@@ -17,6 +17,7 @@ import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useRepliesStore } from '../stores/replies.js';
 import type { ReplyParent } from '../../../shared/replies.js';
 import * as jumpIntent from '../composables/useJumpIntent.js';
+import { useSettingsStore } from '../stores/settings.js';
 
 vi.mock('../composables/useSocket.js', () => ({
   socketSend: vi.fn<() => boolean>(() => true),
@@ -71,6 +72,13 @@ function mountWith(messages: Record<string, unknown>[]) {
 }
 
 const rowOf = (w: VueWrapper, id: number) => w.find(`[data-msg-id="${id}"]`);
+type Row = ReturnType<typeof rowOf>;
+// The message's own text: its body without the quote that opens it.
+const ownText = (row: Row) => {
+  const quote = row.find('.reply-quote');
+  const body = row.find('.body').text();
+  return (quote.exists() ? body.replace(quote.text(), '') : body).trim();
+};
 
 describe('MessageList — replies', () => {
   beforeEach(() => {
@@ -89,18 +97,31 @@ describe('MessageList — replies', () => {
     });
     const w = mountWith([p, r]);
     const row = rowOf(w, r.id);
-    // Quoted as IRC writes it, formatting dropped.
-    expect(row.find('.reply-excerpt').text()).toBe('<alice> what time is it?');
-    expect(row.find('.body').text()).toBe('noon');
-    // A plain line has no reply line.
-    expect(rowOf(w, p.id).find('.reply-ctx').exists()).toBe(false);
+    // Quoted as IRC writes it, formatting dropped, as the first line of the
+    // reply's own body.
+    expect(row.find('.body .reply-quote .reply-text').text()).toBe('<alice> what time is it?');
+    expect(row.find('.body .reply-quote .reply-mark').text()).toBe('┌─');
+    expect(ownText(row)).toBe('noon');
+    // A plain line has no quote.
+    expect(rowOf(w, p.id).find('.reply-quote').exists()).toBe(false);
+  });
+
+  // The quote is part of the message, so a reply keeps its author's run going.
+  it('continues its author’s run, quote and all', () => {
+    useSettingsStore().values = { 'look.message.collapse_authors': true } as never;
+    const first = line('bob', 'first thought');
+    const r = line('bob', 'and a reply', { replyTo: { msgid: 'm1', parent: parent() } });
+    const w = mountWith([first, r]);
+    expect(rowOf(w, r.id).classes()).toContain('cont-author');
+    expect(rowOf(w, r.id).find('.prefix').text()).toBe('');
+    expect(rowOf(w, r.id).find('.reply-quote').exists()).toBe(true);
   });
 
   it('says the answered line is unavailable when it isn’t there', () => {
     const r = line('bob', 'lol same', { replyTo: { msgid: 'gone', parent: null } });
     const w = mountWith([r]);
-    expect(rowOf(w, r.id).find('.reply-ctx').classes()).toContain('missing');
-    expect(rowOf(w, r.id).find('.reply-excerpt').text()).toBe('original message unavailable');
+    expect(rowOf(w, r.id).find('.reply-quote').classes()).toContain('missing');
+    expect(rowOf(w, r.id).find('.reply-text').text()).toBe('original message unavailable');
   });
 
   it('won’t quote someone ignored since, even though the server sent the line', () => {
@@ -119,10 +140,10 @@ describe('MessageList — replies', () => {
     ];
     const r = line('bob', 'alice: noon', { replyTo: { msgid: 'm1', parent: parent() } });
     const w = mountWith([r]);
-    expect(rowOf(w, r.id).find('.reply-excerpt').text()).toBe('original message unavailable');
+    expect(rowOf(w, r.id).find('.reply-text').text()).toBe('original message unavailable');
     expect(rowOf(w, r.id).text()).not.toContain('what time');
     // With no quote naming her, the address is the only sign of who it's to.
-    expect(rowOf(w, r.id).find('.body').text()).toBe('alice: noon');
+    expect(ownText(rowOf(w, r.id))).toBe('alice: noon');
   });
 
   it('jumps to the answered line from the keyboard, and offers nothing when it’s gone', async () => {
@@ -131,7 +152,7 @@ describe('MessageList — replies', () => {
     const r = line('bob', 'noon', { replyTo: { msgid: 'm1', parent: parent({ id: p.id }) } });
     const gone = line('bob', 'lol', { replyTo: { msgid: 'x', parent: null } });
     const w = mountWith([p, r, gone]);
-    const ctx = rowOf(w, r.id).find('.reply-ctx');
+    const ctx = rowOf(w, r.id).find('.reply-quote');
     expect(ctx.attributes('role')).toBe('button');
     expect(ctx.attributes('tabindex')).toBe('0');
     await ctx.trigger('keydown', { key: 'Enter' });
@@ -140,7 +161,7 @@ describe('MessageList — replies', () => {
     expect(jump).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'jump', networkId: 1, target: '#chan', messageId: p.id }),
     );
-    const missing = rowOf(w, gone.id).find('.reply-ctx');
+    const missing = rowOf(w, gone.id).find('.reply-quote');
     expect(missing.attributes('role')).toBeUndefined();
     expect(missing.attributes('tabindex')).toBeUndefined();
     jump.mockRestore();
@@ -154,8 +175,8 @@ describe('MessageList — replies', () => {
       replyTo: { msgid: 'm2', parent: parent({ nick: 'ChanServ', type: 'notice', text: 'hi' }) },
     });
     const w = mountWith([a, n]);
-    expect(rowOf(w, a.id).find('.reply-excerpt').text()).toBe('* carol waves');
-    expect(rowOf(w, n.id).find('.reply-excerpt').text()).toBe('-ChanServ- hi');
+    expect(rowOf(w, a.id).find('.reply-text').text()).toBe('* carol waves');
+    expect(rowOf(w, n.id).find('.reply-text').text()).toBe('-ChanServ- hi');
   });
 
   // The tint follows the server's stamp, which is what the badge and the feed

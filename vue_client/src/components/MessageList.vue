@@ -104,36 +104,6 @@
         :data-msg-id="row.m?.id ?? null"
         @click="onMessageRowClick($event, row.m)"
       >
-        <!-- IRCv3 reply (#993): the line this one answers, on its own grid row above it.
-             In the standard layout the mark sits in the nick column and the excerpt in the
-             body column; compact stacks it above the head. -->
-        <div
-          v-if="row.m?.replyTo"
-          class="reply-ctx"
-          :class="{ missing: !row.replyParent }"
-          :title="row.replyParent ? 'Jump to this message' : undefined"
-          :role="row.replyParent ? 'button' : undefined"
-          :tabindex="row.replyParent ? 0 : undefined"
-          @click.stop="onReplyContextClick(row.replyParent)"
-          @keydown.enter.space.prevent.stop="onReplyContextClick(row.replyParent)"
-        >
-          <!-- A box-drawing arm, not an icon: the list's other markers are plain text
-               (the join and part arrows, the action star), and the square corner
-               matches the buffer list's lines. It rises from the reply's nick below
-               and turns into the quote. -->
-          <span class="reply-mark" role="img" aria-label="In reply to">┌─</span>
-          <!-- Quoted the way IRC writes the line — `<alice> text`, `* bob waves`,
-               `-ChanServ- text` — so it reads as what was said, not as a sentence
-               starting with a name. -->
-          <span class="reply-excerpt"
-            ><template v-if="row.replyParent"
-              >{{ quoteMarks(row.replyParent.type)[0] }}<NickRef :nick="row.replyParent.nick" />{{
-                quoteMarks(row.replyParent.type)[1]
-              }}
-              {{ replyExcerpt(row.replyParent.text) }}</template
-            ><template v-else>original message unavailable</template></span
-          >
-        </div>
         <template v-if="compactMode && row.m?.type === 'message'">
           <!-- Compact-mode message rows (IRCCloud-style): nick on its own
              head line above the body; body row carries the body and a
@@ -151,6 +121,13 @@
             /></span>
           </div>
           <span class="body" :class="bodyClass(row.m)">
+            <!-- IRCv3 reply (#993): the line this one answers, as the body's first
+                 line — part of the message, so it doesn't break the author's run. -->
+            <ReplyQuote
+              v-if="row.m?.replyTo"
+              :parent="row.replyParent ?? null"
+              @jump="onReplyContextClick"
+            />
             <span
               v-if="row.m?.relaySource && !row.continuationAuthor"
               class="relay-via"
@@ -197,6 +174,13 @@
             ><template v-else>{{ row.continuationAuthor ? '' : prefixText(row.m) }}</template></span
           >
           <span class="body" :class="bodyClass(row.m)">
+            <!-- IRCv3 reply (#993): the line this one answers, as the body's first
+                 line — part of the message, so it doesn't break the author's run. -->
+            <ReplyQuote
+              v-if="row.m?.replyTo"
+              :parent="row.replyParent ?? null"
+              @jump="onReplyContextClick"
+            />
             <span
               v-if="row.m?.relaySource && !row.continuationAuthor"
               class="relay-via"
@@ -402,7 +386,8 @@ import {
   useScrollState,
 } from '../composables/useScrollState.js';
 import type { RenderSegment } from '../utils/nickColor.js';
-import { replyExcerpt, stripReplyAddress } from '../utils/replyText.js';
+import { stripReplyAddress } from '../utils/replyText.js';
+import ReplyQuote from './ReplyQuote.vue';
 import {
   formatTimestamp,
   formatDuration,
@@ -735,7 +720,6 @@ function rowClass(row: RenderRow) {
     alt: row.alt,
     highlight: !!row.highlight && !row.nohilight,
     'cont-author': !!row.continuationAuthor,
-    'has-reply': !!m?.replyTo,
     'cont-time': !!row.continuationTime,
     selected: m?.id != null && m.id === selectedMessageId.value,
   };
@@ -1646,13 +1630,6 @@ function shownParent(
     if (verdict.hide) return null;
   }
   return parent;
-}
-
-// What goes either side of the nick in a quoted line, by its type.
-function quoteMarks(type: string): [string, string] {
-  if (type === 'action') return ['* ', ''];
-  if (type === 'notice') return ['-', '-'];
-  return ['<', '>'];
 }
 
 function onReplyContextClick(parent: ReplyParent | null | undefined): void {
@@ -2750,73 +2727,6 @@ watch(
   word-break: break-word;
   padding-left: 1ch;
 }
-/* IRCv3 reply (#993): the answered line, one faded italic row above the reply. It
-   spans the last two columns as a subgrid of its own, so the mark lines up under the
-   nick column's right edge and the excerpt with the body text — and counting from the
-   END keeps that true on phone widths, where the time column is gone. The reply's own
-   cells drop to row 2 (scoped to the standard layout; compact places them by area).
-
-   Faded with opacity rather than a muted colour, so the quoted nick keeps its own
-   colour and fades with the rest — the mark, the brackets and the text all sit at one
-   level. On the mark and the excerpt, not the row: the row also carries the column
-   rule (::before), which must stay at full strength to read as unbroken. */
-.reply-ctx {
-  grid-column: -3 / -1;
-  grid-row: 1;
-  display: grid;
-  grid-template-columns: subgrid;
-  align-items: baseline;
-  min-width: 0;
-  color: var(--fg);
-  font-style: italic;
-  cursor: pointer;
-}
-.reply-ctx.missing {
-  cursor: default;
-}
-.reply-ctx > .reply-mark,
-.reply-ctx > .reply-excerpt {
-  opacity: 0.45;
-}
-.reply-ctx:not(.missing):hover > .reply-mark,
-.reply-ctx:not(.missing):hover > .reply-excerpt {
-  opacity: 0.8;
-}
-.message-list:not(.compact) .line.has-reply > .time,
-.message-list:not(.compact) .line.has-reply > .prefix,
-.message-list:not(.compact) .line.has-reply > .body {
-  grid-row: 2;
-}
-.reply-mark {
-  grid-column: 1;
-  grid-row: 1;
-  justify-self: end;
-  padding-right: 1ch;
-  /* Upright in the italic row: a slanted corner stops lining up with the nick. */
-  font-style: normal;
-}
-.reply-excerpt {
-  grid-column: 2;
-  grid-row: 1;
-  min-width: 0;
-  padding-left: 1ch;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* Carry the nick/body separator through the reply row, so the column rule stays
-   unbroken down the list. A grid item of the row, in the excerpt's cell at its left
-   edge (the column boundary), so the excerpt's fade doesn't reach it. */
-.reply-ctx::before {
-  content: '';
-  grid-column: 2;
-  grid-row: 1;
-  justify-self: start;
-  align-self: stretch;
-  width: 1px;
-  background: var(--border);
-}
-
 /* Relay-bot origin tag (#277): the bracketed [source] before the re-attributed
    text — mirrors how the bot framed the line, so it reads as provenance rather
    than part of the message. Muted, no glyph; font size stays uniform per house
@@ -2897,12 +2807,8 @@ watch(
   .message-list:not(.compact) .prefix {
     padding-right: 0.5ch;
   }
-  .message-list:not(.compact) .body,
-  .message-list:not(.compact) .reply-excerpt {
+  .message-list:not(.compact) .body {
     padding-left: 0.5ch;
-  }
-  .message-list:not(.compact) .reply-mark {
-    padding-right: 0.5ch;
   }
 }
 
@@ -2937,30 +2843,6 @@ watch(
      backgrounds don't touch across the gap. Adjacent siblings collapse
      vertical margins, so back-to-back clusters get one 10px gap, not 20px. */
   margin-top: var(--space-5);
-}
-/* Compact: the reply line gets its own track above the head. A row with no reply
-   leaves the track empty, and an empty auto track is zero tall. It starts in the
-   body's column, not at the edge, so it takes the same small indent the body and
-   its reactions do (the column gap after the empty prefix track). */
-.message-list.compact .line {
-  grid-template-areas:
-    '.      reply reply'
-    'head   head  head'
-    'prefix body  time';
-}
-.message-list.compact .reply-ctx {
-  grid-area: reply;
-  display: flex;
-  gap: 0.75ch;
-}
-.message-list.compact .reply-mark {
-  padding-right: 0;
-}
-.message-list.compact .reply-excerpt {
-  padding-left: 0;
-}
-.message-list.compact .reply-ctx::before {
-  display: none;
 }
 /* Continuation message rows render only body + time — no head, no cluster
    start — and should sit tight under the previous line. */
