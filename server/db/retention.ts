@@ -119,11 +119,10 @@ const bandWalks = new Map<number, { walkFrom: number; fromBoundary: number }>();
 export interface RetentionVisit {
   /** Below this, everything but bookmarks goes (0: nothing is that old). */
   ceilingId: number;
-  /** This visit picked up a walk begun under an earlier boundary: rows the
-   *  boundary has since moved over were never looked at, so finishing here
-   *  isn't finishing — the sweeper comes back and walks from the top. */
-  resumed: boolean;
-  /** The boundary this walk began from. */
+  /** The boundary this walk began from. Not the visit's own when it picked
+   *  up an earlier visit's walk and the boundary has moved since: rows it
+   *  moved over were never looked at, so reaching the ceiling isn't the end
+   *  (see restartBandWalk). */
   fromBoundary: number;
   /** The ceiling's tail is done; the band is being walked. */
   belowCeilingDone: boolean;
@@ -144,11 +143,18 @@ export function newRetentionVisit(
   const resume = !!saved && saved.walkFrom < boundaryId && saved.walkFrom > ceilingId;
   return {
     ceilingId,
-    resumed: resume && saved.fromBoundary !== boundaryId,
     fromBoundary: resume ? saved.fromBoundary : boundaryId,
     belowCeilingDone: ceilingId === 0,
     walkFrom: resume ? saved.walkFrom : boundaryId,
   };
+}
+
+/** Start the band's walk again from `boundaryId` — a walk begun under an
+ *  earlier boundary reached the ceiling, and the top wasn't walked under this
+ *  one. */
+export function restartBandWalk(visit: RetentionVisit, boundaryId: number): void {
+  visit.walkFrom = boundaryId;
+  visit.fromBoundary = boundaryId;
 }
 
 /** Forget a buffer's band walk — it was deleted, or has nothing over its cap. */
@@ -227,12 +233,14 @@ export interface RetentionBatch {
   /** Nothing left to walk this visit: below the ceiling is clear, and the
    *  band has been walked down to it. */
   done: boolean;
-  /** A full batch of deletes, and nothing else — the one case whose time
-   *  says what a batch of this size costs (the sweeper's pacing). Never a
-   *  band window: most of its rows may be spared, so a cheap one would grow
-   *  the size on work that deleted little, and the next window that deletes
-   *  a full batch pays for it. */
+  /** A full batch of deletes — its time says what a batch of this size
+   *  costs, so the sweeper's pacing may grow or shrink on it. */
   full: boolean;
+  /** A band window: `limit` rows walked, however many were spared. Slow says
+   *  the size is too big, so the pacing may shrink on it — but never grow:
+   *  a cheap one may have deleted nothing, and the next window that deletes
+   *  a full batch would pay for it. */
+  shrinkOnly?: boolean;
 }
 
 /**
@@ -252,29 +260,29 @@ export function deleteRetentionBatch(
   if (!visit.belowCeilingDone) {
     below = deleteBelowStmt.run(bufferId, visit.ceilingId, ownerUserId, limit).changes;
     if (below >= limit) return { deleted: below, done: false, full: true };
-    // Short: that part is clear. Go on to the band in this same call — ending
-    // here let a tick whose budget the probes had spent loop on a statement
-    // that deleted nothing, every tick, forever.
     visit.belowCeilingDone = true;
+    // Short: that part is clear. The band waits for the next statement, so
+    // one call is one statement's cost — unless this one deleted nothing:
+    // then go on, or a tick whose budget the probes had spent would loop on
+    // a statement that deletes nothing, every tick, forever.
+    if (below > 0) return { deleted: below, done: false, full: false };
   }
   // The window's far end: `limit` rows down from where the walk is, or the
   // ceiling when fewer are left.
   const low = rowAtOffset(bufferId, visit.walkFrom, limit - 1);
   const last = low === undefined || low <= visit.ceilingId;
   const windowLow = last ? visit.ceilingId : low;
-  const deleted =
-    below +
-    bandDeleteStmt.run({
-      bufferId,
-      walkFrom: visit.walkFrom,
-      low: windowLow,
-      ownerId: ownerUserId,
-      boundaryId,
-    }).changes;
+  const deleted = bandDeleteStmt.run({
+    bufferId,
+    walkFrom: visit.walkFrom,
+    low: windowLow,
+    ownerId: ownerUserId,
+    boundaryId,
+  }).changes;
   visit.walkFrom = windowLow;
   if (last) bandWalks.delete(bufferId);
   else bandWalks.set(bufferId, { walkFrom: windowLow, fromBoundary: visit.fromBoundary });
-  return { deleted, done: last, full: false };
+  return { deleted, done: last, full: false, shrinkOnly: true };
 }
 
 // ─── The noise clock ───────────────────────────────────────────────────────

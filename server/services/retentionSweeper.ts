@@ -34,6 +34,7 @@ import {
   retentionBoundaryId,
   deleteRetentionBatch,
   newRetentionVisit,
+  restartBandWalk,
   dropBandWalk,
   resetBandWalksForTests,
   listUserIds,
@@ -182,7 +183,20 @@ function measure<T>(run: () => T): { value: T; ms: number } {
  * A targetStatementMs of Infinity needs no special case: nothing can overrun
  * it, so the size only grows and pins to `batchRows`.
  */
-function adaptToStatement(opts: RetentionSweepOptions, ms: number, full: boolean): void {
+function adaptToStatement(
+  opts: RetentionSweepOptions,
+  ms: number,
+  full: boolean,
+  shrinkOnly = false,
+): void {
+  // A statement sized by the batch but not bound by its deletes (a band
+  // window): an overrun still says the size is too big.
+  if (shrinkOnly && !full) {
+    if (ms > opts.targetStatementMs) {
+      adaptedBatchRows = Math.floor(pacedBatchRows(opts) / 2);
+    }
+    return;
+  }
   // ONLY a full batch says anything about per-row cost, in EITHER direction —
   // a full batch is row-bound by construction, because the LIMIT is what
   // stopped the walk.
@@ -266,11 +280,11 @@ export async function runRetentionTick(
   // is a row-limited statement that says whether its LIMIT is what stopped it
   // — the plain deletes by coming back full (see chargeSized), the line-cap
   // batch by saying so (RetentionBatch.full).
-  const chargeFull = <T extends { full: boolean }>(run: () => T): T => {
+  const chargeFull = <T extends { full: boolean; shrinkOnly?: boolean }>(run: () => T): T => {
     const { value, ms } = measure(run);
     syncMsSpent += ms;
     batchesSpent++;
-    adaptToStatement(opts, ms, value.full);
+    adaptToStatement(opts, ms, value.full, value.shrinkOnly);
     return value;
   };
   // A row-limited delete returning how many rows it removed: `deleted >=
@@ -351,9 +365,14 @@ export async function runRetentionTick(
         );
         result.rowsDeleted += batch.deleted;
         if (batch.done) {
-          // A walk resumed from an earlier visit ran below rows never looked
-          // at under this boundary: come back and walk from the top.
-          tailDone = !visit.resumed; // (what's left below the boundary is spared)
+          // A walk begun under an earlier boundary reached the ceiling: the
+          // rows the boundary has moved over since were never looked at. Walk
+          // again from the top — on, if the budget allows; else next time.
+          if (visit.fromBoundary !== boundaryId) {
+            restartBandWalk(visit, boundaryId);
+            continue;
+          }
+          tailDone = true; // (what's left below the boundary is spared)
           break;
         }
       } while (!outOfBudget());

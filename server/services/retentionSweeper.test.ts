@@ -319,8 +319,9 @@ describe('runRetentionTick', () => {
       const live = line({ reply: 'thr-resume-0', root: 'thr-resume-0' });
       setUserSetting(userId, 'data.retention.lines', 8);
 
-      // One tick that stops part-way down the spared band.
-      const first = await runRetentionTick({ ...OPTS, maxBatchesPerTick: 2 });
+      // One tick that stops part-way down the spared band: the two probes, the
+      // lines under the ceiling, one window of the band.
+      const first = await runRetentionTick({ ...OPTS, maxBatchesPerTick: 4 });
       expect(first.backlog).toBe(true);
 
       // More lines push two plain ones over the cap, above where that walk
@@ -941,6 +942,39 @@ describe('pacing', () => {
     expect(seen[0]).toBe(64);
     for (let i = 1; i < seen.length; i++) expect(seen[i]).toBeLessThan(seen[i - 1]);
     expect(seen.at(-1)!).toBeLessThanOrEqual(16);
+  });
+
+  // A band window (reply threads) walks `rows` rows but may delete none.
+  function mockBandWindow(ms: number): number[] {
+    const seen: number[] = [];
+    vi.spyOn(retentionDb, 'retentionBoundaryId').mockReturnValue(1);
+    vi.spyOn(retentionDb, 'deleteRetentionBatch').mockImplementation(
+      (_b: number, _bound: number, _owner: number, limit: number, _visit: unknown) => {
+        seen.push(limit);
+        const end = performance.now() + ms;
+        while (performance.now() < end) {
+          /* block */
+        }
+        return { deleted: 0, done: false, full: false, shrinkOnly: true };
+      },
+    );
+    return seen;
+  }
+
+  it('a slow band window shrinks the size; a fast one never grows it', async () => {
+    capped('pace-band');
+    await warmUpToMax();
+
+    const slow = mockBandWindow(30);
+    await runRetentionTick({ ...PACED, maxBatchesPerTick: 4 });
+    expect(slow[0]).toBe(64);
+    expect(slow.at(-1)!).toBeLessThan(64);
+    vi.restoreAllMocks();
+
+    capped('pace-band-fast');
+    const fast = mockBandWindow(0);
+    await runRetentionTick({ ...PACED, maxBatchesPerTick: 6 });
+    expect(new Set(fast).size).toBe(1); // cheap, and deleted nothing: no growth
   });
 
   it('never shrinks below minBatchRows', async () => {
