@@ -63,14 +63,19 @@ export function bufferOwnerId(bufferId: number): number | undefined {
 // cap. OFFSET walks the buffer's own rows inside the covering index — message
 // ids are a single global sequence, so id arithmetic can never answer this
 // (see hasMoreThan in db/messages.ts). No row at that offset = the buffer is
-// within its cap.
-const boundaryStmt = db.prepare(`
-  SELECT id FROM messages WHERE buffer_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?
+// within its cap. `below` continues a walk from an earlier one (the reply
+// threads' ceiling, below).
+const offsetStmt = db.prepare(`
+  SELECT id FROM messages WHERE buffer_id = ? AND id < ? ORDER BY id DESC LIMIT 1 OFFSET ?
 `);
 
-export function retentionBoundaryId(bufferId: number, capLines: number): number | undefined {
-  const row = boundaryStmt.get(bufferId, capLines - 1) as { id: number } | undefined;
+function rowAtOffset(bufferId: number, below: number, offset: number): number | undefined {
+  const row = offsetStmt.get(bufferId, below, offset) as { id: number } | undefined;
   return row?.id;
+}
+
+export function retentionBoundaryId(bufferId: number, capLines: number): number | undefined {
+  return rowAtOffset(bufferId, Number.MAX_SAFE_INTEGER, capLines - 1);
 }
 
 // ─── The tail, and reply threads ───────────────────────────────────────────
@@ -86,42 +91,56 @@ export function retentionBoundaryId(bufferId: number, capLines: number): number 
 //
 // Spared lines only reach back so far: a second boundary, the CEILING, `cap`
 // lines further down, below which everything goes, oldest first, thread or
-// not. A buffer therefore never keeps more than twice its cap (plus
-// bookmarks) — an always-active thread (a bridge that replies to everything
-// makes one thread of a whole channel) can't hold it open-ended, and neither
-// can many live threads at once.
+// not. A buffer therefore never keeps more than twice its cap of lines, plus
+// bookmarks older than that — an always-active thread (a bridge that replies
+// to everything makes one thread of a whole channel) can't hold it open-ended,
+// and neither can many live threads at once. (Bookmarks count toward the
+// band like any line: leaving them out would put a bookmark probe on every
+// row of the O(cap) walk that finds the ceiling.)
 //
-// Both boundaries are fixed for a visit: deleting below the cap boundary never
-// moves it. So what survives can't depend on the order the tail is walked in
-// or where a tick's budget runs out, and whether a thread is alive is asked in
-// SQL, of the rows as they are, statement by statement — never cached across
-// the awaits between batches, where a new reply can land.
+// What's spared depends only on the boundary, as the rows stand — asked in
+// SQL, statement by statement, never cached across the awaits between
+// batches, where a new reply can land. Deleting below the boundary never
+// moves it, so walk order and where a tick's budget runs out can't change
+// what survives.
+
+// Where each buffer's walk of its band has got to, kept across visits: a
+// stretch of spared lines longer than one tick can walk would otherwise be
+// walked from the top every tick, and nothing under it reached. In memory — a
+// restart starts the walk over, which costs a walk, not correctness. Resuming
+// below the rows already walked can only postpone a deletion (a thread that
+// died since is caught next time round), never make a wrong one: every row is
+// judged when it's reached.
+const bandWalks = new Map<number, number>();
 
 /** State one sweeper visit to a buffer carries between batches. */
 export interface RetentionVisit {
   /** Below this, everything but bookmarks goes (0: nothing is that old). */
   ceilingId: number;
-  /** The ceiling's tail is done; the spared band is being walked. */
+  /** The ceiling's tail is done; the band is being walked. */
   belowCeilingDone: boolean;
-  /** Where the band's next batch starts: below every row already examined, so
-   *  the lines a thread spares are walked past once a visit, not per batch. */
+  /** Where the band's next window starts (exclusive). */
   walkFrom: number;
 }
 
-export function newRetentionVisit(boundaryId: number, ceilingId: number): RetentionVisit {
-  return { ceilingId, belowCeilingDone: ceilingId === 0, walkFrom: boundaryId };
+/** A visit to a buffer over its cap: finds the ceiling — the same O(cap)
+ *  walk as the boundary, continued from it — and picks up the band's walk
+ *  where the last visit left it, if that's still inside the band. */
+export function newRetentionVisit(
+  bufferId: number,
+  boundaryId: number,
+  capLines: number,
+): RetentionVisit {
+  const ceilingId = rowAtOffset(bufferId, boundaryId, capLines - 1) ?? 0;
+  const resumed = bandWalks.get(bufferId);
+  const walkFrom =
+    resumed !== undefined && resumed < boundaryId && resumed > ceilingId ? resumed : boundaryId;
+  return { ceilingId, belowCeilingDone: ceilingId === 0, walkFrom };
 }
 
-// The ceiling: `cap` rows below the boundary. Same OFFSET walk as the
-// boundary, continued from it. No row there = the buffer is within twice its
-// cap, and nothing is old enough to go regardless.
-const ceilingStmt = db.prepare(`
-  SELECT id FROM messages WHERE buffer_id = ? AND id < ? ORDER BY id DESC LIMIT 1 OFFSET ?
-`);
-
-export function retentionCeilingId(bufferId: number, boundaryId: number, capLines: number): number {
-  const row = ceilingStmt.get(bufferId, boundaryId, capLines - 1) as { id: number } | undefined;
-  return row?.id ?? 0;
+/** Forget a buffer's band walk — it was deleted. */
+export function dropBandWalk(bufferId: number): void {
+  bandWalks.delete(bufferId);
 }
 
 // Below the ceiling: one bounded bite, bookmarks exempt. Deliberately no ORDER
@@ -144,62 +163,63 @@ const deleteBelowStmt = db.prepare(`
   )
 `);
 
-// Between the ceiling and the boundary: the rows that may go — not
+// One window of the band, [@low, @walkFrom): the rows in it that may go — not
 // bookmarked, and in no thread still alive at or above the boundary. A row is
 // in the thread it replies in (its reply_root_msgid: a reply at or above the
 // boundary, or that thread's first line stored late there by backfill), and
-// in the thread it may have started (replies naming its own msgid; only a
-// line of REPLY_LINE_TYPES can start one, as replyRootFor finds them). The
-// reply probes are seeks on the reply-only partial index — INDEXED BY because
+// in the thread it may have started (replies naming its own msgid; only a line
+// of REPLY_LINE_TYPES can start one, as replyRootFor finds them). The reply
+// probes are seeks on the reply-only partial index — INDEXED BY because
 // nothing runs ANALYZE — and the late-first-line probe one on the msgid index.
-// Newest first from where the last batch stopped, the per-buffer index's own
-// order, so SQL walks past spared rows without handing them back.
-const bandStmt = db.prepare(`
-  SELECT m.id FROM messages m
-   WHERE m.buffer_id = @bufferId AND m.id < @walkFrom AND m.id >= @ceilingId
-     AND NOT EXISTS (
-       SELECT 1 FROM user_bookmarks ub WHERE ub.user_id = @ownerId AND ub.message_id = m.id
-     )
-     AND NOT (m.reply_root_msgid IS NOT NULL AND (
-       EXISTS (
+// The window is sized in rows WALKED (see deleteRetentionBatch), so a stretch
+// of spared lines costs a window, not one unbounded statement. Exported for
+// the plan test, which must plan this text and not a copy.
+export const BAND_DELETE_SQL = `
+  DELETE FROM messages WHERE id IN (
+    SELECT m.id FROM messages m
+     WHERE m.buffer_id = @bufferId AND m.id < @walkFrom AND m.id >= @low
+       AND NOT EXISTS (
+         SELECT 1 FROM user_bookmarks ub WHERE ub.user_id = @ownerId AND ub.message_id = m.id
+       )
+       AND NOT (m.reply_root_msgid IS NOT NULL AND (
+         EXISTS (
+           SELECT 1 FROM messages r INDEXED BY idx_messages_reply_root
+            WHERE r.buffer_id = @bufferId AND r.reply_root_msgid = m.reply_root_msgid
+              AND r.id >= @boundaryId
+         )
+         OR EXISTS (
+           SELECT 1 FROM messages q
+            WHERE q.network_id = m.network_id AND q.msgid = m.reply_root_msgid
+              AND +q.buffer_id = @bufferId AND q.id >= @boundaryId
+              AND q.type IN ${REPLY_LINE_TYPES_SQL}
+         )
+       ))
+       AND NOT (m.msgid IS NOT NULL AND m.type IN ${REPLY_LINE_TYPES_SQL} AND EXISTS (
          SELECT 1 FROM messages r INDEXED BY idx_messages_reply_root
-          WHERE r.buffer_id = @bufferId AND r.reply_root_msgid = m.reply_root_msgid
-            AND r.id >= @boundaryId
-       )
-       OR EXISTS (
-         SELECT 1 FROM messages q
-          WHERE q.network_id = m.network_id AND q.msgid = m.reply_root_msgid
-            AND +q.buffer_id = @bufferId AND q.id >= @boundaryId
-            AND q.type IN ${REPLY_LINE_TYPES_SQL}
-       )
-     ))
-     AND NOT (m.msgid IS NOT NULL AND m.type IN ${REPLY_LINE_TYPES_SQL} AND EXISTS (
-       SELECT 1 FROM messages r INDEXED BY idx_messages_reply_root
-        WHERE r.buffer_id = @bufferId AND r.reply_root_msgid = m.msgid AND r.id >= @boundaryId
-     ))
-   ORDER BY m.id DESC
-   LIMIT @limit
-`);
-
-const deleteIdsStmt = db.prepare(`
-  DELETE FROM messages WHERE id IN (SELECT value FROM json_each(?))
-`);
+          WHERE r.buffer_id = @bufferId AND r.reply_root_msgid = m.msgid AND r.id >= @boundaryId
+       ))
+  )
+`;
+const bandDeleteStmt = db.prepare(BAND_DELETE_SQL);
 
 /** What one call of deleteRetentionBatch did. */
 export interface RetentionBatch {
-  /** Rows deleted. A batch short of its limit that isn't `done` is still
-   *  progress: the walk moved on. */
+  /** Rows deleted. */
   deleted: number;
-  /** Nothing left to delete this visit: below the ceiling is clear, and the
-   *  band has been walked to the ceiling. */
+  /** Nothing left to walk this visit: below the ceiling is clear, and the
+   *  band has been walked down to it. */
   done: boolean;
+  /** The LIMIT is what stopped the statement — its cost scaled with the
+   *  batch size, so its time says something about the next one (the
+   *  sweeper's pacing). A band window is always sized by it. */
+  full: boolean;
 }
 
 /**
- * Delete up to `limit` over-cap rows: first everything below the ceiling,
- * then what the band between it and the boundary doesn't spare (see the
- * section comment). Every call makes progress, so the sweeper loops on
- * `done`.
+ * One step of pruning a buffer, about `limit` rows' worth: rows below the
+ * ceiling first, then the band between it and the boundary, one window of
+ * `limit` rows walked at a time, deleting what nothing spares (see the section
+ * comment). Every call makes progress, so the sweeper loops on `done`.
  */
 export function deleteRetentionBatch(
   bufferId: number,
@@ -211,25 +231,30 @@ export function deleteRetentionBatch(
   let below = 0;
   if (!visit.belowCeilingDone) {
     below = deleteBelowStmt.run(bufferId, visit.ceilingId, ownerUserId, limit).changes;
-    if (below >= limit) return { deleted: below, done: false };
-    // Short: that part is clear. Go on to the band in the same call — ending
-    // here would let a tick whose budget the probes spent loop on a statement
-    // that deletes nothing, every tick, forever.
+    if (below >= limit) return { deleted: below, done: false, full: true };
+    // Short: that part is clear. Go on to the band in this same call — ending
+    // here let a tick whose budget the probes had spent loop on a statement
+    // that deleted nothing, every tick, forever.
     visit.belowCeilingDone = true;
   }
-  const room = limit - below;
-  const rows = bandStmt.all({
-    bufferId,
-    walkFrom: visit.walkFrom,
-    ceilingId: visit.ceilingId,
-    ownerId: ownerUserId,
-    boundaryId,
-    limit: room,
-  }) as Array<{ id: number }>;
-  if (rows.length === 0) return { deleted: below, done: true };
-  visit.walkFrom = rows[rows.length - 1].id;
-  const deleted = below + deleteIdsStmt.run(JSON.stringify(rows.map((r) => r.id))).changes;
-  return { deleted, done: rows.length < room };
+  // The window's far end: `limit` rows down from where the walk is, or the
+  // ceiling when fewer are left.
+  const low = rowAtOffset(bufferId, visit.walkFrom, limit - 1);
+  const last = low === undefined || low <= visit.ceilingId;
+  const windowLow = last ? visit.ceilingId : low;
+  const deleted =
+    below +
+    bandDeleteStmt.run({
+      bufferId,
+      walkFrom: visit.walkFrom,
+      low: windowLow,
+      ownerId: ownerUserId,
+      boundaryId,
+    }).changes;
+  visit.walkFrom = windowLow;
+  if (last) bandWalks.delete(bufferId);
+  else bandWalks.set(bufferId, windowLow);
+  return { deleted, done: last, full: !last };
 }
 
 // ─── The noise clock ───────────────────────────────────────────────────────

@@ -355,28 +355,25 @@ describe('read-marker paths', () => {
 });
 
 describe('retention paths', () => {
-  // deleteRetentionBatch's band walk (db/retention.ts bandStmt): downward on
-  // the per-buffer index with no sort, each thread probe a seek.
-  it('the band walk rides the per-buffer index, its thread probes seeks', () => {
-    const detail = plan(
-      `SELECT m.id FROM messages m
-        WHERE m.buffer_id = 1 AND m.id < 100 AND m.id >= 10
-          AND NOT EXISTS (SELECT 1 FROM user_bookmarks ub WHERE ub.user_id = 1 AND ub.message_id = m.id)
-          AND NOT (m.reply_root_msgid IS NOT NULL AND (
-            EXISTS (SELECT 1 FROM messages r INDEXED BY idx_messages_reply_root
-                     WHERE r.buffer_id = 1 AND r.reply_root_msgid = m.reply_root_msgid AND r.id >= 100)
-            OR EXISTS (SELECT 1 FROM messages q
-                        WHERE q.network_id = m.network_id AND q.msgid = m.reply_root_msgid
-                          AND +q.buffer_id = 1 AND q.id >= 100
-                          AND q.type IN ('message', 'action', 'notice'))))
-          AND NOT (m.msgid IS NOT NULL AND m.type IN ('message', 'action', 'notice') AND EXISTS (
-            SELECT 1 FROM messages r INDEXED BY idx_messages_reply_root
-             WHERE r.buffer_id = 1 AND r.reply_root_msgid = m.msgid AND r.id >= 100))
-        ORDER BY m.id DESC LIMIT 10`,
-    );
-    expect(detail).toMatch(/SEARCH m USING INDEX idx_messages_buf_unread/);
+  // The band window's delete (db/retention.ts), planned from the text it
+  // prepares: the window rides the per-buffer index, and each thread probe
+  // is a seek.
+  it('the band delete rides the per-buffer index, its thread probes seeks', async () => {
+    const { BAND_DELETE_SQL } = await import('./retention.js');
+    const detail = (
+      db.prepare(`EXPLAIN QUERY PLAN ${BAND_DELETE_SQL}`).all({
+        bufferId: 1,
+        walkFrom: 100,
+        low: 10,
+        ownerId: 1,
+        boundaryId: 100,
+      }) as Array<{ detail: string }>
+    )
+      .map((r) => r.detail)
+      .join(' | ');
+    expect(detail).toMatch(/SEARCH m USING (COVERING )?INDEX idx_messages_buf_unread/);
     expect(detail).toMatch(/SEARCH r USING (COVERING )?INDEX idx_messages_reply_root/);
     expect(detail).toMatch(/SEARCH q USING INDEX idx_messages_msgid/);
-    expect(detail).not.toMatch(/TEMP B-TREE/);
+    expect(detail).not.toMatch(/SCAN messages/);
   });
 });

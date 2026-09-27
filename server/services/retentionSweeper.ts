@@ -34,7 +34,7 @@ import {
   retentionBoundaryId,
   deleteRetentionBatch,
   newRetentionVisit,
-  retentionCeilingId,
+  dropBandWalk,
   listUserIds,
   deleteNoiseBatch,
   getNoiseCursor,
@@ -260,17 +260,24 @@ export async function runRetentionTick(
     batchesSpent++;
     return value;
   };
-  // Charge the tick AND size the next batch from what this one cost. Every
-  // caller is a row-limited statement; `full` says whether the LIMIT is what
-  // stopped it — for a plain delete, `deleted >= rows`.
-  const chargeSized = <T>(rows: number, run: () => T, full: (value: T) => boolean): T => {
+  // Charge the tick AND size the next batch from what this one cost. `run`
+  // is a row-limited statement that says whether its LIMIT is what stopped it
+  // — the plain deletes by coming back full (see chargeSized), the line-cap
+  // batch by saying so (RetentionBatch.full).
+  const chargeFull = <T extends { full: boolean }>(run: () => T): T => {
     const { value, ms } = measure(run);
     syncMsSpent += ms;
     batchesSpent++;
-    adaptToStatement(opts, ms, full(value));
+    adaptToStatement(opts, ms, value.full);
     return value;
   };
-  const deletedAll = (rows: number) => (deleted: number) => deleted >= rows;
+  // A row-limited delete returning how many rows it removed: `deleted >=
+  // rows` is what "the batch was full" means.
+  const chargeSized = (rows: number, run: () => number): number =>
+    chargeFull(() => {
+      const deleted = run();
+      return { deleted, full: deleted >= rows };
+    }).deleted;
 
   const pending = takeDirtyBuffers();
   for (let i = 0; i < pending.length; i++) {
@@ -286,7 +293,10 @@ export async function runRetentionTick(
       // chain synchronous work across buffers.
       await yieldToLoop();
       const ownerId = bufferOwnerId(bufferId);
-      if (ownerId === undefined) continue; // buffer deleted; cascade got the rows
+      if (ownerId === undefined) {
+        dropBandWalk(bufferId); // buffer deleted; cascade got the rows
+        continue;
+      }
       let globalLines = capByUser.get(ownerId);
       if (globalLines === undefined) {
         globalLines = userRetentionLines(ownerId);
@@ -302,11 +312,10 @@ export async function runRetentionTick(
       // delete batch.
       const boundaryId = charge(() => retentionBoundaryId(bufferId, cap));
       if (boundaryId === undefined) continue; // within cap
-      // Reply threads keep lines below the boundary, but never below this —
-      // the same O(cap) walk again, continued from the boundary.
-      const ceilingId = charge(() => retentionCeilingId(bufferId, boundaryId, cap));
-      // Carried between this visit's batches (db/retention.ts).
-      const visit = newRetentionVisit(boundaryId, ceilingId);
+      // Reply threads keep lines below the boundary, but never below the
+      // ceiling this finds — the same O(cap) walk again, continued from the
+      // boundary. Carried between this visit's batches (db/retention.ts).
+      const visit = charge(() => newRetentionVisit(bufferId, boundaryId, cap));
 
       // "Done" is a short delete batch, NOT an exhausted budget: keying the
       // re-mark on the budget livelocks — with a small budget every capped
@@ -326,10 +335,8 @@ export async function runRetentionTick(
         // cannot help because it is only consulted between statements.
         await yieldToLoop();
         const rows = pacedBatchRows(opts);
-        const batch = chargeSized(
-          rows,
-          () => deleteRetentionBatch(bufferId, boundaryId, ownerId, rows, visit),
-          (b) => b.deleted >= rows,
+        const batch = chargeFull(() =>
+          deleteRetentionBatch(bufferId, boundaryId, ownerId, rows, visit),
         );
         result.rowsDeleted += batch.deleted;
         if (batch.done) {
@@ -375,11 +382,7 @@ export async function runRetentionTick(
     do {
       await yieldToLoop();
       const rows = pacedBatchRows(opts);
-      const deleted = chargeSized(
-        rows,
-        () => deleteNoiseBatch(userId, sinceIso, cutoffIso, rows),
-        deletedAll(rows),
-      );
+      const deleted = chargeSized(rows, () => deleteNoiseBatch(userId, sinceIso, cutoffIso, rows));
       result.noiseRowsDeleted += deleted;
       if (deleted < rows) {
         // Window clear (survivors are bookmarked). Compare-and-advance, not a
@@ -420,10 +423,8 @@ export async function runRetentionTick(
         do {
           await yieldToLoop();
           const rows = pacedBatchRows(opts);
-          const deleted = chargeSized(
-            rows,
-            () => drainBufferBatch(userId, bufferId, daysNow, rows),
-            deletedAll(rows),
+          const deleted = chargeSized(rows, () =>
+            drainBufferBatch(userId, bufferId, daysNow, rows),
           );
           result.gcRowsDeleted += deleted;
           if (deleted < rows) {

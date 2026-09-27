@@ -846,8 +846,8 @@ describe('pacing', () => {
           /* block the loop the way a real slow statement does */
         }
         return full
-          ? { deleted: limit, done: false }
-          : { deleted: Math.max(0, limit - 1), done: true };
+          ? { deleted: limit, done: false, full: true }
+          : { deleted: Math.max(0, limit - 1), done: true, full: false };
       },
     );
     return seen;
