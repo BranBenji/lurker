@@ -26,7 +26,7 @@
     :tabindex="parent ? 0 : undefined"
     @click.stop="jump"
     @keydown.enter.space.prevent.stop="jump"
-    ><span class="reply-mark" role="img" aria-label="In reply to">┌─</span
+    ><span class="reply-mark" role="img" aria-label="In reply to">╭─</span
     ><span class="reply-text"
       ><template v-if="parent"
         >{{ marks[0] }}<NickRef :nick="parent.nick" />{{ marks[1] }}
@@ -84,5 +84,9 @@ function jump(): void {
   margin-right: 1ch;
   /* Upright in the italic line: a slanted corner stops lining up. */
   font-style: normal;
+  /* Nudged up off the baseline, so the arm sits level with the text's middle.
+     Relative, so the line's height doesn't change. */
+  position: relative;
+  top: -3px;
 }
 </style>

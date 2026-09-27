@@ -100,7 +100,7 @@ describe('MessageList — replies', () => {
     // Quoted as IRC writes it, formatting dropped, as the first line of the
     // reply's own body.
     expect(row.find('.body .reply-quote .reply-text').text()).toBe('<alice> what time is it?');
-    expect(row.find('.body .reply-quote .reply-mark').text()).toBe('┌─');
+    expect(row.find('.body .reply-quote .reply-mark').text()).toBe('╭─');
     expect(ownText(row)).toBe('noon');
     // A plain line has no quote.
     expect(rowOf(w, p.id).find('.reply-quote').exists()).toBe(false);
