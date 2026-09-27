@@ -125,7 +125,7 @@ Web client only for now.
   be cleartext about an encrypted line. Other people's reactions there still show,
   read-only. New reactions from someone you ignore are dropped; ones they gave before
   you ignored them stay. Reactions aren't replayed to bouncer clients yet (#991).
-  <br>`server/services/ircConnection.ts:3926` (receive), `:8287` (send)
+  <br>`server/services/ircConnection.ts:3926` (receive), `:8321` (send)
 
 ### You can see when someone is typing
 
