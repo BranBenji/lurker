@@ -121,6 +121,13 @@
             /></span>
           </div>
           <span class="body" :class="bodyClass(row.m)">
+            <!-- IRCv3 reply (#993): the line this one answers, as the body's first
+                 line — part of the message, so it doesn't break the author's run. -->
+            <ReplyQuote
+              v-if="row.m?.replyTo"
+              :parent="row.replyParent ?? null"
+              @jump="onReplyContextClick"
+            />
             <span
               v-if="row.m?.relaySource && !row.continuationAuthor"
               class="relay-via"
@@ -167,6 +174,13 @@
             ><template v-else>{{ row.continuationAuthor ? '' : prefixText(row.m) }}</template></span
           >
           <span class="body" :class="bodyClass(row.m)">
+            <!-- IRCv3 reply (#993): the line this one answers, as the body's first
+                 line — part of the message, so it doesn't break the author's run. -->
+            <ReplyQuote
+              v-if="row.m?.replyTo"
+              :parent="row.replyParent ?? null"
+              @jump="onReplyContextClick"
+            />
             <span
               v-if="row.m?.relaySource && !row.continuationAuthor"
               class="relay-via"
@@ -372,6 +386,8 @@ import {
   useScrollState,
 } from '../composables/useScrollState.js';
 import type { RenderSegment } from '../utils/nickColor.js';
+import { stripReplyAddress } from '../utils/replyText.js';
+import ReplyQuote from './ReplyQuote.vue';
 import {
   formatTimestamp,
   formatDuration,
@@ -407,8 +423,11 @@ import { useContextMenu, type ContextMenuItem } from '../composables/useContextM
 import { useWhoisStore } from '../stores/whois.js';
 import { addressNick } from '../composables/useComposerOverlay.js';
 import { setViewedBuffer } from '../composables/useViewedBuffer.js';
-import { isChannelTarget, dccChatPeer } from '../../../shared/channels.js';
+import { isChannelTarget, dccChatPeer, isDccChatTarget } from '../../../shared/channels.js';
 import ReactionRow from './ReactionRow.vue';
+import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
+import { useRepliesStore } from '../stores/replies.js';
+import { emitJumpIntent } from '../composables/useJumpIntent.js';
 
 // Extended BufferMessage fields accessed in the template and script
 // (beyond the core BufferMessage definition which uses [key: string]: unknown).
@@ -454,6 +473,9 @@ interface ChatMessage {
   // ISUPPORT, so `kind` is the only way to tell op churn from a ban — see
   // shared/modes.ts and docs/CLIENT_PROTOCOL.md §7.4.
   modes?: ModeChange[];
+  // IRCv3 reply (#993): the line this one answers, as the server resolved it by
+  // msgid within the buffer — see shared/replies.ts.
+  replyTo?: ReplyContext;
   [key: string]: unknown;
 }
 
@@ -462,6 +484,10 @@ interface ChatMessage {
 interface RenderRow {
   // Message row
   m?: ChatMessage;
+  // A reply's answered line as its reply line shows it (#993): null for
+  // "unavailable". Decided once per row in renderRows — it runs the ignore
+  // matcher — rather than per template binding. Absent on a non-reply.
+  replyParent?: ReplyParent | null;
   alt?: boolean;
   key: string | number;
   // Divider row
@@ -507,6 +533,7 @@ const buffers = useBuffersStore();
 const settings = useSettingsStore();
 const config = useConfigStore();
 const ignores = useIgnoresStore();
+const replies = useRepliesStore();
 const highlights = useHighlightRulesStore();
 const relayBots = useRelayBotsStore();
 const nicks = useNickColors();
@@ -732,7 +759,20 @@ const actionContext: MessageContext = {
     return buffer.value?.networkId ?? 0;
   },
   onReply: (msg) => {
-    if (msg.nick) addressNick(msg.nick);
+    if (!msg.nick) return;
+    // A line with a msgid gets a real reply (#993): pending in the status bar,
+    // sent with the next line. Either way the composer addresses them — that's
+    // what a client without replies sees, and the reply line hides it for us.
+    const key = networks.activeKey;
+    if (key && replyable(msg as ChatMessage)) {
+      replies.start(key, {
+        messageId: msg.id as number,
+        nick: msg.nick,
+        type: msg.type ?? 'message',
+        text: (msg.text as string | undefined) ?? '',
+      });
+    }
+    addressNick(msg.nick);
   },
   onIgnore: (msg) => {
     const { user, host } = parseUserHost(msg.userhost);
@@ -1184,15 +1224,21 @@ const renderRows = computed((): RenderRow[] => {
     // -mask scope. Client evaluation is authoritative once the rule store has
     // loaded; until then we fall back to the server stamp.
     let rowHighlight = !!m.matched;
+    // A reply to one of our lines is a highlight with no rule behind it (#993):
+    // the live rule evaluation below can't see it, so it has to survive that.
+    // The server's stamp, not replyTo.parent — the parent can be gone (retention)
+    // or stored after the reply, and the stamp is what the badge and feed count.
+    const replyToSelf = !m.self && !!m.replyToSelf;
     if (highlights.loaded && !m.self && networkId) {
-      rowHighlight = highlights.evaluate(networkId, {
-        nick: m.nick,
-        userhost: m.userhost ?? null,
-        target: bufTarget,
-        text: m.text ?? '',
-        type: m.type,
-        self: m.self,
-      });
+      rowHighlight =
+        highlights.evaluate(networkId, {
+          nick: m.nick,
+          userhost: m.userhost ?? null,
+          target: bufTarget,
+          text: m.text ?? '',
+          type: m.type,
+          self: m.self,
+        }) || replyToSelf;
     }
 
     // Parsed once and reused by the smart filter and the presence dividers
@@ -1312,12 +1358,25 @@ const renderRows = computed((): RenderRow[] => {
         };
       }
     }
+    // A reply's answered line as its reply line will show it — null when it
+    // can't (see shownParent).
+    const replyParent = m.replyTo ? shownParent(m.replyTo.parent, networkId, bufTarget) : null;
+    // A reply that opens by addressing the author it answers (`alice: sure`) —
+    // how halloy and goguma send one, so clients without replies still see who it
+    // is for. The reply line above already names her, so drop the prefix here —
+    // but only when it does: with the quote unavailable (gone, or someone
+    // ignored), the address is the only sign of who the reply is to.
+    if (replyParent && mDisplay.type === 'message') {
+      const text = stripReplyAddress(mDisplay.text ?? '', replyParent.nick);
+      if (text !== mDisplay.text) mDisplay = { ...mDisplay, text };
+    }
     out.push({
       m: mDisplay,
       alt: STRIPED_TYPES.has(m.type) && !!m.alt,
       key,
       nohilight: rowNohilight,
       highlight: rowHighlight,
+      ...(m.replyTo ? { replyParent } : {}),
     });
   }
 
@@ -1531,6 +1590,59 @@ function textSegments(m: ChatMessage | undefined): RenderSegment[] {
     ) as RenderSegment[];
   }
   return nicks.splitText(m.text || '', nickSet.value, selfLower.value) as RenderSegment[];
+}
+
+// Whether the Reply action can make a real reply of this line: it needs the
+// msgid the reply names, and a channel or DM to send it in. Not an E2E line —
+// the server sends no reply tags on an encrypted channel — and not the
+// :server: console or a =nick DCC chat, which aren't IRC targets. The server
+// re-checks all of it (replySendMsgid); this only decides what the action does.
+function replyable(m: ChatMessage): boolean {
+  return (
+    m.id != null &&
+    !!m.msgid &&
+    !m.e2e &&
+    (m.type === 'message' || m.type === 'action' || m.type === 'notice') &&
+    !!m.target &&
+    !m.target.startsWith(':') &&
+    !isDccChatTarget(m.target)
+  );
+}
+
+// The answered line as the reply line shows it — or null for "unavailable",
+// which also covers a line from someone ignored since it arrived (the server
+// only screens out who was ignored at the time). Judged as the line it was.
+function shownParent(
+  parent: ReplyParent | null,
+  networkId: number | null | undefined,
+  target: string,
+): ReplyParent | null {
+  if (!parent) return null;
+  if (!parent.self && parent.nick && networkId != null) {
+    const verdict = ignores.evaluate(networkId, {
+      nick: parent.nick,
+      userhost: parent.userhost,
+      target,
+      text: parent.text,
+      type: parent.type,
+      isDm: buffer.value?.kind === 'dm',
+    });
+    if (verdict.hide) return null;
+  }
+  return parent;
+}
+
+function onReplyContextClick(parent: ReplyParent | null | undefined): void {
+  const buf = buffer.value;
+  if (!parent || !buf || buf.networkId == null) return;
+  // The shared jump pipeline: scrolls to the line if it's loaded, else loads a
+  // slice around it (detaching the buffer), as a search hit does.
+  emitJumpIntent({
+    kind: 'jump',
+    networkId: buf.networkId,
+    target: buf.target,
+    messageId: parent.id,
+  });
 }
 
 // Template helpers for consolidation row items — vue-tsc can't narrow
