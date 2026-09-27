@@ -16,7 +16,7 @@ import { countsTowardPage } from '../../shared/eventFilter.js';
 import type { PageUnit } from '../../shared/eventFilter.js';
 import type { ModeChange } from '../../shared/modes.js';
 import type { MessageReaction } from '../../shared/reactions.js';
-import { REPLY_EXCERPT_MAX } from '../../shared/replies.js';
+import { REPLY_EXCERPT_MAX, REPLY_LINE_TYPES_SQL } from '../../shared/replies.js';
 import type { ReplyContext, ReplyParent } from '../../shared/replies.js';
 
 // Buffer identity is buffers.id as of schema 17: every predicate in this file
@@ -307,7 +307,7 @@ const REPLY_PARENT_JSON = `json_object(
       'text', substr(p.text, 1, ${REPLY_EXCERPT_MAX}), 'userhost', p.userhost,
       'self', p.self
     )`;
-const REPLY_PARENT_WHERE = `p.type IN ('message', 'action', 'notice')
+const REPLY_PARENT_WHERE = `p.type IN ${REPLY_LINE_TYPES_SQL}
       AND p.from_ignored = 0`;
 
 // Resolved at read time rather than stored, so retention taking the parent
@@ -364,7 +364,7 @@ export function findReplyParent(
 const replyRootStmt = db.prepare(`
   SELECT reply_root_msgid AS root FROM messages
   WHERE network_id = ? AND msgid = ? AND +buffer_id = ?
-    AND type IN ('message', 'action', 'notice')
+    AND type IN ${REPLY_LINE_TYPES_SQL}
   ORDER BY id DESC LIMIT 1
 `);
 
@@ -389,7 +389,7 @@ const replySendStmt = db.prepare(`
   SELECT m.msgid FROM messages m
   JOIN networks n ON n.id = m.network_id
   WHERE m.id = ? AND n.user_id = ? AND m.network_id = ? AND m.buffer_id = ?
-    AND m.type IN ('message', 'action', 'notice')
+    AND m.type IN ${REPLY_LINE_TYPES_SQL}
     AND m.msgid IS NOT NULL AND m.msgid != ''
 `);
 
