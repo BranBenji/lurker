@@ -355,23 +355,38 @@ describe('read-marker paths', () => {
 });
 
 describe('retention paths', () => {
-  // deleteRetentionBatch's candidates: the tail walk, plus — for a reply — a
-  // seek for its root (a reply with a held root leaves with it, not alone).
-  it('the held-root probe is a seek on the msgid index', () => {
+  // deleteRetentionBatch's walk: downward from where the last batch stopped,
+  // with each row's bookmark — no sort, the index is already in id order.
+  it('the tail walk rides the per-buffer index without a sort', () => {
     const detail = plan(
-      `SELECT m.id FROM messages m
+      `SELECT m.id,
+              COALESCE(m.reply_root_msgid,
+                       CASE WHEN m.type IN ('message', 'action', 'notice') THEN m.msgid END) AS thread,
+              EXISTS (SELECT 1 FROM user_bookmarks ub WHERE ub.user_id = 1 AND ub.message_id = m.id) AS saved
+         FROM messages m
         WHERE m.buffer_id = 1 AND m.id < 100
-          AND (m.reply_root_msgid IS NULL OR NOT EXISTS (
-            SELECT 1 FROM messages root
-             WHERE root.network_id = m.network_id AND root.msgid = m.reply_root_msgid
-               AND +root.buffer_id = m.buffer_id
-               AND root.type IN ('message', 'action', 'notice')))
-        ORDER BY m.id ASC
-        LIMIT 10`,
+        ORDER BY m.id DESC LIMIT 10`,
     );
     expect(detail).toMatch(/SEARCH m USING INDEX idx_messages_buf_unread/);
-    expect(detail).toMatch(/SEARCH root USING INDEX idx_messages_msgid/);
-    // Oldest first costs nothing: the index already walks in id order.
     expect(detail).not.toMatch(/TEMP B-TREE/);
+  });
+
+  // Whether a thread still has a line at or above the boundary: a seek on the
+  // reply index, and one on msgid for a first line stored late.
+  it('the thread-alive probe is two seeks', () => {
+    const detail = plan(
+      `SELECT EXISTS (
+                SELECT 1 FROM messages INDEXED BY idx_messages_reply_root
+                 WHERE buffer_id = 1 AND reply_root_msgid = 'r' AND id >= 50)
+           OR EXISTS (
+                SELECT 1 FROM messages
+                 WHERE network_id = (SELECT network_id FROM buffers WHERE id = 1)
+                   AND msgid = 'r' AND +buffer_id = 1 AND id >= 50
+                   AND type IN ('message', 'action', 'notice')) AS live`,
+    );
+    expect(detail).toMatch(
+      /USING COVERING INDEX idx_messages_reply_root|USING INDEX idx_messages_reply_root/,
+    );
+    expect(detail).toMatch(/USING INDEX idx_messages_msgid/);
   });
 });

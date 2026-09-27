@@ -941,10 +941,11 @@ whose token you've superseded.
 
 **Stored history is NOT append-only.** Instances can enforce a retention
 policy (an operator ceiling and/or a per-user setting) that permanently
-deletes a buffer's oldest rows in the background. A reply thread goes as one
-piece: when the line that started it is deleted, every reply naming it
-(`reply_root_msgid`) goes too, however recent — unless that first line is
-bookmarked, which keeps the whole thread. Do not treat a message id
+deletes a buffer's oldest rows in the background. A reply thread — the line
+that started it and every reply in it — is kept whole until its newest line is
+past the limit, so a thread's old lines can outlive the plain lines around
+them; a single thread bigger than the limit loses its oldest lines first. Do
+not treat a message id
 you once fetched as permanently fetchable: an `around` jump to it can come
 back `anchorMissing`, a `before` page can return fewer rows with
 `hasMoreOlder:false` earlier than history "should" end, and on the IRC

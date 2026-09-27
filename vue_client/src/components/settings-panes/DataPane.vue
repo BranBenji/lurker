@@ -103,9 +103,9 @@
     <div class="ret-row">
       <label for="ret-lines">History limit (lines per buffer)</label>
       <p class="muted small">
-        Oldest lines beyond the limit are deleted permanently, and a reply thread goes with its
-        first line. Bookmarked messages are never deleted; bookmark a thread's first line to keep
-        the thread. Export first if you want an archive. Per-buffer: type /retention in any buffer.
+        Oldest lines beyond the limit are deleted permanently — bookmarked messages are never
+        deleted, and a reply thread stays whole until its newest line is past the limit. Export
+        first if you want an archive. Per-buffer: type /retention in any buffer.
       </p>
       <div class="editor-line">
         <select
