@@ -81,9 +81,9 @@ export function retentionBoundaryId(bufferId: number, capLines: number): number 
 // ─── The tail, and reply threads ───────────────────────────────────────────
 //
 // A reply thread (its first line and every reply naming it — see
-// messages.reply_root_msgid) is kept whole until its NEWEST line ages out: the
-// thread view, and every reply's quote, would otherwise open on a hole where
-// the question was. So a line below the boundary is spared while a thread it
+// messages.reply_root_msgid) is kept whole until its NEWEST line ages out: a
+// reply's quote (or a view of the whole thread) would otherwise show a hole
+// where the question was. So a line below the boundary is spared while a thread it
 // belongs to — as a reply, or as the line that started one — has a line at or
 // above the boundary. A reply to an old line keeps that line, and itself,
 // rather than both going a moment after it arrives (the first cut took a
