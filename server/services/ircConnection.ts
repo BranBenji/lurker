@@ -8313,15 +8313,18 @@ export class IrcConnection {
 
   // React (or unreact) `value` on the line with `msgid` in `target`. Writes
   // nothing locally: the server's echo comes back through handleReaction like
-  // anyone else's, so what we show is what the network accepted. Both reply
-  // tags go out — `+reply` is the ratified name and `+draft/reply` is what
-  // older clients still read; halloy and goguma send the pair the same way.
+  // anyone else's, so what we show is what the network accepted. The reply
+  // tag goes out under each name the network allows (replyTags) — `+reply` is
+  // the ratified name and `+draft/reply` is what older clients still read;
+  // halloy and goguma send the pair the same way. A name CLIENTTAGDENY forbids
+  // stays off: canSendReactions only needs one of them allowed.
   sendReaction(target: string, msgid: string, value: string, remove: boolean): boolean {
     if (!this.canSendReactions()) return false;
     if (!isValidReactionValue(value)) return false;
+    const replyTags = this.replyTags(msgid);
+    if (!replyTags) return false;
     this.client.tagmsg(target, {
-      '+reply': msgid,
-      '+draft/reply': msgid,
+      ...replyTags,
       [remove ? '+draft/unreact' : '+draft/react']: value,
     });
     return true;

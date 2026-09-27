@@ -28,6 +28,7 @@ type Ev = Record<string, unknown>;
 
 let ircd: FakeIrcd;
 let denyIrcd: FakeIrcd;
+let draftDenyIrcd: FakeIrcd;
 let userId: number;
 let seq = 0;
 
@@ -35,12 +36,15 @@ beforeAll(async () => {
   ircd = await FakeIrcd.start();
   // A network that forbids every client-only tag.
   denyIrcd = await FakeIrcd.start({ isupport: ['CLIENTTAGDENY=*'] });
+  // A network that allows the ratified reply tag but forbids the draft name.
+  draftDenyIrcd = await FakeIrcd.start({ isupport: ['CLIENTTAGDENY=draft/reply'] });
   userId = createUser('reactions-int').id;
 });
 
 afterAll(async () => {
   await ircd.close();
   await denyIrcd.close();
+  await draftDenyIrcd.close();
 });
 
 function makeNetwork(nick: string, port = ircd.port): Network {
@@ -448,6 +452,27 @@ describe('sending reactions', () => {
       expect(rig.conn.canSendReactions()).toBe(false);
       expect(rig.conn.sendReaction('#d1', 'm1', '👍', false)).toBe(false);
       expect(denyIrcd.client('deny1')!.sent.some((l) => l.includes('TAGMSG'))).toBe(false);
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
+  // One reply name allowed is enough to react, but the forbidden one stays off
+  // the wire — the same per-name filter a reply's tags go through.
+  it('leaves off the reply tag name CLIENTTAGDENY forbids', async () => {
+    const rig = await connect('deny2', '#d2', draftDenyIrcd.port);
+    try {
+      expect(rig.conn.canSendReactions()).toBe(true);
+      expect(rig.conn.sendReaction('#d2', 'm1', '👍', false)).toBe(true);
+      await until(
+        () => draftDenyIrcd.client('deny2')!.sent.some((l) => l.includes('TAGMSG #d2')),
+        5000,
+        'reaction sent',
+      );
+      const sent = draftDenyIrcd.client('deny2')!.sent.find((l) => l.includes('TAGMSG #d2'))!;
+      expect(sent).toContain('+reply=m1');
+      expect(sent).not.toContain('+draft/reply');
+      expect(sent).toContain('+draft/react=👍');
     } finally {
       rig.conn.dispose();
     }
