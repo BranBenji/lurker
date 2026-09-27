@@ -111,12 +111,20 @@ export function retentionBoundaryId(bufferId: number, capLines: number): number 
 // below the rows already walked can only postpone a deletion (a thread that
 // died since is caught next time round), never make a wrong one: every row is
 // judged when it's reached.
-const bandWalks = new Map<number, number>();
+// Each walk remembers the boundary it began from: resuming under the same one
+// is the same walk; under a moved one, the rows between were never looked at.
+const bandWalks = new Map<number, { walkFrom: number; fromBoundary: number }>();
 
 /** State one sweeper visit to a buffer carries between batches. */
 export interface RetentionVisit {
   /** Below this, everything but bookmarks goes (0: nothing is that old). */
   ceilingId: number;
+  /** This visit picked up a walk begun under an earlier boundary: rows the
+   *  boundary has since moved over were never looked at, so finishing here
+   *  isn't finishing — the sweeper comes back and walks from the top. */
+  resumed: boolean;
+  /** The boundary this walk began from. */
+  fromBoundary: number;
   /** The ceiling's tail is done; the band is being walked. */
   belowCeilingDone: boolean;
   /** Where the band's next window starts (exclusive). */
@@ -132,15 +140,25 @@ export function newRetentionVisit(
   capLines: number,
 ): RetentionVisit {
   const ceilingId = rowAtOffset(bufferId, boundaryId, capLines - 1) ?? 0;
-  const resumed = bandWalks.get(bufferId);
-  const walkFrom =
-    resumed !== undefined && resumed < boundaryId && resumed > ceilingId ? resumed : boundaryId;
-  return { ceilingId, belowCeilingDone: ceilingId === 0, walkFrom };
+  const saved = bandWalks.get(bufferId);
+  const resume = !!saved && saved.walkFrom < boundaryId && saved.walkFrom > ceilingId;
+  return {
+    ceilingId,
+    resumed: resume && saved.fromBoundary !== boundaryId,
+    fromBoundary: resume ? saved.fromBoundary : boundaryId,
+    belowCeilingDone: ceilingId === 0,
+    walkFrom: resume ? saved.walkFrom : boundaryId,
+  };
 }
 
-/** Forget a buffer's band walk — it was deleted. */
+/** Forget a buffer's band walk — it was deleted, or has nothing over its cap. */
 export function dropBandWalk(bufferId: number): void {
   bandWalks.delete(bufferId);
+}
+
+/** Tests only: forget every walk, as a restart would. */
+export function resetBandWalksForTests(): void {
+  bandWalks.clear();
 }
 
 // Below the ceiling: one bounded bite, bookmarks exempt. Deliberately no ORDER
@@ -209,9 +227,11 @@ export interface RetentionBatch {
   /** Nothing left to walk this visit: below the ceiling is clear, and the
    *  band has been walked down to it. */
   done: boolean;
-  /** The LIMIT is what stopped the statement — its cost scaled with the
-   *  batch size, so its time says something about the next one (the
-   *  sweeper's pacing). A band window is always sized by it. */
+  /** A full batch of deletes, and nothing else — the one case whose time
+   *  says what a batch of this size costs (the sweeper's pacing). Never a
+   *  band window: most of its rows may be spared, so a cheap one would grow
+   *  the size on work that deleted little, and the next window that deletes
+   *  a full batch pays for it. */
   full: boolean;
 }
 
@@ -253,8 +273,8 @@ export function deleteRetentionBatch(
     }).changes;
   visit.walkFrom = windowLow;
   if (last) bandWalks.delete(bufferId);
-  else bandWalks.set(bufferId, windowLow);
-  return { deleted, done: last, full: !last };
+  else bandWalks.set(bufferId, { walkFrom: windowLow, fromBoundary: visit.fromBoundary });
+  return { deleted, done: last, full: false };
 }
 
 // ─── The noise clock ───────────────────────────────────────────────────────

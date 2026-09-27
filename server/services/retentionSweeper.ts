@@ -35,6 +35,7 @@ import {
   deleteRetentionBatch,
   newRetentionVisit,
   dropBandWalk,
+  resetBandWalksForTests,
   listUserIds,
   deleteNoiseBatch,
   getNoiseCursor,
@@ -141,6 +142,7 @@ let adaptedBatchRows = UNMEASURED;
 /** Test-only: forget what the last tick learned about statement cost. */
 export function resetSweepPacingForTests(): void {
   adaptedBatchRows = UNMEASURED;
+  resetBandWalksForTests();
 }
 
 /** The batch size to use right now, clamped into the option's own range. */
@@ -306,15 +308,24 @@ export async function runRetentionTick(
       // lookup (one PK probe) is paid per buffer.
       const cap = effectiveRetentionLines(ownerId, bufferId, globalLines);
       result.buffersExamined++;
-      if (cap <= 0) continue; // unlimited
+      if (cap <= 0) {
+        dropBandWalk(bufferId); // unlimited
+        continue;
+      }
 
       // The OFFSET walk is O(cap) index entries — real work, charged like a
       // delete batch.
       const boundaryId = charge(() => retentionBoundaryId(bufferId, cap));
-      if (boundaryId === undefined) continue; // within cap
+      if (boundaryId === undefined) {
+        dropBandWalk(bufferId); // within cap
+        continue;
+      }
       // Reply threads keep lines below the boundary, but never below the
       // ceiling this finds — the same O(cap) walk again, continued from the
       // boundary. Carried between this visit's batches (db/retention.ts).
+      // Its own statement: yield first, so the two O(cap) walks never run as
+      // one block.
+      await yieldToLoop();
       const visit = charge(() => newRetentionVisit(bufferId, boundaryId, cap));
 
       // "Done" is a short delete batch, NOT an exhausted budget: keying the
@@ -340,7 +351,9 @@ export async function runRetentionTick(
         );
         result.rowsDeleted += batch.deleted;
         if (batch.done) {
-          tailDone = true; // (what's left below the boundary is spared)
+          // A walk resumed from an earlier visit ran below rows never looked
+          // at under this boundary: come back and walk from the top.
+          tailDone = !visit.resumed; // (what's left below the boundary is spared)
           break;
         }
       } while (!outOfBudget());
@@ -434,8 +447,10 @@ export async function runRetentionTick(
         } while (!outOfBudget());
         if (!drained) return false; // budget died mid-drain; re-listed next pass
         // the row delete cascades into eight tables — real work
-        if (charge(() => gcDeleteClosedBuffer(userId, bufferId, daysNow)))
+        if (charge(() => gcDeleteClosedBuffer(userId, bufferId, daysNow))) {
           result.buffersCollected++;
+          dropBandWalk(bufferId);
+        }
         // A refusal (reopened, re-closed recently, or a bookmark landed) is
         // simply left alone; the next pass re-derives eligibility from scratch.
         if (outOfBudget()) return false; // user stays at head

@@ -310,6 +310,32 @@ describe('runRetentionTick', () => {
       expect(child.id).toBeLessThan(p.id);
     });
 
+    it('a walk resumed under a moved boundary still reaches what it moved over the cap', async () => {
+      const { userId, line } = seedTagged('thr-resume', 1); // R, the root
+      const replies = Array.from({ length: 10 }, () =>
+        line({ reply: 'thr-resume-0', root: 'thr-resume-0' }),
+      ).map((l) => l.id);
+      const plain = Array.from({ length: 6 }, () => line()).map((l) => l.id);
+      const live = line({ reply: 'thr-resume-0', root: 'thr-resume-0' });
+      setUserSetting(userId, 'data.retention.lines', 8);
+
+      // One tick that stops part-way down the spared band.
+      const first = await runRetentionTick({ ...OPTS, maxBatchesPerTick: 2 });
+      expect(first.backlog).toBe(true);
+
+      // More lines push two plain ones over the cap, above where that walk
+      // stopped; then the channel goes quiet.
+      const more = [line(), line(), line()].map((l) => l.id);
+      await settle(2);
+
+      expect(rowIds(live.bufferId)).toEqual([
+        ...replies.slice(4),
+        ...plain.slice(2),
+        live.id,
+        ...more,
+      ]);
+    });
+
     it('a bookmark keeps only its own line', async () => {
       const { userId, ids, line } = seedTagged('thr-bm', 2);
       const saved = line({ reply: 'thr-bm-1', root: 'thr-bm-1' });
