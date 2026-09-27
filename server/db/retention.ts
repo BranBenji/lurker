@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Storage side of history retention (lurker-dev/RETENTION_PLAN.md): the dirty-buffer set
-// that tells the sweeper where to look, and the two statements it runs. The
+// that tells the sweeper where to look, and the statements it runs. The
 // scheduling lives in services/retentionSweeper.ts; this module owns the SQL
 // so the statements sit next to the schema they depend on.
 //
-// Both statements ride idx_messages_buf_unread (buffer_id, id DESC, …) —
+// The walks ride idx_messages_buf_unread (buffer_id, id DESC, …) — a
+// departing thread's replies add seeks on the reply and msgid indexes, and
 // count-based retention needs no new index, which is half the reason it won
 // over age-based (the other half is in the plan). The messages_ad trigger
 // keeps messages_fts in sync through these deletes, so search never sees a
@@ -71,37 +72,106 @@ export function retentionBoundaryId(bufferId: number, capLines: number): number 
   return row?.id;
 }
 
-// One bounded bite of the over-cap tail. Deliberately no ORDER BY in the
-// subselect: everything below the boundary goes eventually, so any qualifying
-// rows do, and ordering would only add sort work. The NOT EXISTS is the
-// bookmark exemption — a bookmarked row below
-// the boundary survives as an extra ABOVE the cap (later boundary probes walk
-// past it and it never becomes deletable). It is scoped by user_id, not just
-// message_id: user_bookmarks has no index on message_id alone, and a buffer
-// has exactly one owner who is the only user able to bookmark its rows, so
-// the (user_id, message_id) primary key answers the probe as a seek.
-const deleteBatchStmt = db.prepare(`
-  DELETE FROM messages WHERE id IN (
-    SELECT m.id FROM messages m
-     WHERE m.buffer_id = ? AND m.id < ?
-       AND NOT EXISTS (
-         SELECT 1 FROM user_bookmarks ub
-          WHERE ub.user_id = ? AND ub.message_id = m.id
-       )
-     LIMIT ?
-  )
+// The over-cap tail, one bounded bite at a time. Deliberately no ORDER BY:
+// everything below the boundary goes eventually, so any qualifying rows do,
+// and ordering would only add sort work. The NOT EXISTS is the bookmark
+// exemption — a bookmarked row below the boundary survives as an extra ABOVE
+// the cap (later boundary probes walk past it and it never becomes
+// deletable). It is scoped by user_id, not just message_id: user_bookmarks
+// has no index on message_id alone, and a buffer has exactly one owner who is
+// the only user able to bookmark its rows, so the (user_id, message_id)
+// primary key answers the probe as a seek. The second NOT EXISTS leaves out
+// every reply whose root is a line we hold: it isn't the count's to take. It
+// goes with its root — in the same batch, see deleteRetentionBatch — or stays
+// with it when the root is saved. Found as replyRootFor found the root at
+// insert, a seek on idx_messages_msgid; the root is older than its reply, so
+// a held root is below the boundary whenever the reply is.
+const tailCandidatesStmt = db.prepare(`
+  SELECT m.id, m.msgid, m.type FROM messages m
+   WHERE m.buffer_id = ? AND m.id < ?
+     AND NOT EXISTS (
+       SELECT 1 FROM user_bookmarks ub
+        WHERE ub.user_id = ? AND ub.message_id = m.id
+     )
+     AND (m.reply_root_msgid IS NULL OR NOT EXISTS (
+       SELECT 1 FROM messages root
+        WHERE root.network_id = m.network_id AND root.msgid = m.reply_root_msgid
+          AND +root.buffer_id = m.buffer_id
+          AND root.type IN ('message', 'action', 'notice')
+     ))
+   LIMIT ?
 `);
 
-/** Delete up to `limit` over-cap rows. Returns the number deleted; a return
- *  below `limit` means this buffer's tail is done. */
+// A thread's replies — every row naming this root — minus the bookmarked
+// ones, on the partial idx_messages_reply_root (replies only). INDEXED BY
+// because nothing runs ANALYZE, and without it the planner can walk the
+// buffer's whole id index instead.
+const threadReplyIdsStmt = db.prepare(`
+  SELECT r.id FROM messages r INDEXED BY idx_messages_reply_root
+   WHERE r.buffer_id = ? AND r.reply_root_msgid = ?
+     AND NOT EXISTS (
+       SELECT 1 FROM user_bookmarks ub
+        WHERE ub.user_id = ? AND ub.message_id = r.id
+     )
+`);
+
+const deleteIdsStmt = db.prepare(`
+  DELETE FROM messages WHERE id IN (SELECT value FROM json_each(?))
+`);
+
+const deleteBatchTx = db.transaction((ids: number[]): number => {
+  return deleteIdsStmt.run(JSON.stringify(ids)).changes;
+});
+
+/**
+ * Delete over-cap rows, about `limit` of them. Returns the number deleted; a
+ * return below `limit` means this buffer's tail is done.
+ *
+ * A thread leaves as one piece: when the line that started one falls below
+ * the boundary, its replies go with it in the same statement, however recent
+ * — the thread view (and every reply's quote) would otherwise open on a hole
+ * where the question was. Same statement, not a later one: deleting replies
+ * shrinks the buffer, so a boundary probed again between the two would no
+ * longer reach the root and the thread would stop half gone. A root is found
+ * the way replyRootFor found it at insert (a chat line, by msgid); a reply
+ * whose root we never held is an ordinary line to the count. A bookmark on
+ * the root keeps the whole thread — saving the question saves the answers,
+ * and the root never leaves, so neither do they; a bookmark on a reply keeps
+ * just that line, as a bookmark does from every other delete.
+ *
+ * Rows are taken until the batch reaches `limit`, so it overshoots by at
+ * most one thread: a thread bigger than a batch goes whole or not at all.
+ * Taking one more row whenever the total is still short is also what keeps
+ * "below `limit` = done" true — a batch only comes up short when the
+ * candidates ran out. (The candidates never include a thread's replies, so
+ * the two can't overlap and make a full fetch look short.)
+ */
 export function deleteRetentionBatch(
   bufferId: number,
   boundaryId: number,
   ownerUserId: number,
   limit: number,
 ): number {
-  return deleteBatchStmt.run(bufferId, boundaryId, ownerUserId, limit).changes;
+  const candidates = tailCandidatesStmt.all(bufferId, boundaryId, ownerUserId, limit) as Array<{
+    id: number;
+    msgid: string | null;
+    type: string;
+  }>;
+  const ids = new Set<number>();
+  for (const row of candidates) {
+    if (ids.size >= limit) break;
+    ids.add(row.id);
+    if (!row.msgid || !CHAT_TYPES.has(row.type)) continue;
+    const replies = threadReplyIdsStmt.all(bufferId, row.msgid, ownerUserId) as Array<{
+      id: number;
+    }>;
+    for (const r of replies) ids.add(r.id);
+  }
+  if (ids.size === 0) return 0;
+  return deleteBatchTx([...ids]);
 }
+
+const CHAT_TYPES = new Set(['message', 'action', 'notice']);
 
 // ─── The noise clock ───────────────────────────────────────────────────────
 

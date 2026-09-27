@@ -353,3 +353,22 @@ describe('read-marker paths', () => {
     expect(detail).not.toMatch(/TEMP B-TREE/);
   });
 });
+
+describe('retention paths', () => {
+  // deleteRetentionBatch's candidates: the tail walk, plus — for a reply — a
+  // seek for its root (a reply with a held root leaves with it, not alone).
+  it('the held-root probe is a seek on the msgid index', () => {
+    const detail = plan(
+      `SELECT m.id FROM messages m
+        WHERE m.buffer_id = 1 AND m.id < 100
+          AND (m.reply_root_msgid IS NULL OR NOT EXISTS (
+            SELECT 1 FROM messages root
+             WHERE root.network_id = m.network_id AND root.msgid = m.reply_root_msgid
+               AND +root.buffer_id = m.buffer_id
+               AND root.type IN ('message', 'action', 'notice')))
+        LIMIT 10`,
+    );
+    expect(detail).toMatch(/SEARCH m USING INDEX idx_messages_buf_unread/);
+    expect(detail).toMatch(/SEARCH root USING INDEX idx_messages_msgid/);
+  });
+});
