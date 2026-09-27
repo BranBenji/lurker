@@ -80,7 +80,7 @@ only works if timestamps are trustworthy.
   before Lurker kept them, have none. A message the network sends twice under the
   same ID, in the same channel or conversation, is stored once. Reactions and replies
   are anchored on it.
-  <br>`server/services/ircConnection.ts:1528`
+  <br>`server/services/ircConnection.ts:2434`
 
 ### Multi-line messages stay one message
 
@@ -116,13 +116,15 @@ messages show up in the activity view beside your highlights. They don't ping yo
 Web client only for now.
 
 - **`+draft/react`** and **`+draft/unreact`**, sent on `TAGMSG` and anchored to a
-  message by **`+reply`** / **`+draft/reply`** (both sent). Sending needs
-  **`message-tags`** and **`echo-message`**: Lurker records your reaction only when the
-  network echoes it back, so what you see is what the network accepted. A network whose
-  `CLIENTTAGDENY` refuses the tags gets no React button. A reaction is at most 64
-  characters (graphemes) and is dropped, not cut short, when longer. There are none on
-  E2E channels, where a reaction would be cleartext about an encrypted line, and none
-  from someone you ignore. Reactions aren't replayed to bouncer clients yet (#991).
+  message by **`+reply`** / **`+draft/reply`** (each name the network allows). Sending
+  needs **`message-tags`** and **`echo-message`**: Lurker records your reaction only
+  when the network echoes it back, so what you see is what the network accepted. A
+  network whose `CLIENTTAGDENY` refuses the tags gets no React button. A reaction is at
+  most 64 characters (graphemes) and is dropped, not cut short, when longer.
+- You can't react to notices, or to messages on an E2E channel, where a reaction would
+  be cleartext about an encrypted line. Other people's reactions there still show,
+  read-only. New reactions from someone you ignore are dropped; ones they gave before
+  you ignored them stay. Reactions aren't replayed to bouncer clients yet (#991).
   <br>`server/services/ircConnection.ts:3926` (receive), `:8287` (send)
 
 ### You can see when someone is typing
@@ -345,6 +347,8 @@ attaching to Lurker.
 | `batch`                                 |   ✅   |   ✅    |
 | `draft/multiline`                       |   ✅   |    —    |
 | `+typing`                               |   ✅   |    —    |
+| `+draft/react`, `+draft/unreact`        |   ✅   |    —    |
+| `+reply`, `+draft/reply`                |   ✅   |    —    |
 | `draft/chathistory`                     |   —    |   ✅    |
 | `draft/event-playback`                  |   —    |   ✅    |
 | `draft/read-marker`                     |   —    |   ✅    |
