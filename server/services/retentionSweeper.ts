@@ -34,6 +34,7 @@ import {
   retentionBoundaryId,
   deleteRetentionBatch,
   newRetentionVisit,
+  retentionCeilingId,
   listUserIds,
   deleteNoiseBatch,
   getNoiseCursor,
@@ -301,9 +302,11 @@ export async function runRetentionTick(
       // delete batch.
       const boundaryId = charge(() => retentionBoundaryId(bufferId, cap));
       if (boundaryId === undefined) continue; // within cap
-      // Carried between this visit's batches: where the walk is, and what
-      // each reply thread spares (db/retention.ts).
-      const visit = newRetentionVisit(cap, boundaryId);
+      // Reply threads keep lines below the boundary, but never below this —
+      // the same O(cap) walk again, continued from the boundary.
+      const ceilingId = charge(() => retentionCeilingId(bufferId, boundaryId, cap));
+      // Carried between this visit's batches (db/retention.ts).
+      const visit = newRetentionVisit(boundaryId, ceilingId);
 
       // "Done" is a short delete batch, NOT an exhausted budget: keying the
       // re-mark on the budget livelocks — with a small budget every capped
@@ -323,12 +326,10 @@ export async function runRetentionTick(
         // cannot help because it is only consulted between statements.
         await yieldToLoop();
         const rows = pacedBatchRows(opts);
-        // Full when the walk filled its LIMIT — rows a thread spares are still
-        // rows walked, so `deleted` alone would read a spared stretch as done.
         const batch = chargeSized(
           rows,
           () => deleteRetentionBatch(bufferId, boundaryId, ownerId, rows, visit),
-          (b) => !b.done,
+          (b) => b.deleted >= rows,
         );
         result.rowsDeleted += batch.deleted;
         if (batch.done) {

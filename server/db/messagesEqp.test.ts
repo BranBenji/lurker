@@ -355,38 +355,28 @@ describe('read-marker paths', () => {
 });
 
 describe('retention paths', () => {
-  // deleteRetentionBatch's walk: downward from where the last batch stopped,
-  // with each row's bookmark — no sort, the index is already in id order.
-  it('the tail walk rides the per-buffer index without a sort', () => {
+  // deleteRetentionBatch's band walk (db/retention.ts bandStmt): downward on
+  // the per-buffer index with no sort, each thread probe a seek.
+  it('the band walk rides the per-buffer index, its thread probes seeks', () => {
     const detail = plan(
-      `SELECT m.id,
-              COALESCE(m.reply_root_msgid,
-                       CASE WHEN m.type IN ('message', 'action', 'notice') THEN m.msgid END) AS thread,
-              EXISTS (SELECT 1 FROM user_bookmarks ub WHERE ub.user_id = 1 AND ub.message_id = m.id) AS saved
-         FROM messages m
-        WHERE m.buffer_id = 1 AND m.id < 100
+      `SELECT m.id FROM messages m
+        WHERE m.buffer_id = 1 AND m.id < 100 AND m.id >= 10
+          AND NOT EXISTS (SELECT 1 FROM user_bookmarks ub WHERE ub.user_id = 1 AND ub.message_id = m.id)
+          AND NOT (m.reply_root_msgid IS NOT NULL AND (
+            EXISTS (SELECT 1 FROM messages r INDEXED BY idx_messages_reply_root
+                     WHERE r.buffer_id = 1 AND r.reply_root_msgid = m.reply_root_msgid AND r.id >= 100)
+            OR EXISTS (SELECT 1 FROM messages q
+                        WHERE q.network_id = m.network_id AND q.msgid = m.reply_root_msgid
+                          AND +q.buffer_id = 1 AND q.id >= 100
+                          AND q.type IN ('message', 'action', 'notice'))))
+          AND NOT (m.msgid IS NOT NULL AND m.type IN ('message', 'action', 'notice') AND EXISTS (
+            SELECT 1 FROM messages r INDEXED BY idx_messages_reply_root
+             WHERE r.buffer_id = 1 AND r.reply_root_msgid = m.msgid AND r.id >= 100))
         ORDER BY m.id DESC LIMIT 10`,
     );
     expect(detail).toMatch(/SEARCH m USING INDEX idx_messages_buf_unread/);
+    expect(detail).toMatch(/SEARCH r USING (COVERING )?INDEX idx_messages_reply_root/);
+    expect(detail).toMatch(/SEARCH q USING INDEX idx_messages_msgid/);
     expect(detail).not.toMatch(/TEMP B-TREE/);
-  });
-
-  // Whether a thread still has a line at or above the boundary: a seek on the
-  // reply index, and one on msgid for a first line stored late.
-  it('the thread-alive probe is two seeks', () => {
-    const detail = plan(
-      `SELECT EXISTS (
-                SELECT 1 FROM messages INDEXED BY idx_messages_reply_root
-                 WHERE buffer_id = 1 AND reply_root_msgid = 'r' AND id >= 50)
-           OR EXISTS (
-                SELECT 1 FROM messages
-                 WHERE network_id = (SELECT network_id FROM buffers WHERE id = 1)
-                   AND msgid = 'r' AND +buffer_id = 1 AND id >= 50
-                   AND type IN ('message', 'action', 'notice')) AS live`,
-    );
-    expect(detail).toMatch(
-      /USING COVERING INDEX idx_messages_reply_root|USING INDEX idx_messages_reply_root/,
-    );
-    expect(detail).toMatch(/USING INDEX idx_messages_msgid/);
   });
 });

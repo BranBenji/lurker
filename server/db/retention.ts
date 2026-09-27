@@ -78,83 +78,107 @@ export function retentionBoundaryId(bufferId: number, capLines: number): number 
 // A reply thread (its first line and every reply naming it — see
 // messages.reply_root_msgid) is kept whole until its NEWEST line ages out: the
 // thread view, and every reply's quote, would otherwise open on a hole where
-// the question was. So a line below the boundary is spared while its thread
-// has a line at or above it — a reply to an old line keeps that line, and
-// keeps itself, rather than both going a moment after it arrives (the first
-// cut took a thread when its FIRST line aged out, and a /code-review found
-// exactly that). Once the thread's newest line is below the boundary, all of
-// it is, and it goes like any other tail.
+// the question was. So a line below the boundary is spared while a thread it
+// belongs to — as a reply, or as the line that started one — has a line at or
+// above the boundary. A reply to an old line keeps that line, and itself,
+// rather than both going a moment after it arrives (the first cut took a
+// thread when its FIRST line aged out, and a /code-review found exactly that).
 //
-// One limit, so an always-active thread can't hold a buffer open-endedly (a
-// bridge that replies to everything makes one thread of a whole channel): of a
-// single thread only its newest `cap` replies are spared; older ones, and then
-// its first line, go oldest first like ordinary lines.
+// Spared lines only reach back so far: a second boundary, the CEILING, `cap`
+// lines further down, below which everything goes, oldest first, thread or
+// not. A buffer therefore never keeps more than twice its cap (plus
+// bookmarks) — an always-active thread (a bridge that replies to everything
+// makes one thread of a whole channel) can't hold it open-ended, and neither
+// can many live threads at once.
 //
-// The decision reads only the boundary, which deleting lines below it never
-// moves — so the order the tail is walked in, and where a tick's budget runs
-// out, can't change what survives. A thread whose first line we never held is
-// still a thread (its replies name the same root), spared the same way.
+// Both boundaries are fixed for a visit: deleting below the cap boundary never
+// moves it. So what survives can't depend on the order the tail is walked in
+// or where a tick's budget runs out, and whether a thread is alive is asked in
+// SQL, of the rows as they are, statement by statement — never cached across
+// the awaits between batches, where a new reply can land.
 
 /** State one sweeper visit to a buffer carries between batches. */
 export interface RetentionVisit {
-  /** The buffer's cap: what a single thread may keep. */
-  cap: number;
-  /** Where the next batch's walk starts: below every row already examined. A
-   *  spared row stays spared for the whole visit (the boundary is fixed), so
-   *  it is walked past once, not once per batch. */
+  /** Below this, everything but bookmarks goes (0: nothing is that old). */
+  ceilingId: number;
+  /** The ceiling's tail is done; the spared band is being walked. */
+  belowCeilingDone: boolean;
+  /** Where the band's next batch starts: below every row already examined, so
+   *  the lines a thread spares are walked past once a visit, not per batch. */
   walkFrom: number;
-  /** Per thread (its root msgid): spared rows are those at or above this id,
-   *  or none (null). Fixed for the visit, so worked out once per thread. */
-  threads: Map<string, number | null>;
 }
 
-export function newRetentionVisit(cap: number, boundaryId: number): RetentionVisit {
-  return { cap, walkFrom: boundaryId, threads: new Map() };
+export function newRetentionVisit(boundaryId: number, ceilingId: number): RetentionVisit {
+  return { ceilingId, belowCeilingDone: ceilingId === 0, walkFrom: boundaryId };
 }
 
-// The over-cap tail, newest first from where the last batch stopped: `id <`
-// walks idx_messages_buf_unread (buffer_id, id DESC) downward. Each row comes
-// back with its bookmark and the thread it belongs to — the root it names, or
-// its own msgid when it could be a first line (REPLY_LINE_TYPES, as
-// replyRootFor finds one). The bookmark probe is scoped by user_id: a buffer
-// has exactly one owner, and the (user_id, message_id) primary key answers it
-// as a seek. A bookmarked row below the boundary survives as an extra ABOVE
-// the cap (later boundary probes walk past it and it never becomes deletable).
-const tailStmt = db.prepare(`
-  SELECT m.id,
-         COALESCE(m.reply_root_msgid,
-                  CASE WHEN m.type IN ${REPLY_LINE_TYPES_SQL} THEN m.msgid END) AS thread,
-         EXISTS (
-           SELECT 1 FROM user_bookmarks ub WHERE ub.user_id = ? AND ub.message_id = m.id
-         ) AS saved
-    FROM messages m
-   WHERE m.buffer_id = ? AND m.id < ?
+// The ceiling: `cap` rows below the boundary. Same OFFSET walk as the
+// boundary, continued from it. No row there = the buffer is within twice its
+// cap, and nothing is old enough to go regardless.
+const ceilingStmt = db.prepare(`
+  SELECT id FROM messages WHERE buffer_id = ? AND id < ? ORDER BY id DESC LIMIT 1 OFFSET ?
+`);
+
+export function retentionCeilingId(bufferId: number, boundaryId: number, capLines: number): number {
+  const row = ceilingStmt.get(bufferId, boundaryId, capLines - 1) as { id: number } | undefined;
+  return row?.id ?? 0;
+}
+
+// Below the ceiling: one bounded bite, bookmarks exempt. Deliberately no ORDER
+// BY in the subselect — everything below goes eventually, so any qualifying
+// rows do. The NOT EXISTS is scoped by user_id, not just message_id:
+// user_bookmarks has no index on message_id alone, and a buffer has exactly
+// one owner who is the only user able to bookmark its rows, so the (user_id,
+// message_id) primary key answers the probe as a seek. A bookmarked row
+// survives as an extra ABOVE the cap (later boundary probes walk past it and
+// it never becomes deletable).
+const deleteBelowStmt = db.prepare(`
+  DELETE FROM messages WHERE id IN (
+    SELECT m.id FROM messages m
+     WHERE m.buffer_id = ? AND m.id < ?
+       AND NOT EXISTS (
+         SELECT 1 FROM user_bookmarks ub
+          WHERE ub.user_id = ? AND ub.message_id = m.id
+       )
+     LIMIT ?
+  )
+`);
+
+// Between the ceiling and the boundary: the rows that may go — not
+// bookmarked, and in no thread still alive at or above the boundary. A row is
+// in the thread it replies in (its reply_root_msgid: a reply at or above the
+// boundary, or that thread's first line stored late there by backfill), and
+// in the thread it may have started (replies naming its own msgid; only a
+// line of REPLY_LINE_TYPES can start one, as replyRootFor finds them). The
+// reply probes are seeks on the reply-only partial index — INDEXED BY because
+// nothing runs ANALYZE — and the late-first-line probe one on the msgid index.
+// Newest first from where the last batch stopped, the per-buffer index's own
+// order, so SQL walks past spared rows without handing them back.
+const bandStmt = db.prepare(`
+  SELECT m.id FROM messages m
+   WHERE m.buffer_id = @bufferId AND m.id < @walkFrom AND m.id >= @ceilingId
+     AND NOT EXISTS (
+       SELECT 1 FROM user_bookmarks ub WHERE ub.user_id = @ownerId AND ub.message_id = m.id
+     )
+     AND NOT (m.reply_root_msgid IS NOT NULL AND (
+       EXISTS (
+         SELECT 1 FROM messages r INDEXED BY idx_messages_reply_root
+          WHERE r.buffer_id = @bufferId AND r.reply_root_msgid = m.reply_root_msgid
+            AND r.id >= @boundaryId
+       )
+       OR EXISTS (
+         SELECT 1 FROM messages q
+          WHERE q.network_id = m.network_id AND q.msgid = m.reply_root_msgid
+            AND +q.buffer_id = @bufferId AND q.id >= @boundaryId
+            AND q.type IN ${REPLY_LINE_TYPES_SQL}
+       )
+     ))
+     AND NOT (m.msgid IS NOT NULL AND m.type IN ${REPLY_LINE_TYPES_SQL} AND EXISTS (
+       SELECT 1 FROM messages r INDEXED BY idx_messages_reply_root
+        WHERE r.buffer_id = @bufferId AND r.reply_root_msgid = m.msgid AND r.id >= @boundaryId
+     ))
    ORDER BY m.id DESC
-   LIMIT ?
-`);
-
-// Does the thread have a line at or above the boundary — a reply (on the
-// reply-only partial index; INDEXED BY because nothing runs ANALYZE), or its
-// first line itself, which backfill can store after its replies.
-const threadLiveStmt = db.prepare(`
-  SELECT EXISTS (
-           SELECT 1 FROM messages INDEXED BY idx_messages_reply_root
-            WHERE buffer_id = ? AND reply_root_msgid = ? AND id >= ?
-         )
-      OR EXISTS (
-           SELECT 1 FROM messages
-            WHERE network_id = (SELECT network_id FROM buffers WHERE id = ?)
-              AND msgid = ? AND +buffer_id = ? AND id >= ?
-              AND type IN ${REPLY_LINE_TYPES_SQL}
-         ) AS live
-`);
-
-// The thread's cap-th newest reply: replies older than it are past what one
-// thread may keep. No row = the thread is within it.
-const threadFloorStmt = db.prepare(`
-  SELECT id FROM messages INDEXED BY idx_messages_reply_root
-   WHERE buffer_id = ? AND reply_root_msgid = ?
-   ORDER BY id DESC LIMIT 1 OFFSET ?
+   LIMIT @limit
 `);
 
 const deleteIdsStmt = db.prepare(`
@@ -163,49 +187,19 @@ const deleteIdsStmt = db.prepare(`
 
 /** What one call of deleteRetentionBatch did. */
 export interface RetentionBatch {
-  /** Rows deleted. */
+  /** Rows deleted. A batch short of its limit that isn't `done` is still
+   *  progress: the walk moved on. */
   deleted: number;
-  /** The walk reached the bottom of the buffer: nothing below `boundaryId`
-   *  is left to look at this visit. */
+  /** Nothing left to delete this visit: below the ceiling is clear, and the
+   *  band has been walked to the ceiling. */
   done: boolean;
 }
 
-// Where a thread's spared rows start (see RetentionVisit.threads).
-function threadSparedFrom(
-  bufferId: number,
-  boundaryId: number,
-  visit: RetentionVisit,
-  thread: string,
-): number | null {
-  const known = visit.threads.get(thread);
-  if (known !== undefined) return known;
-  let from: number | null = null;
-  const { live } = threadLiveStmt.get(
-    bufferId,
-    thread,
-    boundaryId,
-    bufferId,
-    thread,
-    bufferId,
-    boundaryId,
-  ) as { live: number };
-  if (live) {
-    const floor = threadFloorStmt.get(bufferId, thread, visit.cap - 1) as
-      | { id: number }
-      | undefined;
-    // Within the thread cap, all of it (the first line included); past it,
-    // the newest `cap` replies.
-    from = floor ? floor.id : 0;
-  }
-  visit.threads.set(thread, from);
-  return from;
-}
-
 /**
- * Examine up to `limit` rows of the over-cap tail, below where the visit's
- * last batch stopped, and delete the ones that may go: not bookmarked, and not
- * spared by a thread still alive above the boundary (see the section comment).
- * Every call moves the walk down, so the sweeper loops on `done`.
+ * Delete up to `limit` over-cap rows: first everything below the ceiling,
+ * then what the band between it and the boundary doesn't spare (see the
+ * section comment). Every call makes progress, so the sweeper loops on
+ * `done`.
  */
 export function deleteRetentionBatch(
   bufferId: number,
@@ -214,24 +208,28 @@ export function deleteRetentionBatch(
   limit: number,
   visit: RetentionVisit,
 ): RetentionBatch {
-  const rows = tailStmt.all(ownerUserId, bufferId, visit.walkFrom, limit) as Array<{
-    id: number;
-    thread: string | null;
-    saved: number;
-  }>;
-  if (rows.length === 0) return { deleted: 0, done: true };
-  visit.walkFrom = rows[rows.length - 1].id;
-  const doomed: number[] = [];
-  for (const row of rows) {
-    if (row.saved) continue;
-    if (row.thread) {
-      const from = threadSparedFrom(bufferId, boundaryId, visit, row.thread);
-      if (from !== null && row.id >= from) continue;
-    }
-    doomed.push(row.id);
+  let below = 0;
+  if (!visit.belowCeilingDone) {
+    below = deleteBelowStmt.run(bufferId, visit.ceilingId, ownerUserId, limit).changes;
+    if (below >= limit) return { deleted: below, done: false };
+    // Short: that part is clear. Go on to the band in the same call — ending
+    // here would let a tick whose budget the probes spent loop on a statement
+    // that deletes nothing, every tick, forever.
+    visit.belowCeilingDone = true;
   }
-  const deleted = doomed.length ? deleteIdsStmt.run(JSON.stringify(doomed)).changes : 0;
-  return { deleted, done: rows.length < limit };
+  const room = limit - below;
+  const rows = bandStmt.all({
+    bufferId,
+    walkFrom: visit.walkFrom,
+    ceilingId: visit.ceilingId,
+    ownerId: ownerUserId,
+    boundaryId,
+    limit: room,
+  }) as Array<{ id: number }>;
+  if (rows.length === 0) return { deleted: below, done: true };
+  visit.walkFrom = rows[rows.length - 1].id;
+  const deleted = below + deleteIdsStmt.run(JSON.stringify(rows.map((r) => r.id))).changes;
+  return { deleted, done: rows.length < room };
 }
 
 // ─── The noise clock ───────────────────────────────────────────────────────

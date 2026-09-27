@@ -221,33 +221,34 @@ describe('runRetentionTick', () => {
       const { userId, ids, line } = seedTagged('thr-whole', 3);
       const a = line({ msgid: 'thr-whole-a', reply: 'thr-whole-0', root: 'thr-whole-0' });
       const b = line({ reply: 'thr-whole-a', root: 'thr-whole-0' });
-      setUserSetting(userId, 'data.retention.lines', 3);
+      setUserSetting(userId, 'data.retention.lines', 4);
       const later = [line(), line()];
       const bufferId = a.bufferId;
 
       await settle();
-      // b is inside the cap, so its whole thread stays; lines 1 and 2 go.
+      // a is inside the cap, so its whole thread stays; lines 1 and 2 go.
       expect(rowIds(bufferId)).toEqual([ids[0], a.id, b.id, ...later.map((l) => l.id)]);
 
-      const newest = line();
+      const newer = [line(), line()];
       await settle();
       // b has aged out: nothing of the thread is left inside the cap.
-      expect(rowIds(bufferId)).toEqual([...later.map((l) => l.id), newest.id]);
+      expect(rowIds(bufferId)).toEqual([...later, ...newer].map((l) => l.id));
     });
 
-    it('a thread bigger than the cap keeps its newest replies; its first line goes first', async () => {
+    it('keeps nothing further back than twice the cap: a live thread loses its oldest lines', async () => {
       const { userId, ids, line } = seedTagged('thr-big', 1);
-      const replies = Array.from({ length: 6 }, () =>
+      const replies = Array.from({ length: 10 }, () =>
         line({ reply: 'thr-big-0', root: 'thr-big-0' }),
       ).map((l) => l.id);
       setUserSetting(userId, 'data.retention.lines', 4);
-      const bufferId = line().bufferId; // the newest line: the thread is still alive
+      const last = line(); // the thread is alive: three of its replies are in the cap
 
       await settle();
 
-      // Four replies are all one thread may keep; the root and the two oldest go.
-      expect(rowIds(bufferId)).toEqual([...replies.slice(2), rowIds(bufferId).at(-1)]);
-      expect(rowIds(bufferId)).not.toContain(ids[0]);
+      // Eight lines kept, four over the cap — the first line and the oldest
+      // replies are further back than that, and go.
+      expect(rowIds(last.bufferId)).toEqual([...replies.slice(3), last.id]);
+      expect(rowIds(last.bufferId)).not.toContain(ids[0]);
     });
 
     it('a thread whose first line we never held is spared the same way', async () => {
@@ -275,7 +276,7 @@ describe('runRetentionTick', () => {
       expect(rowIds(root.bufferId)).toEqual([reply.id, filler[1].id, root.id]);
     });
 
-    it('walks past a stretch of spared lines bigger than a batch, once', async () => {
+    it('walks past a stretch of spared lines bigger than a batch', async () => {
       const { userId, ids, line } = seedTagged('thr-walk', 5); // 0–3 plain, 4 the root
       const old = Array.from({ length: 5 }, () =>
         line({ reply: 'thr-walk-4', root: 'thr-walk-4' }),
@@ -284,13 +285,29 @@ describe('runRetentionTick', () => {
       setUserSetting(userId, 'data.retention.lines', 6);
       const live = line({ reply: 'thr-walk-4', root: 'thr-walk-4' });
 
-      // Four spared replies fill the first batch (OPTS.batchRows); a walk that
-      // started over each batch would never get below them.
+      // Six spared lines sit between the cap and the plain lines under them —
+      // more than a batch of four (OPTS.batchRows).
       await settle();
 
-      // Six replies are all one thread may keep: its first line goes too.
-      expect(rowIds(live.bufferId)).toEqual([...old, ...filler, live.id]);
-      expect(rowIds(live.bufferId)).not.toContain(ids[4]);
+      expect(rowIds(live.bufferId)).toEqual([ids[4], ...old, ...filler, live.id]);
+    });
+
+    it('a reply that also started a thread is kept by either', async () => {
+      const { userId, line } = seedTagged('thr-both', 0);
+      // Backfill order: a reply to P lands before P, so it roots at P; then P
+      // arrives, itself a reply in a thread (Q) nothing else keeps alive.
+      const child = line({ reply: 'thr-both-p', root: 'thr-both-p' });
+      const p = line({ msgid: 'thr-both-p', reply: 'thr-both-q', root: 'thr-both-q' });
+      const filler = [line(), line()];
+      const late = line({ reply: 'thr-both-p', root: 'thr-both-p' });
+      setUserSetting(userId, 'data.retention.lines', 2);
+
+      await settle();
+
+      // P's own thread is alive (late is in the cap), so P stays; the child is
+      // further back than twice the cap, which nothing is kept past.
+      expect(rowIds(p.bufferId)).toEqual([p.id, filler[1].id, late.id]);
+      expect(child.id).toBeLessThan(p.id);
     });
 
     it('a bookmark keeps only its own line', async () => {
@@ -319,23 +336,20 @@ describe('runRetentionTick', () => {
     });
 
     // What survives can't depend on where a tick's budget ran out: the
-    // decision reads only the boundary, which deleting below it never moves.
+    // decision reads only the two boundaries, which deleting below them never
+    // moves.
     for (const budget of [100, 2]) {
       it(`spares the same rows whatever the budget (${budget} statements a tick)`, async () => {
         const { userId, ids, line } = seedTagged(`thr-budget-${budget}`, 12);
         // Threads on lines 0 and 5; only line 5's is alive once the cap bites.
-        line({ reply: `thr-budget-${budget}-0`, root: `thr-budget-${budget}-0` });
+        const r0 = line({ reply: `thr-budget-${budget}-0`, root: `thr-budget-${budget}-0` });
         const tail = Array.from({ length: 6 }, () => line());
         const live = line({ reply: `thr-budget-${budget}-5`, root: `thr-budget-${budget}-5` });
-        setUserSetting(userId, 'data.retention.lines', 4);
+        setUserSetting(userId, 'data.retention.lines', 8);
 
         await settle(budget);
 
-        expect(rowIds(live.bufferId)).toEqual([
-          ids[5],
-          ...tail.slice(-3).map((l) => l.id),
-          live.id,
-        ]);
+        expect(rowIds(live.bufferId)).toEqual([ids[5], r0.id, ...tail.map((l) => l.id), live.id]);
       });
     }
   });
