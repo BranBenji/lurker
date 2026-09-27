@@ -16,7 +16,7 @@ import { countsTowardPage } from '../../shared/eventFilter.js';
 import type { PageUnit } from '../../shared/eventFilter.js';
 import type { ModeChange } from '../../shared/modes.js';
 import type { MessageReaction } from '../../shared/reactions.js';
-import { REPLY_EXCERPT_MAX } from '../../shared/replies.js';
+import { REPLY_EXCERPT_MAX, REPLY_LINE_TYPES_SQL } from '../../shared/replies.js';
 import type { ReplyContext, ReplyParent } from '../../shared/replies.js';
 
 // Buffer identity is buffers.id as of schema 17: every predicate in this file
@@ -364,7 +364,7 @@ export function findReplyParent(
 const replyRootStmt = db.prepare(`
   SELECT reply_root_msgid AS root FROM messages
   WHERE network_id = ? AND msgid = ? AND +buffer_id = ?
-    AND type IN ('message', 'action', 'notice')
+    AND type IN ${REPLY_LINE_TYPES_SQL}
   ORDER BY id DESC LIMIT 1
 `);
 

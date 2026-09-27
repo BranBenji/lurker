@@ -366,9 +366,12 @@ describe('retention paths', () => {
              WHERE root.network_id = m.network_id AND root.msgid = m.reply_root_msgid
                AND +root.buffer_id = m.buffer_id
                AND root.type IN ('message', 'action', 'notice')))
+        ORDER BY m.id ASC
         LIMIT 10`,
     );
     expect(detail).toMatch(/SEARCH m USING INDEX idx_messages_buf_unread/);
     expect(detail).toMatch(/SEARCH root USING INDEX idx_messages_msgid/);
+    // Oldest first costs nothing: the index already walks in id order.
+    expect(detail).not.toMatch(/TEMP B-TREE/);
   });
 });

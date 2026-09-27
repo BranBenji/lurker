@@ -14,6 +14,7 @@
 // pruned row.
 
 import db, { EARLY_PRUNE_TYPES_SQL } from './index.js';
+import { REPLY_LINE_TYPES, REPLY_LINE_TYPES_SQL } from '../../shared/replies.js';
 
 // Buffers that took an insert since the sweeper last looked. In-memory on
 // purpose: a restart just means the next boot seeds every buffer dirty and
@@ -72,22 +73,112 @@ export function retentionBoundaryId(bufferId: number, capLines: number): number 
   return row?.id;
 }
 
-// The over-cap tail, one bounded bite at a time. Deliberately no ORDER BY:
-// everything below the boundary goes eventually, so any qualifying rows do,
-// and ordering would only add sort work. The NOT EXISTS is the bookmark
-// exemption — a bookmarked row below the boundary survives as an extra ABOVE
-// the cap (later boundary probes walk past it and it never becomes
-// deletable). It is scoped by user_id, not just message_id: user_bookmarks
-// has no index on message_id alone, and a buffer has exactly one owner who is
-// the only user able to bookmark its rows, so the (user_id, message_id)
-// primary key answers the probe as a seek. The second NOT EXISTS leaves out
-// every reply whose root is a line we hold: it isn't the count's to take. It
-// goes with its root — in the same batch, see deleteRetentionBatch — or stays
-// with it when the root is saved. Found as replyRootFor found the root at
-// insert, a seek on idx_messages_msgid; the root is older than its reply, so
-// a held root is below the boundary whenever the reply is.
+// ─── Threads leave whole ───────────────────────────────────────────────────
+//
+// When the line that started a reply thread falls past the cap, the whole
+// thread goes with it, however recent its replies — the thread view (and every
+// reply's quote) would otherwise open on a hole where the question was. A
+// reply whose root we hold is therefore never the count's to take (the tail
+// walk leaves it out); one whose root we never held is an ordinary line.
+// Bookmarking the root keeps the thread (the root never leaves, so neither do
+// its replies); bookmarking a reply keeps just that line.
+//
+// A departing thread DRAINS: its replies go in bounded batches, then the root,
+// then the boundary is probed again. Two reasons, both review findings:
+//   - Size. replyRootFor hands a whole reply chain one root, so a bridged
+//     channel can grow a thread of thousands; deleting it in one statement
+//     (plus an FTS trigger per row) is the event-loop block the pacer exists
+//     to prevent.
+//   - Determinism. Deleting replies shrinks the buffer. Decided once, the
+//     departure has to stick while it drains — a re-probed boundary partway
+//     through may no longer reach the root, stranding half a thread — and once
+//     it's done the boundary must be probed afresh before anything else goes,
+//     or a line the thread's departure brought back inside the cap is deleted
+//     anyway, depending on where the tick budget happened to run out.
+// So the departure is recorded (in app_meta, like the noise cursors: a restart
+// mid-drain must finish the job, not forget it) and the tail walk goes oldest
+// first, stopping at the first root it meets.
+
+const THREAD_DRAIN_KEY = 'retention_thread_drains';
+
+interface ThreadDrain {
+  rootId: number;
+  msgid: string;
+}
+
+// bufferId → departing threads, oldest first. One representation, hydrated
+// from app_meta on first use; every write goes through persistDrains.
+let threadDrains: Map<number, ThreadDrain[]> | null = null;
+
+function loadDrains(): Map<number, ThreadDrain[]> {
+  if (threadDrains !== null) return threadDrains;
+  threadDrains = new Map();
+  const row = db.prepare(`SELECT value FROM app_meta WHERE key = ?`).get(THREAD_DRAIN_KEY) as
+    | { value: string }
+    | undefined;
+  if (row) {
+    try {
+      const parsed = JSON.parse(row.value) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(parsed ?? {})) {
+        if (!Array.isArray(v)) continue;
+        // A malformed entry is dropped, never bound into SQL.
+        const list = v.filter(
+          (d): d is [number, string] =>
+            Array.isArray(d) && Number.isInteger(d[0]) && typeof d[1] === 'string' && d[1] !== '',
+        );
+        if (list.length)
+          threadDrains.set(
+            Number(k),
+            list.map(([rootId, msgid]) => ({ rootId, msgid })),
+          );
+      }
+    } catch {
+      /* unparseable = nothing draining; the roots are still past the cap and start again */
+    }
+  }
+  return threadDrains;
+}
+
+function persistDrains(): void {
+  const obj: Record<string, Array<[number, string]>> = {};
+  for (const [k, list] of loadDrains()) {
+    if (list.length) obj[String(k)] = list.map((d) => [d.rootId, d.msgid]);
+  }
+  db.prepare(
+    `INSERT INTO app_meta (key, value) VALUES (?, ?)
+     ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+  ).run(THREAD_DRAIN_KEY, JSON.stringify(obj));
+}
+
+/** A thread in this buffer is part-way out — the sweeper must finish it even
+ *  when the buffer is now within its cap (the replies it took got it there). */
+export function hasThreadDrain(bufferId: number): boolean {
+  return (loadDrains().get(bufferId)?.length ?? 0) > 0;
+}
+
+/** Forget a buffer's drains — it was deleted, and its rows with it. */
+export function dropThreadDrains(bufferId: number): void {
+  if (loadDrains().delete(bufferId)) persistDrains();
+}
+
+/** Tests only: re-read the drains from app_meta, as a restart would. */
+export function reloadThreadDrainsForTests(): void {
+  threadDrains = null;
+}
+
+// The over-cap tail, oldest first, one bounded bite at a time. The first NOT
+// EXISTS is the bookmark exemption — a bookmarked row below the boundary
+// survives as an extra ABOVE the cap (later boundary probes walk past it and
+// it never becomes deletable). It is scoped by user_id, not just message_id:
+// user_bookmarks has no index on message_id alone, and a buffer has exactly
+// one owner who is the only user able to bookmark its rows, so the (user_id,
+// message_id) primary key answers the probe as a seek. The second leaves out
+// every reply whose root we hold, found as replyRootFor found it at insert (a
+// seek on idx_messages_msgid): it goes when its root does. Oldest first
+// because a root must depart before anything newer is judged — the index
+// walks in id order either way, so the ORDER BY costs no sort.
 const tailCandidatesStmt = db.prepare(`
-  SELECT m.id, m.msgid, m.type FROM messages m
+  SELECT m.id, m.network_id AS networkId, m.msgid, m.type FROM messages m
    WHERE m.buffer_id = ? AND m.id < ?
      AND NOT EXISTS (
        SELECT 1 FROM user_bookmarks ub
@@ -97,81 +188,135 @@ const tailCandidatesStmt = db.prepare(`
        SELECT 1 FROM messages root
         WHERE root.network_id = m.network_id AND root.msgid = m.reply_root_msgid
           AND +root.buffer_id = m.buffer_id
-          AND root.type IN ('message', 'action', 'notice')
+          AND root.type IN ${REPLY_LINE_TYPES_SQL}
      ))
+   ORDER BY m.id ASC
    LIMIT ?
 `);
 
-// A thread's replies — every row naming this root — minus the bookmarked
-// ones, on the partial idx_messages_reply_root (replies only). INDEXED BY
-// because nothing runs ANALYZE, and without it the planner can walk the
-// buffer's whole id index instead.
-const threadReplyIdsStmt = db.prepare(`
-  SELECT r.id FROM messages r INDEXED BY idx_messages_reply_root
-   WHERE r.buffer_id = ? AND r.reply_root_msgid = ?
-     AND NOT EXISTS (
-       SELECT 1 FROM user_bookmarks ub
-        WHERE ub.user_id = ? AND ub.message_id = r.id
-     )
+// Which of these msgids have replies here — one statement for the whole batch
+// rather than a probe per candidate (on an IRCv3 network nearly every line has
+// a msgid). INDEXED BY because nothing runs ANALYZE, and without it the
+// planner can walk the buffer's whole id index instead of the reply-only one.
+const threadRootsStmt = db.prepare(`
+  SELECT DISTINCT r.reply_root_msgid AS msgid FROM messages r INDEXED BY idx_messages_reply_root
+   WHERE r.buffer_id = ? AND r.reply_root_msgid IN (SELECT value FROM json_each(?))
 `);
+
+// msgids aren't unique (a replaying upstream can store one twice). The thread
+// hangs off every held copy, so it leaves only with the last: a root with
+// another held copy departs as a plain line.
+const otherRootCopyStmt = db.prepare(`
+  SELECT 1 FROM messages
+   WHERE network_id = ? AND msgid = ? AND +buffer_id = ? AND id != ?
+     AND type IN ${REPLY_LINE_TYPES_SQL}
+   LIMIT 1
+`);
+
+// One bounded bite of a departing thread's replies.
+const deleteThreadRepliesStmt = db.prepare(`
+  DELETE FROM messages WHERE id IN (
+    SELECT r.id FROM messages r INDEXED BY idx_messages_reply_root
+     WHERE r.buffer_id = ? AND r.reply_root_msgid = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM user_bookmarks ub
+          WHERE ub.user_id = ? AND ub.message_id = r.id
+       )
+     LIMIT ?
+  )
+`);
+
+const rootBookmarkedStmt = db.prepare(
+  `SELECT 1 FROM user_bookmarks WHERE user_id = ? AND message_id = ?`,
+);
+
+const deleteRowStmt = db.prepare(`DELETE FROM messages WHERE id = ?`);
 
 const deleteIdsStmt = db.prepare(`
   DELETE FROM messages WHERE id IN (SELECT value FROM json_each(?))
 `);
 
-const deleteBatchTx = db.transaction((ids: number[]): number => {
-  return deleteIdsStmt.run(JSON.stringify(ids)).changes;
-});
-
-/**
- * Delete over-cap rows, about `limit` of them. Returns the number deleted; a
- * return below `limit` means this buffer's tail is done.
- *
- * A thread leaves as one piece: when the line that started one falls below
- * the boundary, its replies go with it in the same statement, however recent
- * — the thread view (and every reply's quote) would otherwise open on a hole
- * where the question was. Same statement, not a later one: deleting replies
- * shrinks the buffer, so a boundary probed again between the two would no
- * longer reach the root and the thread would stop half gone. A root is found
- * the way replyRootFor found it at insert (a chat line, by msgid); a reply
- * whose root we never held is an ordinary line to the count. A bookmark on
- * the root keeps the whole thread — saving the question saves the answers,
- * and the root never leaves, so neither do they; a bookmark on a reply keeps
- * just that line, as a bookmark does from every other delete.
- *
- * Rows are taken until the batch reaches `limit`, so it overshoots by at
- * most one thread: a thread bigger than a batch goes whole or not at all.
- * Taking one more row whenever the total is still short is also what keeps
- * "below `limit` = done" true — a batch only comes up short when the
- * candidates ran out. (The candidates never include a thread's replies, so
- * the two can't overlap and make a full fetch look short.)
- */
-export function deleteRetentionBatch(
-  bufferId: number,
-  boundaryId: number,
-  ownerUserId: number,
-  limit: number,
-): number {
-  const candidates = tailCandidatesStmt.all(bufferId, boundaryId, ownerUserId, limit) as Array<{
-    id: number;
-    msgid: string | null;
-    type: string;
-  }>;
-  const ids = new Set<number>();
-  for (const row of candidates) {
-    if (ids.size >= limit) break;
-    ids.add(row.id);
-    if (!row.msgid || !CHAT_TYPES.has(row.type)) continue;
-    const replies = threadReplyIdsStmt.all(bufferId, row.msgid, ownerUserId) as Array<{
-      id: number;
-    }>;
-    for (const r of replies) ids.add(r.id);
-  }
-  if (ids.size === 0) return 0;
-  return deleteBatchTx([...ids]);
+/** What one call of deleteRetentionBatch did. */
+export interface RetentionBatch {
+  /** Rows deleted. */
+  deleted: number;
+  /** Nothing more to delete below this boundary, and no thread draining. */
+  done: boolean;
+  /** A thread finished leaving: the buffer shrank, so the boundary is stale
+   *  and must be probed again before anything else is deleted. */
+  reprobe: boolean;
 }
 
-const CHAT_TYPES = new Set(['message', 'action', 'notice']);
+/**
+ * One step of pruning a buffer: up to `limit` rows. A departing thread comes
+ * first (see the section comment above); otherwise the tail below
+ * `boundaryId` (0 = none: the buffer is within its cap, only a drain to
+ * finish), oldest first, up to the first thread root, which starts draining.
+ * Every step makes progress, so the sweeper can loop on `done`.
+ */
+export const deleteRetentionBatch = db.transaction(
+  (bufferId: number, boundaryId: number, ownerUserId: number, limit: number): RetentionBatch => {
+    const drains = loadDrains();
+    const queue = drains.get(bufferId);
+    const drain = queue?.[0];
+    if (queue && drain) {
+      // Saved since it started leaving: the root keeps what's left.
+      let deleted = 0;
+      if (!rootBookmarkedStmt.get(ownerUserId, drain.rootId)) {
+        deleted = deleteThreadRepliesStmt.run(bufferId, drain.msgid, ownerUserId, limit).changes;
+        if (deleted >= limit) return { deleted, done: false, reprobe: false };
+        deleted += deleteRowStmt.run(drain.rootId).changes;
+      }
+      queue.shift();
+      if (queue.length === 0) drains.delete(bufferId);
+      persistDrains();
+      return { deleted, done: false, reprobe: true };
+    }
+    if (!boundaryId) return { deleted: 0, done: true, reprobe: false };
+
+    const candidates = tailCandidatesStmt.all(bufferId, boundaryId, ownerUserId, limit) as Array<{
+      id: number;
+      networkId: number;
+      msgid: string | null;
+      type: string;
+    }>;
+    const msgids = candidates
+      .filter((c) => c.msgid && REPLY_LINE_TYPES.includes(c.type))
+      .map((c) => c.msgid);
+    const roots = new Set(
+      msgids.length
+        ? (threadRootsStmt.all(bufferId, JSON.stringify(msgids)) as Array<{ msgid: string }>).map(
+            (r) => r.msgid,
+          )
+        : [],
+    );
+    const plain: number[] = [];
+    let root: (typeof candidates)[number] | undefined;
+    for (const c of candidates) {
+      if (
+        c.msgid &&
+        roots.has(c.msgid) &&
+        REPLY_LINE_TYPES.includes(c.type) &&
+        !otherRootCopyStmt.get(c.networkId, c.msgid, bufferId, c.id)
+      ) {
+        root = c;
+        break;
+      }
+      plain.push(c.id);
+    }
+    // Older lines first; the root starts draining once it's the oldest.
+    if (plain.length) {
+      const deleted = deleteIdsStmt.run(JSON.stringify(plain)).changes;
+      return { deleted, done: !root && candidates.length < limit, reprobe: false };
+    }
+    if (root?.msgid) {
+      drains.set(bufferId, [...(queue ?? []), { rootId: root.id, msgid: root.msgid }]);
+      persistDrains();
+      return { deleted: 0, done: false, reprobe: false };
+    }
+    return { deleted: 0, done: true, reprobe: false };
+  },
+);
 
 // ─── The noise clock ───────────────────────────────────────────────────────
 

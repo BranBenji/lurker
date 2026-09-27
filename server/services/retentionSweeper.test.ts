@@ -209,10 +209,16 @@ describe('runRetentionTick', () => {
 
       await runRetentionTick(OPTS);
 
-      // Line 0 is past the cap, so a and b go although they're inside it; lines
-      // 1–4 are ordinary over-cap rows.
-      expect(rowIds(a.bufferId)).toEqual([ids[5], ...keep.map((k) => k.id), inside.id]);
-      expect(b.id).toBeGreaterThan(ids[5]);
+      // Line 0 is past the cap, so a and b go although they're inside it. That
+      // leaves room: of lines 1–5 only the two oldest are still over the cap.
+      expect(rowIds(a.bufferId)).toEqual([
+        ids[3],
+        ids[4],
+        ids[5],
+        ...keep.map((k) => k.id),
+        inside.id,
+      ]);
+      expect(rowIds(a.bufferId)).not.toContain(b.id);
     });
 
     it('a saved root keeps its whole thread; a saved reply keeps just itself', async () => {
@@ -246,25 +252,85 @@ describe('runRetentionTick', () => {
       expect(rowIds(orphan.bufferId)).not.toContain(ids[1]);
     });
 
-    it('a thread bigger than a batch still goes whole, in one batch', async () => {
+    it('a thread bigger than a batch drains across ticks, its root last', async () => {
       const { userId, ids, line } = seedTagged('thr-big', 1);
       const replies = Array.from(
         { length: 10 },
         () => line({ reply: 'thr-big-0', root: 'thr-big-0' }).id,
       );
-      const tail = [line({}), line({})];
-      setUserSetting(userId, 'data.retention.lines', 12);
-      const bufferId = line({}).bufferId; // the 14th line puts the root past the cap
+      const tail = [line({}), line({}), line({})];
+      const bufferId = tail[0].bufferId;
+      setUserSetting(userId, 'data.retention.lines', 12); // 14 lines: the root and r1 are over
 
-      // One batch of 4 overshoots to take the whole thread with its root — a
-      // thread never goes half. The boundary doesn't get another look at a
-      // buffer the replies just shrank below its cap.
-      const result = await runRetentionTick({ ...OPTS, maxBatchesPerTick: 2 });
-      const left = rowIds(bufferId);
-      expect(left).not.toContain(ids[0]);
-      expect(left.filter((id) => replies.includes(id))).toEqual([]);
-      expect(left).toEqual([...tail.map((l) => l.id), left.at(-1)]);
-      expect(result.rowsDeleted).toBe(11); // the root and all ten of its replies
+      // A probe and one statement a tick: the root marks the thread departing,
+      // then batches of 4 take the replies while the root stays put.
+      await runRetentionTick({ ...OPTS, maxBatchesPerTick: 2 });
+      await runRetentionTick({ ...OPTS, maxBatchesPerTick: 2 });
+      const mid = rowIds(bufferId);
+      expect(mid).toContain(ids[0]);
+      expect(mid.filter((id) => replies.includes(id))).toHaveLength(6);
+
+      let guard = 0;
+      while ((await runRetentionTick({ ...OPTS, maxBatchesPerTick: 2 })).backlog) {
+        if (++guard > 20) throw new Error('sweep never converged');
+      }
+      // All of it, although the buffer fell inside its cap after the first
+      // batch of replies — a departure, once decided, finishes.
+      expect(rowIds(bufferId)).toEqual(tail.map((l) => l.id));
+    });
+
+    // The review's case: A (root), B, C, D (reply to A), E at a cap of 3. A's
+    // thread leaving makes room for B, and B must survive whether the tick had
+    // budget to spare or ran out between every statement.
+    for (const [label, budget] of [
+      ['a roomy tick', 100],
+      ['a starved tick', 2],
+    ] as const) {
+      it(`a line the thread's departure brings back inside the cap survives (${label})`, async () => {
+        const { userId, ids, line } = seedTagged(`thr-room-${budget}`, 3); // A, B, C
+        const d = line({ reply: `thr-room-${budget}-0`, root: `thr-room-${budget}-0` });
+        const e = line({});
+        setUserSetting(userId, 'data.retention.lines', 3);
+
+        let guard = 0;
+        while ((await runRetentionTick({ ...OPTS, maxBatchesPerTick: budget })).backlog) {
+          if (++guard > 20) throw new Error('sweep never converged');
+        }
+        expect(rowIds(d.bufferId)).toEqual([ids[1], ids[2], e.id]);
+      });
+    }
+
+    it('a departing thread finishes after a restart', async () => {
+      const { userId, ids, line } = seedTagged('thr-restart', 1);
+      Array.from({ length: 8 }, () => line({ reply: 'thr-restart-0', root: 'thr-restart-0' }));
+      const tail = [line({}), line({})];
+      setUserSetting(userId, 'data.retention.lines', 9);
+
+      await runRetentionTick({ ...OPTS, maxBatchesPerTick: 2 }); // marks it departing
+      await runRetentionTick({ ...OPTS, maxBatchesPerTick: 2 }); // four replies go
+      expect(rowIds(tail[0].bufferId)).toContain(ids[0]);
+
+      // A restart forgets everything in memory; the boot seeds every buffer dirty.
+      retentionDb.reloadThreadDrainsForTests();
+      retentionDb.seedAllBuffersDirty();
+      let guard = 0;
+      while ((await runRetentionTick({ ...OPTS, maxBatchesPerTick: 2 })).backlog) {
+        if (++guard > 20) throw new Error('sweep never converged');
+      }
+      expect(rowIds(tail[0].bufferId)).toEqual(tail.map((l) => l.id));
+    });
+
+    it('a root whose msgid has a second held copy leaves alone; the thread stays with the copy', async () => {
+      const { userId, ids, line } = seedTagged('thr-dup', 1);
+      const copy = line({ msgid: 'thr-dup-0' }); // a replayed duplicate of the root
+      const reply = line({ reply: 'thr-dup-0', root: 'thr-dup-0' });
+      const tail = [line({}), line({})];
+      setUserSetting(userId, 'data.retention.lines', 4);
+
+      await runRetentionTick(OPTS);
+
+      expect(rowIds(reply.bufferId)).toEqual([copy.id, reply.id, ...tail.map((l) => l.id)]);
+      expect(ids[0]).toBeLessThan(copy.id);
     });
   });
 
@@ -759,7 +825,9 @@ describe('pacing', () => {
         while (performance.now() < end) {
           /* block the loop the way a real slow statement does */
         }
-        return full ? limit : Math.max(0, limit - 1);
+        return full
+          ? { deleted: limit, done: false, reprobe: false }
+          : { deleted: Math.max(0, limit - 1), done: true, reprobe: false };
       },
     );
     return seen;

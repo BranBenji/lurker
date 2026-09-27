@@ -5,6 +5,12 @@
 // message row in, shared by the server (which resolves it) and the client
 // (which draws the line above the reply).
 
+// The line types a reply can answer and a thread can start from — the ones
+// that are stored as lines someone said. Everything that finds a parent or a
+// thread root by msgid filters on this, so they agree about what a root is.
+export const REPLY_LINE_TYPES: readonly string[] = ['message', 'action', 'notice'];
+export const REPLY_LINE_TYPES_SQL = `(${REPLY_LINE_TYPES.map((t) => `'${t}'`).join(', ')})`;
+
 // How much of the answered line's text rides along. The client shows one
 // clipped line of it, so anything past a screen's width is wire weight.
 export const REPLY_EXCERPT_MAX = 300;

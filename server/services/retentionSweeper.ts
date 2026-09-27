@@ -33,6 +33,8 @@ import {
   bufferOwnerId,
   retentionBoundaryId,
   deleteRetentionBatch,
+  hasThreadDrain,
+  dropThreadDrains,
   listUserIds,
   deleteNoiseBatch,
   getNoiseCursor,
@@ -42,6 +44,7 @@ import {
   gcDeleteClosedBuffer,
   importInProgress,
 } from '../db/retention.js';
+import type { RetentionBatch } from '../db/retention.js';
 import { listInflightJobs } from '../db/dataExports.js';
 import {
   effectiveRetentionLines,
@@ -283,7 +286,10 @@ export async function runRetentionTick(
       // chain synchronous work across buffers.
       await yieldToLoop();
       const ownerId = bufferOwnerId(bufferId);
-      if (ownerId === undefined) continue; // buffer deleted; cascade got the rows
+      if (ownerId === undefined) {
+        dropThreadDrains(bufferId); // buffer deleted; cascade got the rows
+        continue;
+      }
       let globalLines = capByUser.get(ownerId);
       if (globalLines === undefined) {
         globalLines = userRetentionLines(ownerId);
@@ -293,14 +299,20 @@ export async function runRetentionTick(
       // lookup (one PK probe) is paid per buffer.
       const cap = effectiveRetentionLines(ownerId, bufferId, globalLines);
       result.buffersExamined++;
-      if (cap <= 0) continue; // unlimited
+      // A thread part-way out is finished whatever the cap now says: its
+      // departure was decided, and the replies it already took may be what
+      // brought the buffer inside the cap (db/retention.ts, threads).
+      const draining = hasThreadDrain(bufferId);
+      if (cap <= 0 && !draining) continue; // unlimited
 
       // The OFFSET walk is O(cap) index entries — real work, charged like a
       // delete batch.
-      const boundaryId = charge(() => retentionBoundaryId(bufferId, cap));
-      if (boundaryId === undefined) continue; // within cap
+      const probe = (): number =>
+        cap > 0 ? (charge(() => retentionBoundaryId(bufferId, cap)) ?? 0) : 0;
+      let boundaryId = probe();
+      if (boundaryId === 0 && !draining) continue; // within cap
 
-      // "Done" is a short delete batch, NOT an exhausted budget: keying the
+      // "Done" is the batch saying so, NOT an exhausted budget: keying the
       // re-mark on the budget livelocks — with a small budget every capped
       // buffer ends its visit at the limit and reports a backlog forever.
       // do/while, NOT while: the probe above is O(cap) and unbatchable, so on
@@ -318,13 +330,23 @@ export async function runRetentionTick(
         // cannot help because it is only consulted between statements.
         await yieldToLoop();
         const rows = pacedBatchRows(opts);
-        const deleted = chargeSized(rows, () =>
-          deleteRetentionBatch(bufferId, boundaryId, ownerId, rows),
-        );
-        result.rowsDeleted += deleted;
-        if (deleted < rows) {
+        let batch: RetentionBatch = { deleted: 0, done: true, reprobe: false };
+        chargeSized(rows, () => {
+          batch = deleteRetentionBatch(bufferId, boundaryId, ownerId, rows);
+          return batch.deleted;
+        });
+        result.rowsDeleted += batch.deleted;
+        if (batch.done) {
           tailDone = true; // (or only bookmarks left below the boundary)
           break;
+        }
+        // A thread finished leaving and the buffer shrank: what's over the
+        // cap has to be asked again, or a line its departure brought back
+        // inside goes anyway. Next visit when the budget's gone.
+        if (batch.reprobe) {
+          if (outOfBudget()) break;
+          await yieldToLoop();
+          boundaryId = probe();
         }
       } while (!outOfBudget());
       if (!tailDone) {
