@@ -51,6 +51,16 @@ export function replyable(m: MessageLike): boolean {
   );
 }
 
+// Whether the network is up and can carry reply tags right now. canReact is the
+// nearest signal the client has: the server's canSendReactions needs a reply tag
+// allowed (plus echo-message and the react tags — a network that denies only
+// those loses Reply on your own lines, never the reverse).
+export function replyTagsGoOut(networkId: number | null | undefined): boolean {
+  if (networkId == null) return false;
+  const state = useNetworksStore().states[networkId];
+  return state?.state === 'connected' && !!state.canReact;
+}
+
 export interface MessageContext {
   networkId: number;
   onReply(message: MessageLike): void;
@@ -100,7 +110,6 @@ export interface MessageActionsAPI {
 export function useMessageActions(): MessageActionsAPI {
   const bookmarks = useBookmarksStore();
   const reactions = useReactionsStore();
-  const networks = useNetworksStore();
   const buffers = useBuffersStore();
   const menu = useContextMenu();
 
@@ -153,13 +162,7 @@ export function useMessageActions(): MessageActionsAPI {
     // uses the hostmask for delivery, not ignore filtering.
     const addressable = !message.self && !!message.nick;
 
-    // Whether the network is up and can carry reply tags right now. canReact is
-    // the nearest signal the client has: the server's canSendReactions needs a
-    // reply tag allowed (plus echo-message and the react tags — a network that
-    // denies only those loses Reply on your own lines, never the reverse).
-    const lineNetworkId = message.networkId ?? message.network_id;
-    const state = lineNetworkId != null ? networks.states[lineNetworkId] : undefined;
-    const tagsGoOut = state?.state === 'connected' && !!state.canReact;
+    const tagsGoOut = replyTagsGoOut(message.networkId ?? message.network_id);
 
     // Reply to someone else always does something — at the least it addresses
     // them, and the address is what a line without its reply tag still says.

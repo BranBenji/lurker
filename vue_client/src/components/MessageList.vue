@@ -411,7 +411,7 @@ import MessageBody from './MessageBody.vue';
 import { previewRevision } from '../composables/useLinkPreview.js';
 import { useConfigStore } from '../stores/config.js';
 import IgnoreModal from './IgnoreModal.vue';
-import { useMessageActions, replyable } from '../composables/useMessageActions.js';
+import { useMessageActions, replyable, replyTagsGoOut } from '../composables/useMessageActions.js';
 import type {
   MessageContext,
   MessageAction,
@@ -768,11 +768,14 @@ const actionContext: MessageContext = {
     // sent with the next line. Either way the composer addresses them — that's
     // what a client without replies sees, and the reply line hides it for us.
     const key = networks.activeKey;
-    const started = !!key && replyable(msg);
     // Your own line (#997): nobody to address — `yournick: ` would read as
-    // talking to yourself to everyone else (halloy skips it too). A pending
-    // reply to someone else goes first, with the `nick: ` its Reply put in
-    // the draft, or this one would go out still addressed to them.
+    // talking to yourself to everyone else (halloy skips it too). So the reply
+    // tag is all it is, and the network must still carry one at the click: the
+    // bar or menu may have been built before it dropped (buildItems snapshots).
+    // A pending reply to someone else goes first, with the `nick: ` its Reply
+    // put in the draft, or this one would go out still addressed to them.
+    const started =
+      !!key && replyable(msg) && (!msg.self || replyTagsGoOut(msg.networkId ?? msg.network_id));
     if (msg.self && started && replies.forKey(key)?.addressed) cancelComposerReply();
     if (started) {
       replies.start(key, {

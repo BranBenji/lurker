@@ -305,6 +305,32 @@ describe('MessageList — replies', () => {
     expect(focus).not.toHaveBeenCalled();
   });
 
+  // The bar was built while the network could carry the tag; by the click it
+  // can't, and your own line has no address for the line to fall back on.
+  it('does nothing on your own line once the network can’t carry the reply', async () => {
+    const focus = vi.spyOn(composerOverlay, 'focusComposer');
+    const mine = line('me', 'the build is green', { msgid: 'm1' });
+    const w = mountWith([mine]);
+    useNetworksStore().states[1].canReact = true;
+    await w.vm.$nextTick();
+    const reply = replyToSelfButton(w, mine.id)!;
+    useNetworksStore().states[1].canReact = false;
+    await reply.trigger('click');
+    expect(useRepliesStore().forKey(KEY)).toBeNull();
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  // Someone else's line keeps its fallback: the address says who it answers.
+  it('still starts a reply to someone else when the tag can’t go out', async () => {
+    const p = line('alice', 'what time is it?', { msgid: 'm1' });
+    const w = mountWith([p]);
+    const reply = rowOf(w, p.id)
+      .findAll('.row-actions button')
+      .find((b) => b.attributes('title') === 'Reply to alice');
+    await reply!.trigger('click');
+    expect(useRepliesStore().forKey(KEY)).toMatchObject({ messageId: p.id, nick: 'alice' });
+  });
+
   // No reply tag would go out, and your own line has no address to fall back on.
   it('offers no Reply on your own line when the network can’t carry it', () => {
     const mine = line('me', 'the build is green', { msgid: 'm1' });
