@@ -22,7 +22,7 @@
 <template>
   <span
     class="reply-quote"
-    :class="{ missing: !parent, static: isStatic }"
+    :class="{ missing: !parent, static: $props.static }"
     :title="live ? 'Jump to this message' : undefined"
     :role="live ? 'button' : undefined"
     :tabindex="live ? 0 : undefined"
@@ -31,7 +31,7 @@
     ><span class="reply-mark" role="img" aria-label="In reply to">╭─</span
     ><span class="reply-text"
       ><template v-if="parent"
-        >{{ marks[0] }}<NickRef :nick="parent.nick" />{{ marks[1] }}
+        >{{ marks[0] }}<NickRef :nick="parent.nick" :self="parent.self" />{{ marks[1] }}
         {{ replyExcerpt(parent.text) }}</template
       ><template v-else>original message unavailable</template></span
     ></span
@@ -44,21 +44,16 @@ import NickRef from './NickRef.vue';
 import { replyExcerpt } from '../utils/replyText.js';
 import type { ReplyParent } from '../../../shared/replies.js';
 
-const props = withDefaults(
-  defineProps<{
-    // The answered line as it should show — null for "unavailable" (gone, never
-    // held, or from someone ignored; useReplyQuote decides).
-    parent: ReplyParent | null;
-    // Not a control of its own: clicks fall through to what it sits in.
-    static?: boolean;
-  }>(),
-  { static: false },
-);
+const props = defineProps<{
+  // The answered line as it should show — null for "unavailable" (gone, never
+  // held, or from someone ignored; useReplyQuote decides).
+  parent: ReplyParent | null;
+  // Not a control of its own: clicks fall through to what it sits in.
+  static?: boolean;
+}>();
 
 const emit = defineEmits<{ jump: [parent: ReplyParent] }>();
 
-// `static` is a reserved word as a template identifier, so read it here.
-const isStatic = computed(() => props.static);
 const live = computed(() => !!props.parent && !props.static);
 
 // What goes either side of the nick, by the quoted line's type.
@@ -96,15 +91,15 @@ function onKey(e: KeyboardEvent): void {
   opacity: 0.45;
   cursor: pointer;
 }
-.reply-quote:not(.missing):hover {
+.reply-quote:not(.missing):not(.static):hover {
   opacity: 0.8;
 }
-.reply-quote.missing,
+.reply-quote.missing {
+  cursor: default;
+}
+/* Part of the row it sits in: the row's cursor, and no hover of its own. */
 .reply-quote.static {
   cursor: inherit;
-}
-.reply-quote.static:hover {
-  opacity: 0.45;
 }
 .reply-mark {
   margin-right: 1ch;

@@ -315,6 +315,12 @@ const REPLY_PARENT_WHERE = `p.type IN ${REPLY_LINE_TYPES_SQL}
 // timeline reads like REACTIONS_COL, and search and bookmarks too (#998), so a
 // reply shown out of its buffer still quotes what it answers; a line that
 // isn't a reply costs the CASE and nothing else.
+//
+// ⚠ Only where the rows come out in index order (the timeline reads). SQLite
+// computes result columns BEFORE a sorter, so on a read that sorts, this runs
+// for every candidate row, not the LIMIT's worth (measured: 499 lookups for a
+// 50-row bookmarks page). Those reads select it in an outer query over the
+// LIMITed page instead — see withReplyCol.
 export const REPLY_COL = (alias: string) => `CASE WHEN ${alias}.reply_msgid IS NULL THEN NULL ELSE (
     SELECT ${REPLY_PARENT_JSON}
     FROM messages p
@@ -326,6 +332,13 @@ export const REPLY_COL = (alias: string) => `CASE WHEN ${alias}.reply_msgid IS N
 // The reply context for a row read with REPLY_COL. Only on reads that resolved
 // it (`reply_parent` present): a reply read without it would otherwise claim its
 // parent was unavailable.
+// A LIMITed page read (`inner`, selecting m.* among its columns) with REPLY_COL
+// added outside it, so the parent lookup runs once per row returned. The outer
+// ORDER BY restores the page's order, which a subquery doesn't promise.
+export function withReplyCol(inner: string): string {
+  return `SELECT page.*, ${REPLY_COL('page')} FROM (${inner}) page ORDER BY page.id DESC`;
+}
+
 export function replyContextOf(row: {
   reply_msgid?: string | null;
   reply_parent?: string | null;
@@ -1373,39 +1386,6 @@ export function countHighlightsNewer(networkId: number, target: string, afterId:
   return row.n;
 }
 
-// Highlight history feed for the /api/highlights endpoint. Scoped to a single
-// user via the networks join. Cursor pagination via `before` (a message id);
-// returns rows ordered newest-first.
-export function listUserHighlights(
-  userId: number,
-  { before, limit = 50 }: { before?: number; limit?: number } = {},
-): MessageEventWithNetwork[] {
-  const sql = before
-    ? `SELECT m.*, n.name AS network_name, ${BOOKMARKED_COL('m')}
-       FROM messages m
-       JOIN networks n ON n.id = m.network_id
-       WHERE n.user_id = ?
-         AND ${HIGHLIGHTED_SQL('m')}
-         AND m.from_ignored = 0
-         AND m.id < ?
-       ORDER BY m.id DESC
-       LIMIT ?`
-    : `SELECT m.*, n.name AS network_name, ${BOOKMARKED_COL('m')}
-       FROM messages m
-       JOIN networks n ON n.id = m.network_id
-       WHERE n.user_id = ?
-         AND ${HIGHLIGHTED_SQL('m')}
-         AND m.from_ignored = 0
-       ORDER BY m.id DESC
-       LIMIT ?`;
-  const params = before ? [userId, before, limit] : [userId, limit];
-  const rows = db.prepare(sql).all(...params) as MessageRowWithNetwork[];
-  return rows.map((row) => ({
-    ...rowToEvent(row),
-    networkName: row.network_name,
-  }));
-}
-
 // Turn a free-text query into an FTS5 MATCH string. Each whitespace-separated
 // term is wrapped in double quotes (embedded quotes doubled to escape them),
 // which neutralizes FTS5 operator characters in user input and ANDs the terms
@@ -1425,8 +1405,7 @@ function toFtsMatch(text: string): string {
 // access-control boundary, so a missing networkId means "all my networks", not
 // "all networks". Cursor pagination via `before` (a message id); rows ordered
 // newest-first, restricted to chat-shaped types. Ignored senders are excluded
-// via the insert-time from_ignored stamp (same as listUserHighlights / the
-// unread counts) so an ignored user stays ignored everywhere, including for
+// via the insert-time from_ignored stamp (same as the unread counts) so an ignored user stays ignored everywhere, including for
 // non-UI consumers of the search verb that have no client-side ignore filter.
 //
 // The `in:` scope's network enumeration (unscoped = "this name on any of my
@@ -1587,11 +1566,14 @@ export function searchMessages(
   // order natively, so the query stops at the LIMIT instead of materializing
   // and sorting every message that ever contained the term (measured 2126ms →
   // 1.6ms for a common word on a 2M-row database).
-  const sql = `SELECT m.*, n.name AS network_name, ${BOOKMARKED_COL('m')}, ${REPLY_COL('m')}
+  // The page is picked first, and the reply quote added over it (withReplyCol):
+  // the nick-driven plans sort, and a column computed before the sorter would
+  // look up a parent for every candidate row.
+  const sql = withReplyCol(`SELECT m.*, n.name AS network_name, ${BOOKMARKED_COL('m')}
                FROM ${from}
                WHERE ${where.join(' AND ')}
                ORDER BY ${hasText ? 'messages_fts.rowid' : 'm.id'} DESC
-               LIMIT ?`;
+               LIMIT ?`);
   params.push(limit);
 
   return (db.prepare(sql).all(...params) as MessageRowWithNetwork[]).map((row) => ({

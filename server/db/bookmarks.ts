@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import db from './index.js';
-import { REPLY_COL, replyContextOf } from './messages.js';
+import { replyContextOf, withReplyCol } from './messages.js';
 
 /** A bookmark event row — message fields joined with network_name. */
 export interface BookmarkEvent {
@@ -87,14 +87,16 @@ export function isBookmarked(userId: number, messageId: number): boolean {
 // db/messages.ts), so nothing needs to ask for the whole set at once.
 
 // Paginated list joined with messages + networks. Row shape matches
-// listUserHighlights so the same HistoryMessageRow component can render
+// searchMessages' so the same HistoryMessageRow component can render
 // bookmark items unchanged.
 export function listBookmarksForUser(
   userId: number,
   { before, limit = 50 }: { before?: number; limit?: number } = {},
 ): BookmarkEvent[] {
-  const sql = before
-    ? `SELECT m.*, n.name AS network_name, ${REPLY_COL('m')}
+  // Sorted by message id, not read in index order — so the reply quote goes on
+  // over the page (withReplyCol), not per candidate row.
+  const inner = before
+    ? `SELECT m.*, n.name AS network_name
        FROM user_bookmarks b
        JOIN messages m ON m.id = b.message_id
        JOIN networks n ON n.id = m.network_id
@@ -102,7 +104,7 @@ export function listBookmarksForUser(
          AND m.id < ?
        ORDER BY m.id DESC
        LIMIT ?`
-    : `SELECT m.*, n.name AS network_name, ${REPLY_COL('m')}
+    : `SELECT m.*, n.name AS network_name
        FROM user_bookmarks b
        JOIN messages m ON m.id = b.message_id
        JOIN networks n ON n.id = m.network_id
@@ -110,7 +112,7 @@ export function listBookmarksForUser(
        ORDER BY m.id DESC
        LIMIT ?`;
   const params = before ? [userId, before, limit] : [userId, limit];
-  const rows = db.prepare(sql).all(...params) as BookmarkRow[];
+  const rows = db.prepare(withReplyCol(inner)).all(...params) as BookmarkRow[];
   return rows.map((row) => {
     const event: BookmarkEvent = {
       id: row.id,

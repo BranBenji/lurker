@@ -25,7 +25,6 @@ let hasMoreThan: typeof import('./messages.js').hasMoreThan;
 let countServerBufferUnread: typeof import('./messages.js').countServerBufferUnread;
 let typeCountsForUnread: typeof import('./messages.js').typeCountsForUnread;
 let countHighlightsNewer: typeof import('./messages.js').countHighlightsNewer;
-let listUserHighlights: typeof import('./messages.js').listUserHighlights;
 let maxIdForBuffer: typeof import('./messages.js').maxIdForBuffer;
 let newestIdAtOrBefore: typeof import('./messages.js').newestIdAtOrBefore;
 let hasConversationForTarget: typeof import('./messages.js').hasConversationForTarget;
@@ -50,7 +49,6 @@ beforeAll(async () => {
     countServerBufferUnread,
     typeCountsForUnread,
     countHighlightsNewer,
-    listUserHighlights,
     maxIdForBuffer,
     newestIdAtOrBefore,
     hasConversationForTarget,
@@ -1109,7 +1107,7 @@ describe('from_ignored excludes ignored senders from unread/highlight counts', (
     expect(countHighlightsNewer(net.id, '#ig', 0)).toBe(2);
   });
 
-  it('listUserHighlights hides from_ignored rows', () => {
+  it('the highlights read hides from_ignored rows', () => {
     const user = createUser('ig-hl-list');
     const net = createNetwork(user.id, {
       name: 'n',
@@ -1120,7 +1118,7 @@ describe('from_ignored excludes ignored senders from unread/highlight counts', (
     })!;
     chatWith(net.id, { nick: 'alice', matched: 7 });
     chatWith(net.id, { nick: 'spammer', matched: 7, ignored: true });
-    const items = listUserHighlights(user.id);
+    const items = searchMessages(user.id, { matched: true });
     expect(items.map((r) => r.nick)).toEqual(['alice']);
   });
 

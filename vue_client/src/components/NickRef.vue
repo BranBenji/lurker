@@ -17,19 +17,28 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { prefixOf } from '../utils/memberPrefix.js';
 
-const props = defineProps<{
-  nick: string;
-  // Channel user-mode glyph (#376). Both must be supplied for the glyph to
-  // render; callers that aren't a channel speaker just omit them.
-  modes?: string[];
-  showPrefix?: boolean;
-  // Pointer affordance for clickable nicks (#238). The click handler is
-  // attached by the consumer and reaches the root span via Vue's attribute
-  // fallthrough — this prop only drives the cursor styling. Nicks open their
-  // menu on left-click/tap only; right-click is left to the browser so the
-  // text stays selectable for copy/paste (#426).
-  interactive?: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    nick: string;
+    // Channel user-mode glyph (#376). Both must be supplied for the glyph to
+    // render; callers that aren't a channel speaker just omit them.
+    modes?: string[];
+    showPrefix?: boolean;
+    // Pointer affordance for clickable nicks (#238). The click handler is
+    // attached by the consumer and reaches the root span via Vue's attribute
+    // fallthrough — this prop only drives the cursor styling. Nicks open their
+    // menu on left-click/tap only; right-click is left to the browser so the
+    // text stays selectable for copy/paste (#426).
+    interactive?: boolean;
+    // Whether this is the user's own nick, when the caller knows (a reply's
+    // quote carries it). Otherwise guessed from the open buffer's network nick —
+    // wrong for a nick shown from another network (a search hit's quote, #998).
+    self?: boolean;
+  }>(),
+  // An explicit undefined: Vue casts an absent Boolean prop to false, which
+  // would read as "not you" and switch the guess off everywhere.
+  { self: undefined },
+);
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
@@ -47,6 +56,7 @@ const selfLower = computed(() => {
 });
 
 const isSelf = computed(() => {
+  if (props.self !== undefined) return props.self;
   const sl = selfLower.value;
   return !!(sl && props.nick && props.nick.toLowerCase() === sl);
 });

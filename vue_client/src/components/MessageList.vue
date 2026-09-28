@@ -1375,19 +1375,13 @@ const renderRows = computed((): RenderRow[] => {
         };
       }
     }
-    // A reply's answered line as its reply line will show it — null when it
-    // can't (see useReplyQuote).
-    const replyParent = m.replyTo
-      ? replyQuote.shownParent(m.replyTo.parent, networkId, bufTarget, bufIsDm)
-      : null;
-    // A reply that opens by addressing the author it answers (`alice: sure`) —
-    // how halloy and goguma send one, so clients without replies still see who it
-    // is for. The reply line above already names her, so drop the prefix here —
-    // but only when it does: with the quote unavailable (gone, or someone
-    // ignored), the address is the only sign of who the reply is to.
-    if (replyParent && mDisplay.type === 'message') {
-      const text = stripReplyAddress(mDisplay.text ?? '', replyParent.nick);
-      if (text !== mDisplay.text) mDisplay = { ...mDisplay, text };
+    // A reply: its quote, and its text without the address the quote makes
+    // redundant (useReplyQuote).
+    let replyParent: ReplyParent | null = null;
+    if (m.replyTo) {
+      const shown = replyQuote.shownReply(m.replyTo, mDisplay, networkId, bufTarget);
+      replyParent = shown.parent;
+      if (shown.text !== (mDisplay.text ?? '')) mDisplay = { ...mDisplay, text: shown.text };
     }
     out.push({
       m: mDisplay,
