@@ -9,6 +9,7 @@ import { useMessageActions, type MessageContext, type MessageLike } from './useM
 import { useContextMenu } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useBuffersStore } from '../stores/buffers.js';
+import { useNetworksStore } from '../stores/networks.js';
 
 function makeCtx(): MessageContext {
   return {
@@ -40,6 +41,78 @@ describe('useMessageActions', () => {
     it('drops reply + ignore on your own line', () => {
       const actions = useMessageActions().buildActions(other({ self: true }));
       expect(actions.map((a) => a.key)).toEqual(['copy', 'save']);
+    });
+
+    // #997: on your own line Reply can only make a real reply, so it needs a
+    // line that can take one, on a network that would send the tag.
+    it('offers reply on your own line that can take a real reply', () => {
+      const replyableMine = other({ self: true, msgid: 'm1', type: 'message', target: '#chan' });
+      const hasReply = (m: MessageLike) =>
+        useMessageActions()
+          .buildActions(m)
+          .some((a) => a.key === 'reply');
+      useNetworksStore().states = { 1: { state: 'connected', canReact: true } } as never;
+      const reply = useMessageActions()
+        .buildActions(replyableMine)
+        .find((a) => a.key === 'reply');
+      expect(reply?.label).toBe('Reply to yourself');
+      for (const over of [
+        { msgid: undefined },
+        { e2e: true },
+        { type: 'join' },
+        { target: ':server:1' },
+        { target: '=alice' },
+        { id: null },
+      ]) {
+        // Paired with the case, so a failure names which gate let it through.
+        expect({ over, reply: hasReply({ ...replyableMine, ...over }) }).toEqual({
+          over,
+          reply: false,
+        });
+      }
+      // Ignore stays off your own line either way.
+      expect(
+        useMessageActions()
+          .buildActions(replyableMine)
+          .map((a) => a.key),
+      ).not.toContain('ignore');
+
+      // No reply tag would go out: nothing a Reply on your own line could do.
+      useNetworksStore().states = { 1: { state: 'connected', canReact: false } } as never;
+      expect(hasReply(replyableMine)).toBe(false);
+      useNetworksStore().states = { 1: { state: 'disconnected', canReact: true } } as never;
+      expect(hasReply(replyableMine)).toBe(false);
+      // Someone else's line still offers it — the address is the fallback.
+      expect(hasReply({ ...replyableMine, self: false })).toBe(true);
+    });
+
+    it('offers react on a chat line, on a network that can carry it', () => {
+      const line = other({ msgid: 'm1', type: 'message', target: '#chan' });
+      const hasReact = (m: MessageLike) =>
+        useMessageActions()
+          .buildActions(m)
+          .some((a) => a.key === 'react');
+      useNetworksStore().states = { 1: { state: 'connected', canReact: true } } as never;
+      expect(hasReact(line)).toBe(true);
+      expect(hasReact({ ...line, type: 'action' })).toBe(true);
+      expect(hasReact({ ...line, self: true })).toBe(true);
+      for (const over of [
+        { type: 'notice' },
+        { type: 'join' },
+        { msgid: undefined },
+        { e2e: true },
+        { target: ':server:1' },
+        { target: '=alice' },
+        { target: undefined },
+        { id: null },
+        { networkId: null },
+      ]) {
+        expect({ over, react: hasReact({ ...line, ...over }) }).toEqual({ over, react: false });
+      }
+      useNetworksStore().states = { 1: { state: 'connected', canReact: false } } as never;
+      expect(hasReact(line)).toBe(false);
+      useNetworksStore().states = { 1: { state: 'connecting', canReact: true } } as never;
+      expect(hasReact(line)).toBe(false);
     });
 
     it('drops copy when there is no text', () => {

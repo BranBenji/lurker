@@ -411,7 +411,7 @@ import MessageBody from './MessageBody.vue';
 import { previewRevision } from '../composables/useLinkPreview.js';
 import { useConfigStore } from '../stores/config.js';
 import IgnoreModal from './IgnoreModal.vue';
-import { useMessageActions } from '../composables/useMessageActions.js';
+import { useMessageActions, replyable, replyTagsGoOut } from '../composables/useMessageActions.js';
 import type {
   MessageContext,
   MessageAction,
@@ -421,9 +421,13 @@ import { useMemberActions } from '../composables/useMemberActions.js';
 import type { MemberContext, MemberLike } from '../composables/useMemberActions.js';
 import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.js';
 import { useWhoisStore } from '../stores/whois.js';
-import { addressNick } from '../composables/useComposerOverlay.js';
+import {
+  addressNick,
+  cancelComposerReply,
+  focusComposer,
+} from '../composables/useComposerOverlay.js';
 import { setViewedBuffer } from '../composables/useViewedBuffer.js';
-import { isChannelTarget, dccChatPeer, isDccChatTarget } from '../../../shared/channels.js';
+import { isChannelTarget, dccChatPeer } from '../../../shared/channels.js';
 import ReactionRow from './ReactionRow.vue';
 import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
 import { useRepliesStore } from '../stores/replies.js';
@@ -764,15 +768,26 @@ const actionContext: MessageContext = {
     // sent with the next line. Either way the composer addresses them — that's
     // what a client without replies sees, and the reply line hides it for us.
     const key = networks.activeKey;
-    if (key && replyable(msg as ChatMessage)) {
+    // Your own line (#997): nobody to address — `yournick: ` would read as
+    // talking to yourself to everyone else (halloy skips it too). So the reply
+    // tag is all it is, and the network must still carry one at the click: the
+    // bar or menu may have been built before it dropped (buildItems snapshots).
+    // A pending reply to someone else goes first, with the `nick: ` its Reply
+    // put in the draft, or this one would go out still addressed to them.
+    const started =
+      !!key && replyable(msg) && (!msg.self || replyTagsGoOut(msg.networkId ?? msg.network_id));
+    if (msg.self && started && replies.forKey(key)?.addressed) cancelComposerReply();
+    if (started) {
       replies.start(key, {
         messageId: msg.id as number,
         nick: msg.nick,
         type: msg.type ?? 'message',
         text: (msg.text as string | undefined) ?? '',
+        self: !!msg.self,
       });
     }
-    addressNick(msg.nick);
+    if (!msg.self) addressNick(msg.nick);
+    else if (started) focusComposer();
   },
   onIgnore: (msg) => {
     const { user, host } = parseUserHost(msg.userhost);
@@ -1590,23 +1605,6 @@ function textSegments(m: ChatMessage | undefined): RenderSegment[] {
     ) as RenderSegment[];
   }
   return nicks.splitText(m.text || '', nickSet.value, selfLower.value) as RenderSegment[];
-}
-
-// Whether the Reply action can make a real reply of this line: it needs the
-// msgid the reply names, and a channel or DM to send it in. Not an E2E line —
-// the server sends no reply tags on an encrypted channel — and not the
-// :server: console or a =nick DCC chat, which aren't IRC targets. The server
-// re-checks all of it (replySendMsgid); this only decides what the action does.
-function replyable(m: ChatMessage): boolean {
-  return (
-    m.id != null &&
-    !!m.msgid &&
-    !m.e2e &&
-    (m.type === 'message' || m.type === 'action' || m.type === 'notice') &&
-    !!m.target &&
-    !m.target.startsWith(':') &&
-    !isDccChatTarget(m.target)
-  );
 }
 
 // The answered line as the reply line shows it — or null for "unavailable",

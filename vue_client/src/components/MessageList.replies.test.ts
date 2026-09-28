@@ -17,6 +17,7 @@ import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useRepliesStore } from '../stores/replies.js';
 import type { ReplyParent } from '../../../shared/replies.js';
 import * as jumpIntent from '../composables/useJumpIntent.js';
+import * as composerOverlay from '../composables/useComposerOverlay.js';
 import { useSettingsStore } from '../stores/settings.js';
 
 vi.mock('../composables/useSocket.js', () => ({
@@ -225,5 +226,125 @@ describe('MessageList — replies', () => {
       .find((b) => b.attributes('title')?.startsWith('Reply'));
     await reply!.trigger('click');
     expect(useRepliesStore().forKey(KEY)).toBeNull();
+  });
+
+  // #997: replying to yourself is a real reply with nobody to address.
+  const replyToSelfButton = (w: VueWrapper, id: number) =>
+    rowOf(w, id)
+      .findAll('.row-actions button')
+      .find((b) => b.attributes('title') === 'Reply to yourself');
+
+  it('replies to your own line without addressing you', async () => {
+    const address = vi.spyOn(composerOverlay, 'addressNick');
+    const focus = vi.spyOn(composerOverlay, 'focusComposer');
+    const cancel = vi.spyOn(composerOverlay, 'cancelComposerReply');
+    const mine = line('me', 'the build is green', { msgid: 'm1' });
+    const w = mountWith([mine]);
+    useNetworksStore().states[1].canReact = true;
+    await w.vm.$nextTick();
+    const reply = replyToSelfButton(w, mine.id);
+    expect(reply).toBeTruthy();
+    await reply!.trigger('click');
+    expect(useRepliesStore().forKey(KEY)).toMatchObject({
+      messageId: mine.id,
+      nick: 'me',
+      self: true,
+    });
+    expect(focus).toHaveBeenCalledTimes(1);
+    expect(address).not.toHaveBeenCalled();
+    // Nothing was pending, so there was nothing to take back.
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  // Reply on alice's line put `alice: ` in the draft; replying to yourself
+  // instead must take it back out, or the line goes out addressed to her.
+  it('drops a pending reply’s address when you switch to your own line', async () => {
+    const cancel = vi
+      .spyOn(composerOverlay, 'cancelComposerReply')
+      .mockImplementation(() => useRepliesStore().cancel(KEY));
+    const mine = line('me', 'the build is green', { msgid: 'm2' });
+    const w = mountWith([mine]);
+    useNetworksStore().states[1].canReact = true;
+    useRepliesStore().start(KEY, {
+      messageId: 1,
+      nick: 'alice',
+      type: 'message',
+      text: 'is it?',
+      addressed: true,
+    });
+    await w.vm.$nextTick();
+    await replyToSelfButton(w, mine.id)!.trigger('click');
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(useRepliesStore().forKey(KEY)).toMatchObject({ messageId: mine.id, self: true });
+  });
+
+  // An address the user typed is theirs: switching leaves it alone.
+  it('leaves a pending reply alone that put no address in', async () => {
+    const cancel = vi.spyOn(composerOverlay, 'cancelComposerReply');
+    const mine = line('me', 'the build is green', { msgid: 'm2' });
+    const w = mountWith([mine]);
+    useNetworksStore().states[1].canReact = true;
+    useRepliesStore().start(KEY, { messageId: 1, nick: 'alice', type: 'message', text: 'is it?' });
+    await w.vm.$nextTick();
+    await replyToSelfButton(w, mine.id)!.trigger('click');
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  // The bar was built while the line could take a reply, and it can't by the
+  // click: no reply starts, so there's nothing to put the caret there for.
+  it('does nothing on your own line once it can no longer take a reply', async () => {
+    const focus = vi.spyOn(composerOverlay, 'focusComposer');
+    const mine = line('me', 'the build is green', { msgid: 'm1' });
+    const w = mountWith([mine]);
+    useNetworksStore().states[1].canReact = true;
+    await w.vm.$nextTick();
+    const reply = replyToSelfButton(w, mine.id)!;
+    useBuffersStore().buffers[KEY].messages[0].msgid = undefined;
+    await reply.trigger('click');
+    expect(useRepliesStore().forKey(KEY)).toBeNull();
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  // The bar was built while the network could carry the tag; by the click it
+  // can't, and your own line has no address for the line to fall back on.
+  it('does nothing on your own line once the network can’t carry the reply', async () => {
+    const focus = vi.spyOn(composerOverlay, 'focusComposer');
+    const mine = line('me', 'the build is green', { msgid: 'm1' });
+    const w = mountWith([mine]);
+    useNetworksStore().states[1].canReact = true;
+    await w.vm.$nextTick();
+    const reply = replyToSelfButton(w, mine.id)!;
+    useNetworksStore().states[1].canReact = false;
+    await reply.trigger('click');
+    expect(useRepliesStore().forKey(KEY)).toBeNull();
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  // Someone else's line keeps its fallback: the address says who it answers.
+  it('still starts a reply to someone else when the tag can’t go out', async () => {
+    const p = line('alice', 'what time is it?', { msgid: 'm1' });
+    const w = mountWith([p]);
+    const reply = rowOf(w, p.id)
+      .findAll('.row-actions button')
+      .find((b) => b.attributes('title') === 'Reply to alice');
+    await reply!.trigger('click');
+    expect(useRepliesStore().forKey(KEY)).toMatchObject({ messageId: p.id, nick: 'alice' });
+  });
+
+  // No reply tag would go out, and your own line has no address to fall back on.
+  it('offers no Reply on your own line when the network can’t carry it', () => {
+    const mine = line('me', 'the build is green', { msgid: 'm1' });
+    const w = mountWith([mine]);
+    expect(replyToSelfButton(w, mine.id)).toBeUndefined();
+  });
+
+  // Without a msgid there's nothing a Reply could do on your own line.
+  it('offers no Reply on your own line without a msgid', () => {
+    const mine = line('me', 'untagged network');
+    const w = mountWith([mine]);
+    const titles = rowOf(w, mine.id)
+      .findAll('.row-actions button')
+      .map((b) => b.attributes('title'));
+    expect(titles.some((t) => t?.startsWith('Reply'))).toBe(false);
   });
 });

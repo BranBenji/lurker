@@ -15,7 +15,11 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useRepliesStore } from '../stores/replies.js';
-import { addressNick, cancelComposerReply } from '../composables/useComposerOverlay.js';
+import {
+  addressNick,
+  cancelComposerReply,
+  focusComposer,
+} from '../composables/useComposerOverlay.js';
 import { socketSendWithAck } from '../composables/useSocket.js';
 import MessageInput from './MessageInput.vue';
 
@@ -213,6 +217,37 @@ describe('composing a reply', () => {
     await press(el, 'Escape');
     expect(useRepliesStore().forKey(KEY)).toBeNull();
     expect(el.value).toBe('alicia should know');
+  });
+
+  // #997: a reply to your own line puts nobody's nick in the draft, so
+  // cancelling it has nothing to take back either.
+  it('replies to your own line with the draft as it was', async () => {
+    seed();
+    const el = await composer();
+    await type(el, 'to clarify');
+    el.blur();
+    useRepliesStore().start(KEY, { ...REPLY, nick: 'me' });
+    focusComposer();
+    await flush();
+    expect(el.value).toBe('to clarify');
+    expect(document.activeElement).toBe(el);
+    await type(el, 'me: I meant tomorrow');
+    await press(el, 'Escape');
+    expect(useRepliesStore().forKey(KEY)).toBeNull();
+    expect(el.value).toBe('me: I meant tomorrow');
+  });
+
+  it('sends a reply to your own line like any other', async () => {
+    seed();
+    const el = await composer();
+    useRepliesStore().start(KEY, { ...REPLY, nick: 'me' });
+    focusComposer();
+    await flush();
+    await type(el, 'I meant tomorrow');
+    await press(el, 'Enter');
+    expect(sent()).toEqual([
+      expect.objectContaining({ type: 'send', text: 'I meant tomorrow', replyTo: 42 }),
+    ]);
   });
 
   it('keeps each buffer’s reply to itself', async () => {

@@ -49,6 +49,24 @@ describe('StatusBar — pending reply', () => {
     expect(w.find('.seg.reply').text()).toContain('alice');
   });
 
+  // #997: a reply to your own line names nobody.
+  it('says “yourself” for a reply to your own line', () => {
+    useRepliesStore().start(KEY, {
+      messageId: 7,
+      nick: 'me',
+      type: 'message',
+      text: 'the build is green',
+      self: true,
+    });
+    const w = mountBar();
+    expect(w.find('.seg.reply').text()).toContain('replying to');
+    expect(w.find('.reply-self').text()).toBe('yourself');
+    expect(w.find('.seg.reply').text()).not.toContain('me:');
+    expect(w.find('.seg.reply').attributes('title')).toBe(
+      'Replying to yourself — Escape to cancel',
+    );
+  });
+
   it('is absent with no reply pending, and for another buffer’s', () => {
     useRepliesStore().start('1::#elsewhere', {
       messageId: 7,

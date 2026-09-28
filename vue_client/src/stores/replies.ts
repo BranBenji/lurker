@@ -19,6 +19,8 @@ export interface PendingReply {
   nick: string;
   type: string;
   text: string;
+  // A reply to your own line (#997) — the status bar says "yourself".
+  self?: boolean;
   // The Reply put `nick: ` into the draft (it doesn't when the draft already
   // opens with it). Only then does cancelling take it back out — an address the
   // user typed is theirs.
