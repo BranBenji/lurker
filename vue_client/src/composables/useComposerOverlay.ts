@@ -71,6 +71,9 @@ let onPickCamera: VoidHandler = () => {};
 // Same signature as a nick pick, but it prepends `nick: ` to the whole draft
 // rather than splicing at a token span, so it gets its own handler.
 let onAddress: NickSelectHandler = () => {};
+// Put the caret in the draft without touching it — Reply on your own line
+// (#997), which has nobody to address.
+let onFocus: VoidHandler = () => {};
 // Drop the pending reply (#993) — the status bar's ×. The composer owns it
 // because cancelling also takes the `nick: ` the Reply put in the draft back out.
 let onCancelReply: VoidHandler = () => {};
@@ -84,6 +87,7 @@ export interface ComposerOverlayHandlers {
   onPickFile?: VoidHandler;
   onPickCamera?: VoidHandler;
   onAddress?: NickSelectHandler;
+  onFocus?: VoidHandler;
   onCancelReply?: VoidHandler;
 }
 
@@ -96,6 +100,7 @@ export function setComposerOverlayHandlers(h: ComposerOverlayHandlers): void {
   if (h.onPickFile) onPickFile = h.onPickFile;
   if (h.onPickCamera) onPickCamera = h.onPickCamera;
   if (h.onAddress) onAddress = h.onAddress;
+  if (h.onFocus) onFocus = h.onFocus;
   if (h.onCancelReply) onCancelReply = h.onCancelReply;
 }
 
@@ -170,6 +175,9 @@ export function selectNick(nick: string): void {
 // which owns the draft text and the focus/caret dance.
 export function addressNick(nick: string): void {
   onAddress(nick);
+}
+export function focusComposer(): void {
+  onFocus();
 }
 export function cancelComposerReply(): void {
   onCancelReply();

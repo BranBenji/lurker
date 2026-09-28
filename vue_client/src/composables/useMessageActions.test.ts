@@ -42,6 +42,36 @@ describe('useMessageActions', () => {
       expect(actions.map((a) => a.key)).toEqual(['copy', 'save']);
     });
 
+    // #997: on your own line Reply can only make a real reply, so it needs a
+    // line that can take one.
+    it('offers reply on your own line that can take a real reply', () => {
+      const replyableMine = other({ self: true, msgid: 'm1', type: 'message', target: '#chan' });
+      const reply = useMessageActions()
+        .buildActions(replyableMine)
+        .find((a) => a.key === 'reply');
+      expect(reply?.label).toBe('Reply to yourself');
+      for (const over of [
+        { msgid: undefined },
+        { e2e: true },
+        { type: 'join' },
+        { target: ':server:1' },
+        { target: '=alice' },
+        { id: null },
+      ]) {
+        const keys = useMessageActions()
+          .buildActions({ ...replyableMine, ...over })
+          .map((a) => a.key);
+        // Paired with the case, so a failure names which gate let it through.
+        expect({ over, reply: keys.includes('reply') }).toEqual({ over, reply: false });
+      }
+      // Ignore stays off your own line either way.
+      expect(
+        useMessageActions()
+          .buildActions(replyableMine)
+          .map((a) => a.key),
+      ).not.toContain('ignore');
+    });
+
     it('drops copy when there is no text', () => {
       const actions = useMessageActions().buildActions(other({ text: '' }));
       expect(actions.map((a) => a.key)).toEqual(['reply', 'save', 'ignore']);

@@ -1799,20 +1799,30 @@ function onStripSelect(nick: string): void {
 // so iOS raises the keyboard from the originating tap.
 function addressInComposer(nick: string): void {
   if (!active.value || !nick) return;
+  const cur = text.value;
+  if (!isAddressedTo(cur, nick)) {
+    focusForReply(nick + addressSuffix() + cur);
+    // Cancelling the pending reply (#993) takes back only what this inserted.
+    if (networks.activeKey) replies.markAddressed(networks.activeKey, nick);
+  } else {
+    focusForReply(cur);
+  }
+}
+
+// Reply on your own line (#997): the same landing, with the draft as it is.
+function focusInComposer(): void {
+  if (!active.value) return;
+  focusForReply(text.value);
+}
+
+function focusForReply(draft: string): void {
   // A Reply click bypasses the keystroke handlers that normally clear these,
   // and setInputAndCaretEnd suppresses onInput (its `cycling` guard) — so clear
   // them here or a stale Tab-completion / Up-Down history walk would act on the
   // old text afterward. Same reset onHistorySelect does for the same reason.
   resetCompletion();
   resetHistoryNav();
-  const cur = text.value;
-  if (!isAddressedTo(cur, nick)) {
-    setInputAndCaretEnd(nick + addressSuffix() + cur);
-    // Cancelling the pending reply (#993) takes back only what this inserted.
-    if (networks.activeKey) replies.markAddressed(networks.activeKey, nick);
-  } else {
-    setInputAndCaretEnd(cur);
-  }
+  setInputAndCaretEnd(draft);
   queueMicrotask(() => inputEl.value?.focus());
 }
 
@@ -2051,6 +2061,7 @@ onMounted(() => {
     onPickFile,
     onPickCamera,
     onAddress: addressInComposer,
+    onFocus: focusInComposer,
     onCancelReply: cancelReply,
   });
 });

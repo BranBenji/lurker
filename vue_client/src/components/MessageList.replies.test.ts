@@ -17,6 +17,7 @@ import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useRepliesStore } from '../stores/replies.js';
 import type { ReplyParent } from '../../../shared/replies.js';
 import * as jumpIntent from '../composables/useJumpIntent.js';
+import * as composerOverlay from '../composables/useComposerOverlay.js';
 import { useSettingsStore } from '../stores/settings.js';
 
 vi.mock('../composables/useSocket.js', () => ({
@@ -225,5 +226,31 @@ describe('MessageList — replies', () => {
       .find((b) => b.attributes('title')?.startsWith('Reply'));
     await reply!.trigger('click');
     expect(useRepliesStore().forKey(KEY)).toBeNull();
+  });
+
+  // #997: replying to yourself is a real reply with nobody to address.
+  it('replies to your own line without addressing you', async () => {
+    const address = vi.spyOn(composerOverlay, 'addressNick');
+    const focus = vi.spyOn(composerOverlay, 'focusComposer');
+    const mine = line('me', 'the build is green', { msgid: 'm1' });
+    const w = mountWith([mine]);
+    const reply = rowOf(w, mine.id)
+      .findAll('.row-actions button')
+      .find((b) => b.attributes('title') === 'Reply to yourself');
+    expect(reply).toBeTruthy();
+    await reply!.trigger('click');
+    expect(useRepliesStore().forKey(KEY)).toMatchObject({ messageId: mine.id, nick: 'me' });
+    expect(focus).toHaveBeenCalledTimes(1);
+    expect(address).not.toHaveBeenCalled();
+  });
+
+  // Without a msgid there's nothing a Reply could do on your own line.
+  it('offers no Reply on your own line without a msgid', () => {
+    const mine = line('me', 'untagged network');
+    const w = mountWith([mine]);
+    const titles = rowOf(w, mine.id)
+      .findAll('.row-actions button')
+      .map((b) => b.attributes('title'));
+    expect(titles.some((t) => t?.startsWith('Reply'))).toBe(false);
   });
 });

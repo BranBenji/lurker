@@ -34,6 +34,23 @@ export interface MessageLike {
   type?: string;
 }
 
+// Whether the Reply action can make a real reply of this line: it needs the
+// msgid the reply names, and a channel or DM to send it in. Not an E2E line —
+// the server sends no reply tags on an encrypted channel — and not the
+// :server: console or a =nick DCC chat, which aren't IRC targets. The server
+// re-checks all of it (replySendMsgid); this only decides what the action does.
+export function replyable(m: MessageLike): boolean {
+  return (
+    m.id != null &&
+    !!m.msgid &&
+    !m.e2e &&
+    (m.type === 'message' || m.type === 'action' || m.type === 'notice') &&
+    !!m.target &&
+    !m.target.startsWith(':') &&
+    !isDccChatTarget(m.target)
+  );
+}
+
 export interface MessageContext {
   networkId: number;
   onReply(message: MessageLike): void;
@@ -132,12 +149,17 @@ export function useMessageActions(): MessageActionsAPI {
     if (!message) return [];
     const actions: MessageAction[] = [];
 
-    // Reply and Ignore both address another user: pointless on your own line,
-    // and the server uses the hostmask for delivery, not ignore filtering.
+    // Ignore addresses another user: pointless on your own line, and the server
+    // uses the hostmask for delivery, not ignore filtering.
     const addressable = !message.self && !!message.nick;
 
+    // Reply to someone else always does something — at the least it addresses
+    // them. On your own line the only thing it can do is a real reply (#997,
+    // "to clarify what I said above"), so it needs a line that can take one.
     if (addressable) {
       actions.push({ key: 'reply', label: `Reply to ${message.nick}`, icon: 'fa-solid fa-reply' });
+    } else if (message.self && replyable(message)) {
+      actions.push({ key: 'reply', label: 'Reply to yourself', icon: 'fa-solid fa-reply' });
     }
 
     // A reaction replies to the line's msgid, so the line needs one, and the
