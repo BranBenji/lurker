@@ -173,6 +173,37 @@ describe('HistoryMessageRow — replies', () => {
     expect(other.style.color).not.toBe('rgb(1, 2, 3)');
   });
 
+  // A relayed you is judged on the row's network, not the open buffer's.
+  it('colours a relayed you by the row’s own network', () => {
+    const SELF = 'rgb(1, 2, 3)';
+    useSettingsStore().values = { 'look.nick.self_color': SELF } as never;
+    // Open buffer: network 1, where you're `me`. The row: network 2, as `me_`.
+    useNetworksStore().states = {
+      1: { nick: 'me', state: 'connected' },
+      2: { nick: 'me_', state: 'connected' },
+    } as never;
+    useBuffersStore().ensure(1, '#chan', 9);
+    useNetworksStore().activeKey = '1::#chan';
+    useRelayBotsStore().byKey['2::bridgebot'] = { nick: 'bridgebot', pattern: '' };
+    const quoting = (nick: string) =>
+      reply({
+        networkId: 2,
+        nick: 'bridgebot',
+        text: `<${nick}> the release one`,
+        replyTo: { msgid: 'm1', parent: parent({ nick: 'bridgebot', text: `<${nick}> which?` }) },
+      });
+    const colourOf = (w: ReturnType<typeof mountRow>, sel: string) =>
+      (w.find(sel).element as HTMLElement).style.color;
+
+    const mine = mountRow(quoting('me_'));
+    expect(colourOf(mine, '.body > .nick')).toBe(SELF);
+    expect(colourOf(mine, '.reply-quote .nick-ref')).toBe(SELF);
+    // Your nick on the OTHER network is someone else here.
+    const theirs = mountRow(quoting('me'));
+    expect(colourOf(theirs, '.body > .nick')).not.toBe(SELF);
+    expect(colourOf(theirs, '.reply-quote .nick-ref')).not.toBe(SELF);
+  });
+
   // The row's click jumps to the reply, where the quote is live again.
   it('leaves clicks on the quote to the row', async () => {
     const message = reply();

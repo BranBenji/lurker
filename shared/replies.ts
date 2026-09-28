@@ -32,7 +32,8 @@ export interface ReplyParent {
 
 // The answered line as a client quotes it: when it came through a marked relay
 // bot, as the person inside the envelope, with the bot and the `[source]` kept
-// for the label the timeline shows on that line (#996).
+// for the label the timeline shows on that line (#996). `self` then says whether
+// that person is the user (their nick on the line's network), not the bot.
 export interface QuotedLine extends ReplyParent {
   relayBot?: string;
   relaySource?: string | null;

@@ -3,6 +3,7 @@
 
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
+import { useNetworksStore } from '../stores/networks.js';
 import { stripReplyAddress } from '../utils/replyText.js';
 import type { QuotedLine, ReplyContext } from '../../../shared/replies.js';
 
@@ -13,6 +14,7 @@ import type { QuotedLine, ReplyContext } from '../../../shared/replies.js';
 export function useReplyQuote() {
   const ignores = useIgnoresStore();
   const relayBots = useRelayBotsStore();
+  const networks = useNetworksStore();
 
   // `line` is the reply as it displays (a relayed line already unwrapped).
   // `parent`: the answered line as the quote shows it — null for "unavailable",
@@ -55,6 +57,9 @@ export function useReplyQuote() {
         ...parent,
         nick: relayed.nick,
         text: relayed.text,
+        // The stored `self` is the bot's line; the person is you when they
+        // carry your nick on the line's network (a bridge echoing you back).
+        self: networks.isOwnNick(networkId, relayed.nick),
         relayBot: parent.nick,
         relaySource: relayed.source,
       };

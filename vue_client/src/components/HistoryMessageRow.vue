@@ -119,7 +119,9 @@ const line = computed(() => {
     nick: relayed.nick,
     text: relayed.text,
     type: m.type,
-    self: false,
+    // You, echoed back through the bridge, on the row's own network — not the
+    // open buffer's.
+    self: networks.isOwnNick(m.networkId, relayed.nick),
     relayBot: m.nick,
     relaySource: relayed.source,
   };

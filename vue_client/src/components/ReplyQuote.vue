@@ -31,10 +31,7 @@
     ><span class="reply-mark" role="img" aria-label="In reply to">╭─</span
     ><span class="reply-text"
       ><template v-if="parent"
-        >{{ marks[0]
-        }}<NickRef :nick="parent.nick" :self="parent.relayBot ? undefined : parent.self" />{{
-          marks[1]
-        }}
+        >{{ marks[0] }}<NickRef :nick="parent.nick" :self="parent.self" />{{ marks[1] }}
         <span
           v-if="parent.relaySource"
           class="reply-relay"
@@ -55,8 +52,8 @@ import type { QuotedLine, ReplyParent } from '../../../shared/replies.js';
 const props = defineProps<{
   // The answered line as it should show — null for "unavailable" (gone, never
   // held, or from someone ignored; useReplyQuote decides).
-  // A relayed line comes unwrapped (QuotedLine): its colour is guessed from the
-  // nick as the timeline row's is, since `self` describes the bot's line.
+  // A relayed line comes unwrapped (QuotedLine), `self` then saying whether
+  // the person in it is you (useReplyQuote).
   parent: QuotedLine | null;
   // Not a control of its own: clicks fall through to what it sits in.
   static?: boolean;

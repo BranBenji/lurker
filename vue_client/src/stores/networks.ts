@@ -127,6 +127,16 @@ export const useNetworksStore = defineStore('networks', {
   }),
   getters: {
     networkById: (state) => (id: number) => state.networks.find((n) => n.id === id) || null,
+    // Whether `nick` is the user's current nick on THAT network — for a line
+    // shown away from its buffer (a search hit, a quote), where NickRef's guess
+    // from the open buffer's network would be the wrong network. Folded the way
+    // NickRef folds.
+    isOwnNick:
+      (state) =>
+      (networkId: number | null | undefined, nick: string | null | undefined): boolean => {
+        const own = networkId != null ? state.states[networkId]?.nick : null;
+        return !!own && !!nick && own.toLowerCase() === nick.toLowerCase();
+      },
     // Presence row for a (network, nick), disconnected-aware: a down network's
     // cached rows are stale, so report a synthetic 'offline'. Connected with no
     // row stays null (unknown = "potentially online", the no-MONITOR case).
