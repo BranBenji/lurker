@@ -25,6 +25,7 @@ let pinBuffer: typeof import('../db/pinnedBuffers.js').pinBuffer;
 let favoriteBuffer: typeof import('../db/favoriteBuffers.js').favoriteBuffer;
 let addRule: typeof import('../db/ignoredMasks.js').addRule;
 let addBookmark: typeof import('../db/bookmarks.js').addBookmark;
+let addReaction: typeof import('../db/reactions.js').addReaction;
 // Seed an ALL-level ignore the way the pre-#301 addMask helper did.
 function addMask(args: { userId: number; networkId: number; mask: string }) {
   return addRule({
@@ -70,6 +71,7 @@ beforeAll(async () => {
   ({ favoriteBuffer } = await import('../db/favoriteBuffers.js'));
   ({ addRule } = await import('../db/ignoredMasks.js'));
   ({ addBookmark } = await import('../db/bookmarks.js'));
+  ({ addReaction } = await import('../db/reactions.js'));
   ({ setReadState, setClearedState, getClearedState } = await import('../db/bufferReads.js'));
   ({ setNicklistCollapsed } = await import('../db/nicklistCollapsed.js'));
   ({ setChannelNotifyAlways } = await import('../db/channelNotify.js'));
@@ -91,6 +93,44 @@ async function exportToBuffer(userId: number, opts: { includeMessages: boolean }
   const chunks: Buffer[] = [];
   sink.on('data', (c: Buffer) => chunks.push(c));
   await buildExportZip(db, userId, opts, sink);
+  return Buffer.concat(chunks);
+}
+
+// An archive's entries, and an archive built back from them — for a test that
+// edits one file of a real export.
+async function unzipToMap(buf: Buffer): Promise<Map<string, Buffer>> {
+  const yauzl = await import('yauzl');
+  return new Promise((resolve, reject) => {
+    yauzl.fromBuffer(buf, { lazyEntries: true }, (err, zip) => {
+      if (err) return reject(err);
+      const out = new Map<string, Buffer>();
+      zip.readEntry();
+      zip.on('entry', (entry) => {
+        if (entry.fileName.endsWith('/')) return zip.readEntry();
+        zip.openReadStream(entry, (e2, stream) => {
+          if (e2) return reject(e2);
+          const chunks: Buffer[] = [];
+          stream.on('data', (c: Buffer) => chunks.push(c));
+          stream.on('end', () => {
+            out.set(entry.fileName, Buffer.concat(chunks));
+            zip.readEntry();
+          });
+          stream.on('error', reject);
+        });
+      });
+      zip.on('end', () => resolve(out));
+      zip.on('error', reject);
+    });
+  });
+}
+
+async function zipFromMap(entries: Map<string, Buffer>): Promise<Buffer> {
+  const { ZipArchive } = await import('archiver');
+  const archive = new ZipArchive();
+  const chunks: Buffer[] = [];
+  archive.on('data', (c: Buffer) => chunks.push(c));
+  for (const [name, content] of entries) archive.append(content, { name });
+  await archive.finalize();
   return Buffer.concat(chunks);
 }
 
@@ -515,6 +555,7 @@ describe('importFromZipBuffer — roundtrip', () => {
     const result = await importFromZipBuffer(dave.id, buf);
     expect(result.counts.messages).toBe(0);
     expect(result.counts.user_bookmarks).toBe(0);
+    expect(result.counts.message_reactions).toBe(0);
 
     const msgs = (
       db
@@ -551,6 +592,78 @@ describe('importFromZipBuffer — roundtrip', () => {
       }
     ).n;
     expect(reads).toBe(0);
+  });
+
+  // #992: a reaction lands on the imported copy of the line it was on — the
+  // equivalence test can't see that, since message_id is rekeyed.
+  it('puts each reaction back on its own line', async () => {
+    const { alice, net } = seedAlice();
+    const [hello, hi] = db
+      .prepare('SELECT id FROM messages WHERE network_id = ? ORDER BY id')
+      .all(net.id) as { id: number }[];
+    const react = (messageId: number, nick: string, value: string, self = false) =>
+      addReaction({
+        messageId,
+        networkId: net.id,
+        nick,
+        value,
+        self,
+        toSelf: messageId === hello.id,
+        time: '2026-05-17T10:05:00Z',
+      });
+    react(hello.id, 'bob', '👍');
+    react(hello.id, 'carol', '🎉');
+    react(hi.id, 'alice', '❤️', true);
+
+    const dave = createUser(uniqueUsername('dave'));
+    const buf = await exportToBuffer(alice.id, { includeMessages: true });
+    const result = await importFromZipBuffer(dave.id, buf);
+    expect(result.counts.message_reactions).toBe(3);
+
+    const landed = db
+      .prepare(
+        `SELECT m.text, r.nick, r.value, r.self, r.to_self, r.network_id = m.network_id AS same_net
+           FROM message_reactions r JOIN messages m ON m.id = r.message_id
+          WHERE m.network_id IN (SELECT id FROM networks WHERE user_id = ?)
+          ORDER BY r.nick`,
+      )
+      .all(dave.id);
+    expect(landed).toEqual([
+      { text: 'hi alice', nick: 'alice', value: '❤️', self: 1, to_self: 0, same_net: 1 },
+      { text: 'hello', nick: 'bob', value: '👍', self: 0, to_self: 1, same_net: 1 },
+      { text: 'hello', nick: 'carol', value: '🎉', self: 0, to_self: 1, same_net: 1 },
+    ]);
+  });
+
+  // A reaction whose line isn't in the archive has nothing to stand on.
+  it('drops a reaction whose line didn’t make the trip', async () => {
+    const { alice, net } = seedAlice();
+    const [hello] = db
+      .prepare('SELECT id FROM messages WHERE network_id = ? ORDER BY id')
+      .all(net.id) as { id: number }[];
+    addReaction({
+      messageId: hello.id,
+      networkId: net.id,
+      nick: 'bob',
+      value: '👍',
+      self: false,
+      toSelf: true,
+      time: '2026-05-17T10:05:00Z',
+    });
+    const buf = await exportToBuffer(alice.id, { includeMessages: true });
+    // The same archive with the line gone from messages.ndjson.
+    const entries = await unzipToMap(buf);
+    const kept = entries
+      .get('messages.ndjson')!
+      .toString('utf8')
+      .split('\n')
+      .filter((l) => l && (JSON.parse(l) as { id: number }).id !== hello.id);
+    entries.set('messages.ndjson', Buffer.from(kept.join('\n') + '\n'));
+
+    const dave = createUser(uniqueUsername('dave'));
+    const result = await importFromZipBuffer(dave.id, await zipFromMap(entries));
+    expect(result.counts.message_reactions).toBe(0);
+    expect(result.counts.messages).toBe(1);
   });
 
   it('keeps buffer_reads when messages are included', async () => {
@@ -1121,6 +1234,27 @@ describe('importFromZipBuffer — end-to-end equivalence', () => {
     buffers.close(user.id, net1.id, '#oldchan');
     addBookmark(user.id, m1.id as number);
     addBookmark(user.id, m2.id as number);
+    // Reactions (#992): a peer's on our line (to_self, with a userhost), and
+    // ours on theirs.
+    addReaction({
+      messageId: m1.id as number,
+      networkId: net1.id,
+      nick: 'Bob',
+      userhost: 'Bob!b@host',
+      value: '👍',
+      self: false,
+      toSelf: true,
+      time: '2026-05-17T10:02:00Z',
+    });
+    addReaction({
+      messageId: m2.id as number,
+      networkId: net1.id,
+      nick: 'alice',
+      value: 'ha, same',
+      self: true,
+      toSelf: false,
+      time: '2026-05-17T10:03:00Z',
+    });
     setReadState(user.id, net1.id, '#general', m2.id as number);
     writeAwayMarker(user.id, {
       awayDatetime: '2026-05-17T11:00:00Z',

@@ -664,6 +664,16 @@ export async function importFromZipFile(
         )
       : null;
 
+    // ---- reactions.json (optional; #992 — archives before it have none) ----
+    const reactionsEntry = entries.get('reactions.json');
+    const reactions = reactionsEntry
+      ? parseJson<Record<string, unknown>[]>(
+          await readEntryBuffer(zip, reactionsEntry),
+          'bad_reactions',
+          'reactions.json',
+        )
+      : null;
+
     // ---- thumbnails — read up front so phase C can apply them inside a
     // synchronous transaction. Accepts .webp (since #560) and .jpg (everything
     // exported before it, which must keep importing). The extension only locates
@@ -694,7 +704,7 @@ export async function importFromZipFile(
             | ExportTableDefFull
             | undefined;
           if (!def || def.mode === 'skip') continue;
-          if (def.section === 'messages' || def.section === 'bookmarks') continue;
+          if (def.section && def.section !== 'data') continue;
           if (dependsOnMessages(def)) continue;
           insertTable(table, data, idMaps, counts, targetUserId);
         }
@@ -724,12 +734,29 @@ export async function importFromZipFile(
           counts.user_bookmarks = 0;
         }
 
+        // Reactions ride the messages (and networks) id maps; one whose line
+        // didn't make the trip has nothing to stand on and is dropped.
+        if (reactions) {
+          const def = EXPORT_TABLES.message_reactions as ExportTableDefFull;
+          const { stmt, cols } = buildInsertStatement('message_reactions', def);
+          let inserted = 0;
+          for (const original of reactions) {
+            const row = rekeyRow(original, def, idMaps, targetUserId);
+            if (row.message_id == null || row.network_id == null) continue;
+            insertOne(stmt, cols, row);
+            inserted += 1;
+          }
+          counts.message_reactions = inserted;
+        } else {
+          counts.message_reactions = 0;
+        }
+
         for (const table of IMPORT_ORDER) {
           const def = EXPORT_TABLES[table as keyof typeof EXPORT_TABLES] as
             | ExportTableDefFull
             | undefined;
           if (!def || def.mode === 'skip') continue;
-          if (def.section === 'messages' || def.section === 'bookmarks') continue;
+          if (def.section && def.section !== 'data') continue;
           if (!dependsOnMessages(def)) continue;
           insertTable(table, data, idMaps, counts, targetUserId);
         }

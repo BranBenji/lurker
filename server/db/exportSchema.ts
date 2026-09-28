@@ -75,7 +75,12 @@ const USERS_SKIPPED_COLUMNS: Record<string, string> = Object.freeze({
 // fkRekey lists FK columns whose values are rewritten through the map of the
 // referenced table. Cascade order matters: networks must be inserted before
 // channels/messages/etc.; highlight_rules before highlight_rule_networks;
-// messages before user_bookmarks.
+// messages before user_bookmarks and message_reactions.
+//
+// `section` names the archive file a table travels in: 'data' (data.json, the
+// default) or one of the history-bound files — messages.ndjson, bookmarks.json,
+// reactions.json — which a with-history export writes and a history-less one
+// leaves out.
 
 export const EXPORT_TABLES = Object.freeze({
   users: {
@@ -525,16 +530,35 @@ export const EXPORT_TABLES = Object.freeze({
     },
   },
 
-  // ---- skipped ----
-
+  // Reactions standing on the user's lines (#992). They hang off messages(id),
+  // so like bookmarks they travel only with message history, in their own
+  // reactions.json: the generic data.json path would fail the NOT NULL
+  // message_id on a history-less import. Rekeyed through the messages id map in
+  // Phase C; a reaction whose line didn't make the trip is dropped.
   message_reactions: {
-    mode: 'skip',
-    reason:
-      'not carried across yet: a reaction rekeys through the messages id map, which only ' +
-      'exists on a with-history import, and the generic data.json path would fail the ' +
-      'NOT NULL message_id on a history-less one. Reactions are lightweight annotations; ' +
-      'an archive without them still restores every line they were on',
+    mode: 'export',
+    scope: 'via_network',
+    section: 'reactions',
+    fkRekey: { message_id: 'messages', network_id: 'networks' },
+    columns: [
+      'message_id',
+      'network_id',
+      'nick',
+      'nick_folded',
+      'value',
+      'self',
+      'to_self',
+      'time',
+      'userhost',
+    ],
+    skippedColumns: {
+      id:
+        'local autoincrement; nothing exported references it (the activity feed pages on it, ' +
+        'and a fresh sequence pages the same way)',
+    },
   },
+
+  // ---- skipped ----
 
   instance_settings: {
     mode: 'skip',
@@ -774,8 +798,9 @@ export const IMPORT_ORDER = Object.freeze([
   'upload_history',
   // Messages depend on networks and highlight_rules.
   'messages',
-  // Bookmarks and buffer_reads depend on messages.
+  // Bookmarks, reactions and buffer_reads depend on messages.
   'user_bookmarks',
+  'message_reactions',
   'buffer_reads',
 ]);
 

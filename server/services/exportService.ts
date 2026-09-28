@@ -192,11 +192,8 @@ export function computeExportPreview(
   for (const [table, def] of Object.entries(EXPORT_TABLES)) {
     const d = def as ExportTableDefWithScope;
     if (d.mode !== 'export' && d.mode !== 'partial') continue;
-    if (d.section === 'messages' && !includeMessages) {
-      counts[table] = 0;
-      continue;
-    }
-    if (d.section === 'bookmarks' && !includeMessages) {
+    // Every section but data.json travels only with message history.
+    if (d.section && d.section !== 'data' && !includeMessages) {
       counts[table] = 0;
       continue;
     }
@@ -255,7 +252,7 @@ export async function buildExportZip(
   const sections: string[] = ['data'];
   const counts: Record<string, number> = {};
 
-  // ---- data.json: everything except messages, bookmarks. ----
+  // ---- data.json: everything but the history-bound sections. ----
   const data: Record<string, unknown[]> = {};
   for (const [table, def] of Object.entries(EXPORT_TABLES)) {
     const d = def as ExportTableDefWithScope;
@@ -313,9 +310,19 @@ export async function buildExportZip(
     );
     archive.append(JSON.stringify(bookmarkRows, null, 2), { name: 'bookmarks.json' });
     counts.user_bookmarks = bookmarkRows.length;
+
+    // ---- reactions.json (#992) ----
+    sections.push('reactions');
+    const reactionsDef = EXPORT_TABLES.message_reactions as ExportTableDefWithScope;
+    const reactionRows = selectAll(db, 'message_reactions', reactionsDef, userId).map((row) =>
+      projectRow(row, reactionsDef),
+    );
+    archive.append(JSON.stringify(reactionRows, null, 2), { name: 'reactions.json' });
+    counts.message_reactions = reactionRows.length;
   } else {
     counts.messages = 0;
     counts.user_bookmarks = 0;
+    counts.message_reactions = 0;
   }
 
   archive.append(JSON.stringify(data, null, 2), { name: 'data.json' });
