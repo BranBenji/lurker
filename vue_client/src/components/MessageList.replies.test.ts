@@ -15,6 +15,7 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useRepliesStore } from '../stores/replies.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
 import type { ReplyParent } from '../../../shared/replies.js';
 import * as jumpIntent from '../composables/useJumpIntent.js';
 import * as composerOverlay from '../composables/useComposerOverlay.js';
@@ -352,5 +353,169 @@ describe('MessageList — replies', () => {
       .findAll('.row-actions button')
       .map((b) => b.attributes('title'));
     expect(titles.some((t) => t?.startsWith('Reply'))).toBe(false);
+  });
+});
+
+// #996: a quoted line from a relay bot shows the person inside its envelope,
+// as the timeline shows that line itself.
+describe('MessageList — replies to relayed lines', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    nextId = 1;
+  });
+  afterEach(() => {
+    wrapper?.unmount();
+    wrapper = null;
+  });
+
+  const markRelay = (nick: string) => {
+    useRelayBotsStore().byKey[`1::${nick.toLowerCase()}`] = { nick, pattern: '' };
+  };
+  const ignore = (mask: string) => {
+    useIgnoresStore().global = [
+      {
+        id: 1,
+        createdAt: '',
+        mask,
+        channels: null,
+        pattern: null,
+        patternKind: 'substr',
+        levels: ['ALL'],
+        isExcept: false,
+        expiresAt: null,
+      },
+    ];
+  };
+  // The bridge's line, and a reply to it quoting it as stored.
+  function relayed(envelope: string, replyText = 'alice: the release one') {
+    const p = line('bridgebot', envelope, { msgid: 'm1' });
+    const r = line('bob', replyText, {
+      replyTo: {
+        msgid: 'm1',
+        parent: parent({
+          id: p.id,
+          nick: 'bridgebot',
+          text: envelope,
+          userhost: 'bridgebot!~b@host',
+        }),
+      },
+    });
+    return { p, r };
+  }
+
+  it('quotes the person, not the bridge, and drops the address that names her', () => {
+    markRelay('bridgebot');
+    const { p, r } = relayed('[Discord] <alice> which branch?');
+    const w = mountWith([p, r]);
+    // The line itself, as the timeline shows it.
+    expect(rowOf(w, p.id).find('.prefix').text()).toContain('alice');
+    // With the `[source]` label the line itself carries in the timeline.
+    expect(rowOf(w, r.id).find('.reply-text').text()).toBe('<alice> [Discord] which branch?');
+    expect(rowOf(w, r.id).find('.reply-relay').attributes('title')).toBe('Relayed via bridgebot');
+    expect(ownText(rowOf(w, r.id))).toBe('the release one');
+  });
+
+  // halloy and goguma know nothing of relay marks: their reply addresses the
+  // bridge by the nick they see.
+  it('drops an address that names the bridge, too', () => {
+    markRelay('bridgebot');
+    const { p, r } = relayed('<alice> which branch?', 'bridgebot: the release one');
+    const w = mountWith([p, r]);
+    expect(rowOf(w, r.id).find('.reply-text').text()).toBe('<alice> which branch?');
+    expect(rowOf(w, r.id).find('.reply-relay').exists()).toBe(false);
+    expect(ownText(rowOf(w, r.id))).toBe('the release one');
+  });
+
+  // The quote colours the person as the timeline row does: from their nick,
+  // since the stored `self` describes the bot's line.
+  it('colours a relayed you as the timeline row does', () => {
+    useSettingsStore().values = { 'look.nick.self_color': 'rgb(1, 2, 3)' } as never;
+    markRelay('bridgebot');
+    const { p, r } = relayed('<me> which branch?', 'this one');
+    const w = mountWith([p, r]);
+    const rowNick = rowOf(w, p.id).find('.prefix .nick-ref').element as HTMLElement;
+    const quoted = rowOf(w, r.id).find('.reply-quote .nick-ref').element as HTMLElement;
+    expect(rowNick.style.color).toBe('rgb(1, 2, 3)');
+    expect(quoted.style.color).toBe('rgb(1, 2, 3)');
+  });
+
+  it('quotes the envelope as it is when the bot isn’t marked', () => {
+    const { p, r } = relayed('<alice> which branch?');
+    const w = mountWith([p, r]);
+    expect(rowOf(w, r.id).find('.reply-text').text()).toBe('<bridgebot> <alice> which branch?');
+    expect(ownText(rowOf(w, r.id))).toBe('alice: the release one');
+  });
+
+  it('follows a chain of marked bridges to the person', () => {
+    markRelay('bridgebot');
+    markRelay('|');
+    const { p, r } = relayed('<|> <alice[m]/OFTC> which branch?', 'alice[m]/OFTC: this one');
+    const w = mountWith([p, r]);
+    expect(rowOf(w, r.id).find('.reply-text').text()).toBe('<alice[m]/OFTC> which branch?');
+    expect(ownText(rowOf(w, r.id))).toBe('this one');
+  });
+
+  // The quote is judged as its line is: the timeline judges a relayed line as
+  // the bot's (no ignore rule reaches inside an envelope), so the quote does too.
+  it('shows or hides the quote exactly as the timeline does the line', () => {
+    markRelay('bridgebot');
+    ignore('alice!*@*');
+    const shown = relayed('<alice> which branch?');
+    let w = mountWith([shown.p, shown.r]);
+    expect(rowOf(w, shown.p.id).exists()).toBe(true);
+    expect(rowOf(w, shown.r.id).find('.reply-text').text()).toBe('<alice> which branch?');
+    w.unmount();
+
+    ignore('bridgebot!*@*');
+    nextId = 1;
+    const hidden = relayed('<alice> which branch?');
+    w = mountWith([hidden.p, hidden.r]);
+    expect(rowOf(w, hidden.p.id).exists()).toBe(false);
+    expect(rowOf(w, hidden.r.id).find('.reply-text').text()).toBe('original message unavailable');
+    expect(ownText(rowOf(w, hidden.r.id))).toBe('alice: the release one');
+    wrapper = w;
+  });
+
+  // The timeline unwraps only a bot's plain messages, never a notice or a /me,
+  // and never your own line; the quote keeps to the same lines.
+  it('leaves a bot’s notice as it is, as the timeline does', () => {
+    markRelay('bridgebot');
+    const p = line('bridgebot', '<alice> which branch?', { msgid: 'm1', type: 'notice' });
+    const r = line('bob', 'this one', {
+      replyTo: {
+        msgid: 'm1',
+        parent: parent({ id: p.id, nick: 'bridgebot', type: 'notice', text: p.text }),
+      },
+    });
+    const w = mountWith([p, r]);
+    expect(rowOf(w, r.id).find('.reply-text').text()).toBe('-bridgebot- <alice> which branch?');
+  });
+
+  it('leaves your own line as it is, even under a marked nick', () => {
+    markRelay('me');
+    const p = line('me', '<alice> which branch?', { msgid: 'm1' });
+    const r = line('bob', 'this one', {
+      replyTo: {
+        msgid: 'm1',
+        parent: parent({ id: p.id, nick: 'me', text: p.text, self: true }),
+      },
+    });
+    const w = mountWith([p, r]);
+    expect(rowOf(w, p.id).find('.prefix').text()).toContain('me');
+    expect(rowOf(w, r.id).find('.reply-text').text()).toBe('<me> <alice> which branch?');
+  });
+
+  // The reply can come through the bridge too: it's her words, addressed to
+  // whoever she answers.
+  it('reads a relayed reply as the person who sent it', () => {
+    markRelay('bridgebot');
+    const p = line('alice', 'which branch?', { msgid: 'm1' });
+    const r = line('bridgebot', '<carol> alice: the release one', {
+      replyTo: { msgid: 'm1', parent: parent({ id: p.id, text: 'which branch?' }) },
+    });
+    const w = mountWith([p, r]);
+    expect(rowOf(w, r.id).find('.prefix').text()).toContain('carol');
+    expect(rowOf(w, r.id).find('.reply-text').text()).toBe('<alice> which branch?');
+    expect(ownText(rowOf(w, r.id))).toBe('the release one');
   });
 });

@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { useIgnoresStore } from '../stores/ignores.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
+import { useNetworksStore } from '../stores/networks.js';
 import { stripReplyAddress } from '../utils/replyText.js';
-import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
+import type { QuotedLine, ReplyContext } from '../../../shared/replies.js';
 
 // How a reply reads — its quote (ReplyQuote) and its own text — shared by the
 // timeline (MessageList) and the out-of-buffer rows: search, activity,
@@ -11,6 +13,8 @@ import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
 // wherever it turns up.
 export function useReplyQuote() {
   const ignores = useIgnoresStore();
+  const relayBots = useRelayBotsStore();
+  const networks = useNetworksStore();
 
   // `line` is the reply as it displays (a relayed line already unwrapped).
   // `parent`: the answered line as the quote shows it — null for "unavailable",
@@ -20,13 +24,25 @@ export function useReplyQuote() {
   // it opens with when the quote names her — how halloy and goguma send one,
   // so clients without replies still see who it's for. Only then: with the
   // quote unavailable, that address is the only sign of who it's to.
+  //
+  // A quoted line from a marked relay bot (#996) shows the person inside its
+  // envelope — `<alice> hi`, not `<bridgebot> <alice> hi` — as the timeline shows
+  // that line. The address may name either: our Reply addresses her, a client
+  // that knows nothing of relay marks (halloy, goguma) the bot. The ignore check
+  // comes first and judges the line as the bot's, again as the timeline judges
+  // it, so a quote never hides a line its row would show, or shows one it would
+  // hide.
+  //
+  // ⚠ Known gap: the parent's text is the server's excerpt (REPLY_EXCERPT_MAX).
+  // A custom template with literal text AFTER `{message}` can't match a line
+  // cut short, so a long line from such a bot is quoted as the bot's.
   function shownReply(
     replyTo: ReplyContext,
     line: { type?: string; text?: string | null },
     networkId: number | null | undefined,
     target: string,
-  ): { parent: ReplyParent | null; text: string } {
-    let parent = replyTo.parent;
+  ): { parent: QuotedLine | null; text: string } {
+    let parent: QuotedLine | null = replyTo.parent;
     if (
       parent &&
       !parent.self &&
@@ -35,11 +51,26 @@ export function useReplyQuote() {
     ) {
       parent = null;
     }
-    const text = line.text ?? '';
-    return {
-      parent,
-      text: parent && line.type === 'message' ? stripReplyAddress(text, parent.nick) : text,
-    };
+    const relayed = parent ? relayBots.unwrap(networkId, parent) : null;
+    if (parent && relayed) {
+      parent = {
+        ...parent,
+        nick: relayed.nick,
+        text: relayed.text,
+        // The stored `self` is the bot's line; the person is you when they
+        // carry your nick on the line's network (a bridge echoing you back).
+        self: networks.isOwnNick(networkId, relayed.nick),
+        relayBot: parent.nick,
+        relaySource: relayed.source,
+      };
+    }
+    let text = line.text ?? '';
+    if (parent && line.type === 'message') {
+      const stripped = stripReplyAddress(text, parent.nick);
+      text =
+        stripped === text && parent.relayBot ? stripReplyAddress(text, parent.relayBot) : stripped;
+    }
+    return { parent, text };
   }
 
   return { shownReply };

@@ -3,6 +3,7 @@
 
 import { defineStore } from 'pinia';
 import { socketSend } from '../composables/useSocket.js';
+import { parseRelayChain, type RelayParse } from '../../../shared/parseRelay.js';
 
 // Per-(network, nick) relay-bot marks (#277). A marked nick is a relay / bridge
 // bot whose messages wrap another person's speech in an envelope; MessageList
@@ -31,8 +32,29 @@ export const useRelayBotsStore = defineStore('relayBots', {
   getters: {
     isRelay: (state) => (networkId: number | string, nick: string) =>
       !!state.byKey[key(networkId, nick)],
-    patternFor: (state) => (networkId: number | string, nick: string) =>
-      state.byKey[key(networkId, nick)]?.pattern || '',
+    // A line as the speaker inside its envelope, or null when it isn't one: not
+    // a plain message from a marked bot (relays bridge speech as PRIVMSG, and a
+    // notice or /me has its own rendering; never your own line), or its text
+    // isn't an envelope. Chained bridges (#801): keeps unwrapping while the
+    // speaker a hop reveals is itself a marked bot, so a relay of a relay lands
+    // on the person who spoke rather than on the bridge in between. Everything
+    // that shows a relayed line reads it through this — the timeline's rows,
+    // search/activity/bookmark rows, and a reply's quote (#996) — so they agree.
+    unwrap:
+      (state) =>
+      (
+        networkId: number | string | null | undefined,
+        line: { type?: string; nick?: string | null; self?: boolean; text?: string | null },
+      ): RelayParse | null => {
+        if (networkId == null || line.type !== 'message' || line.self || !line.nick) return null;
+        const mark = (n: string) => state.byKey[key(networkId, n)];
+        const outer = mark(line.nick);
+        if (!outer) return null;
+        return parseRelayChain(line.text ?? '', outer.pattern || '', (inner) => {
+          const m = mark(inner);
+          return m ? m.pattern || '' : null;
+        });
+      },
     // [{ nick, pattern }] for a given network — drives `/relay list`. Uses the
     // stored canonical nick for display, not the lowercased key.
     listForNetwork: (state) => (networkId: number) => {

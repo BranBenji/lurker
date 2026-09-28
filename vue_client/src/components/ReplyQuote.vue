@@ -32,7 +32,12 @@
     ><span class="reply-text"
       ><template v-if="parent"
         >{{ marks[0] }}<NickRef :nick="parent.nick" :self="parent.self" />{{ marks[1] }}
-        {{ replyExcerpt(parent.text) }}</template
+        <span
+          v-if="parent.relaySource"
+          class="reply-relay"
+          :title="`Relayed via ${parent.relayBot}`"
+          >[{{ parent.relaySource }}] </span
+        >{{ replyExcerpt(parent.text) }}</template
       ><template v-else>original message unavailable</template></span
     ></span
   >
@@ -42,12 +47,14 @@
 import { computed } from 'vue';
 import NickRef from './NickRef.vue';
 import { replyExcerpt } from '../utils/replyText.js';
-import type { ReplyParent } from '../../../shared/replies.js';
+import type { QuotedLine, ReplyParent } from '../../../shared/replies.js';
 
 const props = defineProps<{
   // The answered line as it should show — null for "unavailable" (gone, never
   // held, or from someone ignored; useReplyQuote decides).
-  parent: ReplyParent | null;
+  // A relayed line comes unwrapped (QuotedLine), `self` then saying whether
+  // the person in it is you (useReplyQuote).
+  parent: QuotedLine | null;
   // Not a control of its own: clicks fall through to what it sits in.
   static?: boolean;
 }>();
