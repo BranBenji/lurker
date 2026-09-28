@@ -153,6 +153,35 @@ describe('receiving replies', () => {
     }
   });
 
+  // #998: out of its buffer — a search hit, an activity item — a reply still
+  // quotes what it answers, resolved the same way the timeline resolves it.
+  it('quotes the parent on search and activity reads too', async () => {
+    const rig = await connect('recv5', ['#r5']);
+    try {
+      const mine = await weSay(rig, '#r5', 'which branch?');
+      await peerSays(rig, 'bob', '#r5', 'recv5: the release one', [`+draft/reply=${mine.msgid}`]);
+      await peerSays(rig, 'bob', '#r5', 'release notes too', ['+draft/reply=never-seen']);
+      const expected = {
+        msgid: mine.msgid,
+        parent: expect.objectContaining({ id: mine.id, nick: 'recv5', text: 'which branch?' }),
+      };
+      const byText = searchMessages(userId, { query: 'release', networkId: rig.network.id });
+      expect(byText.find((m) => m.text === 'recv5: the release one')?.replyTo).toEqual(expected);
+      expect(byText.find((m) => m.text === 'release notes too')?.replyTo).toEqual({
+        msgid: 'never-seen',
+        parent: null,
+      });
+      const feed = searchMessages(userId, { matched: true, networkId: rig.network.id });
+      expect(feed.find((m) => m.text === 'recv5: the release one')?.replyTo).toEqual(expected);
+      // A line that isn't a reply still carries nothing.
+      const plain = searchMessages(userId, { query: 'branch', networkId: rig.network.id });
+      expect(plain.map((m) => m.text)).toEqual(['which branch?']);
+      expect(plain[0]).not.toHaveProperty('replyTo');
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
   it('keeps a reply whose parent it can’t find, with no context', async () => {
     const rig = await connect('recv2', ['#r2', '#r2b']);
     try {

@@ -42,9 +42,12 @@
       <span class="text"> on “{{ message.text ?? '' }}”</span>
     </div>
     <div v-else class="body">
+      <!-- IRCv3 reply (#998): the line it answers, as in the timeline. Static —
+           the row's click jumps to the reply, where the quote jumps on. -->
+      <ReplyQuote v-if="message.replyTo" :parent="shown.parent" static />
       <span class="nick" :style="nickStyle">{{ message.nick }}</span>
       <span class="sep">|</span>
-      <span class="text"><LinkedText :text="message.text ?? ''" /></span>
+      <span class="text"><LinkedText :text="shown.text" /></span>
     </div>
   </li>
 </template>
@@ -57,6 +60,9 @@ import { useSettingsStore } from '../stores/settings.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { formatTimestamp, formatDate } from '../utils/timestamp.js';
 import LinkedText from './LinkedText.vue';
+import ReplyQuote from './ReplyQuote.vue';
+import { useReplyQuote } from '../composables/useReplyQuote.js';
+import type { ReplyContext } from '../../../shared/replies.js';
 
 // Shared row shape from search/highlights/bookmarks. All callers pass at
 // minimum { id, networkId, target, nick, time, text }; `self` and
@@ -70,6 +76,9 @@ export interface HistoryMessage {
   time?: string;
   self?: boolean;
   networkName?: string;
+  type?: string;
+  // An IRCv3 reply's quote, resolved by the server as on the timeline (#998).
+  replyTo?: ReplyContext;
   [key: string]: unknown;
 }
 
@@ -92,6 +101,15 @@ defineEmits<{
 const networks = useNetworksStore();
 const settings = useSettingsStore();
 const nicks = useNickColors();
+const replyQuote = useReplyQuote();
+
+// A reply reads as it does in the timeline: its quote, and its text without
+// the address the quote makes redundant.
+const shown = computed(() => {
+  const m = props.message;
+  if (!m.replyTo) return { parent: null, text: m.text ?? '' };
+  return replyQuote.shownReply(m.replyTo, m, m.networkId, m.target);
+});
 
 const tsFormat = computed(() => settings.effective('look.buffer.time_format'));
 const selfColor = computed(() => settings.effective('look.nick.self_color'));

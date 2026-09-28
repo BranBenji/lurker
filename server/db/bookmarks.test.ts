@@ -229,4 +229,49 @@ describe('bookmarked flag on message rows', () => {
     expect(rows.find((r) => r.id === toMe)).toMatchObject({ matched: true, replyToSelf: true });
     expect(rows.find((r) => r.id === forged)).not.toHaveProperty('replyToSelf');
   });
+
+  // #998: a saved reply quotes what it answers, as it does in the timeline —
+  // and only the column may say so.
+  it('carries the quote of a saved reply, and only from the column', () => {
+    const u = createUser('bm-quotes');
+    const net = mkNetwork(u.id, 'libera');
+    const line = (text: string, over: Record<string, unknown> = {}) =>
+      Number(
+        insertMessage({
+          networkId: net!.id,
+          target: '#meta',
+          time: new Date().toISOString(),
+          type: 'message',
+          nick: 'bob',
+          text,
+          ...over,
+        }).id,
+      );
+    const parent = line('which branch?', { nick: 'alice', msgid: 'p1' });
+    const reply = line('alice: the release one', { replyMsgid: 'p1' });
+    const orphan = line('to nothing', { replyMsgid: 'gone' });
+    const forged = line('not a reply', {
+      extra: { replyTo: { msgid: 'p1', parent: { id: parent, nick: 'alice' } } },
+    });
+    for (const id of [reply, orphan, forged, parent]) addBookmark(u.id, id);
+    const rows = listBookmarksForUser(u.id, { limit: 10 });
+    const row = (id: number) => rows.find((r) => r.id === id);
+    expect(row(reply)?.replyTo).toEqual({
+      msgid: 'p1',
+      parent: {
+        id: parent,
+        nick: 'alice',
+        type: 'message',
+        text: 'which branch?',
+        userhost: null,
+        self: false,
+      },
+    });
+    expect(row(orphan)?.replyTo).toEqual({ msgid: 'gone', parent: null });
+    expect(row(forged)).not.toHaveProperty('replyTo');
+    expect(row(parent)).not.toHaveProperty('replyTo');
+    // A later page resolves it the same way.
+    const paged = listBookmarksForUser(u.id, { before: orphan, limit: 10 });
+    expect(paged.find((r) => r.id === reply)?.replyTo).toEqual(row(reply)?.replyTo);
+  });
 });

@@ -165,6 +165,12 @@ describe('MessageList — replies', () => {
     const missing = rowOf(w, gone.id).find('.reply-quote');
     expect(missing.attributes('role')).toBeUndefined();
     expect(missing.attributes('tabindex')).toBeUndefined();
+    // Nothing to jump to, and the click stays with the quote all the same.
+    const bubbled: Event[] = [];
+    rowOf(w, gone.id).element.addEventListener('click', (e) => bubbled.push(e));
+    await missing.trigger('click');
+    expect(jump).toHaveBeenCalledTimes(2);
+    expect(bubbled).toEqual([]);
     jump.mockRestore();
   });
 

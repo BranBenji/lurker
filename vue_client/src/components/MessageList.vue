@@ -373,6 +373,7 @@ import { useNetworksStore, type AwayState } from '../stores/networks.js';
 import { useBuffersStore, type BufferMember } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useIgnoresStore } from '../stores/ignores.js';
+import { useReplyQuote } from '../composables/useReplyQuote.js';
 import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { socketSend } from '../composables/useSocket.js';
@@ -386,7 +387,6 @@ import {
   useScrollState,
 } from '../composables/useScrollState.js';
 import type { RenderSegment } from '../utils/nickColor.js';
-import { stripReplyAddress } from '../utils/replyText.js';
 import ReplyQuote from './ReplyQuote.vue';
 import {
   formatTimestamp,
@@ -537,6 +537,7 @@ const buffers = useBuffersStore();
 const settings = useSettingsStore();
 const config = useConfigStore();
 const ignores = useIgnoresStore();
+const replyQuote = useReplyQuote();
 const replies = useRepliesStore();
 const highlights = useHighlightRulesStore();
 const relayBots = useRelayBotsStore();
@@ -1373,17 +1374,13 @@ const renderRows = computed((): RenderRow[] => {
         };
       }
     }
-    // A reply's answered line as its reply line will show it — null when it
-    // can't (see shownParent).
-    const replyParent = m.replyTo ? shownParent(m.replyTo.parent, networkId, bufTarget) : null;
-    // A reply that opens by addressing the author it answers (`alice: sure`) —
-    // how halloy and goguma send one, so clients without replies still see who it
-    // is for. The reply line above already names her, so drop the prefix here —
-    // but only when it does: with the quote unavailable (gone, or someone
-    // ignored), the address is the only sign of who the reply is to.
-    if (replyParent && mDisplay.type === 'message') {
-      const text = stripReplyAddress(mDisplay.text ?? '', replyParent.nick);
-      if (text !== mDisplay.text) mDisplay = { ...mDisplay, text };
+    // A reply: its quote, and its text without the address the quote makes
+    // redundant (useReplyQuote).
+    let replyParent: ReplyParent | null = null;
+    if (m.replyTo) {
+      const shown = replyQuote.shownReply(m.replyTo, mDisplay, networkId, bufTarget);
+      replyParent = shown.parent;
+      if (shown.text !== (mDisplay.text ?? '')) mDisplay = { ...mDisplay, text: shown.text };
     }
     out.push({
       m: mDisplay,
@@ -1605,29 +1602,6 @@ function textSegments(m: ChatMessage | undefined): RenderSegment[] {
     ) as RenderSegment[];
   }
   return nicks.splitText(m.text || '', nickSet.value, selfLower.value) as RenderSegment[];
-}
-
-// The answered line as the reply line shows it — or null for "unavailable",
-// which also covers a line from someone ignored since it arrived (the server
-// only screens out who was ignored at the time). Judged as the line it was.
-function shownParent(
-  parent: ReplyParent | null,
-  networkId: number | null | undefined,
-  target: string,
-): ReplyParent | null {
-  if (!parent) return null;
-  if (!parent.self && parent.nick && networkId != null) {
-    const verdict = ignores.evaluate(networkId, {
-      nick: parent.nick,
-      userhost: parent.userhost,
-      target,
-      text: parent.text,
-      type: parent.type,
-      isDm: buffer.value?.kind === 'dm',
-    });
-    if (verdict.hide) return null;
-  }
-  return parent;
 }
 
 function onReplyContextClick(parent: ReplyParent | null | undefined): void {
