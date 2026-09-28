@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { useIgnoresStore } from '../stores/ignores.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
 import { stripReplyAddress } from '../utils/replyText.js';
 import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
 
@@ -11,6 +12,7 @@ import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
 // wherever it turns up.
 export function useReplyQuote() {
   const ignores = useIgnoresStore();
+  const relayBots = useRelayBotsStore();
 
   // `line` is the reply as it displays (a relayed line already unwrapped).
   // `parent`: the answered line as the quote shows it — null for "unavailable",
@@ -20,6 +22,12 @@ export function useReplyQuote() {
   // it opens with when the quote names her — how halloy and goguma send one,
   // so clients without replies still see who it's for. Only then: with the
   // quote unavailable, that address is the only sign of who it's to.
+  //
+  // A quoted line from a marked relay bot (#996) shows the person inside its
+  // envelope — `<alice> hi`, not `<bridgebot> <alice> hi` — as the timeline shows
+  // that line, and the address compares against her. The ignore check comes
+  // first and judges the line as the bot's, again as the timeline judges it, so
+  // a quote never hides a line its row would show, or shows one it would hide.
   function shownReply(
     replyTo: ReplyContext,
     line: { type?: string; text?: string | null },
@@ -34,6 +42,10 @@ export function useReplyQuote() {
       ignores.isMessageHidden(networkId, { ...parent, target })
     ) {
       parent = null;
+    }
+    if (parent && parent.type === 'message' && !parent.self && networkId != null) {
+      const relayed = relayBots.unwrap(networkId, parent.nick, parent.text);
+      if (relayed) parent = { ...parent, nick: relayed.nick, text: relayed.text };
     }
     const text = line.text ?? '';
     return {

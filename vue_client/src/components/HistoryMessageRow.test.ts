@@ -15,6 +15,7 @@ import { useIgnoresStore } from '../stores/ignores.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
 import type { ReplyParent } from '../../../shared/replies.js';
 
 const parent = (over: Partial<ReplyParent> = {}): ReplyParent => ({
@@ -96,6 +97,21 @@ describe('HistoryMessageRow — replies', () => {
     expect(w.find('.reply-text').text()).toBe('<alice> which branch?');
     // The same line from someone else is hidden by it.
     expect(mountRow(reply()).find('.reply-text').text()).toBe('original message unavailable');
+  });
+
+  // #996: as in the timeline, a relayed line is quoted as the person in it.
+  it('quotes a relay bot’s line as the person who said it', () => {
+    useRelayBotsStore().byKey['1::bridgebot'] = { nick: 'bridgebot', pattern: '' };
+    const w = mountRow(
+      reply({
+        replyTo: {
+          msgid: 'm1',
+          parent: parent({ nick: 'bridgebot', text: '[Discord] <alice> which branch?' }),
+        },
+      }),
+    );
+    expect(w.find('.reply-text').text()).toBe('<alice> which branch?');
+    expect(w.find('.text').text()).toBe('the release one');
   });
 
   it('keeps a /me’s text whole, as the timeline does', () => {

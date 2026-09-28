@@ -399,7 +399,6 @@ import { consolidateRows } from '../utils/consolidate.js';
 import { historyCountBy } from '../lib/historyPaging.js';
 import type { ConsolidationGroup, NickEntry, RenameEntry } from '../../../shared/consolidate.js';
 import { collapseDisplay } from '../utils/collapseDisplay.js';
-import { parseRelayChain } from '../../../shared/parseRelay.js';
 import { asEventMode, eventModeKey, isNoiseType } from '../../../shared/eventFilter.js';
 import { smartHidesMode } from '../../../shared/modes.js';
 import { describeMode } from '../../../shared/modeNarration.js';
@@ -1348,22 +1347,9 @@ const renderRows = computed((): RenderRow[] => {
     // to plain messages: relays bridge speech as PRIVMSG, and action/notice
     // re-attribution would tangle with their special body rendering.
     let mDisplay = m;
-    if (
-      m.type === 'message' &&
-      m.nick &&
-      !m.self &&
-      networkId &&
-      relayBots.isRelay(networkId, m.nick)
-    ) {
-      // Chained bridges (#801): keep unwrapping while the speaker a hop reveals
-      // is itself a marked bot, so a relay of a relay lands on the person who
-      // spoke rather than on the bridge in between.
-      const parsed = parseRelayChain(
-        m.text ?? '',
-        relayBots.patternFor(networkId, m.nick),
-        (inner) =>
-          relayBots.isRelay(networkId, inner) ? relayBots.patternFor(networkId, inner) : null,
-      );
+    if (m.type === 'message' && m.nick && !m.self && networkId) {
+      // Chained bridges (#801) included — see relayBots.unwrap.
+      const parsed = relayBots.unwrap(networkId, m.nick, m.text ?? '');
       if (parsed) {
         mDisplay = {
           ...m,

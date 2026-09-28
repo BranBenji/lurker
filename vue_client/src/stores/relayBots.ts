@@ -3,6 +3,7 @@
 
 import { defineStore } from 'pinia';
 import { socketSend } from '../composables/useSocket.js';
+import { parseRelayChain, type RelayParse } from '../../../shared/parseRelay.js';
 
 // Per-(network, nick) relay-bot marks (#277). A marked nick is a relay / bridge
 // bot whose messages wrap another person's speech in an envelope; MessageList
@@ -33,6 +34,23 @@ export const useRelayBotsStore = defineStore('relayBots', {
       !!state.byKey[key(networkId, nick)],
     patternFor: (state) => (networkId: number | string, nick: string) =>
       state.byKey[key(networkId, nick)]?.pattern || '',
+    // A line from `nick` as the speaker inside its envelope, or null when `nick`
+    // isn't a marked bot or the text isn't an envelope. Chained bridges (#801):
+    // keeps unwrapping while the speaker a hop reveals is itself a marked bot,
+    // so a relay of a relay lands on the person who spoke rather than on the
+    // bridge in between. The timeline's rows and a reply's quote (#996) both
+    // read relayed lines through this.
+    unwrap:
+      (state) =>
+      (networkId: number | string, nick: string, text: string): RelayParse | null => {
+        const mark = (n: string) => state.byKey[key(networkId, n)];
+        const outer = mark(nick);
+        if (!outer) return null;
+        return parseRelayChain(text, outer.pattern || '', (inner) => {
+          const m = mark(inner);
+          return m ? m.pattern || '' : null;
+        });
+      },
     // [{ nick, pattern }] for a given network — drives `/relay list`. Uses the
     // stored canonical nick for display, not the lowercased key.
     listForNetwork: (state) => (networkId: number) => {
