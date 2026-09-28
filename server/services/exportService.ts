@@ -21,7 +21,7 @@ import type { Writable } from 'stream';
 import { Readable } from 'stream';
 import type { Database } from 'better-sqlite3';
 import { ZipArchive } from 'archiver';
-import { EXPORT_TABLES, EXPORT_FORMAT_VERSION } from '../db/exportSchema.js';
+import { EXPORT_TABLES, EXPORT_FORMAT_VERSION, historyFileTables } from '../db/exportSchema.js';
 import { thumbnailFormat } from './thumbnailFormat.js';
 import { decryptSecret } from '../utils/secretCrypto.js';
 
@@ -36,6 +36,8 @@ interface ExportTableDefWithScope {
   rekeyOnImport?: boolean;
   fkRekey?: Record<string, string>;
   rowWhere?: string;
+  // Row order in the archive when it matters and there's no pk to order by.
+  orderBy?: string;
 }
 
 /** Called periodically as messages stream out so the job row + WS can report progress. */
@@ -177,7 +179,8 @@ function selectAll(
   const { where, params } = scopeFilter(def.scope, userId);
   const rowWhere = def.rowWhere ? ` AND (${def.rowWhere})` : '';
   const cols = def.columns.join(', ');
-  const order = def.pk ? `ORDER BY ${def.pk} ASC` : '';
+  const orderCol = def.orderBy ?? def.pk;
+  const order = orderCol ? `ORDER BY ${orderCol} ASC` : '';
   return db
     .prepare(`SELECT ${cols} FROM ${table} ${where}${rowWhere} ${order}`)
     .all(...params) as Record<string, unknown>[];
@@ -192,11 +195,8 @@ export function computeExportPreview(
   for (const [table, def] of Object.entries(EXPORT_TABLES)) {
     const d = def as ExportTableDefWithScope;
     if (d.mode !== 'export' && d.mode !== 'partial') continue;
-    if (d.section === 'messages' && !includeMessages) {
-      counts[table] = 0;
-      continue;
-    }
-    if (d.section === 'bookmarks' && !includeMessages) {
+    // Every section but data.json travels only with message history.
+    if (d.section && d.section !== 'data' && !includeMessages) {
       counts[table] = 0;
       continue;
     }
@@ -255,7 +255,7 @@ export async function buildExportZip(
   const sections: string[] = ['data'];
   const counts: Record<string, number> = {};
 
-  // ---- data.json: everything except messages, bookmarks. ----
+  // ---- data.json: everything but the history-bound sections. ----
   const data: Record<string, unknown[]> = {};
   for (const [table, def] of Object.entries(EXPORT_TABLES)) {
     const d = def as ExportTableDefWithScope;
@@ -305,17 +305,17 @@ export async function buildExportZip(
     );
     archive.append(messagesStream, { name: 'messages.ndjson' });
 
-    // ---- bookmarks.json ----
-    sections.push('bookmarks');
-    const bookmarksDef = EXPORT_TABLES.user_bookmarks as ExportTableDefWithScope;
-    const bookmarkRows = selectAll(db, 'user_bookmarks', bookmarksDef, userId).map((row) =>
-      projectRow(row, bookmarksDef),
-    );
-    archive.append(JSON.stringify(bookmarkRows, null, 2), { name: 'bookmarks.json' });
-    counts.user_bookmarks = bookmarkRows.length;
+    // ---- <section>.json: bookmarks, reactions (#992) ----
+    for (const [table, d] of historyFileTables()) {
+      const def = d as ExportTableDefWithScope;
+      sections.push(def.section!);
+      const rows = selectAll(db, table, def, userId).map((row) => projectRow(row, def));
+      archive.append(JSON.stringify(rows, null, 2), { name: `${def.section}.json` });
+      counts[table] = rows.length;
+    }
   } else {
     counts.messages = 0;
-    counts.user_bookmarks = 0;
+    for (const [table] of historyFileTables()) counts[table] = 0;
   }
 
   archive.append(JSON.stringify(data, null, 2), { name: 'data.json' });

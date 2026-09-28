@@ -25,6 +25,7 @@ let setNote: typeof import('../db/nickNotes.js').setNote;
 let pinBuffer: typeof import('../db/pinnedBuffers.js').pinBuffer;
 let addRule: typeof import('../db/ignoredMasks.js').addRule;
 let addBookmark: typeof import('../db/bookmarks.js').addBookmark;
+let addReaction: typeof import('../db/reactions.js').addReaction;
 // Seed an ALL-level ignore the way the pre-#301 addMask helper did.
 function addMask(args: { userId: number; networkId: number; mask: string }) {
   return addRule({
@@ -60,6 +61,7 @@ beforeAll(async () => {
   ({ pinBuffer } = await import('../db/pinnedBuffers.js'));
   ({ addRule } = await import('../db/ignoredMasks.js'));
   ({ addBookmark } = await import('../db/bookmarks.js'));
+  ({ addReaction } = await import('../db/reactions.js'));
   ({ buildExportZip, buildExportFilename, computeExportPreview } =
     await import('./exportService.js'));
   ({ EXPORT_FORMAT_VERSION } = await import('../db/exportSchema.js'));
@@ -204,6 +206,83 @@ describe('buildExportZip', () => {
     expect(manifest.sections).toContain('messages');
     expect(manifest.sections).toContain('bookmarks');
     expect(manifest.counts.messages).toBe(2);
+  });
+
+  // #992: reactions travel with history, in their own file, and only the
+  // user's own.
+  it('writes reactions.json with history, and only the user’s reactions', async () => {
+    addReaction({
+      messageId: aliceMsg1.id as number,
+      networkId: aliceNetA.id,
+      nick: 'bob',
+      userhost: 'bob!b@host',
+      value: '👍',
+      self: false,
+      toSelf: true,
+      time: '2026-05-17T10:02:00Z',
+    });
+    const eve = createUser('eve-reactions');
+    const eveNet = createNetwork(eve.id, {
+      name: 'oftc',
+      host: 'irc.oftc.net',
+      port: 6697,
+      tls: true,
+      nick: 'eve',
+    }) as Network;
+    const eveMsg = insertMessage({
+      networkId: eveNet.id,
+      target: '#elsewhere',
+      time: '2026-05-17T10:00:00Z',
+      type: 'message',
+      nick: 'eve',
+      text: 'not alice’s',
+      self: true,
+    });
+    addReaction({
+      messageId: eveMsg.id as number,
+      networkId: eveNet.id,
+      nick: 'mallory',
+      value: '🎉',
+      self: false,
+      toSelf: true,
+      time: '2026-05-17T10:02:00Z',
+    });
+
+    const withHistory = await readZipToMap(await runExport(alice.id, { includeMessages: true }));
+    const reactions = JSON.parse(withHistory.get('reactions.json')!.toString('utf8')) as Array<
+      Record<string, unknown>
+    >;
+    expect(reactions).toEqual([
+      {
+        message_id: Number(aliceMsg1.id),
+        network_id: aliceNetA.id,
+        nick: 'bob',
+        nick_folded: 'bob',
+        value: '👍',
+        self: 0,
+        to_self: 1,
+        time: '2026-05-17T10:02:00Z',
+        userhost: 'bob!b@host',
+      },
+    ]);
+    const manifest = JSON.parse(withHistory.get('manifest.json')!.toString('utf8')) as {
+      sections: string[];
+      counts: Record<string, number>;
+    };
+    expect(manifest.sections).toContain('reactions');
+    expect(manifest.counts.message_reactions).toBe(1);
+    const data = JSON.parse(withHistory.get('data.json')!.toString('utf8')) as Record<
+      string,
+      unknown
+    >;
+    expect(data).not.toHaveProperty('message_reactions');
+
+    const settingsOnly = await readZipToMap(await runExport(alice.id, { includeMessages: false }));
+    expect(settingsOnly.has('reactions.json')).toBe(false);
+    expect(computeExportPreview(db, alice.id, { includeMessages: false }).message_reactions).toBe(
+      0,
+    );
+    expect(computeExportPreview(db, alice.id, { includeMessages: true }).message_reactions).toBe(1);
   });
 
   it('writes data.json with networks, buffers, and other per-user rows', async () => {

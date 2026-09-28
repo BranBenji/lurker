@@ -29,7 +29,12 @@ import { randomBytes } from 'node:crypto';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 import type { Statement, RunResult } from 'better-sqlite3';
 import db from '../db/index.js';
-import { EXPORT_TABLES, EXPORT_FORMAT_VERSION, IMPORT_ORDER } from '../db/exportSchema.js';
+import {
+  EXPORT_TABLES,
+  EXPORT_FORMAT_VERSION,
+  IMPORT_ORDER,
+  historyFileTables,
+} from '../db/exportSchema.js';
 import {
   seedAllBuffersDirty,
   clearNoiseCursorForUser,
@@ -73,6 +78,10 @@ interface ExportTableDefFull {
   // FK columns that should be set to NULL — rather than causing the whole
   // row to be dropped — when their referenced id is missing from the map.
   fkRekeyNullable?: string[];
+  // A row the table already holds (by a UNIQUE key) is skipped, not an error —
+  // as the table's live insert treats one — so a duplicate in the archive can't
+  // fail the whole import.
+  insertOrIgnore?: boolean;
 }
 
 export class ImportError extends Error {
@@ -158,7 +167,8 @@ function buildInsertStatement(
 
   const cols = def.columns.filter((c) => !skipCols.has(c));
   const placeholders = cols.map(() => '?').join(', ');
-  const sql = `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${placeholders})`;
+  const verb = def.insertOrIgnore ? 'INSERT OR IGNORE' : 'INSERT';
+  const sql = `${verb} INTO ${table} (${cols.join(', ')}) VALUES (${placeholders})`;
   return { stmt: db.prepare(sql), cols };
 }
 
@@ -405,7 +415,15 @@ function insertTable(
       continue;
     }
 
+    // nick_folded is derived state, folded as the live insert folds it
+    // (db/reactions.ts addReaction) — recomputed rather than trusted, or an edited
+    // archive could plant a reaction its sender's unreact never matches.
+    if (table === 'message_reactions') {
+      row.nick_folded = String(row.nick ?? '').toLowerCase();
+    }
+
     const result = insertOne(stmt, cols, row);
+    if (result.changes === 0) continue; // insertOrIgnore skipped a duplicate
 
     if (def.rekeyOnImport && def.pk) {
       idMaps[table] ??= new Map();
@@ -654,15 +672,22 @@ export async function importFromZipFile(
       );
     }
 
-    // ---- bookmarks.json (optional, small) ----
-    const bookmarksEntry = entries.get('bookmarks.json');
-    const bookmarks = bookmarksEntry
-      ? parseJson<Record<string, unknown>[]>(
-          await readEntryBuffer(zip, bookmarksEntry),
-          'bad_bookmarks',
-          'bookmarks.json',
-        )
-      : null;
+    // ---- <section>.json: bookmarks, reactions (#992) — optional, small ----
+    // Each is its table's rows, inserted in Phase C like any other table (the
+    // generic path rekeys through the messages map and drops a row whose line
+    // didn't make the trip). A history-less archive, or one from before a file
+    // existed, simply has none. data.json never carries these tables, so this
+    // doesn't overwrite anything.
+    for (const [table, def] of historyFileTables()) {
+      const name = `${def.section}.json`;
+      const entry = entries.get(name);
+      if (!entry) continue;
+      data[table] = parseJson<Record<string, unknown>[]>(
+        await readEntryBuffer(zip, entry),
+        `bad_${def.section}`,
+        name,
+      );
+    }
 
     // ---- thumbnails — read up front so phase C can apply them inside a
     // synchronous transaction. Accepts .webp (since #560) and .jpg (everything
@@ -694,7 +719,7 @@ export async function importFromZipFile(
             | ExportTableDefFull
             | undefined;
           if (!def || def.mode === 'skip') continue;
-          if (def.section === 'messages' || def.section === 'bookmarks') continue;
+          if (def.section && def.section !== 'data') continue;
           if (dependsOnMessages(def)) continue;
           insertTable(table, data, idMaps, counts, targetUserId);
         }
@@ -707,29 +732,15 @@ export async function importFromZipFile(
         ? await streamMessagesInBatches(zip, messagesEntry, targetUserId, idMaps)
         : 0;
 
-      // ---- Phase C: bookmarks + message-dependent tables + thumbnails (one tx). ----
+      // ---- Phase C: the tables that hang off messages — bookmarks, reactions,
+      // buffer_reads — then thumbnails (one tx). ----
       db.transaction(() => {
-        if (bookmarks) {
-          const def = EXPORT_TABLES.user_bookmarks as ExportTableDefFull;
-          const { stmt, cols } = buildInsertStatement('user_bookmarks', def);
-          let inserted = 0;
-          for (const original of bookmarks) {
-            const row = rekeyRow(original, def, idMaps, targetUserId);
-            if (row.message_id === undefined) continue;
-            insertOne(stmt, cols, row);
-            inserted += 1;
-          }
-          counts.user_bookmarks = inserted;
-        } else {
-          counts.user_bookmarks = 0;
-        }
-
         for (const table of IMPORT_ORDER) {
           const def = EXPORT_TABLES[table as keyof typeof EXPORT_TABLES] as
             | ExportTableDefFull
             | undefined;
           if (!def || def.mode === 'skip') continue;
-          if (def.section === 'messages' || def.section === 'bookmarks') continue;
+          if (def.section === 'messages') continue;
           if (!dependsOnMessages(def)) continue;
           insertTable(table, data, idMaps, counts, targetUserId);
         }
