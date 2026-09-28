@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import db from './index.js';
+import { REPLY_COL, replyContextOf } from './messages.js';
 
 /** A bookmark event row — message fields joined with network_name. */
 export interface BookmarkEvent {
@@ -37,6 +38,9 @@ interface BookmarkRow {
   alt: number;
   matched_rule_id: number | null;
   reply_to_self: number;
+  reply_msgid: string | null;
+  // REPLY_COL's resolved parent (JSON), NULL when it isn't there.
+  reply_parent: string | null;
   network_name: string;
   extra: string | null;
 }
@@ -90,7 +94,7 @@ export function listBookmarksForUser(
   { before, limit = 50 }: { before?: number; limit?: number } = {},
 ): BookmarkEvent[] {
   const sql = before
-    ? `SELECT m.*, n.name AS network_name
+    ? `SELECT m.*, n.name AS network_name, ${REPLY_COL('m')}
        FROM user_bookmarks b
        JOIN messages m ON m.id = b.message_id
        JOIN networks n ON n.id = m.network_id
@@ -98,7 +102,7 @@ export function listBookmarksForUser(
          AND m.id < ?
        ORDER BY m.id DESC
        LIMIT ?`
-    : `SELECT m.*, n.name AS network_name
+    : `SELECT m.*, n.name AS network_name, ${REPLY_COL('m')}
        FROM user_bookmarks b
        JOIN messages m ON m.id = b.message_id
        JOIN networks n ON n.id = m.network_id
@@ -135,6 +139,10 @@ export function listBookmarksForUser(
     // After the extra spread, as rowToEvent does: only the column may set it.
     delete event.replyToSelf;
     if (row.reply_to_self === 1) event.replyToSelf = true;
+    // The quote (#998), as the timeline reads resolve it.
+    delete event.replyTo;
+    const replyTo = replyContextOf(row);
+    if (replyTo) event.replyTo = replyTo;
     return event;
   });
 }

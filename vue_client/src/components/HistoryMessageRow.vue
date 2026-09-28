@@ -42,9 +42,12 @@
       <span class="text"> on “{{ message.text ?? '' }}”</span>
     </div>
     <div v-else class="body">
+      <!-- IRCv3 reply (#998): the line it answers, as in the timeline. Static —
+           the row's click jumps to the reply, where the quote jumps on. -->
+      <ReplyQuote v-if="message.replyTo" :parent="replyParent" static />
       <span class="nick" :style="nickStyle">{{ message.nick }}</span>
       <span class="sep">|</span>
-      <span class="text"><LinkedText :text="message.text ?? ''" /></span>
+      <span class="text"><LinkedText :text="shownText" /></span>
     </div>
   </li>
 </template>
@@ -57,6 +60,11 @@ import { useSettingsStore } from '../stores/settings.js';
 import { useNickColors } from '../composables/useNickColors.js';
 import { formatTimestamp, formatDate } from '../utils/timestamp.js';
 import LinkedText from './LinkedText.vue';
+import ReplyQuote from './ReplyQuote.vue';
+import { useReplyQuote } from '../composables/useReplyQuote.js';
+import { stripReplyAddress } from '../utils/replyText.js';
+import { isChannelTarget } from '../../../shared/channels.js';
+import type { ReplyContext } from '../../../shared/replies.js';
 
 // Shared row shape from search/highlights/bookmarks. All callers pass at
 // minimum { id, networkId, target, nick, time, text }; `self` and
@@ -70,6 +78,9 @@ export interface HistoryMessage {
   time?: string;
   self?: boolean;
   networkName?: string;
+  type?: string;
+  // An IRCv3 reply's quote, resolved by the server as on the timeline (#998).
+  replyTo?: ReplyContext;
   [key: string]: unknown;
 }
 
@@ -92,6 +103,24 @@ defineEmits<{
 const networks = useNetworksStore();
 const settings = useSettingsStore();
 const nicks = useNickColors();
+const replyQuote = useReplyQuote();
+
+// The quoted line as the timeline would show it — null for unavailable.
+const replyParent = computed(() => {
+  const m = props.message;
+  if (!m.replyTo) return null;
+  const isDm = !isChannelTarget(m.target) && !m.target.startsWith(':server:');
+  return replyQuote.shownParent(m.replyTo.parent, m.networkId, m.target, isDm);
+});
+
+// With the quote naming who it answers, the `alice: ` the reply opens with is
+// redundant, as in the timeline; without it, that address is the only sign.
+const shownText = computed(() => {
+  const text = props.message.text ?? '';
+  const parent = replyParent.value;
+  if (!parent || props.message.type !== 'message') return text;
+  return stripReplyAddress(text, parent.nick);
+});
 
 const tsFormat = computed(() => settings.effective('look.buffer.time_format'));
 const selfColor = computed(() => settings.effective('look.nick.self_color'));

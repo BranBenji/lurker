@@ -311,16 +311,28 @@ const REPLY_PARENT_WHERE = `p.type IN ${REPLY_LINE_TYPES_SQL}
       AND p.from_ignored = 0`;
 
 // Resolved at read time rather than stored, so retention taking the parent
-// needs nothing kept in step: the reply just reads as unavailable. Same
-// ride-along as REACTIONS_COL and on the same reads (the timeline ones); a
-// line that isn't a reply costs the CASE and nothing else.
-const REPLY_COL = (alias: string) => `CASE WHEN ${alias}.reply_msgid IS NULL THEN NULL ELSE (
+// needs nothing kept in step: the reply just reads as unavailable. Rides the
+// timeline reads like REACTIONS_COL, and search and bookmarks too (#998), so a
+// reply shown out of its buffer still quotes what it answers; a line that
+// isn't a reply costs the CASE and nothing else.
+export const REPLY_COL = (alias: string) => `CASE WHEN ${alias}.reply_msgid IS NULL THEN NULL ELSE (
     SELECT ${REPLY_PARENT_JSON}
     FROM messages p
     WHERE p.network_id = ${alias}.network_id AND p.msgid = ${alias}.reply_msgid
       AND +p.buffer_id = ${alias}.buffer_id AND ${REPLY_PARENT_WHERE}
     ORDER BY p.id DESC LIMIT 1
   ) END AS reply_parent`;
+
+// The reply context for a row read with REPLY_COL. Only on reads that resolved
+// it (`reply_parent` present): a reply read without it would otherwise claim its
+// parent was unavailable.
+export function replyContextOf(row: {
+  reply_msgid?: string | null;
+  reply_parent?: string | null;
+}): ReplyContext | undefined {
+  if (!row.reply_msgid || row.reply_parent === undefined) return undefined;
+  return { msgid: row.reply_msgid, parent: parseReplyParent(row.reply_parent) };
+}
 
 function parseReplyParent(raw: string | null | undefined): ReplyParent | null {
   if (!raw) return null;
@@ -452,14 +464,12 @@ function rowToEvent(row: MessageRow): MessageEvent {
   delete event.reactions;
   const reactions = parseReactionsCol(row.reactions);
   if (reactions) event.reactions = reactions;
-  // And for the reply context. Only on reads that resolved it (REPLY_COL): a
-  // reply read without it would otherwise claim its parent was unavailable.
+  // And for the reply context (replyContextOf: only on reads that resolved it).
   delete event.replyTo;
   delete event.replyToSelf;
   if (row.reply_to_self === 1) event.replyToSelf = true;
-  if (row.reply_msgid && row.reply_parent !== undefined) {
-    event.replyTo = { msgid: row.reply_msgid, parent: parseReplyParent(row.reply_parent) };
-  }
+  const replyTo = replyContextOf(row);
+  if (replyTo) event.replyTo = replyTo;
   return event;
 }
 
@@ -1577,7 +1587,7 @@ export function searchMessages(
   // order natively, so the query stops at the LIMIT instead of materializing
   // and sorting every message that ever contained the term (measured 2126ms →
   // 1.6ms for a common word on a 2M-row database).
-  const sql = `SELECT m.*, n.name AS network_name, ${BOOKMARKED_COL('m')}
+  const sql = `SELECT m.*, n.name AS network_name, ${BOOKMARKED_COL('m')}, ${REPLY_COL('m')}
                FROM ${from}
                WHERE ${where.join(' AND ')}
                ORDER BY ${hasText ? 'messages_fts.rowid' : 'm.id'} DESC

@@ -14,18 +14,20 @@
   reads as what was said, not as a sentence starting with a name. One clipped
   line, italic, faded with opacity so the quoted nick keeps its own colour.
   Clicking (or Enter/Space) jumps to the line; with no parent to show it says
-  so and does nothing.
+  so and does nothing. Out of the buffer (search, activity, bookmarks — #998)
+  it's `static`: part of the row, whose click jumps to the reply, where this
+  quote is live again.
 -->
 
 <template>
   <span
     class="reply-quote"
-    :class="{ missing: !parent }"
-    :title="parent ? 'Jump to this message' : undefined"
-    :role="parent ? 'button' : undefined"
-    :tabindex="parent ? 0 : undefined"
-    @click.stop="jump"
-    @keydown.enter.space.prevent.stop="jump"
+    :class="{ missing: !parent, static: isStatic }"
+    :title="live ? 'Jump to this message' : undefined"
+    :role="live ? 'button' : undefined"
+    :tabindex="live ? 0 : undefined"
+    @click="onClick"
+    @keydown.enter.space="onKey"
     ><span class="reply-mark" role="img" aria-label="In reply to">╭─</span
     ><span class="reply-text"
       ><template v-if="parent"
@@ -42,13 +44,22 @@ import NickRef from './NickRef.vue';
 import { replyExcerpt } from '../utils/replyText.js';
 import type { ReplyParent } from '../../../shared/replies.js';
 
-const props = defineProps<{
-  // The answered line as it should show — null for "unavailable" (gone, never
-  // held, or from someone ignored; MessageList decides).
-  parent: ReplyParent | null;
-}>();
+const props = withDefaults(
+  defineProps<{
+    // The answered line as it should show — null for "unavailable" (gone, never
+    // held, or from someone ignored; useReplyQuote decides).
+    parent: ReplyParent | null;
+    // Not a control of its own: clicks fall through to what it sits in.
+    static?: boolean;
+  }>(),
+  { static: false },
+);
 
 const emit = defineEmits<{ jump: [parent: ReplyParent] }>();
+
+// `static` is a reserved word as a template identifier, so read it here.
+const isStatic = computed(() => props.static);
+const live = computed(() => !!props.parent && !props.static);
 
 // What goes either side of the nick, by the quoted line's type.
 const marks = computed((): [string, string] => {
@@ -58,7 +69,18 @@ const marks = computed((): [string, string] => {
   return ['<', '>'];
 });
 
-function jump(): void {
+// In the timeline the quote keeps its clicks, even with nothing to jump to;
+// static, they're the row's.
+function onClick(e: MouseEvent): void {
+  if (props.static) return;
+  e.stopPropagation();
+  if (props.parent) emit('jump', props.parent);
+}
+
+function onKey(e: KeyboardEvent): void {
+  if (props.static) return;
+  e.preventDefault();
+  e.stopPropagation();
   if (props.parent) emit('jump', props.parent);
 }
 </script>
@@ -77,8 +99,12 @@ function jump(): void {
 .reply-quote:not(.missing):hover {
   opacity: 0.8;
 }
-.reply-quote.missing {
-  cursor: default;
+.reply-quote.missing,
+.reply-quote.static {
+  cursor: inherit;
+}
+.reply-quote.static:hover {
+  opacity: 0.45;
 }
 .reply-mark {
   margin-right: 1ch;
