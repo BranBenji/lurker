@@ -22,6 +22,11 @@
 // and channel_notify_settings dropped its dead `muted` column. v1 archives
 // still import — the importer derives buffer_id from their name columns — but
 // a v1 SERVER rejects a v2 archive as format_too_new, deliberately.
+//
+// A new OPTIONAL archive file is not a bump: an older importer opens entries by
+// name and never sees it. reactions.json (#992) was added that way — an older
+// server restores such an archive without its reactions, exactly as it restored
+// archives from before reactions existed.
 export const EXPORT_FORMAT_VERSION = 2;
 
 // `encryptedColumns` (declared per-table below) lists columns holding secrets
@@ -78,9 +83,11 @@ const USERS_SKIPPED_COLUMNS: Record<string, string> = Object.freeze({
 // messages before user_bookmarks and message_reactions.
 //
 // `section` names the archive file a table travels in: 'data' (data.json, the
-// default) or one of the history-bound files — messages.ndjson, bookmarks.json,
-// reactions.json — which a with-history export writes and a history-less one
-// leaves out.
+// default), 'messages' (messages.ndjson, streamed), or any other name, which is
+// `<section>.json` — bookmarks.json, reactions.json. Every section but data is
+// history-bound: a with-history export writes it and a history-less one leaves
+// it out. The importer reads a `<section>.json` into its table and inserts it in
+// IMPORT_ORDER like any other table.
 
 export const EXPORT_TABLES = Object.freeze({
   users: {
@@ -535,10 +542,18 @@ export const EXPORT_TABLES = Object.freeze({
   // reactions.json: the generic data.json path would fail the NOT NULL
   // message_id on a history-less import. Rekeyed through the messages id map in
   // Phase C; a reaction whose line didn't make the trip is dropped.
+  //
+  // Exported in id order, which a fresh id sequence then reproduces: chips on a
+  // line and the activity feed both order by id. A duplicate in the archive is
+  // skipped as the live insert skips one (ON CONFLICT DO NOTHING) rather than
+  // failing the whole import, and nick_folded is recomputed on import (derived
+  // state, like buffers.target_folded).
   message_reactions: {
     mode: 'export',
     scope: 'via_network',
     section: 'reactions',
+    orderBy: 'id',
+    insertOrIgnore: true,
     fkRekey: { message_id: 'messages', network_id: 'networks' },
     columns: [
       'message_id',
@@ -814,4 +829,18 @@ export function listSkippedTables(): string[] {
   return Object.entries(EXPORT_TABLES)
     .filter(([, def]) => def.mode === 'skip')
     .map(([name]) => name);
+}
+
+// The tables that travel in their own `<section>.json` with message history
+// (see `section` above): every section but data.json and the streamed
+// messages.ndjson. The exporter writes one file per table, and the importer
+// reads each back into its table.
+export function historyFileTables(): [string, { section?: string; mode: string }][] {
+  return Object.entries(EXPORT_TABLES as Record<string, { section?: string; mode: string }>).filter(
+    ([, d]) =>
+      (d.mode === 'export' || d.mode === 'partial') &&
+      !!d.section &&
+      d.section !== 'data' &&
+      d.section !== 'messages',
+  );
 }

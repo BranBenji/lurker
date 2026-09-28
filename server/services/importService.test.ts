@@ -666,6 +666,45 @@ describe('importFromZipBuffer — roundtrip', () => {
     expect(result.counts.messages).toBe(1);
   });
 
+  // An edited archive: a duplicate is skipped as the live insert skips one,
+  // instead of failing the whole import, and nick_folded is recomputed from
+  // the nick, so Bob's unreact still finds his reaction.
+  it('skips a duplicate reaction and recomputes nick_folded', async () => {
+    const { alice, net } = seedAlice();
+    const [hello] = db
+      .prepare('SELECT id FROM messages WHERE network_id = ? ORDER BY id')
+      .all(net.id) as { id: number }[];
+    addReaction({
+      messageId: hello.id,
+      networkId: net.id,
+      nick: 'Bob',
+      value: '👍',
+      self: false,
+      toSelf: true,
+      time: '2026-05-17T10:05:00Z',
+    });
+    const entries = await unzipToMap(await exportToBuffer(alice.id, { includeMessages: true }));
+    const rows = JSON.parse(entries.get('reactions.json')!.toString('utf8')) as Array<
+      Record<string, unknown>
+    >;
+    expect(rows).toHaveLength(1);
+    rows[0].nick_folded = 'robert';
+    rows.push({ ...rows[0] });
+    entries.set('reactions.json', Buffer.from(JSON.stringify(rows)));
+
+    const dave = createUser(uniqueUsername('dave'));
+    const result = await importFromZipBuffer(dave.id, await zipFromMap(entries));
+    expect(result.counts.message_reactions).toBe(1);
+    expect(result.counts.messages).toBe(2);
+    const landed = db
+      .prepare(
+        `SELECT r.nick, r.nick_folded FROM message_reactions r
+          WHERE r.network_id IN (SELECT id FROM networks WHERE user_id = ?)`,
+      )
+      .all(dave.id);
+    expect(landed).toEqual([{ nick: 'Bob', nick_folded: 'bob' }]);
+  });
+
   it('keeps buffer_reads when messages are included', async () => {
     const { alice } = seedAlice();
     const ed = createUser(`ed_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
