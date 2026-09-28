@@ -229,19 +229,87 @@ describe('MessageList — replies', () => {
   });
 
   // #997: replying to yourself is a real reply with nobody to address.
+  const replyToSelfButton = (w: VueWrapper, id: number) =>
+    rowOf(w, id)
+      .findAll('.row-actions button')
+      .find((b) => b.attributes('title') === 'Reply to yourself');
+
   it('replies to your own line without addressing you', async () => {
     const address = vi.spyOn(composerOverlay, 'addressNick');
     const focus = vi.spyOn(composerOverlay, 'focusComposer');
+    const cancel = vi.spyOn(composerOverlay, 'cancelComposerReply');
     const mine = line('me', 'the build is green', { msgid: 'm1' });
     const w = mountWith([mine]);
-    const reply = rowOf(w, mine.id)
-      .findAll('.row-actions button')
-      .find((b) => b.attributes('title') === 'Reply to yourself');
+    useNetworksStore().states[1].canReact = true;
+    await w.vm.$nextTick();
+    const reply = replyToSelfButton(w, mine.id);
     expect(reply).toBeTruthy();
     await reply!.trigger('click');
-    expect(useRepliesStore().forKey(KEY)).toMatchObject({ messageId: mine.id, nick: 'me' });
+    expect(useRepliesStore().forKey(KEY)).toMatchObject({
+      messageId: mine.id,
+      nick: 'me',
+      self: true,
+    });
     expect(focus).toHaveBeenCalledTimes(1);
     expect(address).not.toHaveBeenCalled();
+    // Nothing was pending, so there was nothing to take back.
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  // Reply on alice's line put `alice: ` in the draft; replying to yourself
+  // instead must take it back out, or the line goes out addressed to her.
+  it('drops a pending reply’s address when you switch to your own line', async () => {
+    const cancel = vi
+      .spyOn(composerOverlay, 'cancelComposerReply')
+      .mockImplementation(() => useRepliesStore().cancel(KEY));
+    const mine = line('me', 'the build is green', { msgid: 'm2' });
+    const w = mountWith([mine]);
+    useNetworksStore().states[1].canReact = true;
+    useRepliesStore().start(KEY, {
+      messageId: 1,
+      nick: 'alice',
+      type: 'message',
+      text: 'is it?',
+      addressed: true,
+    });
+    await w.vm.$nextTick();
+    await replyToSelfButton(w, mine.id)!.trigger('click');
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(useRepliesStore().forKey(KEY)).toMatchObject({ messageId: mine.id, self: true });
+  });
+
+  // An address the user typed is theirs: switching leaves it alone.
+  it('leaves a pending reply alone that put no address in', async () => {
+    const cancel = vi.spyOn(composerOverlay, 'cancelComposerReply');
+    const mine = line('me', 'the build is green', { msgid: 'm2' });
+    const w = mountWith([mine]);
+    useNetworksStore().states[1].canReact = true;
+    useRepliesStore().start(KEY, { messageId: 1, nick: 'alice', type: 'message', text: 'is it?' });
+    await w.vm.$nextTick();
+    await replyToSelfButton(w, mine.id)!.trigger('click');
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  // The bar was built while the line could take a reply, and it can't by the
+  // click: no reply starts, so there's nothing to put the caret there for.
+  it('does nothing on your own line once it can no longer take a reply', async () => {
+    const focus = vi.spyOn(composerOverlay, 'focusComposer');
+    const mine = line('me', 'the build is green', { msgid: 'm1' });
+    const w = mountWith([mine]);
+    useNetworksStore().states[1].canReact = true;
+    await w.vm.$nextTick();
+    const reply = replyToSelfButton(w, mine.id)!;
+    useBuffersStore().buffers[KEY].messages[0].msgid = undefined;
+    await reply.trigger('click');
+    expect(useRepliesStore().forKey(KEY)).toBeNull();
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  // No reply tag would go out, and your own line has no address to fall back on.
+  it('offers no Reply on your own line when the network can’t carry it', () => {
+    const mine = line('me', 'the build is green', { msgid: 'm1' });
+    const w = mountWith([mine]);
+    expect(replyToSelfButton(w, mine.id)).toBeUndefined();
   });
 
   // Without a msgid there's nothing a Reply could do on your own line.

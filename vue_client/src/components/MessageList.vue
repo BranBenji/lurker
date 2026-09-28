@@ -421,7 +421,11 @@ import { useMemberActions } from '../composables/useMemberActions.js';
 import type { MemberContext, MemberLike } from '../composables/useMemberActions.js';
 import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.js';
 import { useWhoisStore } from '../stores/whois.js';
-import { addressNick, focusComposer } from '../composables/useComposerOverlay.js';
+import {
+  addressNick,
+  cancelComposerReply,
+  focusComposer,
+} from '../composables/useComposerOverlay.js';
 import { setViewedBuffer } from '../composables/useViewedBuffer.js';
 import { isChannelTarget, dccChatPeer } from '../../../shared/channels.js';
 import ReactionRow from './ReactionRow.vue';
@@ -764,19 +768,23 @@ const actionContext: MessageContext = {
     // sent with the next line. Either way the composer addresses them — that's
     // what a client without replies sees, and the reply line hides it for us.
     const key = networks.activeKey;
-    if (key && replyable(msg)) {
+    const started = !!key && replyable(msg);
+    // Your own line (#997): nobody to address — `yournick: ` would read as
+    // talking to yourself to everyone else (halloy skips it too). A pending
+    // reply to someone else goes first, with the `nick: ` its Reply put in
+    // the draft, or this one would go out still addressed to them.
+    if (msg.self && started && replies.forKey(key)?.addressed) cancelComposerReply();
+    if (started) {
       replies.start(key, {
         messageId: msg.id as number,
         nick: msg.nick,
         type: msg.type ?? 'message',
         text: (msg.text as string | undefined) ?? '',
+        self: !!msg.self,
       });
     }
-    // Your own line (#997): nobody to address — `yournick: ` would read as
-    // talking to yourself to everyone else (halloy skips it too). The action is
-    // only offered where the reply above was started.
-    if (msg.self) focusComposer();
-    else addressNick(msg.nick);
+    if (!msg.self) addressNick(msg.nick);
+    else if (started) focusComposer();
   },
   onIgnore: (msg) => {
     const { user, host } = parseUserHost(msg.userhost);

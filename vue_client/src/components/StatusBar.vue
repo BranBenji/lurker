@@ -63,11 +63,12 @@
         <span
           v-if="pendingReply"
           class="seg reply"
-          :title="`Replying to ${pendingReply.nick} — Escape to cancel`"
+          :title="`Replying to ${pendingReply.self ? 'yourself' : pendingReply.nick} — Escape to cancel`"
           ><span class="reply-body"
             ><i class="fa-solid fa-reply" role="img" aria-label="Replying to"></i
             ><span class="reply-label">{{ compact ? '' : 'replying to' }}</span
-            ><NickRef :nick="pendingReply.nick" /><span class="reply-excerpt">{{
+            ><span v-if="pendingReply.self" class="reply-self">yourself</span
+            ><NickRef v-else :nick="pendingReply.nick" /><span class="reply-excerpt">{{
               pendingReplyExcerpt ? `: ${pendingReplyExcerpt}` : ''
             }}</span
             ><button

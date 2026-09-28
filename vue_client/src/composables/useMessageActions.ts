@@ -153,36 +153,31 @@ export function useMessageActions(): MessageActionsAPI {
     // uses the hostmask for delivery, not ignore filtering.
     const addressable = !message.self && !!message.nick;
 
+    // Whether the network is up and can carry reply tags right now. canReact is
+    // the nearest signal the client has: the server's canSendReactions needs a
+    // reply tag allowed (plus echo-message and the react tags — a network that
+    // denies only those loses Reply on your own lines, never the reverse).
+    const lineNetworkId = message.networkId ?? message.network_id;
+    const state = lineNetworkId != null ? networks.states[lineNetworkId] : undefined;
+    const tagsGoOut = state?.state === 'connected' && !!state.canReact;
+
     // Reply to someone else always does something — at the least it addresses
-    // them. On your own line the only thing it can do is a real reply (#997,
-    // "to clarify what I said above"), so it needs a line that can take one.
+    // them, and the address is what a line without its reply tag still says.
+    // On your own line (#997, "to clarify what I said above") the reply tag is
+    // all it is, so it's offered only where one would go out.
     if (addressable) {
       actions.push({ key: 'reply', label: `Reply to ${message.nick}`, icon: 'fa-solid fa-reply' });
-    } else if (message.self && replyable(message)) {
+    } else if (message.self && replyable(message) && tagsGoOut) {
       actions.push({ key: 'reply', label: 'Reply to yourself', icon: 'fa-solid fa-reply' });
     }
 
-    // A reaction replies to the line's msgid, so the line needs one, and the
-    // network has to be up and able to carry it (canReact — see the server's
-    // canSendReactions). Only a PRIVMSG or /me in a channel or DM: not a notice,
-    // not the :server: console, not a =nick DCC chat — the server's
-    // reactionSendTarget says why. It re-checks all of this; the gate just
-    // keeps a button off lines where it could only do nothing.
-    const reactNetworkId = message.networkId ?? message.network_id;
-    if (
-      message.id != null &&
-      reactNetworkId != null &&
-      message.msgid &&
-      !message.e2e &&
-      (message.type === 'message' || message.type === 'action') &&
-      !!message.target &&
-      !message.target.startsWith(':') &&
-      !isDccChatTarget(message.target)
-    ) {
-      const state = networks.states[reactNetworkId];
-      if (state?.state === 'connected' && state.canReact) {
-        actions.push({ key: 'react', label: 'React', icon: 'fa-solid fa-heart-circle-plus' });
-      }
+    // A reaction replies to the line's msgid, so it needs a line a reply could
+    // name, on a network that can carry it (canReact — see the server's
+    // canSendReactions). Not a notice — the server's reactionSendTarget says
+    // why. It re-checks all of this; the gate just keeps a button off lines
+    // where it could only do nothing.
+    if (replyable(message) && message.type !== 'notice' && tagsGoOut) {
+      actions.push({ key: 'react', label: 'React', icon: 'fa-solid fa-heart-circle-plus' });
     }
 
     if (message.text) {
