@@ -1347,9 +1347,9 @@ const renderRows = computed((): RenderRow[] => {
     // to plain messages: relays bridge speech as PRIVMSG, and action/notice
     // re-attribution would tangle with their special body rendering.
     let mDisplay = m;
-    if (m.type === 'message' && m.nick && !m.self && networkId) {
+    {
       // Chained bridges (#801) included — see relayBots.unwrap.
-      const parsed = relayBots.unwrap(networkId, m.nick, m.text ?? '');
+      const parsed = relayBots.unwrap(networkId, m);
       if (parsed) {
         mDisplay = {
           ...m,

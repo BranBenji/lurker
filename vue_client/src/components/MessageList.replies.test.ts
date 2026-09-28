@@ -409,8 +409,34 @@ describe('MessageList — replies to relayed lines', () => {
     const w = mountWith([p, r]);
     // The line itself, as the timeline shows it.
     expect(rowOf(w, p.id).find('.prefix').text()).toContain('alice');
-    expect(rowOf(w, r.id).find('.reply-text').text()).toBe('<alice> which branch?');
+    // With the `[source]` label the line itself carries in the timeline.
+    expect(rowOf(w, r.id).find('.reply-text').text()).toBe('<alice> [Discord] which branch?');
+    expect(rowOf(w, r.id).find('.reply-relay').attributes('title')).toBe('Relayed via bridgebot');
     expect(ownText(rowOf(w, r.id))).toBe('the release one');
+  });
+
+  // halloy and goguma know nothing of relay marks: their reply addresses the
+  // bridge by the nick they see.
+  it('drops an address that names the bridge, too', () => {
+    markRelay('bridgebot');
+    const { p, r } = relayed('<alice> which branch?', 'bridgebot: the release one');
+    const w = mountWith([p, r]);
+    expect(rowOf(w, r.id).find('.reply-text').text()).toBe('<alice> which branch?');
+    expect(rowOf(w, r.id).find('.reply-relay').exists()).toBe(false);
+    expect(ownText(rowOf(w, r.id))).toBe('the release one');
+  });
+
+  // The quote colours the person as the timeline row does: from their nick,
+  // since the stored `self` describes the bot's line.
+  it('colours a relayed you as the timeline row does', () => {
+    useSettingsStore().values = { 'look.nick.self_color': 'rgb(1, 2, 3)' } as never;
+    markRelay('bridgebot');
+    const { p, r } = relayed('<me> which branch?', 'this one');
+    const w = mountWith([p, r]);
+    const rowNick = rowOf(w, p.id).find('.prefix .nick-ref').element as HTMLElement;
+    const quoted = rowOf(w, r.id).find('.reply-quote .nick-ref').element as HTMLElement;
+    expect(rowNick.style.color).toBe('rgb(1, 2, 3)');
+    expect(quoted.style.color).toBe('rgb(1, 2, 3)');
   });
 
   it('quotes the envelope as it is when the bot isn’t marked', () => {

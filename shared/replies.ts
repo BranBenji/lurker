@@ -30,6 +30,14 @@ export interface ReplyParent {
   self: boolean;
 }
 
+// The answered line as a client quotes it: when it came through a marked relay
+// bot, as the person inside the envelope, with the bot and the `[source]` kept
+// for the label the timeline shows on that line (#996).
+export interface QuotedLine extends ReplyParent {
+  relayBot?: string;
+  relaySource?: string | null;
+}
+
 // On a message row that is a reply. `parent` is null when no line we hold
 // carries that msgid: retention took it, it predates our history, it was a
 // reaction (a TAGMSG, never stored as a line), or its author was ignored.

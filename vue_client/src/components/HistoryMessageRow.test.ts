@@ -110,8 +110,30 @@ describe('HistoryMessageRow — replies', () => {
         },
       }),
     );
-    expect(w.find('.reply-text').text()).toBe('<alice> which branch?');
+    expect(w.find('.reply-text').text()).toBe('<alice> [Discord] which branch?');
     expect(w.find('.text').text()).toBe('the release one');
+  });
+
+  // The row itself reads as the timeline shows it, so it agrees with its quote.
+  it('shows a relayed line as the person who said it', () => {
+    useRelayBotsStore().byKey['1::bridgebot'] = { nick: 'bridgebot', pattern: '' };
+    const w = mountRow(
+      reply({
+        nick: 'bridgebot',
+        text: '[Discord] <carol> alice: the release one',
+        replyTo: { msgid: 'm1', parent: parent() },
+      }),
+    );
+    expect(w.find('.body > .nick').text()).toBe('carol');
+    expect(w.find('.text .relay-via').text()).toBe('[Discord]');
+    expect(w.find('.text .relay-via').attributes('title')).toBe('Relayed via bridgebot');
+    // Her address to alice is the one the quote makes redundant.
+    expect(w.find('.text').text()).toBe('[Discord] the release one');
+    // Unmarked, the line stays the bot's.
+    useRelayBotsStore().byKey = {};
+    const raw = mountRow(reply({ nick: 'bridgebot', text: '<carol> hi', replyTo: undefined }));
+    expect(raw.find('.body > .nick').text()).toBe('bridgebot');
+    expect(raw.find('.text').text()).toBe('<carol> hi');
   });
 
   it('keeps a /me’s text whole, as the timeline does', () => {

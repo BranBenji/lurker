@@ -45,9 +45,13 @@
       <!-- IRCv3 reply (#998): the line it answers, as in the timeline. Static —
            the row's click jumps to the reply, where the quote jumps on. -->
       <ReplyQuote v-if="message.replyTo" :parent="shown.parent" static />
-      <span class="nick" :style="nickStyle">{{ message.nick }}</span>
+      <span class="nick" :style="nickStyle">{{ line.nick }}</span>
       <span class="sep">|</span>
-      <span class="text"><LinkedText :text="shown.text" /></span>
+      <span class="text"
+        ><span v-if="line.relaySource" class="relay-via" :title="`Relayed via ${line.relayBot}`"
+          >[{{ line.relaySource }}] </span
+        ><LinkedText :text="shown.text"
+      /></span>
     </div>
   </li>
 </template>
@@ -62,6 +66,7 @@ import { formatTimestamp, formatDate } from '../utils/timestamp.js';
 import LinkedText from './LinkedText.vue';
 import ReplyQuote from './ReplyQuote.vue';
 import { useReplyQuote } from '../composables/useReplyQuote.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
 import type { ReplyContext } from '../../../shared/replies.js';
 
 // Shared row shape from search/highlights/bookmarks. All callers pass at
@@ -102,13 +107,30 @@ const networks = useNetworksStore();
 const settings = useSettingsStore();
 const nicks = useNickColors();
 const replyQuote = useReplyQuote();
+const relayBots = useRelayBotsStore();
+
+// The line as the timeline shows it: from a marked relay bot, as the person
+// inside the envelope (#996), with the `[source]` label the timeline shows.
+const line = computed(() => {
+  const m = props.message;
+  const relayed = relayBots.unwrap(m.networkId, m);
+  if (!relayed) return { nick: m.nick, text: m.text ?? '', type: m.type, self: m.self };
+  return {
+    nick: relayed.nick,
+    text: relayed.text,
+    type: m.type,
+    self: false,
+    relayBot: m.nick,
+    relaySource: relayed.source,
+  };
+});
 
 // A reply reads as it does in the timeline: its quote, and its text without
 // the address the quote makes redundant.
 const shown = computed(() => {
   const m = props.message;
-  if (!m.replyTo) return { parent: null, text: m.text ?? '' };
-  return replyQuote.shownReply(m.replyTo, m, m.networkId, m.target);
+  if (!m.replyTo) return { parent: null, text: line.value.text };
+  return replyQuote.shownReply(m.replyTo, line.value, m.networkId, m.target);
 });
 
 const tsFormat = computed(() => settings.effective('look.buffer.time_format'));
@@ -145,8 +167,8 @@ const targetLabel = computed(() => {
 });
 
 const nickStyle = computed((): CSSProperties | null => {
-  if (props.message.self) return { color: selfColor.value as string };
-  const c = nicks.color(props.message.nick);
+  if (line.value.self) return { color: selfColor.value as string };
+  const c = nicks.color(line.value.nick);
   return c ? { color: c } : null;
 });
 </script>
@@ -210,6 +232,9 @@ const nickStyle = computed((): CSSProperties | null => {
 .body {
   white-space: pre-wrap;
   word-break: break-word;
+}
+.relay-via {
+  color: var(--fg-muted);
 }
 .sep {
   color: var(--border);
