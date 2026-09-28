@@ -387,7 +387,6 @@ import {
   useScrollState,
 } from '../composables/useScrollState.js';
 import type { RenderSegment } from '../utils/nickColor.js';
-import { stripReplyAddress } from '../utils/replyText.js';
 import ReplyQuote from './ReplyQuote.vue';
 import {
   formatTimestamp,
