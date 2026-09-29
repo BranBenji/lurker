@@ -125,6 +125,25 @@ describe('MessageList — replies', () => {
     expect(ownText(rowOf(w, c2.id))).toBe('and part two');
   });
 
+  // Only while it reads as one run: the same line answered again hours later is
+  // a new reply, and so is our own answer right after someone else's.
+  it('quotes the same line again when it is a new reply', () => {
+    const replyTo = { msgid: 'm1', parent: parent() };
+    const first = line('bob', 'alice: noon', { replyTo });
+    const later = line('bob', 'alice: no, one', {
+      replyTo,
+      time: new Date(Date.UTC(2026, 8, 25, 18, 0)).toISOString(),
+    });
+    const theirs = line('me', 'alice: two', { replyTo });
+    const w = mountWith([first, later]);
+    expect(rowOf(w, later.id).find('.reply-quote').exists()).toBe(true);
+    w.unmount();
+    setActivePinia(createPinia());
+    // Our own line under the same nick (a bridge echoing us back) is ours.
+    const w2 = mountWith([first, { ...theirs, nick: 'bob', self: true }]);
+    expect(rowOf(w2, theirs.id).find('.reply-quote').exists()).toBe(true);
+  });
+
   // The quote is part of the message, so a reply keeps its author's run going.
   it('continues its author’s run, quote and all', () => {
     useSettingsStore().values = { 'look.message.collapse_authors': true } as never;
@@ -356,7 +375,8 @@ describe('MessageList — replies', () => {
   });
 
   // #1015: in a DM the line goes to them anyway, so `alice: ` is only noise —
-  // and what she'd see, on a client that doesn't show replies.
+  // and what she'd see, on a client that doesn't show replies. Reply there is
+  // then only a real reply, offered where one would go out, as on your own line.
   it('does not address the other side of a DM', async () => {
     const address = vi.spyOn(composerOverlay, 'addressNick');
     const focus = vi.spyOn(composerOverlay, 'focusComposer');
@@ -366,18 +386,20 @@ describe('MessageList — replies', () => {
     const replyOn = (id: number) =>
       rowOf(w, id)
         .findAll('.row-actions button')
-        .find((b) => b.attributes('title') === 'Reply to alice')!;
-    await replyOn(tagged.id).trigger('click');
+        .find((b) => b.attributes('title') === 'Reply to alice');
+    // Not while the network can't carry the tag, nor on a line with no msgid.
+    expect(replyOn(tagged.id)).toBeUndefined();
+    useNetworksStore().states[1].canReact = true;
+    await w.vm.$nextTick();
+    expect(replyOn(untagged.id)).toBeUndefined();
+
+    await replyOn(tagged.id)!.trigger('click');
     expect(useRepliesStore().forKey('1::alice')).toMatchObject({
       messageId: tagged.id,
       nick: 'alice',
     });
     expect(useRepliesStore().forKey('1::alice')?.addressed).toBeFalsy();
-    // With no msgid there's no reply to start; the Reply still lands you in the composer.
-    useRepliesStore().cancel('1::alice');
-    await replyOn(untagged.id).trigger('click');
-    expect(useRepliesStore().forKey('1::alice')).toBeNull();
-    expect(focus).toHaveBeenCalledTimes(2);
+    expect(focus).toHaveBeenCalledTimes(1);
     expect(address).not.toHaveBeenCalled();
   });
 

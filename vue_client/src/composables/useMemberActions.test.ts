@@ -64,3 +64,21 @@ describe('useMemberActions channel-operator gating', () => {
     expect(labelsFor(['v'])).not.toContain('Kick…');
   });
 });
+
+// #1015: Reply addresses the speaker, which in a DM is only noise — the line
+// goes to them anyway. A caller with no buffer (channel null) keeps it.
+describe('useMemberActions Reply', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const labelsIn = (channel: string | null) =>
+    useMemberActions()
+      .buildItems('alice', { networkId: 1, isSelf: () => false, onIgnore: () => {}, channel })
+      .map((i) => i.label ?? '');
+
+  it('is offered in a channel, not in a DM or a DCC chat', () => {
+    expect(labelsIn('#chan')).toContain('Reply to alice');
+    expect(labelsIn(null)).toContain('Reply to alice');
+    expect(labelsIn('alice')).not.toContain('Reply to alice');
+    expect(labelsIn('=alice')).not.toContain('Reply to alice');
+  });
+});

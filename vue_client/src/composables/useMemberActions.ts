@@ -10,6 +10,7 @@ import { useContextMenu } from './useContextMenu.js';
 import { socketSend } from './useSocket.js';
 import { historyCountBy } from '../lib/historyPaging.js';
 import { addressNick } from './useComposerOverlay.js';
+import { privateTarget } from './useMessageActions.js';
 import { isChannelTarget } from '../../../shared/channels.js';
 import { DEFAULT_PREFIX, hasRankAtLeast } from '../../../shared/channelModes.js';
 import { useNetworksStore } from '../stores/networks.js';
@@ -108,8 +109,9 @@ export function useMemberActions(): MemberActionsAPI {
     // or nonsensical aimed at yourself, so they're left off below.
     const items: ContextMenuItem[] = [];
     // Reply addresses the speaker in the active composer — the same composer
-    // hand-off as the message action bar's Reply.
-    if (!isSelf) {
+    // hand-off as the message action bar's Reply. Not in a DM: the line goes to
+    // them anyway, and the address would only be noise (#1015).
+    if (!isSelf && !privateTarget(ctx.channel)) {
       items.push({
         label: `Reply to ${nick}`,
         icon: 'fa-solid fa-reply',
