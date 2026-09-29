@@ -173,4 +173,32 @@ describe('network msgids', () => {
     expect(String(row.msgid)).toMatch(/^m[0-9]+$/);
     expect(msgidOf(echo)).toBe(row.msgid);
   });
+
+  // The network's echo carries the tags, but the bouncer drops it for the copy it
+  // writes itself — which has to say it's a reply too, or the client shows it
+  // threaded only once it reads the line back from CHATHISTORY.
+  it('a reply sent from the web app reaches the client as a reply', async () => {
+    const live = await seedLive();
+    const c = await attachIn(live, '#room');
+    const parentMsgid = ircd.say('bob', '#room', 'who broke the build?');
+    const parent = await stored(live, 'who broke the build?');
+    ircManager.send(live.userId, live.networkId, '#room', 'bob: not me', {
+      replyTo: Number(parent.id),
+    });
+    const echo = await c.waitFor((l) => l.includes('PRIVMSG #room :bob: not me'));
+    const tags = echo.slice(1, echo.indexOf(' ')).split(';');
+    expect(tags).toContain(`+reply=${parentMsgid}`);
+    expect(tags).toContain(`+draft/reply=${parentMsgid}`);
+
+    ircManager.action(live.userId, live.networkId, '#room', 'shrugs', {
+      replyTo: Number(parent.id),
+    });
+    const action = await c.waitFor((l) => l.includes('PRIVMSG #room :\u0001ACTION shrugs'));
+    expect(action).toContain(`+reply=${parentMsgid}`);
+
+    // A plain line stays plain.
+    ircManager.send(live.userId, live.networkId, '#room', 'unrelated');
+    const plain = await c.waitFor((l) => l.includes('PRIVMSG #room :unrelated'));
+    expect(plain).not.toContain('reply=');
+  });
 });

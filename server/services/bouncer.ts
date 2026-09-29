@@ -2838,6 +2838,7 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     text: string,
     time: string | null,
     msgid?: string,
+    replyMsgid?: string,
   ): void {
     if (this.closed) return;
     this.prunePendingEcho();
@@ -2861,7 +2862,14 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     const bodies =
       type === 'action' ? [`\u0001ACTION ${text.replace(/\n/g, ' ')}\u0001`] : text.split('\n');
     const head = `:${this.selfPrefix()} ${cmd} ${target}`;
-    for (const line of this.messageLines(head, bodies, { time: time ?? undefined, msgid })) {
+    const tags: ReplayTags = {
+      time: time ?? undefined,
+      msgid,
+      // A reply says so here as it does in CHATHISTORY, or a client shows it
+      // threaded only after a reload.
+      clientTags: replyMsgid ? replyTags(replyMsgid) : undefined,
+    };
+    for (const line of this.messageLines(head, bodies, tags)) {
       this.write(line);
     }
   }
@@ -3146,7 +3154,14 @@ function dispatchIrcEvent(event: Record<string, unknown>): void {
   // The msgid the row took from the network's echo (echo-message), so the client
   // has the id history will give it.
   const msgid = networkMsgid(event);
-  for (const session of set) session.deliverSelfEcho(type, target, text, time, msgid);
+  // The line it answers (publish() resolved the tag into replyTo). Never on an
+  // E2E line: its reply went out without tags, and history replays none either.
+  const replyTo = event.replyTo as { msgid?: unknown } | undefined;
+  const replyMsgid =
+    !event.e2e && typeof replyTo?.msgid === 'string' && replyTo.msgid ? replyTo.msgid : undefined;
+  for (const session of set) {
+    session.deliverSelfEcho(type, target, text, time, msgid, replyMsgid);
+  }
 }
 
 /**
