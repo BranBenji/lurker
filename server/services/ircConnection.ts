@@ -524,11 +524,13 @@ function normalizeEventTime(t: unknown): string {
   return new Date(ms).toISOString();
 }
 
-// A line inside a server-pushed history replay: a CHATHISTORY batch (Ergo's
-// autoreplay, which we never asked for — we don't send CHATHISTORY) or a ZNC
-// playback. Not new history, and the line itself is usually already stored.
-function inHistoryReplayBatch(event: Record<string, unknown>): boolean {
-  const batchType = (event.batch as { type?: string } | undefined)?.type;
+function batchTypeOf(event: Record<string, unknown>): string | undefined {
+  return (event.batch as { type?: string } | undefined)?.type;
+}
+
+// A server-pushed history replay: a CHATHISTORY batch (Ergo's autoreplay, which
+// we never asked for — we don't send CHATHISTORY) or a ZNC playback.
+function isHistoryReplayBatch(batchType: string | undefined): boolean {
   return (
     batchType === 'chathistory' ||
     batchType === 'draft/chathistory' ||
@@ -2418,8 +2420,8 @@ export class IrcConnection {
       // arriving in one of these batches is unsolicited replay — and without
       // a dedupe path it inserts duplicates carrying the original (past)
       // server-time. Ignoring the whole batch is the right call.
-      if (inHistoryReplayBatch(event)) return;
-      const batchType = (event.batch as { type?: string } | undefined)?.type;
+      const batchType = batchTypeOf(event);
+      if (isHistoryReplayBatch(batchType)) return;
       // A `draft/multiline` batch is one logical message fragmented across N
       // PRIVMSGs (#381). Buffer the fragments and flush a single reassembled
       // message on 'batch end draft/multiline' instead of rendering N lines.
@@ -3892,12 +3894,11 @@ export class IrcConnection {
     });
 
     on('tagmsg', (event: Record<string, unknown>) => {
-      // Same rule as the message handler: a replayed batch is not new history.
-      // A replayed typing notice is stale by definition, and a replayed reaction
-      // names a line the message handler just dropped the replay of — applying
-      // it would put a history window's react/unreact sequence back on top of
-      // what we already hold, which a window cut short gets wrong.
-      if (inHistoryReplayBatch(event)) return;
+      // A server-pushed history replay (see the message handler). A replayed
+      // typing notice is stale by definition. A replayed reaction may be one we
+      // missed while disconnected, on a line we hold, so it still counts — with
+      // the window's unreacts judged as old news (handleReaction).
+      const replayed = isHistoryReplayBatch(batchTypeOf(event));
       const me = this.currentNick;
       const eventNick = event.nick as string | undefined;
       // Case-folded, matching the message handler's self check — under
@@ -3909,10 +3910,10 @@ export class IrcConnection {
       // comes back as the echo, and that echo is how it's recorded (the send
       // path writes nothing — see sendReaction).
       if (tags && ('+draft/react' in tags || '+draft/unreact' in tags)) {
-        this.handleReaction(event, tags, isSelf);
+        this.handleReaction(event, tags, isSelf, replayed);
         return;
       }
-      if (isSelf) return;
+      if (isSelf || replayed) return;
       const typing = tags && tags['+typing'];
       if (!typing) return;
       const eventTarget = event.target as string | undefined;
@@ -3939,6 +3940,7 @@ export class IrcConnection {
     event: Record<string, unknown>,
     tags: Record<string, string>,
     isSelf: boolean,
+    replayed: boolean,
   ): void {
     // A replayed session is not new history — same rule as publish().
     if (this.restoring) return;
@@ -3984,7 +3986,7 @@ export class IrcConnection {
       (event.time as number | undefined) ?? this.lineArrivedAt?.getTime(),
     );
     const changed = remove
-      ? removeReaction(parent.id, nick, value, isSelf, time)
+      ? removeReaction(parent.id, nick, value, isSelf, time, replayed)
       : addReaction({
           messageId: parent.id,
           networkId: this.network.id,

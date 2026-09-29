@@ -119,19 +119,40 @@ const removeSelfStmt = db.prepare(`
   WHERE message_id = ? AND self = 1 AND value = ? AND removed_at IS NULL
 `);
 
+// A replayed unreact (a server-pushed history batch) takes back only a reaction
+// given before it. The window can end between an unreact and the re-react after
+// it, and that re-react is the one standing. Live unreacts don't get this test:
+// their time and the react's can come from different clocks (removeStmt). A
+// replay's times are all the server's.
+const removeReplayedStmt = db.prepare(`
+  UPDATE message_reactions SET removed_at = ?
+  WHERE message_id = ? AND nick_folded = ? AND value = ? AND removed_at IS NULL AND time <= ?
+`);
+const removeSelfReplayedStmt = db.prepare(`
+  UPDATE message_reactions SET removed_at = ?
+  WHERE message_id = ? AND self = 1 AND value = ? AND removed_at IS NULL AND time <= ?
+`);
+
 // A peer's unreact matches their nick. Ours matches `self`, not the nick: we may
 // have reacted as alice and be alice_ now, and the unreact echo comes from
 // alice_ — keyed on the nick it would find nothing, and the reaction would stay
 // ours on screen for good, every click sending another unreact that can't land.
 //
-// `time` is when it was taken back: the tombstone's removed_at.
+// `time` is when it was taken back: the tombstone's removed_at. `replayed`: it
+// came in a history replay (removeReplayedStmt).
 export function removeReaction(
   messageId: number,
   nick: string,
   value: string,
   self: boolean,
   time: string,
+  replayed = false,
 ): boolean {
+  if (replayed) {
+    return self
+      ? removeSelfReplayedStmt.run(time, messageId, value, time).changes > 0
+      : removeReplayedStmt.run(time, messageId, nick.toLowerCase(), value, time).changes > 0;
+  }
   if (self) return removeSelfStmt.run(time, messageId, value).changes > 0;
   return removeStmt.run(time, messageId, nick.toLowerCase(), value).changes > 0;
 }

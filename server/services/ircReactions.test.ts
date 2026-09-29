@@ -273,34 +273,54 @@ describe('receiving reactions', () => {
   });
 
   // A server-pushed replay (Ergo autoreplay, ZNC playback) repeats a window of
-  // history on reconnect. A window that ends between an unreact and the re-react
-  // after it would take back a reaction that stands — so a replayed TAGMSG is
-  // skipped, as the message handler skips the replayed lines themselves.
+  // history on reconnect. A reaction in it may be one we missed while away, on a
+  // line we hold, so it counts. But the window can end between an unreact and
+  // the re-react after it: an unreact takes back only a reaction older than it,
+  // or the replay would undo one that stands. A replayed typing notice is stale.
   it.each(['chathistory', 'draft/chathistory', 'znc.in/playback'])(
-    'ignores reactions replayed inside a %s batch',
+    'applies reactions replayed inside a %s batch, but not a stale unreact',
     async (batchType) => {
       const nick = `recv8${batchType.replace(/\W/g, '')}`.slice(0, 16);
       const chan = `#r8${batchType.replace(/\W/g, '')}`;
       const rig = await connect(nick, chan);
       try {
         const msgid = await peerSays(rig, 'bob', chan, 'the build is green');
+        // Standing now: carol's 👍 and our own 👀, both given live.
         ircd.tagmsg('carol', chan, [`+draft/reply=${msgid}`, '+draft/react=👍']);
-        await until(() => reactionFrames(rig).length === 1, 5000, 'carol reacted');
+        expect(rig.conn.sendReaction(chan, msgid, '👀', false)).toBe(true);
+        await until(() => reactionFrames(rig).length === 2, 5000, 'live reactions');
 
-        const at = (s: number) => `time=2026-09-29T10:00:0${s}.000Z`;
-        const tagmsg = (id: string, tags: string) =>
-          `@batch=h1;msgid=${id};${tags} :carol!~carol@peer.fake TAGMSG ${chan}`;
+        // The window: times long past, as a replay's are.
+        const at = (s: number) => `time=2020-01-01T00:00:0${s}.000Z`;
+        const reply = `+draft/reply=${msgid}`;
+        const line = (from: string, id: string, tags: string) =>
+          `@batch=h1;msgid=${id};${tags} :${from}!~${from}@peer.fake TAGMSG ${chan}`;
         ircd.sendRaw(nick, `BATCH +h1 ${batchType} ${chan}`);
-        ircd.sendRaw(nick, tagmsg('old1', `${at(1)};+draft/reply=${msgid};+draft/unreact=👍`));
-        ircd.sendRaw(nick, tagmsg('old2', `${at(2)};+draft/reply=${msgid};+draft/react=🎉`));
-        ircd.sendRaw(nick, tagmsg('old3', `${at(3)};+typing=active`));
+        // Unreacts of reactions given again since: stale.
+        ircd.sendRaw(nick, line('carol', 'old1', `${at(1)};${reply};+draft/unreact=👍`));
+        ircd.sendRaw(nick, line(nick, 'old2', `${at(2)};${reply};+draft/unreact=👀`));
+        // A reaction we missed: it counts.
+        ircd.sendRaw(nick, line('carol', 'old3', `${at(3)};${reply};+draft/react=🎉`));
+        // Given and taken back inside the window: gone again.
+        ircd.sendRaw(nick, line('dave', 'old4', `${at(4)};${reply};+draft/react=🔥`));
+        ircd.sendRaw(nick, line('dave', 'old5', `${at(5)};${reply};+draft/unreact=🔥`));
+        ircd.sendRaw(nick, line('carol', 'old6', `${at(6)};+typing=active`));
         ircd.sendRaw(nick, 'BATCH -h1');
         await barrier(rig, 'erin', chan, msgid);
 
-        expect(reactionFrames(rig).map((e) => e.nick)).toEqual(['carol', 'erin']);
+        expect(reactionFrames(rig).map((e) => [e.nick, e.value, e.remove])).toEqual([
+          ['carol', '👍', false],
+          [nick, '👀', false],
+          ['carol', '🎉', false],
+          ['dave', '🔥', false],
+          ['dave', '🔥', true],
+          ['erin', `probe${barrierSeq}`, false],
+        ]);
         expect(rig.events.some((e) => e.type === 'typing')).toBe(false);
         expect(rowByMsgid(rig, chan, msgid).reactions).toEqual([
           { nick: 'carol', value: '👍', self: false },
+          { nick, value: '👀', self: true },
+          { nick: 'carol', value: '🎉', self: false },
           { nick: 'erin', value: `probe${barrierSeq}`, self: false },
         ]);
       } finally {

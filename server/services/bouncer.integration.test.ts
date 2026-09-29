@@ -4,19 +4,22 @@
 // Socket-driven end-to-end tests for the bouncer: a real TCP client attaches to
 // the real listener against a fake upstream. See test-utils/bouncerHarness.ts.
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { setupTestDb } from '../test-utils/testApp.js';
+import { until } from '../test-utils/until.js';
 
 const ctx = setupTestDb('services-bouncer-integration');
 
 let harnessMod: typeof import('../test-utils/bouncerHarness.js');
 let bouncerMod: typeof import('./bouncer.js');
+let e2eManager: typeof import('./e2e/manager.js').e2eManager;
 let harness: import('../test-utils/bouncerHarness.js').Harness;
 
 beforeAll(async () => {
   process.env.LURKER_BOUNCER_ENABLED = 'true';
   harnessMod = await import('../test-utils/bouncerHarness.js');
   bouncerMod = await import('./bouncer.js');
+  ({ e2eManager } = await import('./e2e/manager.js'));
   harness = await harnessMod.startHarness();
 });
 
@@ -304,11 +307,55 @@ describe('live relay', () => {
     c.send('USER client 0 * :client');
     await c.waitForCommand('422');
     c.send('@+typing=active TAGMSG #chan');
+    c.send('@+draft/reply=m1;+draft/react=👍 TAGMSG #chan');
     // PING is handled locally and in-order after TAGMSG, so a PONG proves the
     // TAGMSG was already processed and relayed.
     c.send('PING sync');
     await c.waitFor((l) => l.includes('PONG'));
-    expect(acct.upstream.rawSent).toContain('@+typing=active TAGMSG #chan');
+    // Typing goes through the connection's sendTyping (the fake records the
+    // line it would send), gated as the web app's is; a reaction goes verbatim.
+    expect(acct.upstream.rawSent).toEqual([
+      '@+typing=active TAGMSG #chan',
+      '@+draft/reply=m1;+draft/react=👍 TAGMSG #chan',
+    ]);
+  });
+
+  it('drops a client TAGMSG with no client-only tags', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'tagless' });
+    const c = await harness.connect();
+    c.send(`PASS ${acct.user.username}:${acct.password}`);
+    c.send('NICK client');
+    c.send('USER client 0 * :client');
+    await c.waitForCommand('422');
+    c.send('TAGMSG #chan');
+    c.send('@+typing=bogus TAGMSG #chan');
+    c.send('@+typing=active TAGMSG =alice');
+    c.send('@+example=1 TOPIC #chan');
+    await until(() => acct.upstream.rawSent.length > 0, 5000, 'TOPIC relayed');
+    expect(acct.upstream.rawSent).toEqual(['@+example=1 TOPIC #chan']);
+  });
+
+  // A reaction is a cleartext tag naming the line: refused on an E2E channel,
+  // as the web app refuses it, and the client is told.
+  it('refuses a client reaction on an E2E channel', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'e2ereact' });
+    const spy = vi.spyOn(e2eManager, 'isChannelEnabled').mockReturnValue(true);
+    try {
+      const c = await harness.connect();
+      c.send(`PASS ${acct.user.username}:${acct.password}`);
+      c.send('NICK client');
+      c.send('USER client 0 * :client');
+      await c.waitForCommand('422');
+      c.send('@+draft/reply=m1;+draft/react=👍 TAGMSG #secret');
+      const notice = await c.waitFor((l) => l.includes('NOTICE') && l.includes('#secret'));
+      expect(notice).toContain("Reactions aren't encrypted yet");
+      c.send('@+typing=active TAGMSG #secret');
+      c.send('@+example=1 TOPIC #secret');
+      await until(() => acct.upstream.rawSent.some((l) => l.includes('TOPIC')), 5000, 'TOPIC');
+      expect(acct.upstream.rawSent.some((l) => l.includes('react'))).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('strips client-only tags when the upstream lacks message-tags', async () => {
@@ -339,11 +386,10 @@ describe('live relay', () => {
     c.send('USER client 0 * :client');
     await c.waitForCommand('422');
     c.send('@+typing=active TAGMSG #chan');
+    c.send('@+draft/reply=m1;+draft/react=👍 TAGMSG #chan');
     c.send('@+example=1 TOPIC #chan');
-    c.send('PING sync');
-    await c.waitFor((l) => l.includes('PONG'));
-    // The TOPIC after it went out, so the TAGMSG was handled before it.
-    expect(acct.upstream.rawSent).toContain('TOPIC #chan');
+    // The TOPIC after them went out, so the TAGMSGs were handled before it.
+    await until(() => acct.upstream.rawSent.includes('TOPIC #chan'), 5000, 'TOPIC relayed');
     expect(acct.upstream.rawSent.some((l) => l.includes('TAGMSG'))).toBe(false);
   });
 

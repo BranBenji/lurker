@@ -2511,12 +2511,7 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         this.handleMonitor(conn, msg);
         return;
       case 'TAGMSG':
-        // A TAGMSG is nothing but its tags. A network without message-tags gets
-        // no tags (relayRaw), and a bare TAGMSG is an unknown command there: its
-        // 421 would come back for every keystroke of a client's typing. ZNC
-        // drops it the same way (Client.cpp, HasMessageTagCap).
-        if (!conn.supportsMessageTags()) return;
-        this.relayRaw(conn, msg);
+        this.handleClientTagmsg(conn, msg);
         return;
       default:
         // Everything else (MODE, TOPIC, WHOIS, WHO, NAMES, LIST, KICK, INVITE,
@@ -2710,6 +2705,36 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     // A query waits its turn on the connection, and its reply comes back to
     // this client alone (replyRouter.ts).
     conn.raw(rebuildLine(forward), this);
+  }
+
+  // A client's TAGMSG on its way to the network. A TAGMSG is nothing but its
+  // client-only tags, so one with none left goes nowhere: a network without
+  // message-tags gets no tags (relayRaw), and a bare TAGMSG is an unknown
+  // command there, its 421 coming back for every keystroke of the client's
+  // typing. ZNC drops it the same way (Client.cpp, HasMessageTagCap). Typing
+  // takes the web app's road (IrcConnection.sendTyping), with its gates on a
+  // target that refused us and an offline DM peer. A reaction is refused on an
+  // E2E channel, as the web app's is: it's a cleartext tag naming the line.
+  private handleClientTagmsg(conn: IrcConnection, msg: ParsedClientLine): void {
+    if (!msg.clientTags || !conn.supportsMessageTags()) return;
+    const target = msg.params[0] || '';
+    // ⚠⚠ `=nick` is a DCC chat, never an IRC target (see handleClientMessage).
+    if (!target || isDccChatTarget(target)) return;
+    const names = msg.clientTags.split(';').map((tag) => tag.split('=', 1)[0]);
+    if (names.length === 1 && names[0] === '+typing') {
+      const state = msg.clientTags.slice('+typing='.length);
+      if (['active', 'paused', 'done'].includes(state)) conn.sendTyping(target, state);
+      return;
+    }
+    if (
+      (names.includes('+draft/react') || names.includes('+draft/unreact')) &&
+      isChannelContext(target) &&
+      e2eManager.isChannelEnabled(this.userId, this.networkId, contextKey(target, ''))
+    ) {
+      this.notice(`Reactions aren't encrypted yet — not sent on E2E channel ${target}`);
+      return;
+    }
+    this.relayRaw(conn, msg);
   }
 
   // A client's CTCP on its way to the network. Its VERSION reply gets " via
@@ -3154,11 +3179,11 @@ function dispatchIrcEvent(event: Record<string, unknown>): void {
   // The msgid the row took from the network's echo (echo-message), so the client
   // has the id history will give it.
   const msgid = networkMsgid(event);
-  // The line it answers (publish() resolved the tag into replyTo). Never on an
-  // E2E line: its reply went out without tags, and history replays none either.
+  // The line it answers (publish() resolved the tag into replyTo). An E2E line
+  // has none: ircManager.send sends and publishes it without reply tags.
   const replyTo = event.replyTo as { msgid?: unknown } | undefined;
   const replyMsgid =
-    !event.e2e && typeof replyTo?.msgid === 'string' && replyTo.msgid ? replyTo.msgid : undefined;
+    typeof replyTo?.msgid === 'string' && replyTo.msgid ? replyTo.msgid : undefined;
   for (const session of set) {
     session.deliverSelfEcho(type, target, text, time, msgid, replyMsgid);
   }
