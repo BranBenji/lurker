@@ -2727,7 +2727,7 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   // never an E2E line or on an E2E channel, the network must carry the tags) and
   // ircManager.typing (a target that refused us, an offline DM peer).
   private handleClientTagmsg(conn: IrcConnection, msg: ParsedClientLine): void {
-    if (!msg.clientTags || !conn.supportsMessageTags()) return;
+    if (!msg.clientTags) return;
     const target = msg.params[0] || '';
     // ⚠⚠ `=nick` is a DCC chat, never an IRC target (see handleClientMessage),
     // not even inside a target list.
@@ -2740,7 +2740,14 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     }
     const react = tags.get('+draft/react');
     const unreact = tags.get('+draft/unreact');
-    if (react !== undefined || unreact !== undefined) {
+    const reaction = react !== undefined || unreact !== undefined;
+    if (!conn.supportsMessageTags()) {
+      // A reaction says it wasn't sent, as every refusal below does. Typing
+      // stays quiet: it's a nicety, and it would say so on every keystroke.
+      if (reaction) this.notice(`Reaction not sent to ${target}`);
+      return;
+    }
+    if (reaction) {
       // The line it names, in the buffer it was sent to (a target list or a
       // STATUSMSG target names no buffer, so it names no line either).
       const parentMsgid = tags.get('+reply') || tags.get('+draft/reply');
@@ -3205,11 +3212,12 @@ function dispatchIrcEvent(event: Record<string, unknown>): void {
   // The msgid the row took from the network's echo (echo-message), so the client
   // has the id history will give it.
   const msgid = networkMsgid(event);
-  // The line it answers (publish() resolved the tag into replyTo). An E2E line
-  // has none: ircManager.send sends and publishes it without reply tags.
+  // The line it answers (publish() resolved the tag into replyTo). Never on an
+  // E2E line, as history never replays one there (!row.e2e): its reply went out
+  // without tags (ircManager.send publishes it without replyMsgid today).
   const replyTo = event.replyTo as { msgid?: unknown } | undefined;
   const replyMsgid =
-    typeof replyTo?.msgid === 'string' && replyTo.msgid ? replyTo.msgid : undefined;
+    !event.e2e && typeof replyTo?.msgid === 'string' && replyTo.msgid ? replyTo.msgid : undefined;
   for (const session of set) {
     session.deliverSelfEcho(type, target, text, time, msgid, replyMsgid);
   }

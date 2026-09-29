@@ -365,6 +365,10 @@ describe('live relay', () => {
     c.send('@+example=1 TOPIC #chan');
     // The TOPIC after them went out, so the TAGMSGs were handled before it.
     await until(() => acct.upstream.rawSent.includes('TOPIC #chan'), 5000, 'TOPIC relayed');
+    // The reaction says it didn't go; typing is quiet about it.
+    expect(c.lines.filter((l) => l.includes('NOTICE')).map((l) => l.split(' :')[1])).toEqual([
+      'Reaction not sent to #chan',
+    ]);
     expect(acct.upstream.rawSent.some((l) => l.includes('TAGMSG'))).toBe(false);
   });
 
