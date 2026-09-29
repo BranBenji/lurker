@@ -26,6 +26,7 @@ let favoriteBuffer: typeof import('../db/favoriteBuffers.js').favoriteBuffer;
 let addRule: typeof import('../db/ignoredMasks.js').addRule;
 let addBookmark: typeof import('../db/bookmarks.js').addBookmark;
 let addReaction: typeof import('../db/reactions.js').addReaction;
+let removeReaction: typeof import('../db/reactions.js').removeReaction;
 // Seed an ALL-level ignore the way the pre-#301 addMask helper did.
 function addMask(args: { userId: number; networkId: number; mask: string }) {
   return addRule({
@@ -71,7 +72,7 @@ beforeAll(async () => {
   ({ favoriteBuffer } = await import('../db/favoriteBuffers.js'));
   ({ addRule } = await import('../db/ignoredMasks.js'));
   ({ addBookmark } = await import('../db/bookmarks.js'));
-  ({ addReaction } = await import('../db/reactions.js'));
+  ({ addReaction, removeReaction } = await import('../db/reactions.js'));
   ({ setReadState, setClearedState, getClearedState } = await import('../db/bufferReads.js'));
   ({ setNicklistCollapsed } = await import('../db/nicklistCollapsed.js'));
   ({ setChannelNotifyAlways } = await import('../db/channelNotify.js'));
@@ -1294,6 +1295,17 @@ describe('importFromZipBuffer — end-to-end equivalence', () => {
       toSelf: false,
       time: '2026-05-17T10:03:00Z',
     });
+    // A tombstone (#1009): taken back, and kept for bouncer history.
+    addReaction({
+      messageId: m1.id as number,
+      networkId: net1.id,
+      nick: 'carol',
+      value: '🎉',
+      self: false,
+      toSelf: true,
+      time: '2026-05-17T10:04:00Z',
+    });
+    removeReaction(m1.id as number, 'carol', '🎉', false, '2026-05-17T10:05:00Z');
     setReadState(user.id, net1.id, '#general', m2.id as number);
     writeAwayMarker(user.id, {
       awayDatetime: '2026-05-17T11:00:00Z',

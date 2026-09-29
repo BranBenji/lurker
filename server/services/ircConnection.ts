@@ -3972,7 +3972,7 @@ export class IrcConnection {
       (event.time as number | undefined) ?? this.lineArrivedAt?.getTime(),
     );
     const changed = remove
-      ? removeReaction(parent.id, nick, value, isSelf)
+      ? removeReaction(parent.id, nick, value, isSelf, time)
       : addReaction({
           messageId: parent.id,
           networkId: this.network.id,

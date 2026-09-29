@@ -48,9 +48,22 @@ const insertStmt = db.prepare(`
   ON CONFLICT(message_id, nick_folded, value) DO NOTHING
 `);
 
-const deleteStmt = db.prepare(`
+// An unreact leaves a tombstone (#1009): the row stays, stamped with when the
+// reaction was taken back, for bouncer history to replay. Only a standing
+// reaction can be taken back.
+const removeStmt = db.prepare(`
+  UPDATE message_reactions SET removed_at = ?
+  WHERE message_id = ? AND nick_folded = ? AND value = ? AND removed_at IS NULL
+`);
+
+// A react where a tombstone holds the key: the tombstone goes, and the react is
+// a fresh row. A fresh id, as before tombstones, so the activity feed (paged by
+// id) shows it as new and its chip goes last. The unreact it replaces leaves
+// history with it, which a client needs no more: the react that follows says
+// where things stand.
+const clearTombstoneStmt = db.prepare(`
   DELETE FROM message_reactions
-  WHERE message_id = ? AND nick_folded = ? AND value = ?
+  WHERE message_id = ? AND nick_folded = ? AND value = ? AND removed_at IS NOT NULL
 `);
 
 export interface ReactionWrite {
@@ -66,12 +79,14 @@ export interface ReactionWrite {
 
 // Both return whether anything changed, so a repeat (the same react twice, an
 // unreact for something never reacted) publishes nothing.
-export function addReaction(r: ReactionWrite): boolean {
+export const addReaction = db.transaction((r: ReactionWrite): boolean => {
+  const nickFolded = r.nick.toLowerCase();
+  clearTombstoneStmt.run(r.messageId, nickFolded, r.value);
   const info = insertStmt.run({
     messageId: r.messageId,
     networkId: r.networkId,
     nick: r.nick,
-    nickFolded: r.nick.toLowerCase(),
+    nickFolded,
     userhost: r.userhost ?? null,
     value: r.value,
     self: r.self ? 1 : 0,
@@ -79,24 +94,28 @@ export function addReaction(r: ReactionWrite): boolean {
     time: r.time,
   });
   return info.changes > 0;
-}
+});
 
-const deleteSelfStmt = db.prepare(`
-  DELETE FROM message_reactions WHERE message_id = ? AND self = 1 AND value = ?
+const removeSelfStmt = db.prepare(`
+  UPDATE message_reactions SET removed_at = ?
+  WHERE message_id = ? AND self = 1 AND value = ? AND removed_at IS NULL
 `);
 
 // A peer's unreact matches their nick. Ours matches `self`, not the nick: we may
 // have reacted as alice and be alice_ now, and the unreact echo comes from
 // alice_ — keyed on the nick it would find nothing, and the reaction would stay
 // ours on screen for good, every click sending another unreact that can't land.
+//
+// `time` is when it was taken back: the tombstone's removed_at.
 export function removeReaction(
   messageId: number,
   nick: string,
   value: string,
-  self = false,
+  self: boolean,
+  time: string,
 ): boolean {
-  if (self) return deleteSelfStmt.run(messageId, value).changes > 0;
-  return deleteStmt.run(messageId, nick.toLowerCase(), value).changes > 0;
+  if (self) return removeSelfStmt.run(time, messageId, value).changes > 0;
+  return removeStmt.run(time, messageId, nick.toLowerCase(), value).changes > 0;
 }
 
 // Where to send a reaction to one of the user's lines: the network, the line's
@@ -181,7 +200,8 @@ export function listReactionsToUser(
   userId: number,
   opts: ReactionFeedOpts = {},
 ): ReactionFeedItem[] {
-  const conds = ['n.user_id = ?', 'r.to_self = 1', 'r.self = 0'];
+  // Standing reactions only: a tombstone was taken back (#1009).
+  const conds = ['n.user_id = ?', 'r.to_self = 1', 'r.self = 0', 'r.removed_at IS NULL'];
   const params: unknown[] = [userId];
   if (opts.before) {
     conds.push('r.id < ?');
@@ -282,6 +302,7 @@ export function reactionsForMessages(
          JOIN messages m ON m.id = r.message_id
          JOIN networks n ON n.id = m.network_id
          WHERE n.user_id = ? AND r.message_id IN (${chunk.map(() => '?').join(', ')})
+           AND r.removed_at IS NULL
          ORDER BY r.id`,
       )
       .all(userId, ...chunk) as { message_id: number; nick: string; value: string; self: number }[];

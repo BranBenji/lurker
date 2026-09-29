@@ -565,6 +565,9 @@ export const EXPORT_TABLES = Object.freeze({
       'to_self',
       'time',
       'userhost',
+      // A tombstone (#1009) travels too, so bouncer history after an import
+      // still says the reaction was taken back.
+      'removed_at',
     ],
     skippedColumns: {
       id:

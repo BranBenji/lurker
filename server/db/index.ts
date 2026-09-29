@@ -1303,6 +1303,16 @@ ensureColumn('message_reactions', 'userhost', 'TEXT');
 // time range can use, and it holds every user's reactions.
 db.exec(`CREATE INDEX IF NOT EXISTS idx_message_reactions_net_time
          ON message_reactions(network_id, time)`);
+// An unreact keeps its row as a tombstone, stamped with when it was taken back
+// (#1009): bouncer history replays it as a +draft/unreact TAGMSG at that time,
+// as soju replays the unreacts it logs, so a client that was away hears it.
+// Everything that shows the reactions standing on a line skips tombstones. A
+// re-react replaces one with a fresh row (db/reactions.ts addReaction).
+ensureColumn('message_reactions', 'removed_at', 'TEXT');
+// The unreacts in a stretch of a network's history, for that replay.
+db.exec(`CREATE INDEX IF NOT EXISTS idx_message_reactions_net_removed
+         ON message_reactions(network_id, removed_at)
+         WHERE removed_at IS NOT NULL`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_msgid
          ON messages(network_id, msgid)
          WHERE msgid IS NOT NULL`);

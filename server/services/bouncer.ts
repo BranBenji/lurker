@@ -2270,7 +2270,8 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   }
 
   // A stored reaction as the TAGMSG that made it (#991): its value, and the
-  // reply tags naming the line it's on. No msgid — a reaction's own isn't kept.
+  // reply tags naming the line it's on — or, for a tombstone's event, the
+  // TAGMSG that took it back (#1009). No msgid — a reaction's own isn't kept.
   // Only ever here for a message-tags client (replaysReactions decides), the
   // only kind a TAGMSG can reach.
   private reactionLine(
@@ -2283,7 +2284,10 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     const tags = this.formatTags({
       time: r.time,
       batchRef,
-      clientTags: [['+draft/react', r.value], ...replyTags(r.parentMsgid)],
+      clientTags: [
+        [r.unreact ? '+draft/unreact' : '+draft/react', r.value],
+        ...replyTags(r.parentMsgid),
+      ],
     });
     const target = this.replayedTarget(r.self, isChannel, bufferTarget, selfNick);
     return `${tags}:${this.replayedSource(r.nick, r.userhost)} TAGMSG ${target}`;

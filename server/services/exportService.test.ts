@@ -263,6 +263,7 @@ describe('buildExportZip', () => {
         to_self: 1,
         time: '2026-05-17T10:02:00Z',
         userhost: 'bob!b@host',
+        removed_at: null,
       },
     ]);
     const manifest = JSON.parse(withHistory.get('manifest.json')!.toString('utf8')) as {
