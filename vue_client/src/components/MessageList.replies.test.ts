@@ -108,6 +108,23 @@ describe('MessageList — replies', () => {
     expect(rowOf(w, p.id).find('.reply-quote').exists()).toBe(false);
   });
 
+  // obby and goguma put the reply tag on every chunk of a long reply; Lurker and
+  // halloy on the first. Either way it reads as one reply, quoted once.
+  it('quotes a split reply once', () => {
+    const replyTo = { msgid: 'm1', parent: parent() };
+    const c1 = line('bob', 'alice: a long answer, part one', { replyTo });
+    const c2 = line('bob', 'and part two', { replyTo });
+    const other = line('carol', 'meanwhile');
+    const c3 = line('bob', 'part three, after carol', { replyTo });
+    const elsewhere = line('bob', 'and to someone else', {
+      replyTo: { msgid: 'm2', parent: parent({ id: 2, nick: 'dave' }) },
+    });
+    const w = mountWith([c1, c2, other, c3, elsewhere]);
+    const quoted = (id: number) => rowOf(w, id).find('.reply-quote').exists();
+    expect([c1, c2, c3, elsewhere].map((m) => quoted(m.id))).toEqual([true, false, true, true]);
+    expect(ownText(rowOf(w, c2.id))).toBe('and part two');
+  });
+
   // The quote is part of the message, so a reply keeps its author's run going.
   it('continues its author’s run, quote and all', () => {
     useSettingsStore().values = { 'look.message.collapse_authors': true } as never;

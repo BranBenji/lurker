@@ -124,7 +124,7 @@
             <!-- IRCv3 reply (#993): the line this one answers, as the body's first
                  line — part of the message, so it doesn't break the author's run. -->
             <ReplyQuote
-              v-if="row.m?.replyTo"
+              v-if="row.m?.replyTo && !row.replyContinued"
               :parent="row.replyParent ?? null"
               @jump="onReplyContextClick"
             />
@@ -177,7 +177,7 @@
             <!-- IRCv3 reply (#993): the line this one answers, as the body's first
                  line — part of the message, so it doesn't break the author's run. -->
             <ReplyQuote
-              v-if="row.m?.replyTo"
+              v-if="row.m?.replyTo && !row.replyContinued"
               :parent="row.replyParent ?? null"
               @jump="onReplyContextClick"
             />
@@ -491,6 +491,9 @@ interface RenderRow {
   // "unavailable". Decided once per row in renderRows — it runs the ignore
   // matcher — rather than per template binding. Absent on a non-reply.
   replyParent?: ReplyParent | null;
+  // A reply whose quote the row before already shows: the same author answering
+  // the same line, as obby and goguma tag every chunk of a split reply.
+  replyContinued?: boolean;
   alt?: boolean;
   key: string | number;
   // Divider row
@@ -1366,10 +1369,20 @@ const renderRows = computed((): RenderRow[] => {
     // A reply: its quote, and its text without the address the quote makes
     // redundant (useReplyQuote).
     let replyParent: ReplyParent | null = null;
+    let replyContinued = false;
     if (m.replyTo) {
       const shown = replyQuote.shownReply(m.replyTo, mDisplay, networkId, bufTarget);
       replyParent = shown.parent;
       if (shown.text !== (mDisplay.text ?? '')) mDisplay = { ...mDisplay, text: shown.text };
+      // One quote for a split reply: obby and goguma tag every chunk of a long
+      // one, where Lurker and halloy tag the first. A divider between them, or
+      // anyone else's line, and the quote shows again.
+      const prev = out[out.length - 1]?.m;
+      replyContinued =
+        !!prev?.replyTo &&
+        prev.replyTo.msgid === m.replyTo.msgid &&
+        prev.type === m.type &&
+        (prev.nick ?? '').toLowerCase() === (mDisplay.nick ?? '').toLowerCase();
     }
     out.push({
       m: mDisplay,
@@ -1378,6 +1391,7 @@ const renderRows = computed((): RenderRow[] => {
       nohilight: rowNohilight,
       highlight: rowHighlight,
       ...(m.replyTo ? { replyParent } : {}),
+      ...(replyContinued ? { replyContinued } : {}),
     });
   }
 
