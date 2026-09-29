@@ -272,6 +272,43 @@ describe('receiving reactions', () => {
     }
   });
 
+  // A server-pushed replay (Ergo autoreplay, ZNC playback) repeats a window of
+  // history on reconnect. A window that ends between an unreact and the re-react
+  // after it would take back a reaction that stands — so a replayed TAGMSG is
+  // skipped, as the message handler skips the replayed lines themselves.
+  it.each(['chathistory', 'draft/chathistory', 'znc.in/playback'])(
+    'ignores reactions replayed inside a %s batch',
+    async (batchType) => {
+      const nick = `recv8${batchType.replace(/\W/g, '')}`.slice(0, 16);
+      const chan = `#r8${batchType.replace(/\W/g, '')}`;
+      const rig = await connect(nick, chan);
+      try {
+        const msgid = await peerSays(rig, 'bob', chan, 'the build is green');
+        ircd.tagmsg('carol', chan, [`+draft/reply=${msgid}`, '+draft/react=👍']);
+        await until(() => reactionFrames(rig).length === 1, 5000, 'carol reacted');
+
+        const at = (s: number) => `time=2026-09-29T10:00:0${s}.000Z`;
+        const tagmsg = (id: string, tags: string) =>
+          `@batch=h1;msgid=${id};${tags} :carol!~carol@peer.fake TAGMSG ${chan}`;
+        ircd.sendRaw(nick, `BATCH +h1 ${batchType} ${chan}`);
+        ircd.sendRaw(nick, tagmsg('old1', `${at(1)};+draft/reply=${msgid};+draft/unreact=👍`));
+        ircd.sendRaw(nick, tagmsg('old2', `${at(2)};+draft/reply=${msgid};+draft/react=🎉`));
+        ircd.sendRaw(nick, tagmsg('old3', `${at(3)};+typing=active`));
+        ircd.sendRaw(nick, 'BATCH -h1');
+        await barrier(rig, 'erin', chan, msgid);
+
+        expect(reactionFrames(rig).map((e) => e.nick)).toEqual(['carol', 'erin']);
+        expect(rig.events.some((e) => e.type === 'typing')).toBe(false);
+        expect(rowByMsgid(rig, chan, msgid).reactions).toEqual([
+          { nick: 'carol', value: '👍', self: false },
+          { nick: 'erin', value: `probe${barrierSeq}`, self: false },
+        ]);
+      } finally {
+        rig.conn.dispose();
+      }
+    },
+  );
+
   it('routes a DM reaction to the sender’s buffer', async () => {
     const rig = await connect('recv5');
     try {

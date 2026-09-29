@@ -524,6 +524,18 @@ function normalizeEventTime(t: unknown): string {
   return new Date(ms).toISOString();
 }
 
+// A line inside a server-pushed history replay: a CHATHISTORY batch (Ergo's
+// autoreplay, which we never asked for — we don't send CHATHISTORY) or a ZNC
+// playback. Not new history, and the line itself is usually already stored.
+function inHistoryReplayBatch(event: Record<string, unknown>): boolean {
+  const batchType = (event.batch as { type?: string } | undefined)?.type;
+  return (
+    batchType === 'chathistory' ||
+    batchType === 'draft/chathistory' ||
+    batchType === 'znc.in/playback'
+  );
+}
+
 function extractExtras(event: IrcEvent): Record<string, unknown> | null {
   let extras: Record<string, unknown> | null = null;
   switch (event.type) {
@@ -2406,15 +2418,8 @@ export class IrcConnection {
       // arriving in one of these batches is unsolicited replay — and without
       // a dedupe path it inserts duplicates carrying the original (past)
       // server-time. Ignoring the whole batch is the right call.
-      const batch = event.batch as { type?: string } | undefined;
-      const batchType = batch?.type;
-      if (
-        batchType === 'chathistory' ||
-        batchType === 'draft/chathistory' ||
-        batchType === 'znc.in/playback'
-      ) {
-        return;
-      }
+      if (inHistoryReplayBatch(event)) return;
+      const batchType = (event.batch as { type?: string } | undefined)?.type;
       // A `draft/multiline` batch is one logical message fragmented across N
       // PRIVMSGs (#381). Buffer the fragments and flush a single reassembled
       // message on 'batch end draft/multiline' instead of rendering N lines.
@@ -3887,6 +3892,12 @@ export class IrcConnection {
     });
 
     on('tagmsg', (event: Record<string, unknown>) => {
+      // Same rule as the message handler: a replayed batch is not new history.
+      // A replayed typing notice is stale by definition, and a replayed reaction
+      // names a line the message handler just dropped the replay of — applying
+      // it would put a history window's react/unreact sequence back on top of
+      // what we already hold, which a window cut short gets wrong.
+      if (inHistoryReplayBatch(event)) return;
       const me = this.currentNick;
       const eventNick = event.nick as string | undefined;
       // Case-folded, matching the message handler's self check — under
