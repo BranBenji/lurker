@@ -1056,6 +1056,48 @@ describe('replies and reactions in history', () => {
     expect(lines[1]).not.toContain('reply=');
   });
 
+  // Only an edited archive could store a reaction whose line is on another
+  // network; TARGETS for the reaction's network mustn't list that buffer. (The
+  // other network is a second account's here: a second network on this one
+  // would stop the client auto-binding, and the join doesn't care whose it is.)
+  it('lists no buffer from another network for a mismatched reaction', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'nm1' });
+    const other = harnessMod.seedAccount({ nick: 'nm2' }).network;
+    const elsewhere = Number(
+      insertMessage({
+        networkId: other.id,
+        target: '#elsewhere',
+        time: at(1),
+        type: 'message',
+        nick: 'bob',
+        userhost: 'bob!u@h',
+        text: 'on the other network',
+        self: false,
+        msgid: 'o1',
+      }).id,
+    );
+    addReaction({
+      messageId: elsewhere,
+      networkId: acct.network.id,
+      nick: 'alice',
+      userhost: 'alice!a@h',
+      value: '👍',
+      self: false,
+      toSelf: false,
+      time: at(2),
+    });
+    const c = await harness.connect();
+    await attachBound(c, acct, REACT_CAPS);
+    c.send(
+      'CHATHISTORY TARGETS timestamp=2023-05-23T00:00:00.000Z timestamp=2023-05-24T00:00:00.000Z 100',
+    );
+    const open = await c.waitFor((l) => l.includes('BATCH +'));
+    const ref = open.split('BATCH +')[1].split(' ')[0];
+    await c.waitFor((l) => l.includes(`BATCH -${ref}`));
+    c.close();
+    expect(batchBodies(c.lines, ref).some((l) => l.includes('#elsewhere'))).toBe(false);
+  });
+
   it('lists in TARGETS only reaction news a window would replay', async () => {
     const window =
       'CHATHISTORY TARGETS timestamp=2023-05-23T06:00:02.000Z timestamp=2023-05-24T00:00:00.000Z 100';

@@ -1182,6 +1182,10 @@ export function listActiveTargetsInWindow(
            JOIN messages m ON m.id = r.message_id
            JOIN buffers b ON b.id = m.buffer_id
           WHERE r.network_id = ?
+            -- The line's buffer must be the reaction's network's, as the window
+            -- finds it (its buffer resolves from the network asked about).
+            -- Always so live; only an edited archive could pair them otherwise.
+            AND b.network_id = r.network_id
             AND ${buffersOnly}
             AND ${replayableReactionSql(false)}
             AND NOT ${selfHidden('r.self = 1 OR m.self = 1')}
