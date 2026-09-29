@@ -26,6 +26,7 @@ let userId: number;
 let otherId: number;
 let net: Network;
 let seq = 0;
+const T = '2026-09-29T09:00:00.000Z';
 
 beforeAll(() => {
   userId = createUser('reactions-db').id;
@@ -90,9 +91,111 @@ describe('reactions on message rows', () => {
     const id = line();
     expect(react(id, 'bob', '👍')).toBe(true);
     expect(react(id, 'BOB', '👍')).toBe(false);
-    expect(removeReaction(id, 'erin', '👍')).toBe(false);
-    expect(removeReaction(id, 'Bob', '👍')).toBe(true);
-    expect(removeReaction(id, 'bob', '👍')).toBe(false);
+    expect(removeReaction(id, 'erin', '👍', false, T)).toBe(false);
+    expect(removeReaction(id, 'Bob', '👍', false, T)).toBe(true);
+    expect(removeReaction(id, 'bob', '👍', false, T)).toBe(false);
+  });
+
+  // #1009: an unreact leaves a tombstone for bouncer history, and nothing that
+  // shows where reactions stand sees it.
+  it('leave a tombstone when taken back, which nothing standing shows', () => {
+    const id = line({ self: true });
+    // On our line, so the activity feed would list the others'.
+    const toMe = (nick: string, value: string, self = false) =>
+      addReaction({ messageId: id, networkId: net.id, nick, value, self, toSelf: true, time: T });
+    toMe('bob', '👍');
+    toMe('carol', '🎉');
+    toMe('me', '❤️', true);
+    expect(removeReaction(id, 'bob', '👍', false, '2026-09-29T10:00:00.000Z')).toBe(true);
+    // Ours by `self`, whatever nick we have now.
+    expect(removeReaction(id, 'me_', '❤️', true, '2026-09-29T10:01:00.000Z')).toBe(true);
+    const rows = db
+      .prepare('SELECT nick, removed_at FROM message_reactions WHERE message_id = ? ORDER BY id')
+      .all(id);
+    expect(rows).toEqual([
+      { nick: 'bob', removed_at: '2026-09-29T10:00:00.000Z' },
+      { nick: 'carol', removed_at: null },
+      { nick: 'me', removed_at: '2026-09-29T10:01:00.000Z' },
+    ]);
+    const standing = [{ nick: 'carol', value: '🎉', self: false }];
+    expect(rowById(id)!.reactions).toEqual(standing);
+    expect(reactionsForMessages(userId, [id]).get(id)).toEqual(standing);
+    expect(
+      listReactionsToUser(userId)
+        .filter((r) => r.id === id)
+        .map((r) => r.nick),
+    ).toEqual(['carol']);
+  });
+
+  // A react older than the unreact that took it back — an upstream's playback,
+  // a stale TAGMSG — must not bring it back.
+  it('stay taken back when an older react arrives', () => {
+    const id = line();
+    const at = (s: number) => `2026-09-29T10:00:0${s}.000Z`;
+    const put = (time: string) =>
+      addReaction({
+        messageId: id,
+        networkId: net.id,
+        nick: 'bob',
+        value: '👍',
+        self: false,
+        toSelf: false,
+        time,
+      });
+    put(at(1));
+    removeReaction(id, 'bob', '👍', false, at(3));
+    expect(put(at(2))).toBe(false);
+    expect(rowById(id)!.reactions).toBeUndefined();
+    // A newer one does.
+    expect(put(at(4))).toBe(true);
+    expect(rowById(id)!.reactions).toEqual([{ nick: 'bob', value: '👍', self: false }]);
+  });
+
+  // Different clocks can stamp the unreact earlier than its react; history
+  // replays each at its own time, so it's never allowed to come first.
+  it('are never taken back before they were made', () => {
+    const id = line();
+    addReaction({
+      messageId: id,
+      networkId: net.id,
+      nick: 'bob',
+      value: '👍',
+      self: false,
+      toSelf: false,
+      time: '2026-09-29T10:00:05.000Z',
+    });
+    removeReaction(id, 'bob', '👍', false, '2026-09-29T10:00:01.000Z');
+    const row = db
+      .prepare('SELECT removed_at FROM message_reactions WHERE message_id = ?')
+      .get(id) as { removed_at: string };
+    expect(row.removed_at).toBe('2026-09-29T10:00:05.000Z');
+  });
+
+  // A re-react replaces the tombstone with a fresh row: a fresh id, so the
+  // activity feed (paged by id) shows it as new and its chip goes last.
+  it('come back as a fresh row after being taken back', () => {
+    const id = line({ self: true });
+    react(id, 'bob', '👍');
+    react(id, 'carol', '🎉');
+    const firstId = (
+      db
+        .prepare('SELECT id FROM message_reactions WHERE message_id = ? AND nick = ?')
+        .get(id, 'bob') as { id: number }
+    ).id;
+    // The helper reacts on the real clock; the re-react must not predate this.
+    removeReaction(id, 'bob', '👍', false, new Date().toISOString());
+    expect(react(id, 'Bob', '👍')).toBe(true);
+    const rows = db
+      .prepare(
+        'SELECT id, removed_at FROM message_reactions WHERE message_id = ? AND nick_folded = ?',
+      )
+      .all(id, 'bob') as { id: number; removed_at: string | null }[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].removed_at).toBeNull();
+    expect(rows[0].id).toBeGreaterThan(firstId);
+    expect(rowById(id)!.reactions!.map((r) => r.nick)).toEqual(['carol', 'Bob']);
+    // A repeat is still no change.
+    expect(react(id, 'bob', '👍')).toBe(false);
   });
 
   it('are deleted with their line', () => {

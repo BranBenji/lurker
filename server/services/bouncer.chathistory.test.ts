@@ -13,6 +13,7 @@ let harnessMod: typeof import('../test-utils/bouncerHarness.js');
 let bouncerMod: typeof import('./bouncer.js');
 let insertMessage: typeof import('../db/messages.js').insertMessage;
 let addReaction: typeof import('../db/reactions.js').addReaction;
+let removeReaction: typeof import('../db/reactions.js').removeReaction;
 let db: typeof import('../db/index.js').default;
 let harness: import('../test-utils/bouncerHarness.js').Harness;
 
@@ -21,7 +22,7 @@ beforeAll(async () => {
   harnessMod = await import('../test-utils/bouncerHarness.js');
   bouncerMod = await import('./bouncer.js');
   ({ insertMessage } = await import('../db/messages.js'));
-  ({ addReaction } = await import('../db/reactions.js'));
+  ({ addReaction, removeReaction } = await import('../db/reactions.js'));
   db = (await import('../db/index.js')).default;
   harness = await harnessMod.startHarness();
 });
@@ -699,7 +700,15 @@ describe('replies and reactions in history', () => {
   const REACT_CAPS = `${HISTORY_CAPS} draft/event-playback`;
   const at = (s: number) => `2023-05-23T06:00:${String(s).padStart(2, '0')}.000Z`;
   type Row = Partial<Parameters<typeof insertMessage>[0]>;
-  type Reaction = { on: number; nick: string; value: string; time: number; self?: boolean };
+  type Reaction = {
+    on: number;
+    nick: string;
+    value: string;
+    time: number;
+    self?: boolean;
+    // Taken back at this second (#1009).
+    removed?: number;
+  };
 
   // Rows in `target` at the given seconds, reactions on them, then the lines one
   // command's batch returns.
@@ -737,6 +746,9 @@ describe('replies and reactions in history', () => {
         toSelf: false,
         time: at(r.time),
       });
+      if (r.removed !== undefined) {
+        removeReaction(ids[r.on], r.nick, r.value, !!r.self, at(r.removed));
+      }
     }
     const c = await harness.connect();
     await attachBound(c, acct, caps);
@@ -1179,6 +1191,66 @@ describe('replies and reactions in history', () => {
         listed: at(2),
       });
     }
+  });
+
+  // #1009: a reaction taken back is replayed as the unreact that took it back,
+  // at its own time — so a client that was away when it happened hears it.
+  it('replays an unreact at the time it was taken back', async () => {
+    const rows = [
+      { s: 1, msgid: 'p1', text: 'which branch?' },
+      { s: 3, msgid: 'p2', text: 'ok' },
+    ];
+    const reactions = [
+      { on: 0, nick: 'alice', value: '👍', time: 2, removed: 4 },
+      { on: 0, nick: 'carol', value: '🎉', time: 5 },
+    ];
+    const { lines, ref } = await history(
+      'ur1',
+      '#u',
+      rows,
+      reactions,
+      'CHATHISTORY LATEST #u * 100',
+    );
+    const tag = (s: number) => `@batch=${ref};time=${at(s)}`;
+    expect(lines).toEqual([
+      `${tag(1)};msgid=p1 :bob!u@h PRIVMSG #u :which branch?`,
+      `${tag(2)};+draft/react=👍;${reply('p1')} :alice!a@h TAGMSG #u`,
+      `${tag(3)};msgid=p2 :bob!u@h PRIVMSG #u :ok`,
+      `${tag(4)};+draft/unreact=👍;${reply('p1')} :alice!a@h TAGMSG #u`,
+      `${tag(5)};+draft/react=🎉;${reply('p1')} :carol!c@h TAGMSG #u`,
+    ]);
+    // A page after the react still carries the unreact, and counts it.
+    const after = await history(
+      'ur2',
+      '#u',
+      rows,
+      reactions,
+      `CHATHISTORY AFTER #u timestamp=${at(3)} 1`,
+    );
+    expect(after.lines).toHaveLength(1);
+    expect(after.lines[0]).toContain('+draft/unreact=👍');
+    // A react and its unreact in the same millisecond: the react first.
+    const same = await history(
+      'ur3',
+      '#u',
+      [{ s: 1, msgid: 'p1', text: 'hi' }],
+      [{ on: 0, nick: 'alice', value: '👍', time: 2, removed: 2 }],
+      'CHATHISTORY LATEST #u * 100',
+    );
+    expect(same.lines.map((l) => l.includes('+draft/unreact'))).toEqual([false, false, true]);
+  });
+
+  it('lists a buffer whose only news is an unreact among TARGETS', async () => {
+    const window =
+      'CHATHISTORY TARGETS timestamp=2023-05-23T06:00:05.000Z timestamp=2023-05-24T00:00:00.000Z 100';
+    const { lines } = await history(
+      'ur4',
+      '#quiet2',
+      [{ s: 1, msgid: 'p1', text: 'old line' }],
+      [{ on: 0, nick: 'alice', value: '👍', time: 2, removed: 7 }],
+      window,
+    );
+    expect(lines.find((l) => l.includes('TARGETS #quiet2'))).toContain(`TARGETS #quiet2 ${at(7)}`);
   });
 
   it('keeps reactions out of attach playback, as soju does', async () => {

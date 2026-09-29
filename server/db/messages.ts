@@ -132,6 +132,8 @@ export interface HistoryReaction {
   self: boolean;
   value: string;
   parentMsgid: string;
+  // Taken back at `time` (#1009): replayed as the +draft/unreact TAGMSG.
+  unreact: boolean;
 }
 
 export type HistoryRow = MessageEvent | HistoryReaction;
@@ -301,7 +303,7 @@ const REACTIONS_COL = (alias: string) => `(
       json_object('nick', r.nick, 'value', r.value, 'self', r.self) ORDER BY r.id
     )
     FROM message_reactions r
-    WHERE r.message_id = ${alias}.id
+    WHERE r.message_id = ${alias}.id AND r.removed_at IS NULL
     HAVING count(*) > 0
   ) AS reactions`;
 
@@ -1009,23 +1011,53 @@ function loadReactionWindow(
   dir: 'ASC' | 'DESC',
   withoutSelf: boolean,
 ): HistoryReaction[] {
+  // Every reaction was made at `time`, a tombstone's included; a tombstone was
+  // also taken back at `removed_at` (#1009). The limit's worth of each, merged.
+  const reacts = reactionEvents(networkId, bufferId, lower, upper, limit, dir, withoutSelf, false);
+  const unreacts = reactionEvents(networkId, bufferId, lower, upper, limit, dir, withoutSelf, true);
+  // Oldest first: by time, a react before an unreact at the same instant (a
+  // row's own react and unreact can share a millisecond), then by row.
+  const rank = (e: HistoryReaction) => (e.unreact ? 1 : 0);
+  const cmp = (a: HistoryReaction, b: HistoryReaction) => {
+    const c = a.time < b.time ? -1 : a.time > b.time ? 1 : rank(a) - rank(b) || a.id - b.id;
+    return dir === 'DESC' ? -c : c;
+  };
+  return [...reacts, ...unreacts].toSorted(cmp).slice(0, limit);
+}
+
+// One kind of reaction event in a window: the reacts (at `time`, down
+// idx_message_reactions_net_time) or the unreacts (tombstones, at `removed_at`,
+// down idx_message_reactions_net_removed). One account's network's, the buffer
+// checked on the line each is on.
+function reactionEvents(
+  networkId: number,
+  bufferId: number,
+  lower: string | null,
+  upper: string | null,
+  limit: number,
+  dir: 'ASC' | 'DESC',
+  withoutSelf: boolean,
+  unreacts: boolean,
+): HistoryReaction[] {
+  const at = unreacts ? 'r.removed_at' : 'r.time';
   const conds = ['r.network_id = ?', 'm.buffer_id = ?', replayableReactionSql(withoutSelf)];
+  if (unreacts) conds.push('r.removed_at IS NOT NULL');
   const params: (string | number)[] = [networkId, bufferId];
   if (lower !== null) {
-    conds.push('r.time > ?');
+    conds.push(`${at} > ?`);
     params.push(lower);
   }
   if (upper !== null) {
-    conds.push('r.time < ?');
+    conds.push(`${at} < ?`);
     params.push(upper);
   }
   params.push(limit);
   const rows = db
     .prepare(
-      `SELECT r.id, r.nick, r.userhost, r.self, r.value, r.time, m.msgid AS parent_msgid
+      `SELECT r.id, r.nick, r.userhost, r.self, r.value, ${at} AS at, m.msgid AS parent_msgid
          FROM message_reactions r JOIN messages m ON m.id = r.message_id
         WHERE ${conds.join(' AND ')}
-        ORDER BY r.time ${dir}, r.id ${dir} LIMIT ?`,
+        ORDER BY ${at} ${dir}, r.id ${dir} LIMIT ?`,
     )
     .all(...params) as Array<{
     id: number;
@@ -1033,18 +1065,19 @@ function loadReactionWindow(
     userhost: string | null;
     self: number;
     value: string;
-    time: string;
+    at: string;
     parent_msgid: string;
   }>;
   return rows.map((r) => ({
     type: 'reaction',
     id: r.id,
-    time: r.time,
+    time: r.at,
     nick: r.nick,
     userhost: r.userhost,
     self: r.self === 1,
     value: r.value,
     parentMsgid: r.parent_msgid,
+    unreact: unreacts,
   }));
 }
 
@@ -1165,6 +1198,21 @@ export function listActiveTargetsInWindow(
   // reaction is its line's buffer's; idx_message_reactions_net_time finds them.
   // Only one a window would replay (replayableReactionSql), and not our own or
   // one on our line where our lines aren't replayed (selfHidden).
+  // One reaction part per kind of event: a react at `time`, an unreact at a
+  // tombstone's `removed_at` (#1009, NULL on a standing reaction, so no match).
+  const reactionArm = (at: string) => `         SELECT b.id, b.target, ${at}
+           FROM message_reactions r
+           JOIN messages m ON m.id = r.message_id
+           JOIN buffers b ON b.id = m.buffer_id
+          WHERE r.network_id = ?
+            -- The line's buffer must be the reaction's network's, as the window
+            -- finds it (its buffer resolves from the network asked about).
+            -- Always so live; only an edited archive could pair them otherwise.
+            AND b.network_id = r.network_id
+            AND ${buffersOnly}
+            AND ${replayableReactionSql(false)}
+            AND NOT ${selfHidden('r.self = 1 OR m.self = 1')}
+            AND ${at} > ? AND ${at} < ?`;
   return db
     .prepare(
       `SELECT target, MAX(t) AS lastMessageAt FROM (
@@ -1177,19 +1225,9 @@ export function listActiveTargetsInWindow(
             AND ${filter.sql}
             AND m.time > ? AND m.time < ?
          UNION ALL
-         SELECT b.id, b.target, r.time
-           FROM message_reactions r
-           JOIN messages m ON m.id = r.message_id
-           JOIN buffers b ON b.id = m.buffer_id
-          WHERE r.network_id = ?
-            -- The line's buffer must be the reaction's network's, as the window
-            -- finds it (its buffer resolves from the network asked about).
-            -- Always so live; only an edited archive could pair them otherwise.
-            AND b.network_id = r.network_id
-            AND ${buffersOnly}
-            AND ${replayableReactionSql(false)}
-            AND NOT ${selfHidden('r.self = 1 OR m.self = 1')}
-            AND r.time > ? AND r.time < ?
+${reactionArm('r.time')}
+         UNION ALL
+${reactionArm('r.removed_at')}
        )
        GROUP BY bid
        ORDER BY lastMessageAt DESC
@@ -1199,6 +1237,10 @@ export function listActiveTargetsInWindow(
       networkId,
       hideSelf,
       ...filter.params,
+      lo,
+      hi,
+      networkId,
+      hideSelf,
       lo,
       hi,
       networkId,

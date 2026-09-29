@@ -3919,7 +3919,8 @@ export class IrcConnection {
 
   // An IRCv3 reaction (client-tags/react) arriving on a TAGMSG: a react or an
   // unreact of `value`, by the sender, on the line whose msgid `+reply` names.
-  // Stored as standing state and fanned out as a `reaction` frame; anything
+  // Stored (an unreact as a tombstone, #1009) and fanned out as a `reaction`
+  // frame; anything
   // that doesn't resolve to a line we hold is dropped. Reactions sent on a
   // PRIVMSG (the spec's text-fallback form) are left to render as the ordinary
   // message they also are.
@@ -3972,7 +3973,7 @@ export class IrcConnection {
       (event.time as number | undefined) ?? this.lineArrivedAt?.getTime(),
     );
     const changed = remove
-      ? removeReaction(parent.id, nick, value, isSelf)
+      ? removeReaction(parent.id, nick, value, isSelf, time)
       : addReaction({
           messageId: parent.id,
           networkId: this.network.id,
