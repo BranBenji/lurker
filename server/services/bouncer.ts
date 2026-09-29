@@ -2510,6 +2510,14 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       case 'MONITOR':
         this.handleMonitor(conn, msg);
         return;
+      case 'TAGMSG':
+        // A TAGMSG is nothing but its tags. A network without message-tags gets
+        // no tags (relayRaw), and a bare TAGMSG is an unknown command there: its
+        // 421 would come back for every keystroke of a client's typing. ZNC
+        // drops it the same way (Client.cpp, HasMessageTagCap).
+        if (!conn.supportsMessageTags()) return;
+        this.relayRaw(conn, msg);
+        return;
       default:
         // Everything else (MODE, TOPIC, WHOIS, WHO, NAMES, LIST, KICK, INVITE,
         // NICK, …) forwards verbatim; replies come back via the raw relay.
