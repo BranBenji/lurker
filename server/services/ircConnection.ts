@@ -3894,11 +3894,13 @@ export class IrcConnection {
     });
 
     on('tagmsg', (event: Record<string, unknown>) => {
-      // A server-pushed history replay (see the message handler). A replayed
-      // typing notice is stale by definition. A replayed reaction may be one we
-      // missed while disconnected, on a line we hold, so it still counts — with
-      // the window's unreacts judged as old news (handleReaction).
-      const replayed = isHistoryReplayBatch(batchTypeOf(event));
+      // Same rule as the message handler: a server-pushed replay is not new
+      // history. A replayed typing notice is stale by definition. A replayed
+      // reaction can't be trusted either: the window can end between an unreact
+      // and the re-react after it, and Ergo's history keeps reacts but not
+      // unreacts, so a reaction taken back would come back. The lines in the
+      // window are dropped too, so what we missed stays missed, consistently.
+      if (isHistoryReplayBatch(batchTypeOf(event))) return;
       const me = this.currentNick;
       const eventNick = event.nick as string | undefined;
       // Case-folded, matching the message handler's self check — under
@@ -3910,10 +3912,10 @@ export class IrcConnection {
       // comes back as the echo, and that echo is how it's recorded (the send
       // path writes nothing — see sendReaction).
       if (tags && ('+draft/react' in tags || '+draft/unreact' in tags)) {
-        this.handleReaction(event, tags, isSelf, replayed);
+        this.handleReaction(event, tags, isSelf);
         return;
       }
-      if (isSelf || replayed) return;
+      if (isSelf) return;
       const typing = tags && tags['+typing'];
       if (!typing) return;
       const eventTarget = event.target as string | undefined;
@@ -3940,7 +3942,6 @@ export class IrcConnection {
     event: Record<string, unknown>,
     tags: Record<string, string>,
     isSelf: boolean,
-    replayed: boolean,
   ): void {
     // A replayed session is not new history — same rule as publish().
     if (this.restoring) return;
@@ -3986,7 +3987,7 @@ export class IrcConnection {
       (event.time as number | undefined) ?? this.lineArrivedAt?.getTime(),
     );
     const changed = remove
-      ? removeReaction(parent.id, nick, value, isSelf, time, replayed)
+      ? removeReaction(parent.id, nick, value, isSelf, time)
       : addReaction({
           messageId: parent.id,
           networkId: this.network.id,

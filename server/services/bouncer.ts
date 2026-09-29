@@ -78,7 +78,8 @@ import {
 } from '../db/messages.js';
 import type { HistoryEvents, HistoryReaction, HistoryRow, MessageEvent } from '../db/messages.js';
 import { getReadState } from '../db/bufferReads.js';
-import { resolveBuffer } from '../db/bufferResolve.js';
+import { resolveBuffer, resolveBufferIdByNetwork } from '../db/bufferResolve.js';
+import { findReactionParent } from '../db/reactions.js';
 import type { AwayChange, ReadMarkerMove } from './ircManager.js';
 import { broadcastReadState } from './wsHub.js';
 import { evaluatePresence, setPresenceSource } from './presence.js';
@@ -304,8 +305,9 @@ export interface ParsedClientLine {
   params: string[];
   // Client-only message tags (the `+`-prefixed ones, e.g. `+typing`,
   // `+draft/react`) exactly as the client sent them, joined by `;` with no
-  // leading `@`. Preserved so a relayed TAGMSG (and other commands routed
-  // through the verbatim `default:` relay) keeps its typing/reaction payload.
+  // leading `@`. Preserved so a relayed TAGMSG keeps its payload (a reaction or
+  // typing is sent again the web app's way, see handleClientTagmsg), as does
+  // any other command routed through the verbatim `default:` relay.
   // NOTE: PRIVMSG/NOTICE route through ircManager.send, which carries no tags,
   // so tags on a message body are NOT forwarded yet (tracked separately).
   // Server-authoritative tags (time, account, msgid, label, batch) are dropped
@@ -655,6 +657,13 @@ export function escapeTagValue(value: string): string {
     .replace(/ /g, '\\s')
     .replace(/\r/g, '\\r')
     .replace(/\n/g, '\\n');
+}
+
+// The inverse, for a value a client sent: `\X` for any other X is X, and a
+// trailing lone backslash is dropped (message-tags spec).
+export function unescapeTagValue(value: string): string {
+  const escapes: Record<string, string> = { ':': ';', s: ' ', '\\': '\\', r: '\r', n: '\n' };
+  return value.replace(/\\(.?)/gs, (_m, c: string) => escapes[c] ?? c);
 }
 
 // The msgid a line built from a stored message carries: the network's own
@@ -2711,27 +2720,44 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   // client-only tags, so one with none left goes nowhere: a network without
   // message-tags gets no tags (relayRaw), and a bare TAGMSG is an unknown
   // command there, its 421 coming back for every keystroke of the client's
-  // typing. ZNC drops it the same way (Client.cpp, HasMessageTagCap). Typing
-  // takes the web app's road (IrcConnection.sendTyping), with its gates on a
-  // target that refused us and an offline DM peer. A reaction is refused on an
-  // E2E channel, as the web app's is: it's a cleartext tag naming the line.
+  // typing. ZNC drops it the same way (Client.cpp, HasMessageTagCap).
+  //
+  // Reactions and typing take the web app's road, so they meet its rules
+  // rather than a copy of them: ircManager.react (the line must be one we hold,
+  // never an E2E line or on an E2E channel, the network must carry the tags) and
+  // ircManager.typing (a target that refused us, an offline DM peer).
   private handleClientTagmsg(conn: IrcConnection, msg: ParsedClientLine): void {
     if (!msg.clientTags || !conn.supportsMessageTags()) return;
     const target = msg.params[0] || '';
-    // ⚠⚠ `=nick` is a DCC chat, never an IRC target (see handleClientMessage).
-    if (!target || isDccChatTarget(target)) return;
-    const names = msg.clientTags.split(';').map((tag) => tag.split('=', 1)[0]);
-    if (names.length === 1 && names[0] === '+typing') {
-      const state = msg.clientTags.slice('+typing='.length);
-      if (['active', 'paused', 'done'].includes(state)) conn.sendTyping(target, state);
+    // ⚠⚠ `=nick` is a DCC chat, never an IRC target (see handleClientMessage),
+    // not even inside a target list.
+    if (!target || target.split(',').some(isDccChatTarget)) return;
+    const tags = new Map<string, string>();
+    for (const tag of msg.clientTags.split(';')) {
+      const eq = tag.indexOf('=');
+      if (eq === -1) tags.set(tag, '');
+      else tags.set(tag.slice(0, eq), unescapeTagValue(tag.slice(eq + 1)));
+    }
+    const react = tags.get('+draft/react');
+    const unreact = tags.get('+draft/unreact');
+    if (react !== undefined || unreact !== undefined) {
+      // The line it names, in the buffer it was sent to (a target list or a
+      // STATUSMSG target names no buffer, so it names no line either).
+      const parentMsgid = tags.get('+reply') || tags.get('+draft/reply');
+      const bufferId = resolveBufferIdByNetwork(this.networkId, target);
+      const parent =
+        parentMsgid && bufferId !== undefined && (react === undefined || unreact === undefined)
+          ? findReactionParent(this.networkId, bufferId, parentMsgid)
+          : null;
+      const value = (react ?? unreact) as string;
+      if (!parent || !ircManager.react(this.userId, parent.id, value, unreact !== undefined)) {
+        this.notice(`Reaction not sent to ${target}`);
+      }
       return;
     }
-    if (
-      (names.includes('+draft/react') || names.includes('+draft/unreact')) &&
-      isChannelContext(target) &&
-      e2eManager.isChannelEnabled(this.userId, this.networkId, contextKey(target, ''))
-    ) {
-      this.notice(`Reactions aren't encrypted yet — not sent on E2E channel ${target}`);
+    const typing = tags.get('+typing');
+    if (typing !== undefined) {
+      ircManager.typing(this.userId, this.networkId, target, typing);
       return;
     }
     this.relayRaw(conn, msg);

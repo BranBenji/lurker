@@ -273,12 +273,12 @@ describe('receiving reactions', () => {
   });
 
   // A server-pushed replay (Ergo autoreplay, ZNC playback) repeats a window of
-  // history on reconnect. A reaction in it may be one we missed while away, on a
-  // line we hold, so it counts. But the window can end between an unreact and
-  // the re-react after it: an unreact takes back only a reaction older than it,
-  // or the replay would undo one that stands. A replayed typing notice is stale.
+  // history on reconnect. None of its TAGMSGs count, as none of its lines do: a
+  // window that ends between an unreact and the re-react after it would take
+  // back a reaction that stands, and Ergo's history keeps reacts but not
+  // unreacts, so a reaction taken back would come back. Typing is stale.
   it.each(['chathistory', 'draft/chathistory', 'znc.in/playback'])(
-    'applies reactions replayed inside a %s batch, but not a stale unreact',
+    'ignores reactions and typing replayed inside a %s batch',
     async (batchType) => {
       const nick = `recv8${batchType.replace(/\W/g, '')}`.slice(0, 16);
       const chan = `#r8${batchType.replace(/\W/g, '')}`;
@@ -296,12 +296,12 @@ describe('receiving reactions', () => {
         const line = (from: string, id: string, tags: string) =>
           `@batch=h1;msgid=${id};${tags} :${from}!~${from}@peer.fake TAGMSG ${chan}`;
         ircd.sendRaw(nick, `BATCH +h1 ${batchType} ${chan}`);
-        // Unreacts of reactions given again since: stale.
+        // Unreacts of reactions given again since.
         ircd.sendRaw(nick, line('carol', 'old1', `${at(1)};${reply};+draft/unreact=👍`));
         ircd.sendRaw(nick, line(nick, 'old2', `${at(2)};${reply};+draft/unreact=👀`));
-        // A reaction we missed: it counts.
+        // A react with no unreact after it (Ergo never stores one).
         ircd.sendRaw(nick, line('carol', 'old3', `${at(3)};${reply};+draft/react=🎉`));
-        // Given and taken back inside the window: gone again.
+        // Given and taken back inside the window.
         ircd.sendRaw(nick, line('dave', 'old4', `${at(4)};${reply};+draft/react=🔥`));
         ircd.sendRaw(nick, line('dave', 'old5', `${at(5)};${reply};+draft/unreact=🔥`));
         ircd.sendRaw(nick, line('carol', 'old6', `${at(6)};+typing=active`));
@@ -311,16 +311,12 @@ describe('receiving reactions', () => {
         expect(reactionFrames(rig).map((e) => [e.nick, e.value, e.remove])).toEqual([
           ['carol', '👍', false],
           [nick, '👀', false],
-          ['carol', '🎉', false],
-          ['dave', '🔥', false],
-          ['dave', '🔥', true],
           ['erin', `probe${barrierSeq}`, false],
         ]);
         expect(rig.events.some((e) => e.type === 'typing')).toBe(false);
         expect(rowByMsgid(rig, chan, msgid).reactions).toEqual([
           { nick: 'carol', value: '👍', self: false },
           { nick, value: '👀', self: true },
-          { nick: 'carol', value: '🎉', self: false },
           { nick: 'erin', value: `probe${barrierSeq}`, self: false },
         ]);
       } finally {
