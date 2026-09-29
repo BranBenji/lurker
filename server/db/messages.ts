@@ -10,6 +10,7 @@ import {
 import { markBufferDirty, noteNoiseInsert } from './retention.js';
 import { networkCasemapping } from './buffers.js';
 import { foldTargetWith } from './casemapping.js';
+import { isServicesNick } from '../utils/servicesNick.js';
 import type { Casemapping } from './casemapping.js';
 import { EARLY_PRUNE_TYPES } from '../../shared/eventFilter.js';
 import { countsTowardPage } from '../../shared/eventFilter.js';
@@ -847,6 +848,13 @@ db.function(FOLD_NICK_FN, { deterministic: true }, (mapping: unknown, nick: unkn
     : null,
 );
 
+// isServicesNick as an SQL function, for TARGETS: our own lines to NickServ and
+// friends are never replayed (they carry credentials), so they're no one's news.
+const SERVICES_NICK_FN = 'lurker_is_services_nick';
+db.function(SERVICES_NICK_FN, { deterministic: true }, (nick: unknown) =>
+  typeof nick === 'string' && isServicesNick(nick) ? 1 : 0,
+);
+
 // The rows a window holds: messages, and for a draft/event-playback client the
 // event rows too, every one counting toward the limit as soju's do. Filtered
 // here rather than at playback, because a batch shorter than its limit reads as
@@ -1120,6 +1128,14 @@ export function listActiveTargetsInWindow(
   // process owns, not account state to mirror to other clients.
   const buffersOnly = `b.kind NOT IN ('server', 'system', 'dcc')
           AND substr(b.target, 1, 1) <> '='`;
+  // Our own lines where the bouncer never replays them — a DM, to a client that
+  // takes no self-messages, or a services buffer, to anyone — are no one's news
+  // either: TARGETS mustn't list a buffer, or a time, its window won't deliver.
+  // The rule loadChatHistory applies per target (replaysSelfLine), per row here.
+  // `?` is withoutSelfInDms.
+  const selfHidden = (isSelf: string) =>
+    `(b.kind = 'dm' AND (${isSelf}) AND (? OR ${SERVICES_NICK_FN}(b.target)))`;
+  const hideSelf = withoutSelfInDms ? 1 : 0;
   if (!reactions) {
     return db
       .prepare(
@@ -1128,22 +1144,22 @@ export function listActiveTargetsInWindow(
            JOIN buffers b ON b.id = m.buffer_id
           WHERE b.network_id = ?
             AND ${buffersOnly}
+            AND NOT ${selfHidden('m.self = 1')}
             AND ${filter.sql}
             AND m.time > ? AND m.time < ?
           GROUP BY b.id
           ORDER BY lastMessageAt DESC
           LIMIT ?`,
       )
-      .all(networkId, ...filter.params, lo, hi, limit) as BufferSummary[];
+      .all(networkId, hideSelf, ...filter.params, lo, hi, limit) as BufferSummary[];
   }
   // A client whose windows hold reactions (#991) counts a reaction made in the
   // window as activity, as soju counts the reaction TAGMSGs it stores for an
   // event-playback client — or goguma, which asks TARGETS what changed while it
   // was away, would never fetch a buffer whose only news is a reaction. A
   // reaction is its line's buffer's; idx_message_reactions_net_time finds them.
-  // Only one a window would replay (replayableReactionSql), and in a DM not our
-  // own or one on our line when the client takes no self-messages, or TARGETS
-  // would send it after a batch that comes back empty.
+  // Only one a window would replay (replayableReactionSql), and not our own or
+  // one on our line where our lines aren't replayed (selfHidden).
   return db
     .prepare(
       `SELECT target, MAX(t) AS lastMessageAt FROM (
@@ -1152,6 +1168,7 @@ export function listActiveTargetsInWindow(
            JOIN buffers b ON b.id = m.buffer_id
           WHERE b.network_id = ?
             AND ${buffersOnly}
+            AND NOT ${selfHidden('m.self = 1')}
             AND ${filter.sql}
             AND m.time > ? AND m.time < ?
          UNION ALL
@@ -1162,7 +1179,7 @@ export function listActiveTargetsInWindow(
           WHERE r.network_id = ?
             AND ${buffersOnly}
             AND ${replayableReactionSql(false)}
-            AND NOT (? AND b.kind = 'dm' AND (r.self = 1 OR m.self = 1))
+            AND NOT ${selfHidden('r.self = 1 OR m.self = 1')}
             AND r.time > ? AND r.time < ?
        )
        GROUP BY bid
@@ -1171,11 +1188,12 @@ export function listActiveTargetsInWindow(
     )
     .all(
       networkId,
+      hideSelf,
       ...filter.params,
       lo,
       hi,
       networkId,
-      withoutSelfInDms ? 1 : 0,
+      hideSelf,
       lo,
       hi,
       limit,

@@ -111,6 +111,7 @@ import {
   withoutUpstreamFilehost,
 } from './bouncerClientFilter.js';
 import type { MonitorHolder } from './monitorList.js';
+import { isServicesNick } from '../utils/servicesNick.js';
 import type { ReplyClient } from './replyRouter.js';
 
 const SERVER_NAME = 'lurker.bouncer';
@@ -643,27 +644,7 @@ function isChannelName(target: string): boolean {
   return isChannelTarget(target);
 }
 
-// Network-services pseudo-users (NickServ/ChanServ/…). Playback replays their
-// buffers like any DM, but never the user's OWN lines to them — the self side
-// routinely contains credentials (`msg NickServ IDENTIFY <password>` from a
-// client's perform/on-connect) that would otherwise land in every attached
-// client's logs on every reconnect.
-export function isServicesNick(nick: string): boolean {
-  const lower = nick.toLowerCase();
-  // *serv (NickServ/ChanServ/AuthServ/…) covers most networks; the short list
-  // catches well-known non-*serv auth bots (QuakeNet Q, Undernet X/W) whose
-  // self-lines also carry AUTH credentials. Best-effort — over-matching only
-  // withholds a user's own DMs from playback; the durable fix is tagging
-  // credential-bearing messages at persist time.
-  return (
-    /^[a-z]+serv$/.test(lower) ||
-    lower === 'global' ||
-    lower === 'services' ||
-    lower === 'q' ||
-    lower === 'x' ||
-    lower === 'w'
-  );
-}
+export { isServicesNick };
 
 // IRCv3 message-tag value escaping (space→\s, ;→\:, \→\\, CR→\r, LF→\n). Used
 // to encode a network's `key=value;…` attribute list for BOUNCER NETWORK.

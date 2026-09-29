@@ -1031,6 +1031,61 @@ describe('replies and reactions in history', () => {
     expect(e2e.lines.some((l) => l.includes('TARGETS #sec'))).toBe(false);
   });
 
+  // TARGETS lists a buffer, at a time, only for lines its window delivers: not
+  // our own DM lines to a client that takes none, and never our lines to
+  // services (they carry credentials). With and without reactions in play.
+  it('lists no buffer or time in TARGETS for our lines a window leaves out', async () => {
+    const window =
+      'CHATHISTORY TARGETS timestamp=2023-05-23T00:00:00.000Z timestamp=2023-05-24T00:00:00.000Z 100';
+    const listed = (lines: string[], target: string) =>
+      lines
+        .find((l) => l.includes(`TARGETS ${target} `))
+        ?.split(' ')
+        .pop() ?? null;
+    for (const caps of [HISTORY_CAPS, REACT_CAPS]) {
+      const tag = caps === REACT_CAPS ? 'r' : 'm';
+      // A DM holding only our own line.
+      const mine = (nick: string) => [
+        { s: 1, msgid: 'p1', text: 'hi', nick, userhost: `${nick}!s@h`, self: true },
+      ];
+      const noSelf = await history(`ts1${tag}`, 'bob', mine(`ts1${tag}`), [], window, caps);
+      expect({ caps, listed: listed(noSelf.lines, 'bob') }).toEqual({ caps, listed: null });
+      const echo = await history(
+        `ts2${tag}`,
+        'bob',
+        mine(`ts2${tag}`),
+        [],
+        window,
+        `${caps} echo-message`,
+      );
+      expect({ caps, listed: listed(echo.lines, 'bob') }).toEqual({ caps, listed: at(1) });
+      // NickServ: our IDENTIFY never counts, even with echo-message; its reply does.
+      const services = await history(
+        `ts3${tag}`,
+        'NickServ',
+        [
+          {
+            s: 1,
+            msgid: 'n1',
+            text: 'IDENTIFY hunter2',
+            nick: `ts3${tag}`,
+            userhost: `ts3${tag}!s@h`,
+            self: true,
+          },
+          { s: 2, msgid: 'n2', text: 'You are now identified.', nick: 'NickServ' },
+          { s: 3, msgid: 'n3', text: 'thanks', nick: `ts3${tag}`, self: true },
+        ],
+        [],
+        window,
+        `${caps} echo-message`,
+      );
+      expect({ caps, listed: listed(services.lines, 'NickServ') }).toEqual({
+        caps,
+        listed: at(2),
+      });
+    }
+  });
+
   it('keeps reactions out of attach playback, as soju does', async () => {
     const acct = harnessMod.seedAccount({ nick: 'rx11' });
     acct.upstream.addChannel('#att', { members: ['rx11', 'bob'] });
