@@ -914,13 +914,24 @@ export function loadHistoryWindow(
     newestFirst = false,
     events: forEvents,
     reactions = false,
-  }: { newestFirst?: boolean; events?: HistoryEvents | null; reactions?: boolean } = {},
+    withoutSelf = false,
+  }: {
+    newestFirst?: boolean;
+    events?: HistoryEvents | null;
+    reactions?: boolean;
+    withoutSelf?: boolean;
+  } = {},
 ): HistoryRow[] {
   const bufferId = resolveBufferIdByNetwork(networkId, target);
   if (bufferId === undefined) return [];
   const filter = historyFilter('', forEvents, forEvents?.me ? networkCasemapping(networkId) : null);
   const conds = ['buffer_id = ?', filter.sql];
   const params: (string | number | null)[] = [bufferId, ...filter.params];
+  // Our own lines, for a client the bouncer won't replay them to (a DM without
+  // self-message, a services buffer): left out HERE, so they don't use up the
+  // limit and hand back a short batch, which halloy and gamja read as the
+  // start of history (the reason historyFilter filters in SQL too).
+  if (withoutSelf) conds.push('self = 0');
   if (lower !== null) {
     conds.push('time > ?');
     params.push(lower);
@@ -941,7 +952,7 @@ export function loadHistoryWindow(
   if (reactions) {
     // The limit's worth from each, merged in the window's order: the first
     // `limit` of the merge are the first `limit` of both together.
-    const reacted = loadReactionWindow(networkId, bufferId, lower, upper, limit, dir);
+    const reacted = loadReactionWindow(networkId, bufferId, lower, upper, limit, dir, withoutSelf);
     window = mergeHistory(window, reacted, newestFirst).slice(0, limit);
   }
   return newestFirst ? window.toReversed() : window;
@@ -955,10 +966,27 @@ function historyRowToEvent(row: MessageRow): MessageEvent {
   return event;
 }
 
+// A reaction the bouncer can replay: one on a line history replays with its
+// msgid, since the TAGMSG's reply tag names it. So a line with a msgid, of a
+// kind the window holds (chathistoryMsgFilter), and not a decrypted E2E line,
+// which history replays without one (bouncer.ts networkMsgid). A reaction on a
+// line the client never gets would be an orphan, and would use up the limit.
+// `withoutSelf` as in loadHistoryWindow: neither our reactions nor any on our
+// lines. Shared with TARGETS, so it never lists activity a window won't hold.
+function replayableReactionSql(withoutSelf: boolean): string {
+  const conds = [
+    'm.msgid IS NOT NULL',
+    chathistoryMsgFilter('m'),
+    "NOT (json_valid(m.extra) AND COALESCE(json_extract(m.extra, '$.e2e'), 0))",
+  ];
+  if (withoutSelf) conds.push('r.self = 0', 'm.self = 0');
+  return conds.join(' AND ');
+}
+
 // The reactions made in a window of one buffer, in the window's order, each
-// with the msgid of the line it's on (a reaction is stored only on a line that
-// has one). Down idx_message_reactions_net_time: the network's reactions in the
-// time range, the buffer checked on the line each is on.
+// with the msgid of the line it's on. Down idx_message_reactions_net_time: the
+// network's reactions in the time range — one account's, since a network row
+// is — the buffer checked on the line each is on.
 function loadReactionWindow(
   networkId: number,
   bufferId: number,
@@ -966,8 +994,9 @@ function loadReactionWindow(
   upper: string | null,
   limit: number,
   dir: 'ASC' | 'DESC',
+  withoutSelf: boolean,
 ): HistoryReaction[] {
-  const conds = ['r.network_id = ?', 'm.buffer_id = ?', 'm.msgid IS NOT NULL'];
+  const conds = ['r.network_id = ?', 'm.buffer_id = ?', replayableReactionSql(withoutSelf)];
   const params: (string | number)[] = [networkId, bufferId];
   if (lower !== null) {
     conds.push('r.time > ?');
@@ -1007,22 +1036,18 @@ function loadReactionWindow(
 }
 
 // Two runs of history rows, each already in the window's order, merged into one.
-// Oldest first, a line sorts before a reaction at the same instant (a reaction
-// stored in the same millisecond as its line comes after it), and newest first
-// is the exact reverse, so a page read either way agrees about order.
+// Only a line and a reaction are ever compared. Oldest first, a line sorts
+// before a reaction at the same instant (a reaction stored in the same
+// millisecond as its line comes after it), and newest first is the exact
+// reverse, so a page read either way agrees about order.
 function mergeHistory(
   lines: HistoryRow[],
   reacted: HistoryReaction[],
   newestFirst: boolean,
 ): HistoryRow[] {
-  const rank = (r: HistoryRow) => (r.type === 'reaction' ? 1 : 0);
-  const cmp = (a: HistoryRow, b: HistoryRow) => {
-    const c =
-      a.time < b.time
-        ? -1
-        : a.time > b.time
-          ? 1
-          : rank(a) - rank(b) || (a.id as number) - (b.id as number);
+  // <= 0: the line goes first.
+  const cmp = (line: HistoryRow, reaction: HistoryReaction) => {
+    const c = line.time < reaction.time ? -1 : line.time > reaction.time ? 1 : -1;
     return newestFirst ? -c : c;
   };
   const out: HistoryRow[] = [];
@@ -1071,7 +1096,11 @@ export function listActiveTargetsInWindow(
   isoA: string,
   isoB: string,
   limit: number,
-  { events, reactions = false }: { events?: HistoryEvents | null; reactions?: boolean } = {},
+  {
+    events,
+    reactions = false,
+    withoutSelfInDms = false,
+  }: { events?: HistoryEvents | null; reactions?: boolean; withoutSelfInDms?: boolean } = {},
 ): BufferSummary[] {
   const [lo, hi] = isoA <= isoB ? [isoA, isoB] : [isoB, isoA];
   const filter = historyFilter('m', events, events?.me ? networkCasemapping(networkId) : null);
@@ -1112,6 +1141,9 @@ export function listActiveTargetsInWindow(
   // event-playback client — or goguma, which asks TARGETS what changed while it
   // was away, would never fetch a buffer whose only news is a reaction. A
   // reaction is its line's buffer's; idx_message_reactions_net_time finds them.
+  // Only one a window would replay (replayableReactionSql), and in a DM not our
+  // own or one on our line when the client takes no self-messages, or TARGETS
+  // would send it after a batch that comes back empty.
   return db
     .prepare(
       `SELECT target, MAX(t) AS lastMessageAt FROM (
@@ -1129,13 +1161,25 @@ export function listActiveTargetsInWindow(
            JOIN buffers b ON b.id = m.buffer_id
           WHERE r.network_id = ?
             AND ${buffersOnly}
+            AND ${replayableReactionSql(false)}
+            AND NOT (? AND b.kind = 'dm' AND (r.self = 1 OR m.self = 1))
             AND r.time > ? AND r.time < ?
        )
        GROUP BY bid
        ORDER BY lastMessageAt DESC
        LIMIT ?`,
     )
-    .all(networkId, ...filter.params, lo, hi, networkId, lo, hi, limit) as BufferSummary[];
+    .all(
+      networkId,
+      ...filter.params,
+      lo,
+      hi,
+      networkId,
+      withoutSelfInDms ? 1 : 0,
+      lo,
+      hi,
+      limit,
+    ) as BufferSummary[];
 }
 
 export function listRecentForBuffers(

@@ -941,6 +941,96 @@ describe('replies and reactions in history', () => {
     expect(other.lines.some((l) => l.includes('TARGETS #quiet'))).toBe(false);
   });
 
+  // A client that takes no self-messages is sent none of our DM lines, so
+  // they, our reactions and reactions on our lines stay out of the window
+  // itself: a batch short of its limit reads as the start of history.
+  it('fills the limit without our own DM lines, for a client that takes none', async () => {
+    const rows = [
+      { s: 1, msgid: 'a', text: 'first' },
+      { s: 2, msgid: 'm', text: 'mine', nick: 'sx1', userhost: 'sx1!s@h', self: true },
+      { s: 3, msgid: 'b', text: 'second' },
+    ];
+    const reactions = [
+      { on: 1, nick: 'bob', value: '👍', time: 4 },
+      { on: 0, nick: 'sx1', value: '👀', time: 5, self: true },
+    ];
+    const { lines } = await history('sx1', 'bob', rows, reactions, 'CHATHISTORY LATEST bob * 2');
+    expect(lines.map((l) => l.split(' :').pop())).toEqual(['first', 'second']);
+    // With echo-message they're ours to replay, and in the window.
+    const echo = await history(
+      'sx2',
+      'bob',
+      rows.map((r) => (r.self ? { ...r, nick: 'sx2', userhost: 'sx2!s@h' } : r)),
+      [reactions[0], { ...reactions[1], nick: 'sx2' }],
+      'CHATHISTORY LATEST bob * 2',
+      `${REACT_CAPS} echo-message`,
+    );
+    expect(echo.lines.map((l) => l.split(' ')[1])).toEqual([':bob!b@h', ':sx2!s@h']);
+    expect(echo.lines.every((l) => l.includes('TAGMSG'))).toBe(true);
+  });
+
+  // History replays a decrypted E2E line without a msgid, so nothing may name
+  // it: no reply tag on an E2E reply, no reaction on an E2E line.
+  it('names no E2E line: no reply tag, no reaction', async () => {
+    const { lines } = await history(
+      'e2x',
+      '#sec',
+      [
+        { s: 1, msgid: 'c1', text: 'secret', extra: { e2e: true } },
+        { s: 2, msgid: 'c2', text: 'reply', extra: { e2e: true }, replyMsgid: 'c1' },
+        { s: 3, msgid: 'p3', text: 'plain' },
+      ],
+      [{ on: 0, nick: 'alice', value: '👍', time: 4 }],
+      'CHATHISTORY LATEST #sec * 100',
+    );
+    expect(lines.map((l) => l.split(' :').pop())).toEqual(['secret', 'reply', 'plain']);
+    expect(lines.some((l) => l.includes('reply=') || l.includes('TAGMSG'))).toBe(false);
+  });
+
+  // Only on a line the window replays: a reaction on a mirrored copy (or a
+  // line without text) would be an orphan the client can't place.
+  it('replays no reaction on a line the window leaves out', async () => {
+    const { lines } = await history(
+      'rp1',
+      '#m',
+      [
+        { s: 1, msgid: 'm1', text: 'mirrored copy', type: 'notice', mirrored: true },
+        { s: 2, msgid: 'p2', text: 'real' },
+      ],
+      [{ on: 0, nick: 'alice', value: '👍', time: 3 }],
+      'CHATHISTORY LATEST #m * 100',
+    );
+    expect(lines.map((l) => l.split(' :').pop())).toEqual(['real']);
+  });
+
+  it('lists in TARGETS only reaction news a window would replay', async () => {
+    const window =
+      'CHATHISTORY TARGETS timestamp=2023-05-23T06:00:02.000Z timestamp=2023-05-24T00:00:00.000Z 100';
+    // Our reaction in a DM: news to a client that takes self-messages only.
+    const dm = [{ s: 1, msgid: 'p1', text: 'hi' }];
+    const mine = [{ on: 0, nick: 'tg1', value: '👍', time: 5, self: true }];
+    const noSelf = await history('tg1', 'bob', dm, mine, window);
+    expect(noSelf.lines.some((l) => l.includes('TARGETS bob'))).toBe(false);
+    const withSelf = await history(
+      'tg2',
+      'bob',
+      dm,
+      [{ ...mine[0], nick: 'tg2' }],
+      window,
+      `${REACT_CAPS} echo-message`,
+    );
+    expect(withSelf.lines.some((l) => l.includes('TARGETS bob'))).toBe(true);
+    // A reaction on an E2E line is no one's news.
+    const e2e = await history(
+      'tg3',
+      '#sec',
+      [{ s: 1, msgid: 'c1', text: 'secret', extra: { e2e: true } }],
+      [{ on: 0, nick: 'alice', value: '👍', time: 5 }],
+      window,
+    );
+    expect(e2e.lines.some((l) => l.includes('TARGETS #sec'))).toBe(false);
+  });
+
   it('keeps reactions out of attach playback, as soju does', async () => {
     const acct = harnessMod.seedAccount({ nick: 'rx11' });
     acct.upstream.addChannel('#att', { members: ['rx11', 'bob'] });

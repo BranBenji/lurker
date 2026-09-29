@@ -1875,6 +1875,7 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     const targets = listActiveTargetsInWindow(this.networkId, isoA, isoB, limit, {
       events: this.historyEvents(),
       reactions: this.replaysReactions(),
+      withoutSelfInDms: !this.wantsSelfMessages(),
     }).filter((t) => !closed.has(foldTargetFor(this.networkId, t.target)));
     this.withBatch('draft/chathistory-targets', [], (ref) => {
       const tag = ref ? `@batch=${ref} ` : '';
@@ -1899,6 +1900,8 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     const nid = this.networkId;
     const events = this.historyEvents();
     const reactions = this.replaysReactions();
+    // Our own lines this client won't be sent stay out of the window itself.
+    const withoutSelf = !this.replaysSelfLine(isChannelName(target), target);
     // Only LATEST's bound can be `*` (unbounded); every other bound is a
     // timestamp by the time we get here (the parser rejects `*` elsewhere).
     const iso = (b: ChatBound): string | null => ('iso' in b ? b.iso : null);
@@ -1908,14 +1911,20 @@ class BouncerSession implements MonitorHolder, ReplyClient {
           newestFirst: true,
           events,
           reactions,
+          withoutSelf,
         });
       case 'AFTER':
-        return loadHistoryWindow(nid, target, iso(bound0), null, limit, { events, reactions });
+        return loadHistoryWindow(nid, target, iso(bound0), null, limit, {
+          events,
+          reactions,
+          withoutSelf,
+        });
       case 'LATEST':
         return loadHistoryWindow(nid, target, iso(bound0), null, limit, {
           newestFirst: true,
           events,
           reactions,
+          withoutSelf,
         });
       case 'AROUND': {
         // Split the limit around the point: newest half before, earliest after.
@@ -1924,10 +1933,12 @@ class BouncerSession implements MonitorHolder, ReplyClient {
           newestFirst: true,
           events,
           reactions,
+          withoutSelf,
         });
         const newer = loadHistoryWindow(nid, target, iso(bound0), null, afterLimit, {
           events,
           reactions,
+          withoutSelf,
         });
         return [...older, ...newer];
       }
@@ -1941,6 +1952,7 @@ class BouncerSession implements MonitorHolder, ReplyClient {
           newestFirst: !ascending,
           events,
           reactions,
+          withoutSelf,
         });
       }
     }
@@ -2278,17 +2290,15 @@ class BouncerSession implements MonitorHolder, ReplyClient {
 
   // A stored reaction as the TAGMSG that made it (#991): its value, and the
   // reply tags naming the line it's on. No msgid — a reaction's own isn't kept.
-  // Only to a message-tags client (replaysReactions), which is the only kind a
-  // TAGMSG can reach.
+  // Only ever here for a message-tags client (replaysReactions decides), the
+  // only kind a TAGMSG can reach.
   private reactionLine(
     r: HistoryReaction,
     bufferTarget: string,
     isChannel: boolean,
     selfNick: string,
     batchRef: string | undefined,
-  ): string | null {
-    if (!this.caps.has('message-tags')) return null;
-    if (r.self && !this.replaysSelfLine(isChannel, bufferTarget)) return null;
+  ): string {
     const tags = this.formatTags({
       time: r.time,
       batchRef,
@@ -2310,8 +2320,7 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       // Reaction rows are here only for a client that takes them: the query
       // decides (replaysReactions).
       if (isHistoryReaction(row)) {
-        const line = this.reactionLine(row, bufferTarget, isChannel, selfNick, opts.batchRef);
-        if (line) out.push(line);
+        out.push(this.reactionLine(row, bufferTarget, isChannel, selfNick, opts.batchRef));
         continue;
       }
       // Event rows are here only for a draft/event-playback client: the query
@@ -2342,8 +2351,9 @@ class BouncerSession implements MonitorHolder, ReplyClient {
           time: row.time,
           msgid: networkMsgid(row),
           batchRef: opts.batchRef,
-          // A reply names the line it answers, as its sender tagged it (#991).
-          clientTags: row.replyMsgid ? replyTags(row.replyMsgid) : undefined,
+          // A reply names the line it answers, as its sender tagged it (#991) —
+          // not on an E2E line, whose parent history replays without a msgid.
+          clientTags: row.replyMsgid && !row.e2e ? replyTags(row.replyMsgid) : undefined,
         }),
       );
     }
