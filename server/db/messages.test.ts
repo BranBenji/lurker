@@ -1340,7 +1340,9 @@ describe('chathistory window queries', () => {
     at(net.id, '#o', '2023-05-23T06:00:02.000Z', 'newer');
     const oldId = at(net.id, '#o', '2023-05-23T06:00:01.000Z', 'older'); // higher id, older time
     // LATEST must return them oldest-first BY TIME, not by id.
-    const latest = loadHistoryWindow(net.id, '#o', null, null, 10, { newestFirst: true });
+    const latest = loadHistoryWindow(net.id, '#o', null, null, 10, {
+      newestFirst: true,
+    }) as Array<{ text: string | null }>;
     expect(latest.map((m) => m.text)).toEqual(['older', 'newer']);
     // BEFORE :02 selects the older-time row (id-ordering would have missed it).
     const before = loadHistoryWindow(net.id, '#o', null, '2023-05-23T06:00:02.000Z', 10, {

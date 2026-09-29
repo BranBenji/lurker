@@ -12,6 +12,7 @@ const ctx = setupTestDb('services-bouncer-chathistory');
 let harnessMod: typeof import('../test-utils/bouncerHarness.js');
 let bouncerMod: typeof import('./bouncer.js');
 let insertMessage: typeof import('../db/messages.js').insertMessage;
+let addReaction: typeof import('../db/reactions.js').addReaction;
 let harness: import('../test-utils/bouncerHarness.js').Harness;
 
 beforeAll(async () => {
@@ -19,6 +20,7 @@ beforeAll(async () => {
   harnessMod = await import('../test-utils/bouncerHarness.js');
   bouncerMod = await import('./bouncer.js');
   ({ insertMessage } = await import('../db/messages.js'));
+  ({ addReaction } = await import('../db/reactions.js'));
   harness = await harnessMod.startHarness();
 });
 
@@ -685,5 +687,291 @@ describe('draft/event-playback', () => {
     } finally {
       delete process.env.LURKER_BOUNCER_PLAYBACK;
     }
+  });
+});
+
+// #991: history carries what a reply and a reaction were on the wire. A reply
+// line gets its +reply tags back; a reaction comes back as the TAGMSG that made
+// it, in time order among the lines, to the clients soju sends them to.
+describe('replies and reactions in history', () => {
+  const REACT_CAPS = `${HISTORY_CAPS} draft/event-playback`;
+  const at = (s: number) => `2023-05-23T06:00:${String(s).padStart(2, '0')}.000Z`;
+  type Row = Partial<Parameters<typeof insertMessage>[0]>;
+  type Reaction = { on: number; nick: string; value: string; time: number; self?: boolean };
+
+  // Rows in `target` at the given seconds, reactions on them, then the lines one
+  // command's batch returns.
+  async function history(
+    nick: string,
+    target: string,
+    rows: Array<Row & { s: number }>,
+    reactions: Reaction[],
+    command: string,
+    caps = REACT_CAPS,
+  ): Promise<{ lines: string[]; ref: string }> {
+    const acct = harnessMod.seedAccount({ nick });
+    const ids = rows.map(({ s, ...row }) =>
+      Number(
+        insertMessage({
+          networkId: acct.network.id,
+          target,
+          time: at(s),
+          type: 'message',
+          nick: 'bob',
+          userhost: 'bob!u@h',
+          self: false,
+          ...row,
+        } as Parameters<typeof insertMessage>[0]).id,
+      ),
+    );
+    for (const r of reactions) {
+      addReaction({
+        messageId: ids[r.on],
+        networkId: acct.network.id,
+        nick: r.nick,
+        userhost: `${r.nick}!${r.nick[0]}@h`,
+        value: r.value,
+        self: !!r.self,
+        toSelf: false,
+        time: at(r.time),
+      });
+    }
+    const c = await harness.connect();
+    await attachBound(c, acct, caps);
+    c.send(command);
+    const open = await c.waitFor((l) => l.includes('BATCH +'));
+    const ref = open.split('BATCH +')[1].split(' ')[0];
+    await c.waitFor((l) => l.includes(`BATCH -${ref}`));
+    c.close();
+    return { lines: batchBodies(c.lines, ref), ref };
+  }
+
+  const reply = (msgid: string) => `+draft/reply=${msgid};+reply=${msgid}`;
+
+  it('tags a replayed reply with the msgid it answers', async () => {
+    const { lines, ref } = await history(
+      'rr1',
+      '#r',
+      [
+        { s: 1, msgid: 'p1', text: 'which branch?' },
+        {
+          s: 2,
+          msgid: 'r1',
+          text: 'the release one',
+          nick: 'carol',
+          userhost: 'carol!c@h',
+          replyMsgid: 'p1',
+        },
+      ],
+      [],
+      'CHATHISTORY LATEST #r * 100',
+      HISTORY_CAPS,
+    );
+    expect(lines).toEqual([
+      `@batch=${ref};time=${at(1)};msgid=p1 :bob!u@h PRIVMSG #r :which branch?`,
+      `@batch=${ref};time=${at(2)};msgid=r1;${reply('p1')} :carol!c@h PRIVMSG #r :the release one`,
+    ]);
+  });
+
+  it('tags only the first line of a multiline reply, and nothing without message-tags', async () => {
+    const rows = [{ s: 1, msgid: 'r1', text: 'one\ntwo', replyMsgid: 'p1' }];
+    const tagged = await history(
+      'rr2',
+      '#r',
+      rows,
+      [],
+      'CHATHISTORY LATEST #r * 100',
+      HISTORY_CAPS,
+    );
+    expect(tagged.lines).toHaveLength(2);
+    expect(tagged.lines[0]).toContain(reply('p1'));
+    expect(tagged.lines[1]).not.toContain('reply=');
+    const plain = await history(
+      'rr3',
+      '#r',
+      rows,
+      [],
+      'CHATHISTORY LATEST #r * 100',
+      'sasl batch server-time draft/chathistory',
+    );
+    expect(plain.lines.some((l) => l.includes('reply='))).toBe(false);
+  });
+
+  it('tags a reply in attach playback too', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'rr4' });
+    acct.upstream.addChannel('#att', { members: ['rr4', 'bob'] });
+    insertMessage({
+      networkId: acct.network.id,
+      target: '#att',
+      time: at(1),
+      type: 'message',
+      nick: 'bob',
+      userhost: 'bob!u@h',
+      text: 'sure',
+      self: false,
+      replyMsgid: 'p1',
+    });
+    const c = await harness.connect();
+    await attachBound(c, acct, 'sasl batch server-time message-tags');
+    c.send('PING sync');
+    await c.waitForCommand('PONG');
+    expect(c.lines.find((l) => l.includes('PRIVMSG #att :sure'))).toContain(reply('p1'));
+    c.close();
+  });
+
+  it('replays a reaction as its TAGMSG, at its own time among the lines', async () => {
+    const { lines, ref } = await history(
+      'rx1',
+      '#x',
+      [
+        { s: 1, msgid: 'p1', text: 'which branch?' },
+        { s: 2, msgid: 'p2', text: 'anyone?' },
+        { s: 4, msgid: 'p3', text: 'ok' },
+      ],
+      // On the first line, made after the second: it sits at :03, not beside
+      // the line it's on. A second one at :02 sorts after the line at :02.
+      [
+        { on: 0, nick: 'alice', value: '👍', time: 3 },
+        { on: 1, nick: 'carol', value: 'same', time: 2 },
+      ],
+      'CHATHISTORY LATEST #x * 100',
+    );
+    const tag = (s: number) => `@batch=${ref};time=${at(s)}`;
+    expect(lines).toEqual([
+      `${tag(1)};msgid=p1 :bob!u@h PRIVMSG #x :which branch?`,
+      `${tag(2)};msgid=p2 :bob!u@h PRIVMSG #x :anyone?`,
+      `${tag(2)};+draft/react=same;${reply('p2')} :carol!c@h TAGMSG #x`,
+      `${tag(3)};+draft/react=👍;${reply('p1')} :alice!a@h TAGMSG #x`,
+      `${tag(4)};msgid=p3 :bob!u@h PRIVMSG #x :ok`,
+    ]);
+  });
+
+  // halloy pages on the times a batch holds, reactions included, so a reaction
+  // counts toward the limit and the next page starts where this one ended.
+  it('counts reactions toward the limit, and pages on without a gap', async () => {
+    const rows = [
+      { s: 1, msgid: 'p1', text: 'one' },
+      { s: 2, msgid: 'p2', text: 'two' },
+      { s: 4, msgid: 'p3', text: 'four' },
+    ];
+    const reactions = [{ on: 0, nick: 'alice', value: '👍', time: 3 }];
+    const latest = await history('rx2', '#x', rows, reactions, 'CHATHISTORY LATEST #x * 2');
+    expect(latest.lines.map((l) => l.split(' ').slice(1).join(' '))).toEqual([
+      ':alice!a@h TAGMSG #x',
+      ':bob!u@h PRIVMSG #x :four',
+    ]);
+    const before = await history(
+      'rx3',
+      '#x',
+      rows,
+      reactions,
+      `CHATHISTORY BEFORE #x timestamp=${at(3)} 2`,
+    );
+    expect(before.lines.map((l) => l.split(' :').pop())).toEqual(['one', 'two']);
+    const after = await history(
+      'rx4',
+      '#x',
+      rows,
+      reactions,
+      `CHATHISTORY AFTER #x timestamp=${at(2)} 1`,
+    );
+    expect(after.lines).toHaveLength(1);
+    expect(after.lines[0]).toContain('TAGMSG #x');
+  });
+
+  // soju's rule: only an event-playback client gets them, and a TAGMSG never
+  // reaches a client without message-tags. Neither counts them.
+  it('replays no reactions to a client without event-playback or message-tags', async () => {
+    const rows = [
+      { s: 1, msgid: 'p1', text: 'one' },
+      { s: 2, msgid: 'p2', text: 'two' },
+    ];
+    const reactions = [{ on: 0, nick: 'alice', value: '👍', time: 3 }];
+    for (const [nick, caps] of [
+      ['rx5', HISTORY_CAPS],
+      ['rx6', 'sasl batch server-time draft/chathistory draft/event-playback'],
+    ]) {
+      const { lines } = await history(
+        nick,
+        '#x',
+        rows,
+        reactions,
+        'CHATHISTORY LATEST #x * 2',
+        caps,
+      );
+      expect({ caps, lines: lines.map((l) => l.split(' :').pop()) }).toEqual({
+        caps,
+        lines: ['one', 'two'],
+      });
+    }
+  });
+
+  it('addresses our own reaction in a DM as our own line, only to a client that takes those', async () => {
+    const rows = [{ s: 1, msgid: 'p1', text: 'hi', nick: 'bob', userhost: 'bob!u@h' }];
+    const reactions = [{ on: 0, nick: 'rx7', value: '👋', time: 2, self: true }];
+    const withEcho = await history(
+      'rx7',
+      'bob',
+      rows,
+      reactions,
+      'CHATHISTORY LATEST bob * 10',
+      `${REACT_CAPS} echo-message`,
+    );
+    expect(withEcho.lines[1]).toContain(`${reply('p1')} :rx7!r@h TAGMSG bob`);
+    const without = await history(
+      'rx8',
+      'bob',
+      rows,
+      [{ ...reactions[0], nick: 'rx8' }],
+      'CHATHISTORY LATEST bob * 10',
+    );
+    expect(without.lines.some((l) => l.includes('TAGMSG'))).toBe(false);
+  });
+
+  it('lists a buffer whose only news is a reaction among TARGETS, for a client that takes them', async () => {
+    const window =
+      'CHATHISTORY TARGETS timestamp=2023-05-23T06:00:02.000Z timestamp=2023-05-24T00:00:00.000Z 100';
+    const rows = [{ s: 1, msgid: 'p1', text: 'old line' }];
+    const reactions = [{ on: 0, nick: 'alice', value: '👍', time: 5 }];
+    const taker = await history('rx9', '#quiet', rows, reactions, window);
+    expect(taker.lines.find((l) => l.includes('TARGETS #quiet'))).toContain(
+      `TARGETS #quiet ${at(5)}`,
+    );
+    const other = await history('rx10', '#quiet', rows, reactions, window, HISTORY_CAPS);
+    expect(other.lines.some((l) => l.includes('TARGETS #quiet'))).toBe(false);
+  });
+
+  it('keeps reactions out of attach playback, as soju does', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'rx11' });
+    acct.upstream.addChannel('#att', { members: ['rx11', 'bob'] });
+    const id = Number(
+      insertMessage({
+        networkId: acct.network.id,
+        target: '#att',
+        time: at(1),
+        type: 'message',
+        nick: 'bob',
+        userhost: 'bob!u@h',
+        text: 'hi',
+        self: false,
+        msgid: 'p1',
+      }).id,
+    );
+    addReaction({
+      messageId: id,
+      networkId: acct.network.id,
+      nick: 'alice',
+      value: '👍',
+      self: false,
+      toSelf: false,
+      time: at(2),
+    });
+    const c = await harness.connect();
+    await attachBound(c, acct, 'sasl batch server-time message-tags draft/event-playback');
+    c.send('PING sync');
+    await c.waitForCommand('PONG');
+    expect(c.lines.some((l) => l.includes('PRIVMSG #att :hi'))).toBe(true);
+    expect(c.lines.some((l) => l.includes('TAGMSG'))).toBe(false);
+    c.close();
   });
 });
