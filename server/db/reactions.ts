@@ -6,7 +6,8 @@ import { resolveBuffer } from './bufferResolve.js';
 import type { MessageReaction } from '../../shared/reactions.js';
 
 // IRCv3 reactions — see the message_reactions table in db/index.ts for the
-// model. Rows hold standing state: react inserts, unreact deletes. How they
+// model. A react inserts; an unreact leaves the row as a tombstone (removed_at,
+// #1009), which everything showing where reactions stand must skip. How they
 // reach clients: attached to message rows (REACTIONS_COL in db/messages.ts),
 // plus a live `reaction` frame when one changes.
 
@@ -50,9 +51,12 @@ const insertStmt = db.prepare(`
 
 // An unreact leaves a tombstone (#1009): the row stays, stamped with when the
 // reaction was taken back, for bouncer history to replay. Only a standing
-// reaction can be taken back.
+// reaction can be taken back. Never earlier than the react: the two times can
+// come from different clocks (one line's server-time, the other's arrival),
+// and history replays each at its own — an unreact sorted before its react
+// would leave the reaction standing on the client.
 const removeStmt = db.prepare(`
-  UPDATE message_reactions SET removed_at = ?
+  UPDATE message_reactions SET removed_at = MAX(time, ?)
   WHERE message_id = ? AND nick_folded = ? AND value = ? AND removed_at IS NULL
 `);
 
@@ -61,6 +65,14 @@ const removeStmt = db.prepare(`
 // id) shows it as new and its chip goes last. The unreact it replaces leaves
 // history with it, which a client needs no more: the react that follows says
 // where things stand.
+//
+// Unless the react is older than the unreact: a replayed one (an upstream's
+// playback, a stale TAGMSG) must not bring back what was since taken back. The
+// tombstone is the record that it was.
+const tombstoneStmt = db.prepare(`
+  SELECT removed_at FROM message_reactions
+  WHERE message_id = ? AND nick_folded = ? AND value = ? AND removed_at IS NOT NULL
+`);
 const clearTombstoneStmt = db.prepare(`
   DELETE FROM message_reactions
   WHERE message_id = ? AND nick_folded = ? AND value = ? AND removed_at IS NOT NULL
@@ -81,7 +93,13 @@ export interface ReactionWrite {
 // unreact for something never reacted) publishes nothing.
 export const addReaction = db.transaction((r: ReactionWrite): boolean => {
   const nickFolded = r.nick.toLowerCase();
-  clearTombstoneStmt.run(r.messageId, nickFolded, r.value);
+  const tombstone = tombstoneStmt.get(r.messageId, nickFolded, r.value) as
+    | { removed_at: string }
+    | undefined;
+  if (tombstone) {
+    if (r.time < tombstone.removed_at) return false;
+    clearTombstoneStmt.run(r.messageId, nickFolded, r.value);
+  }
   const info = insertStmt.run({
     messageId: r.messageId,
     networkId: r.networkId,
@@ -97,7 +115,7 @@ export const addReaction = db.transaction((r: ReactionWrite): boolean => {
 });
 
 const removeSelfStmt = db.prepare(`
-  UPDATE message_reactions SET removed_at = ?
+  UPDATE message_reactions SET removed_at = MAX(time, ?)
   WHERE message_id = ? AND self = 1 AND value = ? AND removed_at IS NULL
 `);
 
@@ -164,7 +182,7 @@ export function reactionSendTarget(userId: number, messageId: number): ReactionS
 }
 
 // The reactions feed: other people's reactions to the user's own lines, newest
-// reaction first. Walks idx_message_reactions_to_self per network. Filters
+// reaction first. Walks idx_message_reactions_to_self_standing per network. Filters
 // mirror the highlights feed's from:/in:/on: + free text, applied to the
 // reaction (from: = who reacted) and the line it's on (in:, text).
 export interface ReactionFeedItem {

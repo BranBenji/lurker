@@ -127,6 +127,50 @@ describe('reactions on message rows', () => {
     ).toEqual(['carol']);
   });
 
+  // A react older than the unreact that took it back — an upstream's playback,
+  // a stale TAGMSG — must not bring it back.
+  it('stay taken back when an older react arrives', () => {
+    const id = line();
+    const at = (s: number) => `2026-09-29T10:00:0${s}.000Z`;
+    const put = (time: string) =>
+      addReaction({
+        messageId: id,
+        networkId: net.id,
+        nick: 'bob',
+        value: '👍',
+        self: false,
+        toSelf: false,
+        time,
+      });
+    put(at(1));
+    removeReaction(id, 'bob', '👍', false, at(3));
+    expect(put(at(2))).toBe(false);
+    expect(rowById(id)!.reactions).toBeUndefined();
+    // A newer one does.
+    expect(put(at(4))).toBe(true);
+    expect(rowById(id)!.reactions).toEqual([{ nick: 'bob', value: '👍', self: false }]);
+  });
+
+  // Different clocks can stamp the unreact earlier than its react; history
+  // replays each at its own time, so it's never allowed to come first.
+  it('are never taken back before they were made', () => {
+    const id = line();
+    addReaction({
+      messageId: id,
+      networkId: net.id,
+      nick: 'bob',
+      value: '👍',
+      self: false,
+      toSelf: false,
+      time: '2026-09-29T10:00:05.000Z',
+    });
+    removeReaction(id, 'bob', '👍', false, '2026-09-29T10:00:01.000Z');
+    const row = db
+      .prepare('SELECT removed_at FROM message_reactions WHERE message_id = ?')
+      .get(id) as { removed_at: string };
+    expect(row.removed_at).toBe('2026-09-29T10:00:05.000Z');
+  });
+
   // A re-react replaces the tombstone with a fresh row: a fresh id, so the
   // activity feed (paged by id) shows it as new and its chip goes last.
   it('come back as a fresh row after being taken back', () => {
@@ -138,7 +182,8 @@ describe('reactions on message rows', () => {
         .prepare('SELECT id FROM message_reactions WHERE message_id = ? AND nick = ?')
         .get(id, 'bob') as { id: number }
     ).id;
-    removeReaction(id, 'bob', '👍', false, T);
+    // The helper reacts on the real clock; the re-react must not predate this.
+    removeReaction(id, 'bob', '👍', false, new Date().toISOString());
     expect(react(id, 'Bob', '👍')).toBe(true);
     const rows = db
       .prepare(

@@ -26,6 +26,7 @@ let pinBuffer: typeof import('../db/pinnedBuffers.js').pinBuffer;
 let addRule: typeof import('../db/ignoredMasks.js').addRule;
 let addBookmark: typeof import('../db/bookmarks.js').addBookmark;
 let addReaction: typeof import('../db/reactions.js').addReaction;
+let removeReaction: typeof import('../db/reactions.js').removeReaction;
 // Seed an ALL-level ignore the way the pre-#301 addMask helper did.
 function addMask(args: { userId: number; networkId: number; mask: string }) {
   return addRule({
@@ -61,7 +62,7 @@ beforeAll(async () => {
   ({ pinBuffer } = await import('../db/pinnedBuffers.js'));
   ({ addRule } = await import('../db/ignoredMasks.js'));
   ({ addBookmark } = await import('../db/bookmarks.js'));
-  ({ addReaction } = await import('../db/reactions.js'));
+  ({ addReaction, removeReaction } = await import('../db/reactions.js'));
   ({ buildExportZip, buildExportFilename, computeExportPreview } =
     await import('./exportService.js'));
   ({ EXPORT_FORMAT_VERSION } = await import('../db/exportSchema.js'));
@@ -263,7 +264,6 @@ describe('buildExportZip', () => {
         to_self: 1,
         time: '2026-05-17T10:02:00Z',
         userhost: 'bob!b@host',
-        removed_at: null,
       },
     ]);
     const manifest = JSON.parse(withHistory.get('manifest.json')!.toString('utf8')) as {
@@ -280,6 +280,25 @@ describe('buildExportZip', () => {
 
     const settingsOnly = await readZipToMap(await runExport(alice.id, { includeMessages: false }));
     expect(settingsOnly.has('reactions.json')).toBe(false);
+
+    // A tombstone (#1009) stays behind: an older importer, which knows no
+    // removed_at, would restore it as a reaction standing again.
+    addReaction({
+      messageId: aliceMsg1.id as number,
+      networkId: aliceNetA.id,
+      nick: 'carol',
+      value: '🎉',
+      self: false,
+      toSelf: true,
+      time: '2026-05-17T10:03:00Z',
+    });
+    removeReaction(aliceMsg1.id as number, 'carol', '🎉', false, '2026-05-17T10:04:00Z');
+    const later = await readZipToMap(await runExport(alice.id, { includeMessages: true }));
+    const exported = JSON.parse(later.get('reactions.json')!.toString('utf8')) as Array<{
+      nick: string;
+    }>;
+    expect(exported.map((r) => r.nick)).toEqual(['bob']);
+    expect(computeExportPreview(db, alice.id, { includeMessages: true }).message_reactions).toBe(1);
     expect(computeExportPreview(db, alice.id, { includeMessages: false }).message_reactions).toBe(
       0,
     );

@@ -537,7 +537,7 @@ export const EXPORT_TABLES = Object.freeze({
     },
   },
 
-  // Reactions standing on the user's lines (#992). They hang off messages(id),
+  // Reactions on the user's lines (#992). They hang off messages(id),
   // so like bookmarks they travel only with message history, in their own
   // reactions.json: the generic data.json path would fail the NOT NULL
   // message_id on a history-less import. Rekeyed through the messages id map in
@@ -548,10 +548,17 @@ export const EXPORT_TABLES = Object.freeze({
   // skipped as the live insert skips one (ON CONFLICT DO NOTHING) rather than
   // failing the whole import, and nick_folded is recomputed on import (derived
   // state, like buffers.target_folded).
+  //
+  // Standing reactions only: not the tombstones an unreact leaves (#1009). An
+  // older importer builds its insert from its own column list, which has no
+  // removed_at, and would restore every one as a reaction standing again — and
+  // a bump would refuse the whole archive to it. What stays behind is only the
+  // unreacts in bouncer history from before the move.
   message_reactions: {
     mode: 'export',
     scope: 'via_network',
     section: 'reactions',
+    rowWhere: 'removed_at IS NULL',
     orderBy: 'id',
     insertOrIgnore: true,
     fkRekey: { message_id: 'messages', network_id: 'networks' },
@@ -565,14 +572,14 @@ export const EXPORT_TABLES = Object.freeze({
       'to_self',
       'time',
       'userhost',
-      // A tombstone (#1009) travels too, so bouncer history after an import
-      // still says the reaction was taken back.
-      'removed_at',
     ],
     skippedColumns: {
       id:
         'local autoincrement; nothing exported references it (the activity feed pages on it, ' +
         'and a fresh sequence pages the same way)',
+      removed_at:
+        'only standing reactions are exported (rowWhere), so it is always NULL; tombstones ' +
+        '(#1009) stay behind, as an older importer would restore them as standing',
     },
   },
 

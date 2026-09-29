@@ -622,8 +622,9 @@ function migrate() {
       ON user_bookmarks(user_id, message_id DESC);
 
     -- IRCv3 reactions (+draft/react / +draft/unreact, keyed to their parent by
-    -- +reply). One row per (message, reactor, value) currently standing: a
-    -- react inserts, an unreact deletes, so the table holds state, not a log.
+    -- +reply). One row per (message, reactor, value): a react inserts, and an
+    -- unreact leaves the row as a tombstone (removed_at, added below, #1009) for
+    -- bouncer history. Everything showing where reactions stand skips those.
     -- The message_id FK cascades, so retention and buffer/network deletes take a
     -- line's reactions with it. A reaction whose parent we never stored is
     -- dropped at receive time rather than parked — there's nothing to hang it on.
@@ -648,8 +649,8 @@ function migrate() {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_message_reactions_key
       ON message_reactions(message_id, nick_folded, value);
-    CREATE INDEX IF NOT EXISTS idx_message_reactions_to_self
-      ON message_reactions(network_id, id) WHERE to_self = 1 AND self = 0;
+    -- The feed's partial index is idx_message_reactions_to_self_standing, below:
+    -- it needs removed_at, which a table created here doesn't have yet.
 
     -- Saved theme presets: per-user snapshots of the \`themed\` settings-registry
     -- keys (shared/settingsRegistry.ts), stored as one JSON object per theme.
@@ -1313,6 +1314,12 @@ ensureColumn('message_reactions', 'removed_at', 'TEXT');
 db.exec(`CREATE INDEX IF NOT EXISTS idx_message_reactions_net_removed
          ON message_reactions(network_id, removed_at)
          WHERE removed_at IS NOT NULL`);
+// The activity feed's range, standing reactions only, so it never walks past
+// tombstones. Replaces idx_message_reactions_to_self, which kept them.
+db.exec(`CREATE INDEX IF NOT EXISTS idx_message_reactions_to_self_standing
+         ON message_reactions(network_id, id)
+         WHERE to_self = 1 AND self = 0 AND removed_at IS NULL`);
+db.exec(`DROP INDEX IF EXISTS idx_message_reactions_to_self`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_msgid
          ON messages(network_id, msgid)
          WHERE msgid IS NOT NULL`);

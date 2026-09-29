@@ -1148,6 +1148,7 @@ type AnyTableDef = {
   pk?: string;
   fkRekey?: Record<string, string>;
   blobColumns?: string[];
+  rowWhere?: string;
 };
 
 // Columns re-derived on the target instance rather than round-tripped verbatim,
@@ -1306,6 +1307,7 @@ describe('importFromZipBuffer — end-to-end equivalence', () => {
       time: '2026-05-17T10:04:00Z',
     });
     removeReaction(m1.id as number, 'carol', '🎉', false, '2026-05-17T10:05:00Z');
+    // (Left behind by the export — see the tombstone test.)
     setReadState(user.id, net1.id, '#general', m2.id as number);
     writeAwayMarker(user.id, {
       awayDatetime: '2026-05-17T11:00:00Z',
@@ -1362,6 +1364,9 @@ describe('importFromZipBuffer — end-to-end equivalence', () => {
       default:
         throw new Error(`unknown scope ${def.scope}`);
     }
+    // The rows the exporter selects: a table's rowWhere leaves some behind on
+    // purpose (reaction tombstones, #1009), so they're no part of equivalence.
+    if (def.rowWhere) sql += ` AND (${def.rowWhere})`;
     return db.prepare(sql).all(userId) as Record<string, unknown>[];
   }
 
