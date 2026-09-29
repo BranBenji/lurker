@@ -58,17 +58,17 @@ function line(nick: string, text: string, extra: Record<string, unknown> = {}) {
   };
 }
 
-function mountWith(messages: Record<string, unknown>[]) {
+function mountWith(messages: Record<string, unknown>[], target = '#chan') {
   const networks = useNetworksStore();
   const buffers = useBuffersStore();
   networks.networks = [{ id: 1, name: 'testnet' }] as never;
   networks.states = { 1: { nick: 'me', state: 'connected', peerPresence: {} } } as never;
-  const b = buffers.ensure(1, '#chan', 9);
+  const b = buffers.ensure(1, target, 9);
   b.messages = messages as never;
   b.joined = true;
   b.hasMoreOlder = false;
   b.lastReadId = 999;
-  networks.activeKey = KEY;
+  networks.activeKey = `1::${target}`;
   wrapper = mount(MessageList, { attachTo: document.body });
   return wrapper;
 }
@@ -336,6 +336,32 @@ describe('MessageList — replies', () => {
       .find((b) => b.attributes('title') === 'Reply to alice');
     await reply!.trigger('click');
     expect(useRepliesStore().forKey(KEY)).toMatchObject({ messageId: p.id, nick: 'alice' });
+  });
+
+  // #1015: in a DM the line goes to them anyway, so `alice: ` is only noise —
+  // and what she'd see, on a client that doesn't show replies.
+  it('does not address the other side of a DM', async () => {
+    const address = vi.spyOn(composerOverlay, 'addressNick');
+    const focus = vi.spyOn(composerOverlay, 'focusComposer');
+    const tagged = line('alice', 'what time is it?', { msgid: 'm1', target: 'alice' });
+    const untagged = line('alice', 'and where?', { target: 'alice' });
+    const w = mountWith([tagged, untagged], 'alice');
+    const replyOn = (id: number) =>
+      rowOf(w, id)
+        .findAll('.row-actions button')
+        .find((b) => b.attributes('title') === 'Reply to alice')!;
+    await replyOn(tagged.id).trigger('click');
+    expect(useRepliesStore().forKey('1::alice')).toMatchObject({
+      messageId: tagged.id,
+      nick: 'alice',
+    });
+    expect(useRepliesStore().forKey('1::alice')?.addressed).toBeFalsy();
+    // With no msgid there's no reply to start; the Reply still lands you in the composer.
+    useRepliesStore().cancel('1::alice');
+    await replyOn(untagged.id).trigger('click');
+    expect(useRepliesStore().forKey('1::alice')).toBeNull();
+    expect(focus).toHaveBeenCalledTimes(2);
+    expect(address).not.toHaveBeenCalled();
   });
 
   // No reply tag would go out, and your own line has no address to fall back on.

@@ -786,8 +786,11 @@ const actionContext: MessageContext = {
         self: !!msg.self,
       });
     }
-    if (!msg.self) addressNick(msg.nick);
-    else if (started) focusComposer();
+    // In a DM there's nobody else it could be for, so no address there either
+    // (halloy skips it in queries too, #1015): the line goes to them anyway.
+    const inDm = buffer.value?.kind === 'dm';
+    if (!msg.self && !inDm) addressNick(msg.nick);
+    else if (started || inDm) focusComposer();
   },
   onIgnore: (msg) => {
     const { user, host } = parseUserHost(msg.userhost);
