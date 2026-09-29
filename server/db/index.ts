@@ -1297,6 +1297,12 @@ ensureColumn('messages', 'msgid', 'TEXT');
 // The reactor's hostmask, as the reaction arrived — so the activity feed can
 // apply a host-mask ignore added after the fact, as message rows do.
 ensureColumn('message_reactions', 'userhost', 'TEXT');
+// The reactions in a stretch of a network's history, in time order: the
+// bouncer's CHATHISTORY replays them among the lines they stand on (#991), as
+// soju replays the TAGMSGs it stores. The table has no other index a network +
+// time range can use, and it holds every user's reactions.
+db.exec(`CREATE INDEX IF NOT EXISTS idx_message_reactions_net_time
+         ON message_reactions(network_id, time)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_msgid
          ON messages(network_id, msgid)
          WHERE msgid IS NOT NULL`);

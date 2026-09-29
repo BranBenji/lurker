@@ -70,12 +70,13 @@ import {
   HISTORY_EVENT_TYPES,
   listBuffersForNetwork,
   listRecentMessages,
+  isHistoryReaction,
   loadHistoryWindow,
   listActiveTargetsInWindow,
   readMarkerTime,
   newestIdAtOrBefore,
 } from '../db/messages.js';
-import type { HistoryEvents, MessageEvent } from '../db/messages.js';
+import type { HistoryEvents, HistoryReaction, HistoryRow, MessageEvent } from '../db/messages.js';
 import { getReadState } from '../db/bufferReads.js';
 import { resolveBuffer } from '../db/bufferResolve.js';
 import type { AwayChange, ReadMarkerMove } from './ircManager.js';
@@ -110,6 +111,7 @@ import {
   withoutUpstreamFilehost,
 } from './bouncerClientFilter.js';
 import type { MonitorHolder } from './monitorList.js';
+import { isServicesNick } from '../utils/servicesNick.js';
 import type { ReplyClient } from './replyRouter.js';
 
 const SERVER_NAME = 'lurker.bouncer';
@@ -642,27 +644,7 @@ function isChannelName(target: string): boolean {
   return isChannelTarget(target);
 }
 
-// Network-services pseudo-users (NickServ/ChanServ/…). Playback replays their
-// buffers like any DM, but never the user's OWN lines to them — the self side
-// routinely contains credentials (`msg NickServ IDENTIFY <password>` from a
-// client's perform/on-connect) that would otherwise land in every attached
-// client's logs on every reconnect.
-export function isServicesNick(nick: string): boolean {
-  const lower = nick.toLowerCase();
-  // *serv (NickServ/ChanServ/AuthServ/…) covers most networks; the short list
-  // catches well-known non-*serv auth bots (QuakeNet Q, Undernet X/W) whose
-  // self-lines also carry AUTH credentials. Best-effort — over-matching only
-  // withholds a user's own DMs from playback; the durable fix is tagging
-  // credential-bearing messages at persist time.
-  return (
-    /^[a-z]+serv$/.test(lower) ||
-    lower === 'global' ||
-    lower === 'services' ||
-    lower === 'q' ||
-    lower === 'x' ||
-    lower === 'w'
-  );
-}
+export { isServicesNick };
 
 // IRCv3 message-tag value escaping (space→\s, ;→\:, \→\\, CR→\r, LF→\n). Used
 // to encode a network's `key=value;…` attribute list for BOUNCER NETWORK.
@@ -785,6 +767,25 @@ export function attachedSessionCount(userId?: number, networkId?: number): numbe
 // ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
+
+// The tag block for a replayed line (formatTags). `clientTags` are client-only
+// tags (`+reply`, `+draft/react`), which need message-tags.
+interface ReplayTags {
+  time?: string;
+  msgid?: string;
+  batchRef?: string;
+  clientTags?: Array<[string, string]>;
+}
+
+// A reply's tags as a line replayed from history carries them (#991): both
+// names, as halloy and goguma send them and Lurker reads them — `+reply` is the
+// ratified one, `+draft/reply` what older clients still read.
+function replyTags(msgid: string): Array<[string, string]> {
+  return [
+    ['+draft/reply', msgid],
+    ['+reply', msgid],
+  ];
+}
 
 class BouncerSession implements MonitorHolder, ReplyClient {
   readonly caps = new Set<string>();
@@ -1854,6 +1855,8 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     // on an rfc1459 network) slips past and gets re-offered.
     const targets = listActiveTargetsInWindow(this.networkId, isoA, isoB, limit, {
       events: this.historyEvents(),
+      reactions: this.replaysReactions(),
+      withoutSelfInDms: !this.wantsSelfMessages(),
     }).filter((t) => !closed.has(foldTargetFor(this.networkId, t.target)));
     this.withBatch('draft/chathistory-targets', [], (ref) => {
       const tag = ref ? `@batch=${ref} ` : '';
@@ -1874,9 +1877,12 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     bound0: ChatBound,
     bound1: ChatBound | null,
     limit: number,
-  ): MessageEvent[] {
+  ): HistoryRow[] {
     const nid = this.networkId;
     const events = this.historyEvents();
+    const reactions = this.replaysReactions();
+    // Our own lines this client won't be sent stay out of the window itself.
+    const withoutSelf = !this.replaysSelfLine(isChannelName(target), target);
     // Only LATEST's bound can be `*` (unbounded); every other bound is a
     // timestamp by the time we get here (the parser rejects `*` elsewhere).
     const iso = (b: ChatBound): string | null => ('iso' in b ? b.iso : null);
@@ -1885,13 +1891,21 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         return loadHistoryWindow(nid, target, null, iso(bound0), limit, {
           newestFirst: true,
           events,
+          reactions,
+          withoutSelf,
         });
       case 'AFTER':
-        return loadHistoryWindow(nid, target, iso(bound0), null, limit, { events });
+        return loadHistoryWindow(nid, target, iso(bound0), null, limit, {
+          events,
+          reactions,
+          withoutSelf,
+        });
       case 'LATEST':
         return loadHistoryWindow(nid, target, iso(bound0), null, limit, {
           newestFirst: true,
           events,
+          reactions,
+          withoutSelf,
         });
       case 'AROUND': {
         // Split the limit around the point: newest half before, earliest after.
@@ -1899,8 +1913,14 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         const older = loadHistoryWindow(nid, target, null, iso(bound0), limit - afterLimit, {
           newestFirst: true,
           events,
+          reactions,
+          withoutSelf,
         });
-        const newer = loadHistoryWindow(nid, target, iso(bound0), null, afterLimit, { events });
+        const newer = loadHistoryWindow(nid, target, iso(bound0), null, afterLimit, {
+          events,
+          reactions,
+          withoutSelf,
+        });
         return [...older, ...newer];
       }
       case 'BETWEEN': {
@@ -1912,13 +1932,15 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         return loadHistoryWindow(nid, target, ascending ? a : b, ascending ? b : a, limit, {
           newestFirst: !ascending,
           events,
+          reactions,
+          withoutSelf,
         });
       }
     }
     return [];
   }
 
-  private sendChatHistoryBatch(target: string, rows: MessageEvent[]): void {
+  private sendChatHistoryBatch(target: string, rows: HistoryRow[]): void {
     this.withBatch('chathistory', [target], (ref) => {
       const lines = this.playbackLines(rows, target, isChannelName(target), {
         batchRef: ref ?? undefined,
@@ -1932,6 +1954,17 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   private historyEvents(): HistoryEvents | null {
     if (!this.caps.has(CAP_EVENT_PLAYBACK)) return null;
     return { me: this.currentNick() || this.network?.nick || null };
+  }
+
+  // Whether this client's history windows hold the reactions made in them, as
+  // TAGMSGs (#991). soju's rule: its store keeps a reaction TAGMSG with no text,
+  // and a window without draft/event-playback takes only rows with text
+  // (database/sqlite.go `m.text IS NOT NULL`), so only an event-playback client
+  // gets them — goguma and halloy ask for it. And a TAGMSG never goes to a client
+  // without message-tags (downstream.go SendMessage). Attach playback never
+  // replays them, as soju's backlog doesn't (it loads without Events).
+  private replaysReactions(): boolean {
+    return this.caps.has(CAP_EVENT_PLAYBACK) && this.caps.has('message-tags');
   }
 
   // Parse a CHATHISTORY selector — `*` (LATEST only) or `timestamp=<iso>`. msgid
@@ -2125,13 +2158,17 @@ class BouncerSession implements MonitorHolder, ReplyClient {
 
   // Assemble the leading IRCv3 tag block for a replayed line, honoring the
   // client's negotiated caps. `batch` ties a line to an open BATCH; `time`
-  // needs server-time; `msgid` needs message-tags.
-  private formatTags(opts: { time?: string; msgid?: string; batchRef?: string }): string {
+  // needs server-time; `msgid` and client-only tags (`+reply`, `+draft/react`)
+  // need message-tags.
+  private formatTags(opts: ReplayTags): string {
     const tags: string[] = [];
     if (opts.batchRef) tags.push(`batch=${opts.batchRef}`);
     if (opts.time && this.caps.has('server-time')) tags.push(`time=${toIrcTime(opts.time)}`);
-    if (opts.msgid && this.caps.has('message-tags')) {
-      tags.push(`msgid=${escapeTagValue(opts.msgid)}`);
+    if (this.caps.has('message-tags')) {
+      if (opts.msgid) tags.push(`msgid=${escapeTagValue(opts.msgid)}`);
+      for (const [name, value] of opts.clientTags ?? []) {
+        tags.push(`${name}=${escapeTagValue(value)}`);
+      }
     }
     return tags.length > 0 ? `@${tags.join(';')} ` : '';
   }
@@ -2139,16 +2176,15 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   // A stored message as client lines, one per body line. As in the live
   // multiline fallback (bouncerClientFilter.ts), blank lines are skipped and
   // only the first line carries the msgid: halloy drops a later line that
-  // repeats an id as a duplicate.
-  private messageLines(
-    head: string,
-    bodies: string[],
-    tags: { time?: string; msgid?: string; batchRef?: string },
-  ): string[] {
+  // repeats an id as a duplicate. The reply tag rides with it — the first line
+  // is the message's, as a multiline reply's tag rides its BATCH line.
+  private messageLines(head: string, bodies: string[], tags: ReplayTags): string[] {
     const out: string[] = [];
     for (const body of bodies) {
       if (body === '') continue;
-      const block = this.formatTags(out.length === 0 ? tags : { ...tags, msgid: undefined });
+      const block = this.formatTags(
+        out.length === 0 ? tags : { ...tags, msgid: undefined, clientTags: undefined },
+      );
       out.push(`${block}${head} :${body}`);
     }
     return out;
@@ -2199,8 +2235,62 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     return null;
   }
 
+  // Whether a stored line from us in a DM may be replayed to this client, and
+  // how any replayed line is addressed. Shared by messages and reactions: a
+  // reaction is a line from its sender to the buffer, like a message.
+  //
+  // A self-message in a DM is `:you PRIVMSG peer` — a shape only clients
+  // that negotiated znc.in/self-message (or echo-message) can attribute
+  // correctly. Anything else (e.g. mIRC) misreads it as an INCOMING PM
+  // "from you", which confuses query windows and trips auto-responders.
+  // ZNC gates on the same caps. Channel self-lines are safe for everyone.
+  //
+  // Never replay your OWN lines to services (NickServ/ChanServ/…) even to
+  // capable clients: that's where credentials live (IDENTIFY from a
+  // client's perform), and each reconnect would replay them into that
+  // client's logs. The services' replies still play back normally.
+  private replaysSelfLine(isChannel: boolean, bufferTarget: string): boolean {
+    if (isChannel) return true;
+    return this.wantsSelfMessages() && !isServicesNick(bufferTarget);
+  }
+
+  private replayedSource(nick: string, userhost: string | null | undefined): string {
+    return userhost && userhost.includes('!') ? userhost : `${nick}!${nick}@${SERVER_NAME}`;
+  }
+
+  // Channel rows keep the channel as the target; DM rows address inbound
+  // lines to us and outbound (self) lines to the peer, ZNC-style.
+  private replayedTarget(
+    self: boolean,
+    isChannel: boolean,
+    bufferTarget: string,
+    selfNick: string,
+  ): string {
+    return isChannel || self ? bufferTarget : selfNick;
+  }
+
+  // A stored reaction as the TAGMSG that made it (#991): its value, and the
+  // reply tags naming the line it's on. No msgid — a reaction's own isn't kept.
+  // Only ever here for a message-tags client (replaysReactions decides), the
+  // only kind a TAGMSG can reach.
+  private reactionLine(
+    r: HistoryReaction,
+    bufferTarget: string,
+    isChannel: boolean,
+    selfNick: string,
+    batchRef: string | undefined,
+  ): string {
+    const tags = this.formatTags({
+      time: r.time,
+      batchRef,
+      clientTags: [['+draft/react', r.value], ...replyTags(r.parentMsgid)],
+    });
+    const target = this.replayedTarget(r.self, isChannel, bufferTarget, selfNick);
+    return `${tags}:${this.replayedSource(r.nick, r.userhost)} TAGMSG ${target}`;
+  }
+
   private playbackLines(
-    rows: MessageEvent[],
+    rows: HistoryRow[],
     bufferTarget: string,
     isChannel: boolean,
     opts: { batchRef?: string } = {},
@@ -2208,6 +2298,12 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     const out: string[] = [];
     const selfNick = this.currentNick() || this.clientNick || '*';
     for (const row of rows) {
+      // Reaction rows are here only for a client that takes them: the query
+      // decides (replaysReactions).
+      if (isHistoryReaction(row)) {
+        out.push(this.reactionLine(row, bufferTarget, isChannel, selfNick, opts.batchRef));
+        continue;
+      }
       // Event rows are here only for a draft/event-playback client: the query
       // decides (historyFilter).
       if (HISTORY_EVENT_TYPES.includes(row.type)) {
@@ -2221,25 +2317,9 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       // not the bouncer's job), so playback stays consistent with it rather
       // than hiding in history what the client will then see live.
       if (row.mirrored || !row.text) continue;
-      // A self-message in a DM is `:you PRIVMSG peer` — a shape only clients
-      // that negotiated znc.in/self-message (or echo-message) can attribute
-      // correctly. Anything else (e.g. mIRC) misreads it as an INCOMING PM
-      // "from you", which confuses query windows and trips auto-responders.
-      // ZNC gates on the same caps. Channel self-lines are safe for everyone.
-      if (row.self && !isChannel && !this.wantsSelfMessages()) continue;
-      // Never replay your OWN lines to services (NickServ/ChanServ/…) even to
-      // capable clients: that's where credentials live (IDENTIFY from a
-      // client's perform), and each reconnect would replay them into that
-      // client's logs. The services' replies still play back normally.
-      if (row.self && !isChannel && isServicesNick(bufferTarget)) continue;
-      const nick = row.nick || 'unknown';
-      const prefix =
-        row.userhost && row.userhost.includes('!')
-          ? row.userhost
-          : `${nick}!${nick}@${SERVER_NAME}`;
-      // Channel rows keep the channel as the target; DM rows address inbound
-      // lines to us and outbound (self) lines to the peer, ZNC-style.
-      const target = isChannel ? bufferTarget : row.self ? bufferTarget : selfNick;
+      if (row.self && !this.replaysSelfLine(isChannel, bufferTarget)) continue;
+      const prefix = this.replayedSource(row.nick || 'unknown', row.userhost);
+      const target = this.replayedTarget(row.self, isChannel, bufferTarget, selfNick);
       const cmd = row.type === 'notice' ? 'NOTICE' : 'PRIVMSG';
       // Persisted multiline bodies (IRCv3 draft/multiline) become one playback
       // line per row line; ACTION collapses to a single line.
@@ -2252,6 +2332,9 @@ class BouncerSession implements MonitorHolder, ReplyClient {
           time: row.time,
           msgid: networkMsgid(row),
           batchRef: opts.batchRef,
+          // A reply names the line it answers, as its sender tagged it (#991) —
+          // not on an E2E line, whose parent history replays without a msgid.
+          clientTags: row.replyMsgid && !row.e2e ? replyTags(row.replyMsgid) : undefined,
         }),
       );
     }
