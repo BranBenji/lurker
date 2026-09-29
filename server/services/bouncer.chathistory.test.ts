@@ -13,6 +13,7 @@ let harnessMod: typeof import('../test-utils/bouncerHarness.js');
 let bouncerMod: typeof import('./bouncer.js');
 let insertMessage: typeof import('../db/messages.js').insertMessage;
 let addReaction: typeof import('../db/reactions.js').addReaction;
+let db: typeof import('../db/index.js').default;
 let harness: import('../test-utils/bouncerHarness.js').Harness;
 
 beforeAll(async () => {
@@ -21,6 +22,7 @@ beforeAll(async () => {
   bouncerMod = await import('./bouncer.js');
   ({ insertMessage } = await import('../db/messages.js'));
   ({ addReaction } = await import('../db/reactions.js'));
+  db = (await import('../db/index.js')).default;
   harness = await harnessMod.startHarness();
 });
 
@@ -1001,6 +1003,57 @@ describe('replies and reactions in history', () => {
       'CHATHISTORY LATEST #m * 100',
     );
     expect(lines.map((l) => l.split(' :').pop())).toEqual(['real']);
+  });
+
+  // `extra` is data from the network: a malformed one mustn't throw the window,
+  // and a stray replyMsgid in it mustn't become a reply tag.
+  it('survives a malformed extra, and takes no reply tag from one', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'ex1' });
+    const line = (s: number, msgid: string, text: string) =>
+      Number(
+        insertMessage({
+          networkId: acct.network.id,
+          target: '#ex',
+          time: at(s),
+          type: 'message',
+          nick: 'bob',
+          userhost: 'bob!u@h',
+          text,
+          self: false,
+          msgid,
+        }).id,
+      );
+    const broken = line(1, 'p1', 'broken extra');
+    const forged = line(2, 'p2', 'not a reply');
+    db.prepare(`UPDATE messages SET extra = '{bad' WHERE id = ?`).run(broken);
+    db.prepare(`UPDATE messages SET extra = ? WHERE id = ?`).run(
+      JSON.stringify({ replyMsgid: 'p1' }),
+      forged,
+    );
+    addReaction({
+      messageId: broken,
+      networkId: acct.network.id,
+      nick: 'alice',
+      userhost: 'alice!a@h',
+      value: '👍',
+      self: false,
+      toSelf: false,
+      time: at(3),
+    });
+    const c = await harness.connect();
+    await attachBound(c, acct, REACT_CAPS);
+    c.send('CHATHISTORY LATEST #ex * 100');
+    const open = await c.waitFor((l) => l.includes('BATCH +'));
+    const ref = open.split('BATCH +')[1].split(' ')[0];
+    await c.waitFor((l) => l.includes(`BATCH -${ref}`));
+    c.send(
+      'CHATHISTORY TARGETS timestamp=2023-05-23T00:00:00.000Z timestamp=2023-05-24T00:00:00.000Z 100',
+    );
+    await c.waitFor((l) => l.includes('TARGETS #ex'));
+    c.close();
+    const lines = batchBodies(c.lines, ref);
+    expect(lines.map((l) => l.split(' ')[2])).toEqual(['PRIVMSG', 'PRIVMSG', 'TAGMSG']);
+    expect(lines[1]).not.toContain('reply=');
   });
 
   it('lists in TARGETS only reaction news a window would replay', async () => {

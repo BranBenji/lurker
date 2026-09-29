@@ -970,6 +970,9 @@ export function loadHistoryWindow(
 // for its +reply tag (see MessageEvent.replyMsgid).
 function historyRowToEvent(row: MessageRow): MessageEvent {
   const event = rowToEvent(row);
+  // Only the column may say so: rowToEvent spreads `extra`, which a stray key
+  // would otherwise turn into a forged reply tag (as for replyTo, bookmarked).
+  delete event.replyMsgid;
   if (row.reply_msgid) event.replyMsgid = row.reply_msgid;
   return event;
 }
@@ -985,7 +988,9 @@ function replayableReactionSql(withoutSelf: boolean): string {
   const conds = [
     'm.msgid IS NOT NULL',
     chathistoryMsgFilter('m'),
-    "NOT (json_valid(m.extra) AND COALESCE(json_extract(m.extra, '$.e2e'), 0))",
+    // CASE, not AND: SQLite evaluates json_extract even when json_valid is
+    // false, and one malformed `extra` would throw the whole query.
+    "NOT COALESCE(CASE WHEN json_valid(m.extra) THEN json_extract(m.extra, '$.e2e') END, 0)",
   ];
   if (withoutSelf) conds.push('r.self = 0', 'm.self = 0');
   return conds.join(' AND ');
