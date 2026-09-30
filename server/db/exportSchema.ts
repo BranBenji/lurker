@@ -89,6 +89,16 @@ const USERS_SKIPPED_COLUMNS: Record<string, string> = Object.freeze({
 // it out. The importer reads a `<section>.json` into its table and inserts it in
 // IMPORT_ORDER like any other table.
 
+// A draft's reply and an input-history entry's (reply_message_id, reply_addressed)
+// don't travel. The line they name is a messages.id, and messages ride an
+// optional archive file: a data-only restore has none, and a full one rekeys
+// them, so the id would name nothing, or another line. The text travels; an
+// imported draft is just no longer a reply.
+const DRAFT_REPLY_SKIPPED = {
+  reply_message_id: 'names a messages.id, which a data-only restore lacks and a full one rekeys',
+  reply_addressed: 'only means anything with reply_message_id',
+};
+
 export const EXPORT_TABLES = Object.freeze({
   users: {
     mode: 'partial',
@@ -315,12 +325,14 @@ export const EXPORT_TABLES = Object.freeze({
   },
 
   input_history: {
-    mode: 'export',
+    // 'partial': the reply columns stay behind (see DRAFT_REPLY_SKIPPED).
+    mode: 'partial',
     scope: 'user_id',
     section: 'data',
     pk: 'id',
     fkRekey: { user_id: 'users', buffer_id: 'buffers' },
     columns: ['id', 'user_id', 'buffer_id', 'text', 'created_at'],
+    skippedColumns: DRAFT_REPLY_SKIPPED,
   },
 
   upload_history: {
@@ -423,11 +435,13 @@ export const EXPORT_TABLES = Object.freeze({
   },
 
   user_drafts: {
-    mode: 'export',
+    // 'partial': the reply columns stay behind (see DRAFT_REPLY_SKIPPED).
+    mode: 'partial',
     scope: 'user_id',
     section: 'data',
     fkRekey: { user_id: 'users', buffer_id: 'buffers' },
     columns: ['user_id', 'buffer_id', 'body', 'updated_at'],
+    skippedColumns: DRAFT_REPLY_SKIPPED,
   },
 
   ignored_masks: {

@@ -52,3 +52,29 @@ export interface ReplyContext {
 export function replyMsgidFromTags(tags: Record<string, string> | undefined): string | undefined {
   return tags?.['+reply'] || tags?.['+draft/reply'] || undefined;
 }
+
+// A composer draft's reply: the stored line it answers, and whether the Reply
+// put `nick: ` into the draft's text (cancelling takes back only an address it
+// put there). It rides the draft across devices, and an up-arrow history entry
+// keeps the one it was sent with. This is what a client sends; the server sends
+// back a DraftReply, with the line resolved as a reply's quote is.
+export interface DraftReplyRef {
+  messageId: number;
+  addressed: boolean;
+}
+
+export interface DraftReply extends DraftReplyRef {
+  parent: ReplyParent;
+}
+
+// A client's `reply` field: undefined when it sent none (a client that doesn't
+// know about replies — the stored reply stays as it is), null to clear it or
+// when it's malformed, else the ref.
+export function parseDraftReplyRef(raw: unknown): DraftReplyRef | null | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const messageId = Number(r.messageId);
+  if (!Number.isInteger(messageId) || messageId <= 0) return null;
+  return { messageId, addressed: r.addressed === true };
+}

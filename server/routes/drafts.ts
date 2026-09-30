@@ -7,6 +7,7 @@ import type { Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { ownsNetwork } from '../db/networks.js';
 import draftsService from '../services/draftsService.js';
+import { parseDraftReplyRef } from '../../shared/replies.js';
 
 const router = Router();
 
@@ -18,7 +19,7 @@ const beaconBody = express.text({ type: '*/*', limit: '512kb' });
 
 // POST /api/drafts/flush — last-ditch save on tab close (or any other
 // fire-and-forget path where the WS may already be tearing down). The body
-// is `{ drafts: [{ networkId, target, body }, ...] }`. Each entry routes
+// is `{ drafts: [{ networkId, target, body, reply? }, ...] }`. Each entry routes
 // through draftsService.set; empty bodies clear the row. Updates fan out via
 // the standard WS path so other open tabs see the new state.
 router.post('/flush', requireAuth, beaconBody, (req: Request, res: Response) => {
@@ -39,7 +40,7 @@ router.post('/flush', requireAuth, beaconBody, (req: Request, res: Response) => 
     if (!Number.isInteger(networkId) || networkId <= 0) continue;
     if (!target || target.startsWith(':server:')) continue;
     if (!ownsNetwork(req.user!.id, networkId)) continue;
-    draftsService.set(req.user!.id, networkId, target, body, null);
+    draftsService.set(req.user!.id, networkId, target, body, parseDraftReplyRef(entry.reply), null);
   }
   res.status(204).end();
 });

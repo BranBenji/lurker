@@ -2480,6 +2480,17 @@ if (schemaVersion < 18 && columnExists('buffer_reads', 'target')) {
   }
 }
 
+// A composer draft's reply, and the one an input-history entry was sent with:
+// the stored line it answers (messages.id) and whether the Reply put `nick: `
+// in the text. After the v18 rebuild above, which recreates both tables. No
+// foreign key: the line is looked up when the row is read
+// (DRAFT_REPLY_PARENT_COL), so retention taking it just drops the reply, with
+// nothing to keep in step and no index the retention delete would have to check.
+ensureColumn('user_drafts', 'reply_message_id', 'INTEGER');
+ensureColumn('user_drafts', 'reply_addressed', 'INTEGER NOT NULL DEFAULT 0');
+ensureColumn('input_history', 'reply_message_id', 'INTEGER');
+ensureColumn('input_history', 'reply_addressed', 'INTEGER NOT NULL DEFAULT 0');
+
 // One placement per buffer: a favorite and a pin are mutually exclusive
 // (favorite⇒unpin and pin⇒unfavorite in the wsHub verbs). Enforce it on every
 // boot for rows that predate the invariant — chiefly v19 migrations that
