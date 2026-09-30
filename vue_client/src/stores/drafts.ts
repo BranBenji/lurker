@@ -5,6 +5,7 @@ import { defineStore } from 'pinia';
 import { socketSend } from '../composables/useSocket.js';
 import type { PendingReply } from './replies.js';
 import type { DraftReply } from '../../../shared/replies.js';
+import { useReplyQuote } from '../composables/useReplyQuote.js';
 
 // Idle-typing debounce before a buffer's draft is flushed to the server.
 // Short enough that a typical pause between sentences is plenty to persist
@@ -35,14 +36,30 @@ function replyRef(
 
 // A draft's reply as the server resolved it, as the composer holds one. Null
 // for none, or for a line the server couldn't resolve (gone, not replyable).
-export function pendingReplyFrom(reply: DraftReply | null | undefined): PendingReply | null {
+//
+// The server sends the line as stored; the composer names it as the timeline
+// quotes it (useReplyQuote, the one rule): a marked relay bot's line as the
+// person inside it — whom the Reply addressed, and whose `nick: ` a cancel takes
+// back — and a line from someone ignored since without their words. It's still
+// a reply to them; the status bar just doesn't quote them.
+export function pendingReplyFrom(
+  reply: DraftReply | null | undefined,
+  networkId: number | string,
+  target: string,
+): PendingReply | null {
   if (!reply?.parent) return null;
+  const shown = useReplyQuote().shownReply(
+    { msgid: '', parent: reply.parent },
+    { type: 'message', text: '' },
+    Number(networkId),
+    target,
+  ).parent;
   return {
     messageId: reply.messageId,
-    nick: reply.parent.nick,
+    nick: shown?.nick ?? reply.parent.nick,
     type: reply.parent.type,
-    text: reply.parent.text,
-    self: reply.parent.self,
+    text: shown ? shown.text : '',
+    self: shown ? shown.self : reply.parent.self,
     addressed: reply.addressed,
   };
 }
@@ -124,7 +141,7 @@ export const useDraftStore = defineStore('drafts', {
             continue;
           }
           if (typeof d.body === 'string' && d.body.length > 0) next[k] = d.body;
-          const reply = pendingReplyFrom(d.reply);
+          const reply = pendingReplyFrom(d.reply, d.networkId, d.target);
           if (reply) nextReplies[k] = reply;
         }
       }
@@ -160,7 +177,7 @@ export const useDraftStore = defineStore('drafts', {
       if (text.length > 0) this.drafts[k] = text;
       else delete this.drafts[k];
       if (reply === undefined) return;
-      const pendingReply = pendingReplyFrom(reply);
+      const pendingReply = pendingReplyFrom(reply, networkId, target);
       if (pendingReply) this.replies[k] = pendingReply;
       else delete this.replies[k];
     },

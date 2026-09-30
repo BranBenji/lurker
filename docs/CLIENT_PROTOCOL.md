@@ -566,7 +566,8 @@ follows the user to another device and survives a reload. `draft-set` takes
 put `nick: ` into `body` (cancelling should then take that back out). Send
 `reply: null` to clear it; a `draft-set` with no `reply` key leaves the stored
 one as it is, so a client that doesn't know about replies can still edit the
-text. A reply with an empty `body` is a draft. `draft-snapshot` entries and
+text — except that one emptying `body` clears the whole draft, as a send does.
+A reply with an empty `body` is a draft. `draft-snapshot` entries and
 `draft-updated` carry `reply` back as `{ messageId, addressed, parent }` with
 `parent` shaped as above, or `null` — also when the line is gone or no longer
 one a reply can name, in which case the text stays. An up-arrow history entry

@@ -260,9 +260,9 @@ describe('schema 18 — satellite rebuild', () => {
   });
 
   it('preserves input-history ids and repoints case twins onto one buffer', async () => {
-    const { listRecent } = await import('./inputHistory.js');
-    expect(listRecent(1, 10, '#chan')).toEqual(['first', 'second']);
-    expect(listRecent(1, 10, 'bob')).toEqual(['dm line']);
+    const { inputHistoryFields } = await import('./inputHistory.js');
+    expect(inputHistoryFields(1, 10, '#chan', 200).inputHistory).toEqual(['first', 'second']);
+    expect(inputHistoryFields(1, 10, 'bob', 200).inputHistory).toEqual(['dm line']);
     const ids = db
       .prepare(`SELECT id FROM input_history WHERE buffer_id = 100 ORDER BY id`)
       .all() as Array<{ id: number }>;

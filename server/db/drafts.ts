@@ -3,7 +3,7 @@
 
 import db from './index.js';
 import { resolveBuffer } from './bufferResolve.js';
-import { DRAFT_REPLY_PARENT_COL, draftReplyFrom, replySendMsgid } from './messages.js';
+import { DRAFT_REPLY_PARENT_COL, draftReplyFrom, resolveDraftReply } from './messages.js';
 import type { DraftReply, DraftReplyRef } from '../../shared/replies.js';
 
 // Keyed (user_id, buffer_id) since schema 18; the snapshot joins back through
@@ -69,8 +69,9 @@ const listStmt = db.prepare(`
 /** Returns the buffer id the draft landed on (undefined = unknown buffer,
  *  no-op) so the draft-updated fanout can carry it without a second resolve.
  *  `reply`: undefined leaves the stored one; null clears it; a ref sets it —
- *  unless it names a line a reply here can't (not the user's to see, another
- *  buffer's, no msgid), which clears it: the server re-checks at send anyway. */
+ *  unless it doesn't resolve the way it'll be read back (resolveDraftReply: not
+ *  the user's, another buffer's, no msgid, from someone ignored), which clears
+ *  it. The server re-checks at send anyway. */
 export function upsertDraft(
   userId: number,
   networkId: number,
@@ -84,7 +85,7 @@ export function upsertDraft(
     upsertStmt.run(userId, buffer.id, body);
     return buffer.id;
   }
-  const valid = reply && replySendMsgid(userId, networkId, target, reply.messageId) !== null;
+  const valid = reply && resolveDraftReply(userId, networkId, target, reply) !== null;
   upsertWithReplyStmt.run(
     userId,
     buffer.id,

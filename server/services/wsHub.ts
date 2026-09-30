@@ -48,7 +48,6 @@ import {
   maxIdForBuffer,
   maxMessageId,
   typeCountsForUnread,
-  resolveDraftReply,
 } from '../db/messages.js';
 import {
   listReadStateForUser,
@@ -3390,8 +3389,13 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         const text = typeof msg.text === 'string' ? msg.text : '';
         if (!networkId || !target || !text) break;
         // The line this one was sent as a reply to: recalled, it's a reply again.
-        const reply = parseDraftReplyRef(msg.reply) ?? null;
-        addInputHistory(userId, networkId, target, text, reply);
+        const reply = addInputHistory(
+          userId,
+          networkId,
+          target,
+          text,
+          parseDraftReplyRef(msg.reply) ?? null,
+        );
         // Other tabs/devices need this for cross-client up-arrow consistency.
         // The originating socket already added it optimistically, so skip it
         // to avoid a duplicate append.
@@ -3403,7 +3407,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
             target,
             bufferId: addr?.bufferId ?? resolveBuffer(userId, networkId, target)?.id ?? null,
             text,
-            reply: reply ? resolveDraftReply(userId, networkId, target, reply) : null,
+            reply,
           },
           { exceptWs: ws },
         );

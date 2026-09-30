@@ -17,9 +17,12 @@ import type { DraftReplyRef } from '../../shared/replies.js';
 // where it inserts no address) is a draft all the same, and follows you to
 // another device like one.
 //
-// `reply` (see upsertDraft): undefined leaves the stored one, null clears it.
-// The change announces the reply as it was stored and resolved, which is not
-// always what was sent: one naming a line a reply can't is dropped.
+// `reply` (see upsertDraft): undefined leaves the stored one, null clears it —
+// except that emptying the text with no reply key clears the whole draft, as a
+// send does: that's how a client that knows nothing of replies clears one. The
+// change announces the reply as it was stored and resolved, which is not always
+// what was sent: one that doesn't resolve is dropped, and then the sender is
+// told as well, or it would go on showing a reply the draft no longer has.
 class DraftsService extends EventEmitter {
   set(
     userId: number,
@@ -36,10 +39,25 @@ class DraftsService extends EventEmitter {
     }
     const bufferId = upsertDraft(userId, networkId, target, text, reply);
     if (bufferId === undefined) return; // unknown buffer — nothing stored, nothing to announce
+    if (reply === null) {
+      // Nothing to read back: the text as sent, no reply.
+      this.emit('change', {
+        userId,
+        networkId,
+        target,
+        bufferId,
+        body: text,
+        reply: null,
+        originWs,
+      });
+      return;
+    }
     const stored = getDraftForBuffer(userId, bufferId);
+    // A reply sent and not kept: the sender still shows it, so it's told too.
+    const dropped = !!reply && !stored?.reply;
     if (!stored?.body && !stored?.reply) {
       // Only a reply, and it didn't hold.
-      this.clear(userId, networkId, target, originWs);
+      this.clear(userId, networkId, target, dropped ? null : originWs);
       return;
     }
     this.emit('change', {
@@ -49,7 +67,7 @@ class DraftsService extends EventEmitter {
       bufferId,
       body: stored.body,
       reply: stored.reply,
-      originWs,
+      originWs: dropped ? null : originWs,
     });
   }
 

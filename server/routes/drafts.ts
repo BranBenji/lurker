@@ -20,7 +20,8 @@ const beaconBody = express.text({ type: '*/*', limit: '512kb' });
 // POST /api/drafts/flush — last-ditch save on tab close (or any other
 // fire-and-forget path where the WS may already be tearing down). The body
 // is `{ drafts: [{ networkId, target, body, reply? }, ...] }`. Each entry routes
-// through draftsService.set; empty bodies clear the row. Updates fan out via
+// through draftsService.set, which decides what an empty body means (a reply
+// with no text yet is still a draft). Updates fan out via
 // the standard WS path so other open tabs see the new state.
 router.post('/flush', requireAuth, beaconBody, (req: Request, res: Response) => {
   let payload: { drafts?: unknown[] } | undefined;

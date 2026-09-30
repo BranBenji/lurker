@@ -17,6 +17,8 @@ vi.mock('../composables/useSocket.js', () => ({
 import { socketSend } from '../composables/useSocket.js';
 import { useDraftStore } from './drafts.js';
 import { useRepliesStore } from './replies.js';
+import { useRelayBotsStore } from './relayBots.js';
+import { useIgnoresStore } from './ignores.js';
 import type { DraftReply } from '../../../shared/replies.js';
 
 const KEY = '1::#chan';
@@ -116,5 +118,59 @@ describe('a draft’s reply', () => {
     expect(useRepliesStore().forKey('1::bobby')?.messageId).toBe(42);
     drafts.dropBuffer(1, 'bobby');
     expect(useRepliesStore().forKey('1::bobby')).toBeNull();
+  });
+
+  // The server sends the line as stored; the composer names it as the timeline
+  // quotes it, so a reply that came back from another device reads the same as
+  // the one started here.
+  it('names a relayed line’s speaker, and doesn’t quote someone ignored since', () => {
+    const drafts = useDraftStore();
+    useRelayBotsStore().byKey['1::bridgebot'] = { nick: 'bridgebot', pattern: '' } as never;
+    const relayed = fromServer({
+      parent: {
+        id: 42,
+        nick: 'bridgebot',
+        type: 'message',
+        text: '<alice> the release one',
+        userhost: 'bridgebot!~b@host',
+        self: false,
+      },
+    });
+    drafts.applyRemoteUpdate(1, '#chan', 'alice: yes', relayed);
+    expect(useRepliesStore().forKey(KEY)).toMatchObject({
+      nick: 'alice',
+      text: 'the release one',
+      addressed: true,
+    });
+
+    useIgnoresStore().global = [
+      {
+        id: 1,
+        createdAt: '',
+        mask: 'mallory!*@*',
+        channels: null,
+        pattern: null,
+        patternKind: 'substr',
+        levels: ['ALL'],
+        isExcept: false,
+        expiresAt: null,
+      },
+    ] as never;
+    drafts.applyRemoteUpdate(
+      1,
+      '#chan',
+      '',
+      fromServer({
+        parent: {
+          id: 9,
+          nick: 'mallory',
+          type: 'message',
+          text: 'something rude',
+          userhost: 'mallory!~m@host',
+          self: false,
+        },
+      }),
+    );
+    expect(useRepliesStore().forKey(KEY)).toMatchObject({ nick: 'mallory', text: '' });
   });
 });

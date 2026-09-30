@@ -143,6 +143,20 @@ describe('a draft’s reply', () => {
     expect(draftIn('#a')).toBeUndefined();
   });
 
+  // The sending tab still shows the reply it sent. Kept, it needn't hear back
+  // (it has it); dropped, it must, or it goes on showing one the draft lacks.
+  it('tells the sender too when the reply it sent was dropped', () => {
+    const ws = { tab: 'sender' };
+    const ignored = said('#a', 'mallory', { fromIgnored: true });
+    draftsService.set(userId, networkId, '#a', 'hm', { messageId: ignored, addressed: false }, ws);
+    expect(changes.at(-1)).toMatchObject({ body: 'hm', reply: null, originWs: null });
+    draftsService.set(userId, networkId, '#a', '', { messageId: ignored, addressed: false }, ws);
+    expect(changes.at(-1)).toMatchObject({ body: '', reply: null, originWs: null });
+    const line = said('#a');
+    draftsService.set(userId, networkId, '#a', 'ok', { messageId: line, addressed: false }, ws);
+    expect(changes.at(-1)).toMatchObject({ reply: { messageId: line }, originWs: ws });
+  });
+
   // Retention took the line, or its author is ignored since: the text stays,
   // the reply reads as gone, as a reply's quote reads unavailable.
   it('reads as gone once the line is, and the text stays', () => {

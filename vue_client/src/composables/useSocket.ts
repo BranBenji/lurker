@@ -798,7 +798,9 @@ function applyBacklog(payload: any): void {
 // frame says (inputHistoryReplies rides beside inputHistory, index for index).
 function seedInputHistory(payload: any): void {
   const replies = Array.isArray(payload.inputHistoryReplies)
-    ? payload.inputHistoryReplies.map(pendingReplyFrom)
+    ? payload.inputHistoryReplies.map((r: any) =>
+        pendingReplyFrom(r, payload.networkId, payload.target),
+      )
     : undefined;
   useInputHistoryStore().seed(payload.networkId, payload.target, payload.inputHistory, replies);
 }
@@ -974,7 +976,7 @@ function handleMessage(raw: string): void {
       payload.networkId,
       payload.target,
       payload.text,
-      pendingReplyFrom(payload.reply),
+      pendingReplyFrom(payload.reply, payload.networkId, payload.target),
     );
     return;
   }
