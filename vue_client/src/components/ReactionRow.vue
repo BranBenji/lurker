@@ -122,6 +122,15 @@ function onChipClick(value: string) {
   padding: var(--space-2) var(--space-4) calc(var(--space-2) + 1px);
   cursor: pointer;
 }
+/* A value can be up to 64 graphemes of text. The chip shows the start of a long
+   one and the tooltip the whole (#1014), as halloy does. Cut by the browser, so
+   an emoji or a combining mark is never split. */
+.value {
+  max-width: 12ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .chip:hover:not(:disabled) {
   background: color-mix(in srgb, var(--fg) 8%, var(--bg-soft));
   color: var(--fg);
