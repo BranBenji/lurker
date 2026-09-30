@@ -21,6 +21,8 @@ let networks: typeof import('../db/networks.js');
 let hashPassword: typeof import('./password.js').hashPassword;
 let messages: typeof import('../db/messages.js');
 let e2eManager: typeof import('./e2e/manager.js').e2eManager;
+let ignoreRulesService: typeof import('./ignoreRulesService.js').default;
+let maskToRuleInput: typeof import('./ignoreRuleInput.js').maskToRuleInput;
 let harness: import('../test-utils/bouncerHarness.js').Harness;
 let ircd: FakeIrcd;
 
@@ -46,6 +48,8 @@ beforeAll(async () => {
   ({ hashPassword } = await import('./password.js'));
   messages = await import('../db/messages.js');
   ({ e2eManager } = await import('./e2e/manager.js'));
+  ignoreRulesService = (await import('./ignoreRulesService.js')).default;
+  ({ maskToRuleInput } = await import('./ignoreRuleInput.js'));
   ircd = await FakeIrcd.start();
   harness = await harnessMod.startHarness();
 });
@@ -290,5 +294,72 @@ describe('reactions from an attached client', () => {
     await expect(
       ircd.waitForLine((l, from) => from.nick === live.nick && reactionSent(l), 50),
     ).rejects.toThrow('timed out');
+  });
+});
+
+// #483: a client's reply goes the web app's way (ircManager.send's replyTo), so
+// the network gets the tags it allows, the account stores a reply, and every
+// client — the web app and the other attached ones — sees one.
+describe('replies from an attached client', () => {
+  const tagsOf = (line: string) => (line.startsWith('@') ? line.slice(1, line.indexOf(' ')) : '');
+
+  it('go to the network, the account and the other clients as replies', async () => {
+    const live = await seedLive();
+    const c = await attachIn(live, '#room');
+    const other = await attachIn(live, '#room');
+    const parentMsgid = ircd.say('bob', '#room', 'who broke the build?');
+    await stored(live, 'who broke the build?');
+
+    // Only the draft name, as HexDroid sends it: both go out all the same.
+    c.send(`@+draft/reply=${parentMsgid} PRIVMSG #room :bob: not me`);
+    const sent = await ircd.waitForLine(
+      (l, from) => from.nick === live.nick && l.includes('PRIVMSG #room :bob: not me'),
+    );
+    expect(tagsOf(sent).split(';')).toEqual(
+      expect.arrayContaining([`+reply=${parentMsgid}`, `+draft/reply=${parentMsgid}`]),
+    );
+    const row = await stored(live, 'bob: not me');
+    expect(row.replyTo).toMatchObject({ msgid: parentMsgid, parent: { nick: 'bob' } });
+    const echoed = await other.waitFor((l) => l.includes('PRIVMSG #room :bob: not me'));
+    expect(tagsOf(echoed)).toContain(`+reply=${parentMsgid}`);
+    // The sender asked for echo-message: its own copy says so too.
+    const own = await c.waitFor((l) => l.includes('PRIVMSG #room :bob: not me'));
+    expect(tagsOf(own)).toContain(`+reply=${parentMsgid}`);
+
+    c.send(`@+reply=${parentMsgid} PRIVMSG #room :\u0001ACTION shrugs\u0001`);
+    const action = await ircd.waitForLine(
+      (l, from) => from.nick === live.nick && l.includes('ACTION shrugs'),
+    );
+    expect(tagsOf(action)).toContain(`+reply=${parentMsgid}`);
+  });
+
+  it('go out as plain lines when the account could not show what they answer', async () => {
+    const live = await seedLive();
+    const c = await attachIn(live, '#room');
+    const elsewhere = ircd.say('bob', live.nick, 'a line in our DM');
+    await stored(live, 'a line in our DM');
+    const added = ignoreRulesService.add(
+      live.userId,
+      live.networkId,
+      maskToRuleInput('mallory!*@*')!,
+    );
+    expect(added.ok).toBe(true);
+    const ignored = ircd.say('mallory', '#room', 'spam');
+    await stored(live, 'spam');
+
+    // Nothing by that msgid, one from another buffer, a line from someone
+    // ignored (its quote would read "unavailable"), and a NOTICE (the web app
+    // has no notice reply): all plain.
+    c.send('@+reply=nope PRIVMSG #room :unknown: hello');
+    c.send(`@+reply=${elsewhere} PRIVMSG #room :bob: wrong room`);
+    c.send(`@+reply=${ignored} PRIVMSG #room :mallory: no`);
+    c.send(`@+reply=${ignored} NOTICE #room :mallory: still no`);
+    for (const text of ['unknown: hello', 'bob: wrong room', 'mallory: no', 'mallory: still no']) {
+      const sent = await ircd.waitForLine(
+        (l, from) => from.nick === live.nick && l.includes(` #room :${text}`),
+      );
+      expect(tagsOf(sent)).not.toContain('reply=');
+      expect((await stored(live, text)).replyTo).toBeUndefined();
+    }
   });
 });

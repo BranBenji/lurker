@@ -75,6 +75,7 @@ import {
   listActiveTargetsInWindow,
   readMarkerTime,
   newestIdAtOrBefore,
+  findReplyParent,
 } from '../db/messages.js';
 import type { HistoryEvents, HistoryReaction, HistoryRow, MessageEvent } from '../db/messages.js';
 import { getReadState } from '../db/bufferReads.js';
@@ -308,8 +309,9 @@ export interface ParsedClientLine {
   // leading `@`. Preserved so a relayed TAGMSG keeps its payload (a reaction or
   // typing is sent again the web app's way, see handleClientTagmsg), as does
   // any other command routed through the verbatim `default:` relay.
-  // NOTE: PRIVMSG/NOTICE route through ircManager.send, which carries no tags,
-  // so tags on a message body are NOT forwarded yet (tracked separately).
+  // A PRIVMSG or /me routes through ircManager instead, which carries only the
+  // reply tag (handleClientMessage, #483), and a NOTICE none; any other tag on
+  // them is dropped. A non-ACTION CTCP is relayed verbatim, tags and all.
   // Server-authoritative tags (time, account, msgid, label, batch) are dropped
   // here — mirrors soju's copyClientTags.
   clientTags?: string;
@@ -664,6 +666,23 @@ export function escapeTagValue(value: string): string {
 export function unescapeTagValue(value: string): string {
   const escapes: Record<string, string> = { ':': ';', s: ' ', '\\': '\\', r: '\r', n: '\n' };
   return value.replace(/\\(.?)/gs, (_m, c: string) => escapes[c] ?? c);
+}
+
+// A client's `+`-tags (ParsedClientLine.clientTags) by name, values unescaped.
+function clientTagMap(clientTags: string): Map<string, string> {
+  const tags = new Map<string, string>();
+  for (const tag of clientTags.split(';')) {
+    const eq = tag.indexOf('=');
+    if (eq === -1) tags.set(tag, '');
+    else tags.set(tag.slice(0, eq), unescapeTagValue(tag.slice(eq + 1)));
+  }
+  return tags;
+}
+
+// The msgid a client's `+reply` (or `+draft/reply`) names, the ratified name first.
+function clientReplyMsgid(clientTags: string): string | undefined {
+  const tags = clientTagMap(clientTags);
+  return tags.get('+reply') || tags.get('+draft/reply') || undefined;
 }
 
 // The msgid a line built from a stored message carries: the network's own
@@ -2732,12 +2751,7 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     // ⚠⚠ `=nick` is a DCC chat, never an IRC target (see handleClientMessage),
     // not even inside a target list.
     if (!target || target.split(',').some(isDccChatTarget)) return;
-    const tags = new Map<string, string>();
-    for (const tag of msg.clientTags.split(';')) {
-      const eq = tag.indexOf('=');
-      if (eq === -1) tags.set(tag, '');
-      else tags.set(tag.slice(0, eq), unescapeTagValue(tag.slice(eq + 1)));
-    }
+    const tags = clientTagMap(msg.clientTags);
     const react = tags.get('+draft/react');
     const unreact = tags.get('+draft/unreact');
     const reaction = react !== undefined || unreact !== undefined;
@@ -2826,6 +2840,8 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       this.notice(`Upstream '${this.network?.name}' is ${conn.state} — message not sent.`);
       return;
     }
+    // The msgid a reply names (#483), parsed once for every target.
+    const replyMsgid = msg.clientTags ? clientReplyMsgid(msg.clientTags) : undefined;
     for (const target of targets) {
       const isAction = text.startsWith('\u0001ACTION ') || text.startsWith('\u0001ACTION\u0001');
       if (text.startsWith('\u0001') && !isAction) {
@@ -2850,11 +2866,19 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         );
         continue;
       }
+      // A reply goes the web app's way too (#483): named by the line it answers,
+      // so ircManager puts on the tags the network allows, stores it as a reply
+      // and echoes it as one to every client. Not a NOTICE: the web app has no
+      // notice reply, so ircManager.notice takes none.
+      const replyTo =
+        replyMsgid && msg.command === 'PRIVMSG'
+          ? this.clientReplyTo(replyMsgid, target)
+          : undefined;
       if (isAction) {
         // eslint-disable-next-line no-control-regex
         const body = text.replace(/^\u0001ACTION ?/, '').replace(/\u0001$/, '');
         for (const chunk of splitAction(body)) this.registerEcho('action', target, chunk);
-        ircManager.action(this.userId, this.networkId, target, body);
+        ircManager.action(this.userId, this.networkId, target, body, { replyTo });
       } else if (msg.command === 'PRIVMSG') {
         const chunks = splitSay(text);
         for (const chunk of chunks) this.registerEcho('message', target, chunk);
@@ -2862,12 +2886,26 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         // (not per wire chunk), so register the whole text too when it split.
         // The unmatched leftover key expires harmlessly (see pendingEcho).
         if (chunks.length > 1) this.registerEcho('message', target, text);
-        ircManager.send(this.userId, this.networkId, target, text);
+        ircManager.send(this.userId, this.networkId, target, text, { replyTo });
       } else {
         for (const chunk of splitSay(text)) this.registerEcho('notice', target, chunk);
         ircManager.notice(this.userId, this.networkId, target, text);
       }
     }
+  }
+
+  // The stored line a client's reply names, in the buffer the message goes to:
+  // what the web app's Reply hands ircManager. Found as a reply's quote is
+  // (findReplyParent: a chat line, not from someone ignored). Anything else — a
+  // line we don't hold (a replay we dropped, one retention took), one from
+  // someone ignored, a msgid from another buffer — sends a plain line, its
+  // `nick: ` still saying who it's for. A bouncer client mirrors the account,
+  // and the account couldn't say what it answers; and #b must not be told
+  // about a line only #a saw.
+  private clientReplyTo(msgid: string, target: string): number | undefined {
+    const bufferId = resolveBufferIdByNetwork(this.networkId, target);
+    if (bufferId === undefined) return undefined;
+    return findReplyParent(this.networkId, bufferId, msgid)?.id;
   }
 
   private registerEcho(type: string, target: string, text: string): void {
