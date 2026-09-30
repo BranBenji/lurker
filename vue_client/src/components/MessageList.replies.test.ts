@@ -138,6 +138,15 @@ describe('MessageList — replies', () => {
     const w = mountWith([first, later]);
     expect(rowOf(w, later.id).find('.reply-quote').exists()).toBe(true);
     w.unmount();
+    // A replayed row stamped earlier than the one above it is a new reply too.
+    setActivePinia(createPinia());
+    const replayed = line('bob', 'alice: from the replay', {
+      replyTo,
+      time: new Date(Date.UTC(2026, 8, 25, 11, 59)).toISOString(),
+    });
+    const w1 = mountWith([first, replayed]);
+    expect(rowOf(w1, replayed.id).find('.reply-quote').exists()).toBe(true);
+    w1.unmount();
     setActivePinia(createPinia());
     // Our own line under the same nick (a bridge echoing us back) is ours.
     const w2 = mountWith([first, { ...theirs, nick: 'bob', self: true }]);

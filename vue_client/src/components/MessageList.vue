@@ -1384,6 +1384,9 @@ const renderRows = computed((): RenderRow[] => {
       // speaker is theirs by bridge too): a divider, anyone else's line, or a
       // later reply to the same line, and the quote shows again.
       const prev = out[out.length - 1]?.m;
+      // Non-negative, as collapseDisplay has it: a bouncer replay can stamp a
+      // row older than the one above it, and that's a new reply, not more of it.
+      const deltaMs = mTimeMs - (Date.parse(prev?.time ?? '') || 0);
       replyContinued =
         !!prev?.replyTo &&
         prev.replyTo.msgid === m.replyTo.msgid &&
@@ -1391,7 +1394,8 @@ const renderRows = computed((): RenderRow[] => {
         !!prev.self === !!m.self &&
         prev.relaySource === mDisplay.relaySource &&
         (prev.nick ?? '').toLowerCase() === (mDisplay.nick ?? '').toLowerCase() &&
-        Math.abs(mTimeMs - (Date.parse(prev.time ?? '') || 0)) <= collapseAuthorsWindowMs.value;
+        deltaMs >= 0 &&
+        deltaMs <= collapseAuthorsWindowMs.value;
     }
     out.push({
       m: mDisplay,
