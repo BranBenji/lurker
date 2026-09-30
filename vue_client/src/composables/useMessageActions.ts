@@ -5,7 +5,7 @@ import type { ContextMenuItem } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useReactionsStore } from '../stores/reactions.js';
 import { useNetworksStore } from '../stores/networks.js';
-import { isDccChatTarget } from '../../../shared/channels.js';
+import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useContextMenu } from './useContextMenu.js';
 
@@ -49,6 +49,13 @@ export function replyable(m: MessageLike): boolean {
     !m.target.startsWith(':') &&
     !isDccChatTarget(m.target)
   );
+}
+
+// A DM or a DCC chat: the line goes to the one other person anyway, so a Reply
+// there puts no `nick: ` in the draft (#1015; halloy skips it in queries too).
+// Like Reply to yourself, it's then only offered where a real reply goes out.
+export function privateTarget(target: string | null | undefined): boolean {
+  return !!target && !isChannelTarget(target) && !target.startsWith(':');
 }
 
 // Whether the network is up and can carry reply tags right now. canReact is the
@@ -164,14 +171,17 @@ export function useMessageActions(): MessageActionsAPI {
 
     const tagsGoOut = replyTagsGoOut(message.networkId ?? message.network_id);
 
-    // Reply to someone else always does something — at the least it addresses
-    // them, and the address is what a line without its reply tag still says.
-    // On your own line (#997, "to clarify what I said above") the reply tag is
-    // all it is, so it's offered only where one would go out.
-    if (addressable) {
+    // Reply to someone else in a channel always does something — at the least it
+    // addresses them, and the address is what a line without its reply tag still
+    // says. On your own line (#997, "to clarify what I said above") or in a DM
+    // (privateTarget) there's no address, so the reply tag is all it is, and it's
+    // offered only where one would go out.
+    const unaddressed = !!message.self || privateTarget(message.target);
+    if (addressable && !unaddressed) {
       actions.push({ key: 'reply', label: `Reply to ${message.nick}`, icon: 'fa-solid fa-reply' });
-    } else if (message.self && replyable(message) && tagsGoOut) {
-      actions.push({ key: 'reply', label: 'Reply to yourself', icon: 'fa-solid fa-reply' });
+    } else if (unaddressed && message.nick && replyable(message) && tagsGoOut) {
+      const label = message.self ? 'Reply to yourself' : `Reply to ${message.nick}`;
+      actions.push({ key: 'reply', label, icon: 'fa-solid fa-reply' });
     }
 
     // A reaction replies to the line's msgid, so it needs a line a reply could

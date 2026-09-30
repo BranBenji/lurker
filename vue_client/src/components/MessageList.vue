@@ -124,7 +124,7 @@
             <!-- IRCv3 reply (#993): the line this one answers, as the body's first
                  line — part of the message, so it doesn't break the author's run. -->
             <ReplyQuote
-              v-if="row.m?.replyTo"
+              v-if="row.m?.replyTo && !row.replyContinued"
               :parent="row.replyParent ?? null"
               @jump="onReplyContextClick"
             />
@@ -177,7 +177,7 @@
             <!-- IRCv3 reply (#993): the line this one answers, as the body's first
                  line — part of the message, so it doesn't break the author's run. -->
             <ReplyQuote
-              v-if="row.m?.replyTo"
+              v-if="row.m?.replyTo && !row.replyContinued"
               :parent="row.replyParent ?? null"
               @jump="onReplyContextClick"
             />
@@ -410,7 +410,12 @@ import MessageBody from './MessageBody.vue';
 import { previewRevision } from '../composables/useLinkPreview.js';
 import { useConfigStore } from '../stores/config.js';
 import IgnoreModal from './IgnoreModal.vue';
-import { useMessageActions, replyable, replyTagsGoOut } from '../composables/useMessageActions.js';
+import {
+  useMessageActions,
+  privateTarget,
+  replyable,
+  replyTagsGoOut,
+} from '../composables/useMessageActions.js';
 import type {
   MessageContext,
   MessageAction,
@@ -491,6 +496,9 @@ interface RenderRow {
   // "unavailable". Decided once per row in renderRows — it runs the ignore
   // matcher — rather than per template binding. Absent on a non-reply.
   replyParent?: ReplyParent | null;
+  // A reply whose quote the row before already shows: the same author answering
+  // the same line, as obby and goguma tag every chunk of a split reply.
+  replyContinued?: boolean;
   alt?: boolean;
   key: string | number;
   // Divider row
@@ -774,9 +782,11 @@ const actionContext: MessageContext = {
     // bar or menu may have been built before it dropped (buildItems snapshots).
     // A pending reply to someone else goes first, with the `nick: ` its Reply
     // put in the draft, or this one would go out still addressed to them.
+    // The same holds in a DM, where the line goes to them anyway (#1015).
+    const unaddressed = !!msg.self || privateTarget(msg.target);
     const started =
-      !!key && replyable(msg) && (!msg.self || replyTagsGoOut(msg.networkId ?? msg.network_id));
-    if (msg.self && started && replies.forKey(key)?.addressed) cancelComposerReply();
+      !!key && replyable(msg) && (!unaddressed || replyTagsGoOut(msg.networkId ?? msg.network_id));
+    if (unaddressed && started && replies.forKey(key)?.addressed) cancelComposerReply();
     if (started) {
       replies.start(key, {
         messageId: msg.id as number,
@@ -786,7 +796,7 @@ const actionContext: MessageContext = {
         self: !!msg.self,
       });
     }
-    if (!msg.self) addressNick(msg.nick);
+    if (!unaddressed) addressNick(msg.nick);
     else if (started) focusComposer();
   },
   onIgnore: (msg) => {
@@ -1363,10 +1373,29 @@ const renderRows = computed((): RenderRow[] => {
     // A reply: its quote, and its text without the address the quote makes
     // redundant (useReplyQuote).
     let replyParent: ReplyParent | null = null;
+    let replyContinued = false;
     if (m.replyTo) {
       const shown = replyQuote.shownReply(m.replyTo, mDisplay, networkId, bufTarget);
       replyParent = shown.parent;
       if (shown.text !== (mDisplay.text ?? '')) mDisplay = { ...mDisplay, text: shown.text };
+      // One quote for a split reply: obby and goguma tag every chunk of a long
+      // one, where Lurker and halloy tag the first. Only while it reads as one
+      // run of the same speaker's (collapseDisplay's author window; a relayed
+      // speaker is theirs by bridge too): a divider, anyone else's line, or a
+      // later reply to the same line, and the quote shows again.
+      const prev = out[out.length - 1]?.m;
+      // Non-negative, as collapseDisplay has it: a bouncer replay can stamp a
+      // row older than the one above it, and that's a new reply, not more of it.
+      const deltaMs = mTimeMs - (Date.parse(prev?.time ?? '') || 0);
+      replyContinued =
+        !!prev?.replyTo &&
+        prev.replyTo.msgid === m.replyTo.msgid &&
+        prev.type === m.type &&
+        !!prev.self === !!m.self &&
+        prev.relaySource === mDisplay.relaySource &&
+        (prev.nick ?? '').toLowerCase() === (mDisplay.nick ?? '').toLowerCase() &&
+        deltaMs >= 0 &&
+        deltaMs <= collapseAuthorsWindowMs.value;
     }
     out.push({
       m: mDisplay,
@@ -1375,6 +1404,7 @@ const renderRows = computed((): RenderRow[] => {
       nohilight: rowNohilight,
       highlight: rowHighlight,
       ...(m.replyTo ? { replyParent } : {}),
+      ...(replyContinued ? { replyContinued } : {}),
     });
   }
 

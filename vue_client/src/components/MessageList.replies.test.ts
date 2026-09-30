@@ -58,17 +58,17 @@ function line(nick: string, text: string, extra: Record<string, unknown> = {}) {
   };
 }
 
-function mountWith(messages: Record<string, unknown>[]) {
+function mountWith(messages: Record<string, unknown>[], target = '#chan') {
   const networks = useNetworksStore();
   const buffers = useBuffersStore();
   networks.networks = [{ id: 1, name: 'testnet' }] as never;
   networks.states = { 1: { nick: 'me', state: 'connected', peerPresence: {} } } as never;
-  const b = buffers.ensure(1, '#chan', 9);
+  const b = buffers.ensure(1, target, 9);
   b.messages = messages as never;
   b.joined = true;
   b.hasMoreOlder = false;
   b.lastReadId = 999;
-  networks.activeKey = KEY;
+  networks.activeKey = `1::${target}`;
   wrapper = mount(MessageList, { attachTo: document.body });
   return wrapper;
 }
@@ -106,6 +106,51 @@ describe('MessageList — replies', () => {
     expect(ownText(row)).toBe('noon');
     // A plain line has no quote.
     expect(rowOf(w, p.id).find('.reply-quote').exists()).toBe(false);
+  });
+
+  // obby and goguma put the reply tag on every chunk of a long reply; Lurker and
+  // halloy on the first. Either way it reads as one reply, quoted once.
+  it('quotes a split reply once', () => {
+    const replyTo = { msgid: 'm1', parent: parent() };
+    const c1 = line('bob', 'alice: a long answer, part one', { replyTo });
+    const c2 = line('bob', 'and part two', { replyTo });
+    const other = line('carol', 'meanwhile');
+    const c3 = line('bob', 'part three, after carol', { replyTo });
+    const elsewhere = line('bob', 'and to someone else', {
+      replyTo: { msgid: 'm2', parent: parent({ id: 2, nick: 'dave' }) },
+    });
+    const w = mountWith([c1, c2, other, c3, elsewhere]);
+    const quoted = (id: number) => rowOf(w, id).find('.reply-quote').exists();
+    expect([c1, c2, c3, elsewhere].map((m) => quoted(m.id))).toEqual([true, false, true, true]);
+    expect(ownText(rowOf(w, c2.id))).toBe('and part two');
+  });
+
+  // Only while it reads as one run: the same line answered again hours later is
+  // a new reply, and so is our own answer right after someone else's.
+  it('quotes the same line again when it is a new reply', () => {
+    const replyTo = { msgid: 'm1', parent: parent() };
+    const first = line('bob', 'alice: noon', { replyTo });
+    const later = line('bob', 'alice: no, one', {
+      replyTo,
+      time: new Date(Date.UTC(2026, 8, 25, 18, 0)).toISOString(),
+    });
+    const theirs = line('me', 'alice: two', { replyTo });
+    const w = mountWith([first, later]);
+    expect(rowOf(w, later.id).find('.reply-quote').exists()).toBe(true);
+    w.unmount();
+    // A replayed row stamped earlier than the one above it is a new reply too.
+    setActivePinia(createPinia());
+    const replayed = line('bob', 'alice: from the replay', {
+      replyTo,
+      time: new Date(Date.UTC(2026, 8, 25, 11, 59)).toISOString(),
+    });
+    const w1 = mountWith([first, replayed]);
+    expect(rowOf(w1, replayed.id).find('.reply-quote').exists()).toBe(true);
+    w1.unmount();
+    setActivePinia(createPinia());
+    // Our own line under the same nick (a bridge echoing us back) is ours.
+    const w2 = mountWith([first, { ...theirs, nick: 'bob', self: true }]);
+    expect(rowOf(w2, theirs.id).find('.reply-quote').exists()).toBe(true);
   });
 
   // The quote is part of the message, so a reply keeps its author's run going.
@@ -336,6 +381,35 @@ describe('MessageList — replies', () => {
       .find((b) => b.attributes('title') === 'Reply to alice');
     await reply!.trigger('click');
     expect(useRepliesStore().forKey(KEY)).toMatchObject({ messageId: p.id, nick: 'alice' });
+  });
+
+  // #1015: in a DM the line goes to them anyway, so `alice: ` is only noise —
+  // and what she'd see, on a client that doesn't show replies. Reply there is
+  // then only a real reply, offered where one would go out, as on your own line.
+  it('does not address the other side of a DM', async () => {
+    const address = vi.spyOn(composerOverlay, 'addressNick');
+    const focus = vi.spyOn(composerOverlay, 'focusComposer');
+    const tagged = line('alice', 'what time is it?', { msgid: 'm1', target: 'alice' });
+    const untagged = line('alice', 'and where?', { target: 'alice' });
+    const w = mountWith([tagged, untagged], 'alice');
+    const replyOn = (id: number) =>
+      rowOf(w, id)
+        .findAll('.row-actions button')
+        .find((b) => b.attributes('title') === 'Reply to alice');
+    // Not while the network can't carry the tag, nor on a line with no msgid.
+    expect(replyOn(tagged.id)).toBeUndefined();
+    useNetworksStore().states[1].canReact = true;
+    await w.vm.$nextTick();
+    expect(replyOn(untagged.id)).toBeUndefined();
+
+    await replyOn(tagged.id)!.trigger('click');
+    expect(useRepliesStore().forKey('1::alice')).toMatchObject({
+      messageId: tagged.id,
+      nick: 'alice',
+    });
+    expect(useRepliesStore().forKey('1::alice')?.addressed).toBeFalsy();
+    expect(focus).toHaveBeenCalledTimes(1);
+    expect(address).not.toHaveBeenCalled();
   });
 
   // No reply tag would go out, and your own line has no address to fall back on.
