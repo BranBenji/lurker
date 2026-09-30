@@ -536,7 +536,7 @@ describe('ircManager.react', () => {
   function stubConn() {
     const sendReaction = vi.fn<IrcConnection['sendReaction']>(() => true);
     const publishEphemeral = vi.fn<IrcConnection['publishEphemeral']>();
-    const conn = { sendReaction, publishEphemeral } as unknown as IrcConnection;
+    const conn = { state: 'connected', sendReaction, publishEphemeral } as unknown as IrcConnection;
     return { conn, sendReaction, publishEphemeral };
   }
 
@@ -563,6 +563,18 @@ describe('ircManager.react', () => {
     vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
     expect(ircManager.react(userId, id, '👍', false)).toBe(true);
     expect(sendReaction).toHaveBeenCalledWith('#plain', `mgr${seq}`, '👍', false);
+  });
+
+  // A network in reconnect backoff keeps its connection object, but a TAGMSG
+  // written to it is dropped: the reaction must be refused, not reported sent.
+  it('refuses while the network is not connected', () => {
+    const network = makeNetwork('mgr3');
+    const id = storedLine(network, '#plain');
+    const { conn, sendReaction } = stubConn();
+    (conn as unknown as { state: string }).state = 'reconnecting';
+    vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
+    expect(ircManager.react(userId, id, '👍', false)).toBe(false);
+    expect(sendReaction).not.toHaveBeenCalled();
   });
 
   // A reaction is a cleartext tag, so even a plaintext line on an E2E channel

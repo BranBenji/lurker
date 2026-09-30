@@ -1097,7 +1097,9 @@ class IrcManager extends EventEmitter {
   react(userId: number, messageId: number, value: string, remove: boolean): boolean {
     const dest = reactionSendTarget(userId, messageId);
     if (!dest) return false;
-    const conn = this.getConnection(userId, dest.networkId);
+    // Writable, not just present: a network in reconnect backoff keeps its
+    // connection object, and a TAGMSG written to it is dropped unseen (#809).
+    const conn = this.writableConnection(userId, dest.networkId);
     if (!conn) return false;
     // A reaction is a cleartext tag. On an E2E channel even one on a plaintext
     // line (sent before /e2e on, or by a peer without it) would put "lol" on
