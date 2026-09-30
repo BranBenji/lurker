@@ -30,7 +30,7 @@
     @close="emit('close')"
   >
     <template #row="{ row }">
-      <span class="entry" :title="row">{{ row }}</span>
+      <span class="entry" :title="row.text">{{ row.text }}</span>
     </template>
   </VerticalPopover>
 </template>
@@ -61,18 +61,25 @@ const props = withDefaults(
   },
 );
 
+// `index` is the entry's place in `entries`: two alike lines can have gone out
+// differently (one of them a reply), and the index says which was picked.
 const emit = defineEmits<{
-  select: [entry: string];
+  select: [entry: string, index: number];
   close: [];
 }>();
 
 // Cap the list so a long-lived buffer doesn't render hundreds of rows. The
 // newest entries are the likeliest recalls, so keep the tail (oldest first ->
 // newest last) and let the panel scroll for the rest.
-const rows = computed<readonly string[]>(() => (props.open ? props.entries.slice(-50) : []));
+type Row = { text: string; index: number };
+const rows = computed<readonly Row[]>(() => {
+  if (!props.open) return [];
+  const from = Math.max(0, props.entries.length - 50);
+  return props.entries.slice(from).map((text, i) => ({ text, index: from + i }));
+});
 
-function onSelect(row: string): void {
-  emit('select', row);
+function onSelect(row: Row): void {
+  emit('select', row.text, row.index);
 }
 
 // Forward keyboard nav to the popover so MessageInput's textarea keydown

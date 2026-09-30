@@ -19,13 +19,14 @@ const insertStmt = db.prepare(`
   VALUES (?, ?, ?, ?, ?)
 `);
 
+// Qualified: inside the lookup's subquery a bare `buffer_id` is the message's.
 const listRecentStmt = db.prepare(`
-  SELECT text,
-         ${DRAFT_REPLY_PARENT_COL('reply_message_id', 'buffer_id')} AS replyParent,
-         reply_addressed AS replyAddressed
-  FROM input_history
-  WHERE user_id = ? AND buffer_id = ?
-  ORDER BY id DESC
+  SELECT h.text AS text,
+         ${DRAFT_REPLY_PARENT_COL('h.reply_message_id', 'h.buffer_id')} AS replyParent,
+         h.reply_addressed AS replyAddressed
+  FROM input_history h
+  WHERE h.user_id = ? AND h.buffer_id = ?
+  ORDER BY h.id DESC
   LIMIT ?
 `);
 

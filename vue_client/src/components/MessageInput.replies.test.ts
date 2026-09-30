@@ -20,7 +20,8 @@ import {
   cancelComposerReply,
   focusComposer,
 } from '../composables/useComposerOverlay.js';
-import { socketSendWithAck } from '../composables/useSocket.js';
+import { socketSend, socketSendWithAck } from '../composables/useSocket.js';
+import { useInputHistoryStore } from '../stores/inputHistory.js';
 import MessageInput from './MessageInput.vue';
 
 type AckResult = { ok: boolean; error?: string };
@@ -258,5 +259,75 @@ describe('composing a reply', () => {
     await press(el, 'Enter');
     expect(sent()[0]).not.toHaveProperty('replyTo');
     expect(useRepliesStore().forKey('1::#other')).toMatchObject(REPLY);
+  });
+});
+
+// An up-arrow history entry keeps the reply it was sent as: recalled, it's a
+// reply again — fixing a typo in one and resending it still answers the line.
+// A plain line recalled over a pending reply is a plain line; walking back down
+// to the draft gives the draft its own reply back.
+describe('recalling a reply from history', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    vi.mocked(socketSend).mockClear();
+    vi.mocked(socketSendWithAck).mockClear();
+  });
+  afterEach(() => {
+    for (const wrapper of mounted) wrapper.unmount();
+    mounted = [];
+  });
+
+  // History walks on the frame after the key, once the browser's own caret move
+  // has had its turn (MessageInput's arrow handling).
+  async function arrow(el: HTMLTextAreaElement, key: 'ArrowUp' | 'ArrowDown') {
+    el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    await new Promise((r) => setTimeout(r, 40));
+    await flush();
+  }
+  const pending = () => useRepliesStore().forKey(KEY)?.messageId ?? null;
+  const historyAdds = () =>
+    vi
+      .mocked(socketSend)
+      .mock.calls.map((c) => c[0] as Record<string, unknown>)
+      .filter((f) => f.type === 'input-history-add');
+
+  it('records the reply with the entry, and brings it back on recall', async () => {
+    seed();
+    const el = await composer();
+    await reply(el);
+    await type(el, 'alice: noon');
+    await press(el, 'Enter');
+    await type(el, 'plain');
+    await press(el, 'Enter');
+    expect(historyAdds()).toEqual([
+      expect.objectContaining({ text: 'alice: noon', reply: { messageId: 42, addressed: true } }),
+      expect.not.objectContaining({ reply: expect.anything() }),
+    ]);
+
+    await arrow(el, 'ArrowUp');
+    expect([el.value, pending()]).toEqual(['plain', null]);
+    await arrow(el, 'ArrowUp');
+    expect([el.value, pending()]).toEqual(['alice: noon', 42]);
+    // Recalled with its address flag: Escape takes back the `alice: ` again.
+    expect(useRepliesStore().forKey(KEY)?.addressed).toBe(true);
+    await arrow(el, 'ArrowDown');
+    expect([el.value, pending()]).toEqual(['plain', null]);
+
+    // Sent from a recall, it's the reply again.
+    await arrow(el, 'ArrowUp');
+    await press(el, 'Enter');
+    expect(sent().at(-1)).toMatchObject({ text: 'alice: noon', replyTo: 42 });
+  });
+
+  it('gives the draft its own reply back at the bottom of the walk', async () => {
+    seed();
+    useInputHistoryStore().seed(1, '#chan', ['an old line']);
+    const el = await composer();
+    useRepliesStore().start(KEY, { ...REPLY, messageId: 7 });
+    await type(el, 'half a thought');
+    await arrow(el, 'ArrowUp');
+    expect([el.value, pending()]).toEqual(['an old line', null]);
+    await arrow(el, 'ArrowDown');
+    expect([el.value, pending()]).toEqual(['half a thought', 7]);
   });
 });

@@ -16,7 +16,7 @@ import { useConfigStore } from '../stores/config.js';
 import { useHighlightRulesStore } from '../stores/highlightRules.js';
 import { useInputHistoryStore } from '../stores/inputHistory.js';
 import { bufferClosed, applyBufferRenamed } from '../lib/bufferLifecycle.js';
-import { useDraftStore } from '../stores/drafts.js';
+import { useDraftStore, pendingReplyFrom } from '../stores/drafts.js';
 import { useChanlistStore } from '../stores/chanlist.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useFavoritesStore, type FavoriteEntry } from '../stores/favorites.js';
@@ -791,10 +791,16 @@ function applyBacklog(payload: any): void {
     // the client learns each buffer's stable id.
     { reset: !!payload.reset, hasMoreOlder: payload.hasMoreOlder, bufferId: payload.bufferId },
   );
-  if (payload.inputHistory) {
-    const inputHistory = useInputHistoryStore();
-    inputHistory.seed(payload.networkId, payload.target, payload.inputHistory);
-  }
+  if (payload.inputHistory) seedInputHistory(payload);
+}
+
+// A buffer's up-arrow recall, with the reply each entry was sent as, where the
+// frame says (inputHistoryReplies rides beside inputHistory, index for index).
+function seedInputHistory(payload: any): void {
+  const replies = Array.isArray(payload.inputHistoryReplies)
+    ? payload.inputHistoryReplies.map(pendingReplyFrom)
+    : undefined;
+  useInputHistoryStore().seed(payload.networkId, payload.target, payload.inputHistory, replies);
 }
 
 function handleMessage(raw: string): void {
@@ -856,9 +862,7 @@ function handleMessage(raw: string): void {
       buffers.applyLatestReplace(payload.networkId, payload.target, payload);
       // The 'latest' reply is also how a fresh-connect SHELL hydrates on open;
       // it carries inputHistory so up-arrow recall is restored (shells omit it).
-      if (payload.inputHistory) {
-        useInputHistoryStore().seed(payload.networkId, payload.target, payload.inputHistory);
-      }
+      if (payload.inputHistory) seedInputHistory(payload);
     } else if (mode === 'after') {
       buffers.appendHistory(
         payload.networkId,
@@ -966,7 +970,12 @@ function handleMessage(raw: string): void {
   }
   if (payload.kind === 'input-history-added') {
     const inputHistory = useInputHistoryStore();
-    inputHistory.add(payload.networkId, payload.target, payload.text);
+    inputHistory.add(
+      payload.networkId,
+      payload.target,
+      payload.text,
+      pendingReplyFrom(payload.reply),
+    );
     return;
   }
   if (payload.kind === 'draft-snapshot') {
@@ -976,7 +985,13 @@ function handleMessage(raw: string): void {
   }
   if (payload.kind === 'draft-updated') {
     const drafts = useDraftStore();
-    drafts.applyRemoteUpdate(payload.networkId, payload.target, payload.body);
+    // No `reply` key: a server that doesn't send one — leave ours alone.
+    drafts.applyRemoteUpdate(
+      payload.networkId,
+      payload.target,
+      payload.body,
+      'reply' in payload ? payload.reply : undefined,
+    );
     return;
   }
   if (payload.kind === 'chanlist-state') {

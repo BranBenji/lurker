@@ -344,6 +344,8 @@ const REPLY_PARENT_WHERE = `p.type IN ${REPLY_LINE_TYPES_SQL}
 // buffer, not from someone ignored) and one a reply can name (it has a msgid).
 // Null when retention took it or it no longer qualifies — the draft then keeps
 // its text and loses the reply. messages.id is the primary key: one seek.
+// ⚠ Pass QUALIFIED columns: the subquery reads messages, so a bare `buffer_id`
+// would be the message's own and the buffer check would always pass.
 const DRAFT_REPLY_WHERE = `${REPLY_PARENT_WHERE} AND p.msgid IS NOT NULL AND p.msgid != ''`;
 export const DRAFT_REPLY_PARENT_COL = (idCol: string, bufferCol: string) => `CASE
     WHEN ${idCol} IS NULL THEN NULL ELSE (
