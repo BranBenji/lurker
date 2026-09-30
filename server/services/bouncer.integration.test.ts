@@ -6,6 +6,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { setupTestDb } from '../test-utils/testApp.js';
+import { until } from '../test-utils/until.js';
 
 const ctx = setupTestDb('services-bouncer-integration');
 
@@ -304,11 +305,32 @@ describe('live relay', () => {
     c.send('USER client 0 * :client');
     await c.waitForCommand('422');
     c.send('@+typing=active TAGMSG #chan');
-    // PING is handled locally and in-order after TAGMSG, so a PONG proves the
-    // TAGMSG was already processed and relayed.
-    c.send('PING sync');
-    await c.waitFor((l) => l.includes('PONG'));
-    expect(acct.upstream.rawSent).toContain('@+typing=active TAGMSG #chan');
+    c.send('@+example=1 TAGMSG #chan');
+    c.send('@+example=1 TOPIC #chan');
+    await until(() => acct.upstream.rawSent.includes('@+example=1 TOPIC #chan'), 5000, 'TOPIC');
+    // Typing goes through the connection's sendTyping, whose gates are its own
+    // (ircConnection.test.ts); the fake records the line it would send. Any
+    // other TAGMSG goes verbatim.
+    expect(acct.upstream.rawSent).toEqual([
+      '@+typing=active TAGMSG #chan',
+      '@+example=1 TAGMSG #chan',
+      '@+example=1 TOPIC #chan',
+    ]);
+  });
+
+  it('drops a client TAGMSG with no client-only tags', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'tagless' });
+    const c = await harness.connect();
+    c.send(`PASS ${acct.user.username}:${acct.password}`);
+    c.send('NICK client');
+    c.send('USER client 0 * :client');
+    await c.waitForCommand('422');
+    c.send('TAGMSG #chan');
+    c.send('@+typing=bogus TAGMSG #chan');
+    c.send('@+typing=active TAGMSG =alice');
+    c.send('@+example=1 TOPIC #chan');
+    await until(() => acct.upstream.rawSent.length > 0, 5000, 'TOPIC relayed');
+    expect(acct.upstream.rawSent).toEqual(['@+example=1 TOPIC #chan']);
   });
 
   it('strips client-only tags when the upstream lacks message-tags', async () => {
@@ -319,13 +341,35 @@ describe('live relay', () => {
     c.send('NICK client');
     c.send('USER client 0 * :client');
     await c.waitForCommand('422');
-    c.send('@+typing=active TAGMSG #chan');
+    c.send('@+example=1 TOPIC #chan');
     c.send('PING sync');
     await c.waitFor((l) => l.includes('PONG'));
     // The bare command still forwards; the tag prefix is dropped so a non-IRCv3
-    // server doesn't parse `@+typing=active` as the command.
-    expect(acct.upstream.rawSent).toContain('TAGMSG #chan');
-    expect(acct.upstream.rawSent.some((l) => l.includes('+typing'))).toBe(false);
+    // server doesn't parse `@+example=1` as the command.
+    expect(acct.upstream.rawSent).toContain('TOPIC #chan');
+    expect(acct.upstream.rawSent.some((l) => l.includes('+example'))).toBe(false);
+  });
+
+  // A TAGMSG without its tags is nothing, and an unknown command to a network
+  // without message-tags: each keystroke of a client's typing would earn a 421.
+  it('drops a client TAGMSG when the upstream lacks message-tags', async () => {
+    const acct = harnessMod.seedAccount({ nick: 'plaintyper' });
+    acct.upstream.messageTags = false;
+    const c = await harness.connect();
+    c.send(`PASS ${acct.user.username}:${acct.password}`);
+    c.send('NICK client');
+    c.send('USER client 0 * :client');
+    await c.waitForCommand('422');
+    c.send('@+typing=active TAGMSG #chan');
+    c.send('@+draft/reply=m1;+draft/react=👍 TAGMSG #chan');
+    c.send('@+example=1 TOPIC #chan');
+    // The TOPIC after them went out, so the TAGMSGs were handled before it.
+    await until(() => acct.upstream.rawSent.includes('TOPIC #chan'), 5000, 'TOPIC relayed');
+    // The reaction says it didn't go; typing is quiet about it.
+    expect(c.lines.filter((l) => l.includes('NOTICE')).map((l) => l.split(' :')[1])).toEqual([
+      'Reaction not sent to #chan',
+    ]);
+    expect(acct.upstream.rawSent.some((l) => l.includes('TAGMSG'))).toBe(false);
   });
 
   // #809. ircManager now refuses a write on a network in reconnect backoff rather

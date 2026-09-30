@@ -78,7 +78,8 @@ import {
 } from '../db/messages.js';
 import type { HistoryEvents, HistoryReaction, HistoryRow, MessageEvent } from '../db/messages.js';
 import { getReadState } from '../db/bufferReads.js';
-import { resolveBuffer } from '../db/bufferResolve.js';
+import { resolveBuffer, resolveBufferIdByNetwork } from '../db/bufferResolve.js';
+import { findReactionParent } from '../db/reactions.js';
 import type { AwayChange, ReadMarkerMove } from './ircManager.js';
 import { broadcastReadState } from './wsHub.js';
 import { evaluatePresence, setPresenceSource } from './presence.js';
@@ -304,8 +305,9 @@ export interface ParsedClientLine {
   params: string[];
   // Client-only message tags (the `+`-prefixed ones, e.g. `+typing`,
   // `+draft/react`) exactly as the client sent them, joined by `;` with no
-  // leading `@`. Preserved so a relayed TAGMSG (and other commands routed
-  // through the verbatim `default:` relay) keeps its typing/reaction payload.
+  // leading `@`. Preserved so a relayed TAGMSG keeps its payload (a reaction or
+  // typing is sent again the web app's way, see handleClientTagmsg), as does
+  // any other command routed through the verbatim `default:` relay.
   // NOTE: PRIVMSG/NOTICE route through ircManager.send, which carries no tags,
   // so tags on a message body are NOT forwarded yet (tracked separately).
   // Server-authoritative tags (time, account, msgid, label, batch) are dropped
@@ -655,6 +657,13 @@ export function escapeTagValue(value: string): string {
     .replace(/ /g, '\\s')
     .replace(/\r/g, '\\r')
     .replace(/\n/g, '\\n');
+}
+
+// The inverse, for a value a client sent: `\X` for any other X is X, and a
+// trailing lone backslash is dropped (message-tags spec).
+export function unescapeTagValue(value: string): string {
+  const escapes: Record<string, string> = { ':': ';', s: ' ', '\\': '\\', r: '\r', n: '\n' };
+  return value.replace(/\\(.?)/gs, (_m, c: string) => escapes[c] ?? c);
 }
 
 // The msgid a line built from a stored message carries: the network's own
@@ -2510,6 +2519,9 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       case 'MONITOR':
         this.handleMonitor(conn, msg);
         return;
+      case 'TAGMSG':
+        this.handleClientTagmsg(conn, msg);
+        return;
       default:
         // Everything else (MODE, TOPIC, WHOIS, WHO, NAMES, LIST, KICK, INVITE,
         // NICK, …) forwards verbatim; replies come back via the raw relay.
@@ -2704,6 +2716,60 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     conn.raw(rebuildLine(forward), this);
   }
 
+  // A client's TAGMSG on its way to the network. A TAGMSG is nothing but its
+  // client-only tags, so one with none left goes nowhere: a network without
+  // message-tags gets no tags (relayRaw), and a bare TAGMSG is an unknown
+  // command there, its 421 coming back for every keystroke of the client's
+  // typing. ZNC drops it the same way (Client.cpp, HasMessageTagCap).
+  //
+  // Reactions and typing take the web app's road, so they meet its rules
+  // rather than a copy of them: ircManager.react (the line must be one we hold,
+  // never an E2E line or on an E2E channel, the network must carry the tags) and
+  // ircManager.typing (a target that refused us, an offline DM peer).
+  private handleClientTagmsg(conn: IrcConnection, msg: ParsedClientLine): void {
+    if (!msg.clientTags) return;
+    const target = msg.params[0] || '';
+    // ⚠⚠ `=nick` is a DCC chat, never an IRC target (see handleClientMessage),
+    // not even inside a target list.
+    if (!target || target.split(',').some(isDccChatTarget)) return;
+    const tags = new Map<string, string>();
+    for (const tag of msg.clientTags.split(';')) {
+      const eq = tag.indexOf('=');
+      if (eq === -1) tags.set(tag, '');
+      else tags.set(tag.slice(0, eq), unescapeTagValue(tag.slice(eq + 1)));
+    }
+    const react = tags.get('+draft/react');
+    const unreact = tags.get('+draft/unreact');
+    const reaction = react !== undefined || unreact !== undefined;
+    if (!conn.supportsMessageTags()) {
+      // A reaction says it wasn't sent, as every refusal below does. Typing
+      // stays quiet: it's a nicety, and it would say so on every keystroke.
+      if (reaction) this.notice(`Reaction not sent to ${target}`);
+      return;
+    }
+    if (reaction) {
+      // The line it names, in the buffer it was sent to (a target list or a
+      // STATUSMSG target names no buffer, so it names no line either).
+      const parentMsgid = tags.get('+reply') || tags.get('+draft/reply');
+      const bufferId = resolveBufferIdByNetwork(this.networkId, target);
+      const parent =
+        parentMsgid && bufferId !== undefined && (react === undefined || unreact === undefined)
+          ? findReactionParent(this.networkId, bufferId, parentMsgid)
+          : null;
+      const value = (react ?? unreact) as string;
+      if (!parent || !ircManager.react(this.userId, parent.id, value, unreact !== undefined)) {
+        this.notice(`Reaction not sent to ${target}`);
+      }
+      return;
+    }
+    const typing = tags.get('+typing');
+    if (typing !== undefined) {
+      ircManager.typing(this.userId, this.networkId, target, typing);
+      return;
+    }
+    this.relayRaw(conn, msg);
+  }
+
   // A client's CTCP on its way to the network. Its VERSION reply gets " via
   // Lurker <version>", as ZNC adds itself (Client.cpp:1378). Not once the user
   // changed the VERSION reply or turned replies off: the request never reached
@@ -2830,6 +2896,7 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     text: string,
     time: string | null,
     msgid?: string,
+    replyMsgid?: string,
   ): void {
     if (this.closed) return;
     this.prunePendingEcho();
@@ -2853,7 +2920,14 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     const bodies =
       type === 'action' ? [`\u0001ACTION ${text.replace(/\n/g, ' ')}\u0001`] : text.split('\n');
     const head = `:${this.selfPrefix()} ${cmd} ${target}`;
-    for (const line of this.messageLines(head, bodies, { time: time ?? undefined, msgid })) {
+    const tags: ReplayTags = {
+      time: time ?? undefined,
+      msgid,
+      // A reply says so here as it does in CHATHISTORY, or a client shows it
+      // threaded only after a reload.
+      clientTags: replyMsgid ? replyTags(replyMsgid) : undefined,
+    };
+    for (const line of this.messageLines(head, bodies, tags)) {
       this.write(line);
     }
   }
@@ -3138,7 +3212,15 @@ function dispatchIrcEvent(event: Record<string, unknown>): void {
   // The msgid the row took from the network's echo (echo-message), so the client
   // has the id history will give it.
   const msgid = networkMsgid(event);
-  for (const session of set) session.deliverSelfEcho(type, target, text, time, msgid);
+  // The line it answers (publish() resolved the tag into replyTo). Never on an
+  // E2E line, as history never replays one there (!row.e2e): its reply went out
+  // without tags (ircManager.send publishes it without replyMsgid today).
+  const replyTo = event.replyTo as { msgid?: unknown } | undefined;
+  const replyMsgid =
+    !event.e2e && typeof replyTo?.msgid === 'string' && replyTo.msgid ? replyTo.msgid : undefined;
+  for (const session of set) {
+    session.deliverSelfEcho(type, target, text, time, msgid, replyMsgid);
+  }
 }
 
 /**

@@ -272,6 +272,59 @@ describe('receiving reactions', () => {
     }
   });
 
+  // A server-pushed replay (Ergo autoreplay, ZNC playback) repeats a window of
+  // history on reconnect. None of its TAGMSGs count, as none of its lines do: a
+  // window that ends between an unreact and the re-react after it would take
+  // back a reaction that stands, and Ergo's history keeps reacts but not
+  // unreacts, so a reaction taken back would come back. Typing is stale.
+  it.each(['chathistory', 'draft/chathistory', 'znc.in/playback'])(
+    'ignores reactions and typing replayed inside a %s batch',
+    async (batchType) => {
+      const nick = `recv8${batchType.replace(/\W/g, '')}`.slice(0, 16);
+      const chan = `#r8${batchType.replace(/\W/g, '')}`;
+      const rig = await connect(nick, chan);
+      try {
+        const msgid = await peerSays(rig, 'bob', chan, 'the build is green');
+        // Standing now: carol's 👍 and our own 👀, both given live.
+        ircd.tagmsg('carol', chan, [`+draft/reply=${msgid}`, '+draft/react=👍']);
+        expect(rig.conn.sendReaction(chan, msgid, '👀', false)).toBe(true);
+        await until(() => reactionFrames(rig).length === 2, 5000, 'live reactions');
+
+        // The window: times long past, as a replay's are.
+        const at = (s: number) => `time=2020-01-01T00:00:0${s}.000Z`;
+        const reply = `+draft/reply=${msgid}`;
+        const line = (from: string, id: string, tags: string) =>
+          `@batch=h1;msgid=${id};${tags} :${from}!~${from}@peer.fake TAGMSG ${chan}`;
+        ircd.sendRaw(nick, `BATCH +h1 ${batchType} ${chan}`);
+        // Unreacts of reactions given again since.
+        ircd.sendRaw(nick, line('carol', 'old1', `${at(1)};${reply};+draft/unreact=👍`));
+        ircd.sendRaw(nick, line(nick, 'old2', `${at(2)};${reply};+draft/unreact=👀`));
+        // A react with no unreact after it (Ergo never stores one).
+        ircd.sendRaw(nick, line('carol', 'old3', `${at(3)};${reply};+draft/react=🎉`));
+        // Given and taken back inside the window.
+        ircd.sendRaw(nick, line('dave', 'old4', `${at(4)};${reply};+draft/react=🔥`));
+        ircd.sendRaw(nick, line('dave', 'old5', `${at(5)};${reply};+draft/unreact=🔥`));
+        ircd.sendRaw(nick, line('carol', 'old6', `${at(6)};+typing=active`));
+        ircd.sendRaw(nick, 'BATCH -h1');
+        await barrier(rig, 'erin', chan, msgid);
+
+        expect(reactionFrames(rig).map((e) => [e.nick, e.value, e.remove])).toEqual([
+          ['carol', '👍', false],
+          [nick, '👀', false],
+          ['erin', `probe${barrierSeq}`, false],
+        ]);
+        expect(rig.events.some((e) => e.type === 'typing')).toBe(false);
+        expect(rowByMsgid(rig, chan, msgid).reactions).toEqual([
+          { nick: 'carol', value: '👍', self: false },
+          { nick, value: '👀', self: true },
+          { nick: 'erin', value: `probe${barrierSeq}`, self: false },
+        ]);
+      } finally {
+        rig.conn.dispose();
+      }
+    },
+  );
+
   it('routes a DM reaction to the sender’s buffer', async () => {
     const rig = await connect('recv5');
     try {
@@ -483,7 +536,7 @@ describe('ircManager.react', () => {
   function stubConn() {
     const sendReaction = vi.fn<IrcConnection['sendReaction']>(() => true);
     const publishEphemeral = vi.fn<IrcConnection['publishEphemeral']>();
-    const conn = { sendReaction, publishEphemeral } as unknown as IrcConnection;
+    const conn = { state: 'connected', sendReaction, publishEphemeral } as unknown as IrcConnection;
     return { conn, sendReaction, publishEphemeral };
   }
 
@@ -510,6 +563,18 @@ describe('ircManager.react', () => {
     vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
     expect(ircManager.react(userId, id, '👍', false)).toBe(true);
     expect(sendReaction).toHaveBeenCalledWith('#plain', `mgr${seq}`, '👍', false);
+  });
+
+  // A network in reconnect backoff keeps its connection object, but a TAGMSG
+  // written to it is dropped: the reaction must be refused, not reported sent.
+  it('refuses while the network is not connected', () => {
+    const network = makeNetwork('mgr3');
+    const id = storedLine(network, '#plain');
+    const { conn, sendReaction } = stubConn();
+    (conn as unknown as { state: string }).state = 'reconnecting';
+    vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
+    expect(ircManager.react(userId, id, '👍', false)).toBe(false);
+    expect(sendReaction).not.toHaveBeenCalled();
   });
 
   // A reaction is a cleartext tag, so even a plaintext line on an E2E channel

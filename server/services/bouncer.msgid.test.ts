@@ -6,7 +6,7 @@
 // real IrcConnection on the fake ircd, with the real bouncer in front of it. See
 // bouncerHarness.ts.
 
-import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } from 'vitest';
 import { setupTestDb } from '../test-utils/testApp.js';
 import { FakeIrcd } from '../test-utils/fakeIrcd.js';
 import { until } from '../test-utils/until.js';
@@ -19,6 +19,8 @@ let ircManager: typeof import('./ircManager.js').default;
 let users: typeof import('../db/users.js');
 let networks: typeof import('../db/networks.js');
 let hashPassword: typeof import('./password.js').hashPassword;
+let messages: typeof import('../db/messages.js');
+let e2eManager: typeof import('./e2e/manager.js').e2eManager;
 let harness: import('../test-utils/bouncerHarness.js').Harness;
 let ircd: FakeIrcd;
 
@@ -30,6 +32,7 @@ interface Live {
   username: string;
   networkId: number;
   password: string;
+  nick: string;
   events: Event[];
 }
 
@@ -41,6 +44,8 @@ beforeAll(async () => {
   users = await import('../db/users.js');
   networks = await import('../db/networks.js');
   ({ hashPassword } = await import('./password.js'));
+  messages = await import('../db/messages.js');
+  ({ e2eManager } = await import('./e2e/manager.js'));
   ircd = await FakeIrcd.start();
   harness = await harnessMod.startHarness();
 });
@@ -88,7 +93,14 @@ async function seedLive(): Promise<Live> {
     ircManager.connectionsForUser(user.id).delete(network.id);
   });
   await until(() => conn.state === 'connected', 5000, 'connected');
-  return { userId: user.id, username: user.username, networkId: network.id, password, events };
+  return {
+    userId: user.id,
+    username: user.username,
+    networkId: network.id,
+    password,
+    nick: network.nick,
+    events,
+  };
 }
 
 const NUL = String.fromCharCode(0);
@@ -172,5 +184,111 @@ describe('network msgids', () => {
     const row = await stored(live, 'from the web');
     expect(String(row.msgid)).toMatch(/^m[0-9]+$/);
     expect(msgidOf(echo)).toBe(row.msgid);
+  });
+
+  // The network's echo carries the tags, but the bouncer drops it for the copy it
+  // writes itself — which has to say it's a reply too, or the client shows it
+  // threaded only once it reads the line back from CHATHISTORY.
+  it('a reply sent from the web app reaches the client as a reply', async () => {
+    const live = await seedLive();
+    const c = await attachIn(live, '#room');
+    const parentMsgid = ircd.say('bob', '#room', 'who broke the build?');
+    const parent = await stored(live, 'who broke the build?');
+    ircManager.send(live.userId, live.networkId, '#room', 'bob: not me', {
+      replyTo: Number(parent.id),
+    });
+    const echo = await c.waitFor((l) => l.includes('PRIVMSG #room :bob: not me'));
+    const tags = echo.slice(1, echo.indexOf(' ')).split(';');
+    expect(tags).toContain(`+reply=${parentMsgid}`);
+    expect(tags).toContain(`+draft/reply=${parentMsgid}`);
+
+    ircManager.action(live.userId, live.networkId, '#room', 'shrugs', {
+      replyTo: Number(parent.id),
+    });
+    const action = await c.waitFor((l) => l.includes('PRIVMSG #room :\u0001ACTION shrugs'));
+    expect(action).toContain(`+reply=${parentMsgid}`);
+
+    // A plain line stays plain.
+    ircManager.send(live.userId, live.networkId, '#room', 'unrelated');
+    const plain = await c.waitFor((l) => l.includes('PRIVMSG #room :unrelated'));
+    expect(plain).not.toContain('reply=');
+  });
+});
+
+// A client's reaction takes the web app's road (ircManager.react), so it meets
+// the same rules: the line must be one we hold, and neither it nor its channel
+// end-to-end encrypted — a reaction is a cleartext tag naming the line.
+describe('reactions from an attached client', () => {
+  const reactionSent = (l: string) => l.includes('TAGMSG') && l.includes('+draft/react=');
+
+  it('go to the network as the web app sends them, and are recorded from the echo', async () => {
+    const live = await seedLive();
+    const c = await attachIn(live, '#room');
+    const msgid = ircd.say('bob', '#room', 'ship it?');
+    await stored(live, 'ship it?');
+    // Only the draft reply name, a value with an escaped space, the channel in
+    // another case: what goes out is the web app's line all the same.
+    c.send(`@+draft/reply=${msgid};+draft/react=lol\\sok TAGMSG #ROOM`);
+    const sent = await ircd.waitForLine((l, from) => from.nick === live.nick && reactionSent(l));
+    expect(sent).toContain(' TAGMSG #room');
+    expect(sent).toContain(`+reply=${msgid}`);
+    expect(sent).toContain(`+draft/reply=${msgid}`);
+    expect(sent).toContain('+draft/react=lol\\sok');
+    await until(
+      () => live.events.some((e) => e.type === 'reaction' && e.value === 'lol ok' && e.self),
+      5000,
+      'reaction recorded',
+    );
+  });
+
+  it('are refused for a line we do not hold, on an E2E channel, and on an encrypted line', async () => {
+    const live = await seedLive();
+    const c = await attachIn(live, '#room');
+    const msgid = ircd.say('bob', '#room', 'ship it?');
+    await stored(live, 'ship it?');
+    // ⚠ waitFor matches lines already received: count the notices instead, so
+    // each refusal has to earn its own.
+    const notices = () => c.lines.filter((l) => l.includes('Reaction not sent to')).length;
+    const refused = async (line: string, target: string) => {
+      const before = notices();
+      c.send(line);
+      await until(() => notices() > before, 2000, `refused: ${line}`);
+      expect(c.lines.filter((l) => l.includes('Reaction not sent to')).at(-1)).toContain(
+        `Reaction not sent to ${target}`,
+      );
+    };
+
+    await refused('@+draft/reply=nope;+draft/react=👍 TAGMSG #room', '#room');
+    // "MUST NOT both be attached": no telling which was meant.
+    await refused(`@+draft/reply=${msgid};+draft/react=👍;+draft/unreact=👍 TAGMSG #room`, '#room');
+    // A target list names no buffer, so no line either.
+    await refused(`@+draft/reply=${msgid};+draft/react=👍 TAGMSG #room,#other`, '#room,#other');
+
+    const spy = vi.spyOn(e2eManager, 'isChannelEnabled').mockReturnValue(true);
+    try {
+      await refused(`@+draft/reply=${msgid};+draft/react=👍 TAGMSG #room`, '#room');
+    } finally {
+      spy.mockRestore();
+    }
+
+    // A DM line that arrived encrypted: no channel to be E2E, the line itself is.
+    messages.insertMessage({
+      networkId: live.networkId,
+      target: 'bob',
+      time: new Date().toISOString(),
+      type: 'message',
+      nick: 'bob',
+      text: 'psst',
+      msgid: 'e2e-line',
+      extra: { e2e: true },
+    });
+    await refused('@+draft/reply=e2e-line;+draft/react=👍 TAGMSG bob', 'bob');
+
+    // Nothing reached the network: a line sent after them has, and they haven't.
+    c.send('PRIVMSG #room :barrier line');
+    await ircd.waitForLine((l) => l.includes('PRIVMSG #room :barrier line'));
+    await expect(
+      ircd.waitForLine((l, from) => from.nick === live.nick && reactionSent(l), 50),
+    ).rejects.toThrow('timed out');
   });
 });

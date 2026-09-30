@@ -164,6 +164,12 @@ export class FakeUpstream {
     return this.messageTags;
   }
 
+  // IrcConnection.sendTyping, minus its gates (a refused target, an offline
+  // peer): the TAGMSG it would put on the wire.
+  sendTyping(target: string, state: string): void {
+    this.rawSent.push(`@+typing=${state} TAGMSG ${target}`);
+  }
+
   // IrcConnection.syncMonitor, with no nicks of Lurker's own.
   syncMonitor(): MonitorSync | null {
     if (!this.useMonitor || this.state !== 'connected') return null;
