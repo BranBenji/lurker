@@ -26,7 +26,7 @@
               :disabled="!canReact"
               @click="choose(g.value)"
             >
-              <span class="value">{{ g.value }}</span>
+              <span class="value" dir="auto">{{ g.value }}</span>
               <span class="who">{{ g.nicks.join(', ') }}</span>
             </button>
           </li>
@@ -194,10 +194,18 @@ onMounted(() => {
 .standing-row:hover:not(:disabled) {
   border-color: var(--border);
 }
+/* The one place a long text reaction is shown whole (#1014): it wraps, and
+   leaves the names beside it at least half the row. */
+.standing-row .value {
+  max-width: 50%;
+  overflow-wrap: anywhere;
+}
 .standing-row.mine .value {
   color: var(--accent);
 }
 .standing-row .who {
+  flex: 1;
+  min-width: 0;
   color: var(--fg-muted);
   overflow: hidden;
   text-overflow: ellipsis;

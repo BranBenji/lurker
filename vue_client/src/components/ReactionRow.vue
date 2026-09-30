@@ -29,7 +29,7 @@
       @click.stop="onChipClick(g.value)"
       @contextmenu.stop
     >
-      <span class="value">{{ g.value }}</span
+      <span class="value" dir="auto">{{ g.value }}</span
       ><span class="count">{{ g.nicks.length }}</span>
     </button>
     <button
@@ -121,6 +121,18 @@ function onChipClick(value: string) {
   line-height: 1.2;
   padding: var(--space-2) var(--space-4) calc(var(--space-2) + 1px);
   cursor: pointer;
+}
+/* A value can be up to 64 graphemes of text. The chip shows the start of a long
+   one and the tooltip the whole (#1014), as halloy does; the picker shows it
+   all. Cut by the browser, so an emoji or a combining mark is never split.
+   Clipped sideways only, as ReactModal's quick row is: `overflow: hidden` clips
+   every edge, and shaved the bottom off an emoji sitting low in the line. */
+.value {
+  max-width: 12ch;
+  overflow-x: clip;
+  overflow-y: visible;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .chip:hover:not(:disabled) {
   background: color-mix(in srgb, var(--fg) 8%, var(--bg-soft));
