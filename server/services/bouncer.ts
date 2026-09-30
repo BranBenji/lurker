@@ -308,8 +308,8 @@ export interface ParsedClientLine {
   // leading `@`. Preserved so a relayed TAGMSG keeps its payload (a reaction or
   // typing is sent again the web app's way, see handleClientTagmsg), as does
   // any other command routed through the verbatim `default:` relay.
-  // NOTE: PRIVMSG/NOTICE route through ircManager.send, which carries no tags,
-  // so tags on a message body are NOT forwarded yet (tracked separately).
+  // PRIVMSG and NOTICE route through ircManager instead, which carries only the
+  // reply tag (handleClientMessage, #483); any other tag on a message is dropped.
   // Server-authoritative tags (time, account, msgid, label, batch) are dropped
   // here — mirrors soju's copyClientTags.
   clientTags?: string;
@@ -664,6 +664,17 @@ export function escapeTagValue(value: string): string {
 export function unescapeTagValue(value: string): string {
   const escapes: Record<string, string> = { ':': ';', s: ' ', '\\': '\\', r: '\r', n: '\n' };
   return value.replace(/\\(.?)/gs, (_m, c: string) => escapes[c] ?? c);
+}
+
+// A client's `+`-tags (ParsedClientLine.clientTags) by name, values unescaped.
+function clientTagMap(clientTags: string): Map<string, string> {
+  const tags = new Map<string, string>();
+  for (const tag of clientTags.split(';')) {
+    const eq = tag.indexOf('=');
+    if (eq === -1) tags.set(tag, '');
+    else tags.set(tag.slice(0, eq), unescapeTagValue(tag.slice(eq + 1)));
+  }
+  return tags;
 }
 
 // The msgid a line built from a stored message carries: the network's own
@@ -2732,12 +2743,7 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     // ⚠⚠ `=nick` is a DCC chat, never an IRC target (see handleClientMessage),
     // not even inside a target list.
     if (!target || target.split(',').some(isDccChatTarget)) return;
-    const tags = new Map<string, string>();
-    for (const tag of msg.clientTags.split(';')) {
-      const eq = tag.indexOf('=');
-      if (eq === -1) tags.set(tag, '');
-      else tags.set(tag.slice(0, eq), unescapeTagValue(tag.slice(eq + 1)));
-    }
+    const tags = clientTagMap(msg.clientTags);
     const react = tags.get('+draft/react');
     const unreact = tags.get('+draft/unreact');
     const reaction = react !== undefined || unreact !== undefined;
@@ -2850,11 +2856,15 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         );
         continue;
       }
+      // A reply goes the web app's way too (#483): named by the line it answers,
+      // so ircManager puts on the tags the network allows, stores it as a reply
+      // and echoes it as one to every client.
+      const replyTo = this.clientReplyTo(msg, target);
       if (isAction) {
         // eslint-disable-next-line no-control-regex
         const body = text.replace(/^\u0001ACTION ?/, '').replace(/\u0001$/, '');
         for (const chunk of splitAction(body)) this.registerEcho('action', target, chunk);
-        ircManager.action(this.userId, this.networkId, target, body);
+        ircManager.action(this.userId, this.networkId, target, body, { replyTo });
       } else if (msg.command === 'PRIVMSG') {
         const chunks = splitSay(text);
         for (const chunk of chunks) this.registerEcho('message', target, chunk);
@@ -2862,12 +2872,28 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         // (not per wire chunk), so register the whole text too when it split.
         // The unmatched leftover key expires harmlessly (see pendingEcho).
         if (chunks.length > 1) this.registerEcho('message', target, text);
-        ircManager.send(this.userId, this.networkId, target, text);
+        ircManager.send(this.userId, this.networkId, target, text, { replyTo });
       } else {
         for (const chunk of splitSay(text)) this.registerEcho('notice', target, chunk);
         ircManager.notice(this.userId, this.networkId, target, text);
       }
     }
+  }
+
+  // The stored line a client's `+reply` (or `+draft/reply`) names, in the buffer
+  // the message goes to: what the web app's Reply hands ircManager. A line we
+  // don't hold (a replay we dropped, one retention took) sends a plain line, its
+  // `nick: ` still saying who it's for. A bouncer client mirrors the account,
+  // and the account can't say what that reply answers. Nor can a msgid from
+  // another buffer be a reply here: #b would be told about a line only #a saw.
+  private clientReplyTo(msg: ParsedClientLine, target: string): number | undefined {
+    if (!msg.clientTags) return undefined;
+    const tags = clientTagMap(msg.clientTags);
+    const msgid = tags.get('+reply') || tags.get('+draft/reply');
+    if (!msgid) return undefined;
+    const bufferId = resolveBufferIdByNetwork(this.networkId, target);
+    if (bufferId === undefined) return undefined;
+    return findReactionParent(this.networkId, bufferId, msgid)?.id;
   }
 
   private registerEcho(type: string, target: string, text: string): void {

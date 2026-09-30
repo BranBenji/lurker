@@ -292,3 +292,58 @@ describe('reactions from an attached client', () => {
     ).rejects.toThrow('timed out');
   });
 });
+
+// #483: a client's reply goes the web app's way (ircManager.send's replyTo), so
+// the network gets the tags it allows, the account stores a reply, and every
+// client — the web app and the other attached ones — sees one.
+describe('replies from an attached client', () => {
+  const tagsOf = (line: string) => (line.startsWith('@') ? line.slice(1, line.indexOf(' ')) : '');
+
+  it('go to the network, the account and the other clients as replies', async () => {
+    const live = await seedLive();
+    const c = await attachIn(live, '#room');
+    const other = await attachIn(live, '#room');
+    const parentMsgid = ircd.say('bob', '#room', 'who broke the build?');
+    await stored(live, 'who broke the build?');
+
+    // Only the draft name, as HexDroid sends it: both go out all the same.
+    c.send(`@+draft/reply=${parentMsgid} PRIVMSG #room :bob: not me`);
+    const sent = await ircd.waitForLine(
+      (l, from) => from.nick === live.nick && l.includes('PRIVMSG #room :bob: not me'),
+    );
+    expect(tagsOf(sent).split(';')).toEqual(
+      expect.arrayContaining([`+reply=${parentMsgid}`, `+draft/reply=${parentMsgid}`]),
+    );
+    const row = await stored(live, 'bob: not me');
+    expect(row.replyTo).toMatchObject({ msgid: parentMsgid, parent: { nick: 'bob' } });
+    const echoed = await other.waitFor((l) => l.includes('PRIVMSG #room :bob: not me'));
+    expect(tagsOf(echoed)).toContain(`+reply=${parentMsgid}`);
+    // The sender asked for echo-message: its own copy says so too.
+    const own = await c.waitFor((l) => l.includes('PRIVMSG #room :bob: not me'));
+    expect(tagsOf(own)).toContain(`+reply=${parentMsgid}`);
+
+    c.send(`@+reply=${parentMsgid} PRIVMSG #room :\u0001ACTION shrugs\u0001`);
+    const action = await ircd.waitForLine(
+      (l, from) => from.nick === live.nick && l.includes('ACTION shrugs'),
+    );
+    expect(tagsOf(action)).toContain(`+reply=${parentMsgid}`);
+  });
+
+  it('go out as plain lines when they name a line the account does not hold', async () => {
+    const live = await seedLive();
+    const c = await attachIn(live, '#room');
+    const elsewhere = ircd.say('bob', live.nick, 'a line in our DM');
+    await stored(live, 'a line in our DM');
+
+    // Nothing by that msgid, and one from another buffer: both plain.
+    c.send('@+reply=nope PRIVMSG #room :unknown: hello');
+    c.send(`@+reply=${elsewhere} PRIVMSG #room :bob: wrong room`);
+    for (const text of ['unknown: hello', 'bob: wrong room']) {
+      const sent = await ircd.waitForLine(
+        (l, from) => from.nick === live.nick && l.includes(`PRIVMSG #room :${text}`),
+      );
+      expect(tagsOf(sent)).not.toContain('reply=');
+      expect((await stored(live, text)).replyTo).toBeUndefined();
+    }
+  });
+});
