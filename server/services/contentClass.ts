@@ -134,8 +134,14 @@ export const ACCEPTED_SUMMARY = 'images, text, and audio/video (mp4, mov, m4v, m
  * reports that as `application/xml`. Lumping it in with pdf/zip would have turned
  * every real SVG upload — which works today — into a 415. These fall through to the
  * text/SVG logic below and get decided there.
+ *
+ * ISO 9660 is here for the opposite reason: it's not text, but its whole signature
+ * is `CD001` at byte 32769 (file-type 22.1+). A text upload that happens to have
+ * those five bytes there would get a 415. Falling through keeps the pre-22.1
+ * answer: the full-file UTF-8 check below decides, same as for every file with no
+ * signature.
  */
-const TEXTISH_SNIFF = new Set(['application/xml', 'text/xml']);
+const TEXTISH_SNIFF = new Set(['application/xml', 'text/xml', 'application/x-iso9660-image']);
 
 /**
  * The text dialect table moved to shared/ — the CLIENT's paste/drop gate needs the

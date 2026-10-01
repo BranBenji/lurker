@@ -162,6 +162,12 @@ describe('clampUploadCapBytes', () => {
     expect(limits.clampUploadCapBytes(-5)).toBe(1);
   });
 
+  // multer 2.4 throws on a non-integer fileSize, so a policy maxMb of 0.3 would 500
+  // every upload rather than cap it.
+  it('resolves to whole bytes', () => {
+    expect(limits.clampUploadCapBytes(0.3 * MIB)).toBe(314572);
+  });
+
   it('applies the transport ceiling to a policy cap the operator baked higher', () => {
     process.env.LURKER_MAX_UPLOAD_MB = '100';
     expect(limits.clampUploadCapBytes(200 * MIB)).toBe(100 * 1_000_000 - ENVELOPE);
