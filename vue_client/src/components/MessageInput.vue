@@ -747,10 +747,27 @@ let cycling = false; // true while we're programmatically rewriting `text`
 // so Down past the newest restores the in-progress draft.
 let historyIndex: number | null = null;
 let historyDraft = '';
+// The reply the draft had when the walk began: Down past the newest gives it
+// back with the text.
+let historyDraftReply: PendingReply | null = null;
 
 function resetHistoryNav() {
   historyIndex = null;
   historyDraft = '';
+  historyDraftReply = null;
+}
+
+// A recalled line comes back as it was sent: a reply with its reply, a plain
+// line with none — even over a pending one, which would otherwise attach itself
+// to whatever was recalled.
+function recallEntry(networkId: number, target: string, index: number): void {
+  setInputAndCaretEnd(inputHistory.forBuffer(networkId, target)[index]);
+  setActiveReply(inputHistory.replyAt(networkId, target, index));
+}
+
+function setActiveReply(reply: PendingReply | null): void {
+  const key = networks.activeKey;
+  if (key) replies.set(key, reply);
 }
 
 function setInputAndCaretEnd(value: string): void {
@@ -787,13 +804,14 @@ function walkHistory(key: 'ArrowUp' | 'ArrowDown'): void {
   if (key === 'ArrowUp') {
     if (historyIndex === null) {
       historyDraft = text.value;
+      historyDraftReply = replies.forKey(networks.activeKey);
       historyIndex = list.length - 1;
     } else if (historyIndex > 0) {
       historyIndex -= 1;
     } else {
       return;
     }
-    setInputAndCaretEnd(list[historyIndex]);
+    recallEntry(networkId, target, historyIndex);
     return;
   }
 
@@ -801,11 +819,13 @@ function walkHistory(key: 'ArrowUp' | 'ArrowDown'): void {
   if (historyIndex === null) return;
   if (historyIndex < list.length - 1) {
     historyIndex += 1;
-    setInputAndCaretEnd(list[historyIndex]);
+    recallEntry(networkId, target, historyIndex);
   } else {
     const draft = historyDraft;
+    const draftReply = historyDraftReply;
     resetHistoryNav();
     setInputAndCaretEnd(draft);
+    setActiveReply(draftReply);
   }
 }
 
@@ -1850,7 +1870,7 @@ function toggleHistory(): void {
 // draft is discarded, not stashed; the menu is a deliberate "jump to this past
 // line", not a reversible walk. `cycling` inside setInputAndCaretEnd keeps the
 // resulting onInput from firing a typing notification or resetting state.
-function onHistorySelect(entry: string): void {
+function onHistorySelect(entry: string, index: number): void {
   closeHistoryPicker();
   // The menu opens on a tap, bypassing the keystroke handlers that normally
   // clear these — so a pick can land on top of a live Tab-completion session
@@ -1860,6 +1880,9 @@ function onHistorySelect(entry: string): void {
   resetCompletion();
   resetHistoryNav();
   setInputAndCaretEnd(entry);
+  // With the reply it went out as, as an Up-arrow recall does.
+  const a = active.value;
+  if (a) setActiveReply(inputHistory.replyAt(a.networkId, a.target, index));
   queueMicrotask(() => inputEl.value?.focus());
 }
 
@@ -2227,10 +2250,18 @@ function commitInput(
   raw: string,
   networkId: number,
   target: string,
-  opts: { isChatMessage: boolean },
+  opts: { isChatMessage: boolean; reply?: PendingReply | null },
 ): void {
-  inputHistory.add(networkId, target, raw);
-  socketSend({ type: 'input-history-add', networkId, target, text: raw });
+  // The reply it went out as rides with the entry: recalled, it's a reply again.
+  const reply = opts.reply ?? null;
+  inputHistory.add(networkId, target, raw, reply);
+  socketSend({
+    type: 'input-history-add',
+    networkId,
+    target,
+    text: raw,
+    ...(reply ? { reply: { messageId: reply.messageId, addressed: !!reply.addressed } } : {}),
+  });
   // Clear the draft for the buffer the send came FROM, addressed explicitly
   // rather than through `text.value` (whose setter targets whatever buffer is
   // active *now*). A command like `/msg nick text` calls buffers.activate()
@@ -2400,8 +2431,12 @@ async function submit() {
     pendingCommandAck = null;
     const handled = await handleCommand(raw, networkId, target);
     if (!handled) return;
-    commitInput(raw, networkId, target, { isChatMessage: chatMessagesSent > said });
+    // Taken first: a /me that went out as a reply carries it in its origin.
     const ack = takeCommandAck();
+    commitInput(raw, networkId, target, {
+      isChatMessage: chatMessagesSent > said,
+      reply: ack?.origin.reply?.reply ?? null,
+    });
     if (ack) {
       const result = await ack.promise;
       if (!result.ok) {
@@ -2436,7 +2471,7 @@ async function submit() {
   typingState = null;
   typingTarget = null;
   clearInactivityTimer();
-  commitInput(raw, networkId, target, { isChatMessage: true });
+  commitInput(raw, networkId, target, { isChatMessage: true, reply: taken?.reply ?? null });
   const result = await pending;
   if (!result.ok) {
     toastSendFailure(result.error ?? 'unknown', raw);

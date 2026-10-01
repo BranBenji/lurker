@@ -28,22 +28,26 @@ beforeAll(async () => {
 
 afterAll(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
-describe('addEntry / listRecent', () => {
+describe('addEntry / inputHistoryFields', () => {
   it('returns oldest-first within the requested slice', () => {
     inputHistory.addEntry(user.id, net!.id, '#chat', 'one');
     inputHistory.addEntry(user.id, net!.id, '#chat', 'two');
     inputHistory.addEntry(user.id, net!.id, '#chat', 'three');
-    expect(inputHistory.listRecent(user.id, net!.id, '#chat', 10)).toEqual(['one', 'two', 'three']);
+    expect(inputHistory.inputHistoryFields(user.id, net!.id, '#chat', 10).inputHistory).toEqual([
+      'one',
+      'two',
+      'three',
+    ]);
   });
 
   it('respects the limit and keeps the most-recent suffix', () => {
     for (let i = 0; i < 10; i += 1) inputHistory.addEntry(user.id, net!.id, '#wall', `m${i}`);
-    const recent = inputHistory.listRecent(user.id, net!.id, '#wall', 3);
+    const recent = inputHistory.inputHistoryFields(user.id, net!.id, '#wall', 3).inputHistory;
     expect(recent).toEqual(['m7', 'm8', 'm9']);
   });
 
   it('scopes by (user, network, target)', () => {
     inputHistory.addEntry(user.id, net!.id, '#a', 'private');
-    expect(inputHistory.listRecent(user.id, net!.id, '#b', 10)).toEqual([]);
+    expect(inputHistory.inputHistoryFields(user.id, net!.id, '#b', 10).inputHistory).toEqual([]);
   });
 });

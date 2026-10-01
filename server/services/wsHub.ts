@@ -11,6 +11,7 @@ import type { PageUnit } from '../../shared/eventFilter.js';
 import { asPageUnit } from '../../shared/eventFilter.js';
 import { dccChatPeer, isChannelTarget, isDccChatTarget } from '../../shared/channels.js';
 import { WS_CLOSE_SESSION_REVOKED } from '../../shared/wsCloseCodes.js';
+import { parseDraftReplyRef } from '../../shared/replies.js';
 import { WebSocketServer } from 'ws';
 import cookie from 'cookie';
 import cookieParser from 'cookie-parser';
@@ -62,10 +63,7 @@ import {
   hasOlderSystem,
   hasNewerSystem,
 } from '../db/systemMessages.js';
-import {
-  addEntry as addInputHistory,
-  listRecent as listRecentInputHistory,
-} from '../db/inputHistory.js';
+import { addEntry as addInputHistory, inputHistoryFields } from '../db/inputHistory.js';
 import {
   getBuffer,
   getState as getBufferState,
@@ -912,7 +910,7 @@ export function buildBufferBacklog(
     speakers: listSpeakers(networkId, target),
     joined: channelJoined(target, conn),
     ...bufferStateFields(userId, networkId, target),
-    inputHistory: listRecentInputHistory(userId, networkId, target, INPUT_HISTORY_SLICE),
+    ...inputHistoryFields(userId, networkId, target, INPUT_HISTORY_SLICE),
   };
 }
 
@@ -2285,6 +2283,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
             target: ev.to,
             bufferId: ev.bufferId,
             body: draft?.body ?? '',
+            reply: draft?.reply ?? null,
           });
         }
       }
@@ -2459,10 +2458,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   // that triggered the change (if any) and gets excluded so the originator
   // doesn't clobber its own optimistic state with a stale echo. HTTP-driven
   // writes (sendBeacon on tab close) pass null and reach every tab.
-  draftsService.on('change', ({ userId, networkId, target, bufferId, body, originWs }) => {
+  draftsService.on('change', ({ userId, networkId, target, bufferId, body, reply, originWs }) => {
     fanOut(
       userId,
-      { kind: 'draft-updated', networkId, target, bufferId, body },
+      { kind: 'draft-updated', networkId, target, bufferId, body, reply },
       originWs ? { exceptWs: originWs } : undefined,
     );
   });
@@ -2797,12 +2796,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       // (INPUT_HISTORY_SLICE); older entries stay in the DB (no pagination
       // request exists, so this slice is the recall depth). The 'history' latest
       // reply re-seeds it when a shell is opened.
-      const inputHistory = listRecentInputHistory(
-        userId,
-        conn.network.id,
-        target,
-        INPUT_HISTORY_SLICE,
-      );
+      const inputHistory = inputHistoryFields(userId, conn.network.id, target, INPUT_HISTORY_SLICE);
       // Speakers are deliberately NOT shipped on connect. The sidebar doesn't
       // use them, and computing them per buffer here (listSpeakers scanning
       // history × every buffer) was the snapshot's dominant cost once the other
@@ -2828,7 +2822,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         hasMoreOlder: slice.hasMoreOlder,
         joined: channelJoined(target, conn),
         ...stateFields,
-        inputHistory,
+        ...inputHistory,
       });
       bufferCount += 1;
     }
@@ -3394,7 +3388,14 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         const target = addr ? addr.target : typeof msg.target === 'string' ? msg.target : '';
         const text = typeof msg.text === 'string' ? msg.text : '';
         if (!networkId || !target || !text) break;
-        addInputHistory(userId, networkId, target, text);
+        // The line this one was sent as a reply to: recalled, it's a reply again.
+        const reply = addInputHistory(
+          userId,
+          networkId,
+          target,
+          text,
+          parseDraftReplyRef(msg.reply) ?? null,
+        );
         // Other tabs/devices need this for cross-client up-arrow consistency.
         // The originating socket already added it optimistically, so skip it
         // to avoid a duplicate append.
@@ -3406,6 +3407,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
             target,
             bufferId: addr?.bufferId ?? resolveBuffer(userId, networkId, target)?.id ?? null,
             text,
+            reply,
           },
           { exceptWs: ws },
         );
@@ -3418,7 +3420,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         const target = addr ? addr.target : typeof msg.target === 'string' ? msg.target : '';
         const body = typeof msg.body === 'string' ? msg.body : '';
         if (!networkId || !target || target.startsWith(':server:')) break;
-        draftsService.set(userId, networkId, target, body, ws);
+        draftsService.set(userId, networkId, target, body, parseDraftReplyRef(msg.reply), ws);
         break;
       }
       case 'draft-clear': {
@@ -3920,12 +3922,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
             hasMoreNewer: false,
             hasMore: oldestId > 0 && hasOlderRow(histNetworkId, histTarget, oldestId),
             before: null,
-            inputHistory: listRecentInputHistory(
-              userId,
-              histNetworkId,
-              histTarget,
-              INPUT_HISTORY_SLICE,
-            ),
+            ...inputHistoryFields(userId, histNetworkId, histTarget, INPUT_HISTORY_SLICE),
           });
           break;
         }

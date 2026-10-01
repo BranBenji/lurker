@@ -2,38 +2,79 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { EventEmitter } from 'events';
-import { upsertDraft, clearDraft, listForUser } from '../db/drafts.js';
+import { upsertDraft, clearDraft, listForUser, getDraftForBuffer } from '../db/drafts.js';
+import type { DraftReplyRef } from '../../shared/replies.js';
 
 // Per-buffer drafts are last-write-wins by updated_at — no merging, no CRDT.
 // The conflict surface is tiny in practice (you don't actively type into the
 // same buffer on two devices simultaneously), so this service just upserts and
 // emits a `change` for wsHub to fan out to every other tab of the same user.
 //
-// Empty bodies are treated as a delete: the row is sparse on disk, and clients
+// A draft with nothing in it is a delete: the row is sparse on disk, and clients
 // expect "no draft" rather than "draft with empty string" so the pencil chip
-// can drive itself off `hasDraft` without extra trim checks.
+// can drive itself off `hasDraft` without extra trim checks. Nothing means no
+// text AND no reply: a Reply with nothing typed yet (on your own line, in a DM,
+// where it inserts no address) is a draft all the same, and follows you to
+// another device like one.
+//
+// `reply` (see upsertDraft): undefined leaves the stored one, null clears it —
+// except that emptying the text with no reply key clears the whole draft, as a
+// send does: that's how a client that knows nothing of replies clears one. The
+// change announces the reply as it was stored and resolved, which is not always
+// what was sent: one that doesn't resolve is dropped, and then the sender is
+// told as well, or it would go on showing a reply the draft no longer has.
 class DraftsService extends EventEmitter {
   set(
     userId: number,
     networkId: number,
     target: string,
     body: unknown,
+    reply: DraftReplyRef | null | undefined,
     originWs: unknown = null,
   ): void {
     const text = typeof body === 'string' ? body : '';
-    if (text.length === 0) {
+    if (text.length === 0 && !reply) {
       this.clear(userId, networkId, target, originWs);
       return;
     }
-    const bufferId = upsertDraft(userId, networkId, target, text);
+    const bufferId = upsertDraft(userId, networkId, target, text, reply);
     if (bufferId === undefined) return; // unknown buffer — nothing stored, nothing to announce
-    this.emit('change', { userId, networkId, target, bufferId, body: text, originWs });
+    if (reply === null) {
+      // Nothing to read back: the text as sent, no reply.
+      this.emit('change', {
+        userId,
+        networkId,
+        target,
+        bufferId,
+        body: text,
+        reply: null,
+        originWs,
+      });
+      return;
+    }
+    const stored = getDraftForBuffer(userId, bufferId);
+    // A reply sent and not kept: the sender still shows it, so it's told too.
+    const dropped = !!reply && !stored?.reply;
+    if (!stored?.body && !stored?.reply) {
+      // Only a reply, and it didn't hold.
+      this.clear(userId, networkId, target, dropped ? null : originWs);
+      return;
+    }
+    this.emit('change', {
+      userId,
+      networkId,
+      target,
+      bufferId,
+      body: stored.body,
+      reply: stored.reply,
+      originWs: dropped ? null : originWs,
+    });
   }
 
   clear(userId: number, networkId: number, target: string, originWs: unknown = null): void {
     const bufferId = clearDraft(userId, networkId, target);
     if (bufferId === undefined) return;
-    this.emit('change', { userId, networkId, target, bufferId, body: '', originWs });
+    this.emit('change', { userId, networkId, target, bufferId, body: '', reply: null, originWs });
   }
 
   snapshotForUser(userId: number): unknown[] {

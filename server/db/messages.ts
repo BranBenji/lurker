@@ -18,7 +18,7 @@ import type { PageUnit } from '../../shared/eventFilter.js';
 import type { ModeChange } from '../../shared/modes.js';
 import type { MessageReaction } from '../../shared/reactions.js';
 import { REPLY_EXCERPT_MAX, REPLY_LINE_TYPES_SQL } from '../../shared/replies.js';
-import type { ReplyContext, ReplyParent } from '../../shared/replies.js';
+import type { DraftReply, DraftReplyRef, ReplyContext, ReplyParent } from '../../shared/replies.js';
 
 // Buffer identity is buffers.id as of schema 17: every predicate in this file
 // filters on `buffer_id`, and `target` is written at insert as an observation
@@ -338,6 +338,48 @@ const REPLY_PARENT_JSON = `json_object(
     )`;
 const REPLY_PARENT_WHERE = `p.type IN ${REPLY_LINE_TYPES_SQL}
       AND p.from_ignored = 0`;
+
+// The line a composer draft or an input-history entry replies to, by its id: the
+// reply the composer would send, found as a reply's quote is (a chat line in that
+// buffer, not from someone ignored) and one a reply can name (it has a msgid).
+// Null when retention took it or it no longer qualifies — the draft then keeps
+// its text and loses the reply. messages.id is the primary key: one seek.
+// ⚠ Pass QUALIFIED columns: the subquery reads messages, so a bare `buffer_id`
+// would be the message's own and the buffer check would always pass.
+const DRAFT_REPLY_WHERE = `${REPLY_PARENT_WHERE} AND p.msgid IS NOT NULL AND p.msgid != ''`;
+export const DRAFT_REPLY_PARENT_COL = (idCol: string, bufferCol: string) => `CASE
+    WHEN ${idCol} IS NULL THEN NULL ELSE (
+      SELECT ${REPLY_PARENT_JSON} FROM messages p
+      WHERE p.id = ${idCol} AND p.buffer_id = ${bufferCol} AND ${DRAFT_REPLY_WHERE}
+    ) END`;
+
+// A row's draft reply, from DRAFT_REPLY_PARENT_COL and its addressed flag.
+export function draftReplyFrom(
+  parentJson: string | null | undefined,
+  addressed: number | null | undefined,
+): DraftReply | null {
+  const parent = parseReplyParent(parentJson);
+  return parent ? { messageId: parent.id, addressed: addressed === 1, parent } : null;
+}
+
+// One draft reply a client sent, resolved as a stored one would read back:
+// what the input-history fan-out tells the user's other clients.
+const draftReplyParentStmt = db.prepare(`
+  SELECT ${REPLY_PARENT_JSON} AS parent FROM messages p
+  WHERE p.id = ? AND p.buffer_id = ? AND ${DRAFT_REPLY_WHERE}
+`);
+export function resolveDraftReply(
+  userId: number,
+  networkId: number,
+  target: string,
+  ref: DraftReplyRef,
+): DraftReply | null {
+  if (replySendMsgid(userId, networkId, target, ref.messageId) === null) return null;
+  const bufferId = resolveBufferIdByNetwork(networkId, target);
+  if (bufferId === undefined) return null;
+  const row = draftReplyParentStmt.get(ref.messageId, bufferId) as { parent: string } | undefined;
+  return draftReplyFrom(row?.parent, ref.addressed ? 1 : 0);
+}
 
 // Resolved at read time rather than stored, so retention taking the parent
 // needs nothing kept in step: the reply just reads as unavailable. Rides the

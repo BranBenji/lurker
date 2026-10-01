@@ -3,6 +3,9 @@
 
 import { defineStore } from 'pinia';
 import { socketSend } from '../composables/useSocket.js';
+import type { PendingReply } from './replies.js';
+import type { DraftReply } from '../../../shared/replies.js';
+import { useReplyQuote } from '../composables/useReplyQuote.js';
 
 // Idle-typing debounce before a buffer's draft is flushed to the server.
 // Short enough that a typical pause between sentences is plenty to persist
@@ -12,6 +15,53 @@ const FLUSH_DEBOUNCE_MS = 500;
 
 function key(networkId: number | string, target: string) {
   return `${networkId}::${target}`;
+}
+
+// A network buffer's key back to its parts. The network id is the part before
+// the first `::` — a channel name may hold `::` itself.
+function splitKey(k: string): { networkId: number; target: string } | null {
+  const at = k.indexOf('::');
+  const networkId = Number(k.slice(0, at));
+  if (at <= 0 || !Number.isInteger(networkId)) return null;
+  return { networkId, target: k.slice(at + 2) };
+}
+
+// What the server stores of a pending reply: the line, and whether the Reply
+// put the address in the text. The rest (nick, excerpt) it resolves itself.
+function replyRef(
+  reply: PendingReply | undefined,
+): { messageId: number; addressed: boolean } | null {
+  return reply ? { messageId: reply.messageId, addressed: !!reply.addressed } : null;
+}
+
+// A draft's reply as the server resolved it, as the composer holds one. Null
+// for none, or for a line the server couldn't resolve (gone, not replyable).
+//
+// The server sends the line as stored; the composer names it as the timeline
+// quotes it (useReplyQuote, the one rule): a marked relay bot's line as the
+// person inside it — whom the Reply addressed, and whose `nick: ` a cancel takes
+// back — and a line from someone ignored since without their words. It's still
+// a reply to them; the status bar just doesn't quote them.
+export function pendingReplyFrom(
+  reply: DraftReply | null | undefined,
+  networkId: number | string,
+  target: string,
+): PendingReply | null {
+  if (!reply?.parent) return null;
+  const shown = useReplyQuote().shownReply(
+    { msgid: '', parent: reply.parent },
+    { type: 'message', text: '' },
+    Number(networkId),
+    target,
+  ).parent;
+  return {
+    messageId: reply.messageId,
+    nick: shown?.nick ?? reply.parent.nick,
+    type: reply.parent.type,
+    text: shown ? shown.text : '',
+    self: shown ? shown.self : reply.parent.self,
+    addressed: reply.addressed,
+  };
 }
 
 // Debounce timers and the unflushed-pending tracker live module-local: they
@@ -49,14 +99,25 @@ export const useDraftStore = defineStore('drafts', {
     // `${networkId}::${target}` -> body string. Sparse: an empty/unused
     // buffer has no entry. Drives `hasDraft` for the pencil indicator.
     drafts: {} as Record<string, string>,
+    // The reply the draft is being written as, same keys (the replies store is
+    // its face): part of the draft, so it syncs, flushes and survives a reload
+    // with the text — a draft that came back with its `alice: ` and not its
+    // reply would go out looking like a reply it wasn't.
+    replies: {} as Record<string, PendingReply>,
   }),
   getters: {
     forBuffer: (state) => (networkId: number | string, target: string) =>
       state.drafts[key(networkId, target)] || '',
+    // A reply with nothing typed yet (on your own line, in a DM) is a draft too.
     hasDraft: (state) => (networkId: number | string, target: string) => {
-      const body = state.drafts[key(networkId, target)];
-      return typeof body === 'string' && body.length > 0;
+      const k = key(networkId, target);
+      const body = state.drafts[k];
+      return (typeof body === 'string' && body.length > 0) || !!state.replies[k];
     },
+    replyForKey:
+      (state) =>
+      (k: string | null | undefined): PendingReply | null =>
+        (k && state.replies[k]) || null,
   },
   actions: {
     // Apply a fresh server snapshot. Buffers with an un-flushed local edit
@@ -64,16 +125,24 @@ export const useDraftStore = defineStore('drafts', {
     // newer than whatever the snapshot froze.
     seed(list: any[]) {
       const next: Record<string, string> = {};
+      const nextReplies: Record<string, PendingReply> = {};
+      // A buffer's local state, kept whole — text and reply are one draft.
+      const keep = (k: string) => {
+        const existing = this.drafts[k];
+        if (typeof existing === 'string' && existing.length > 0) next[k] = existing;
+        if (this.replies[k]) nextReplies[k] = this.replies[k];
+      };
       if (Array.isArray(list)) {
         for (const d of list) {
           if (!d) continue;
           const k = key(d.networkId, d.target);
           if (pending.has(k) || k === composingKey) {
-            const existing = this.drafts[k];
-            if (typeof existing === 'string' && existing.length > 0) next[k] = existing;
+            keep(k);
             continue;
           }
           if (typeof d.body === 'string' && d.body.length > 0) next[k] = d.body;
+          const reply = pendingReplyFrom(d.reply, d.networkId, d.target);
+          if (reply) nextReplies[k] = reply;
         }
       }
       // Bring along pending-only buffers the snapshot didn't include (typed
@@ -82,16 +151,22 @@ export const useDraftStore = defineStore('drafts', {
       // fires before the first input event, so there's a gap where it isn't
       // pending yet.
       for (const k of composingKey ? [...pending.keys(), composingKey] : pending.keys()) {
-        if (next[k] != null) continue;
-        const existing = this.drafts[k];
-        if (typeof existing === 'string' && existing.length > 0) next[k] = existing;
+        if (next[k] != null || nextReplies[k]) continue;
+        keep(k);
       }
       this.drafts = next;
+      this.replies = nextReplies;
     },
     // Fan-out from another tab/device. Skip if we have a pending local edit —
     // our debounce will flush momentarily and last-write-wins picks the right
     // one by updated_at.
-    applyRemoteUpdate(networkId: number | string, target: string, body: string) {
+    // `reply` undefined: the frame had none (an older server) — leave ours.
+    applyRemoteUpdate(
+      networkId: number | string,
+      target: string,
+      body: string,
+      reply?: DraftReply | null,
+    ) {
       const k = key(networkId, target);
       // The composing check is load-bearing on its own: `pending` disarms when
       // the debounced flush fires, which a >500ms mid-word pause used to allow —
@@ -101,6 +176,21 @@ export const useDraftStore = defineStore('drafts', {
       const text = typeof body === 'string' ? body : '';
       if (text.length > 0) this.drafts[k] = text;
       else delete this.drafts[k];
+      if (reply === undefined) return;
+      const pendingReply = pendingReplyFrom(reply, networkId, target);
+      if (pendingReply) this.replies[k] = pendingReply;
+      else delete this.replies[k];
+    },
+    // The replies store's writes: the reply is part of the draft, so it flushes
+    // with it (and holds off remote updates until it has, as typing does).
+    setReplyForKey(k: string, reply: PendingReply | null) {
+      const parts = splitKey(k);
+      if (!parts) return;
+      if (reply) this.replies[k] = reply;
+      else if (this.replies[k]) delete this.replies[k];
+      else return;
+      pending.set(k, parts);
+      this.scheduleFlush(parts.networkId, parts.target);
     },
     // Local optimistic write — input bar binds through this. Schedules a
     // debounced WS push to the server.
@@ -124,6 +214,7 @@ export const useDraftStore = defineStore('drafts', {
     drop(networkId: number | string, target: string) {
       const k = key(networkId, target);
       delete this.drafts[k];
+      delete this.replies[k];
       this.clearTimer(k);
       pending.delete(k);
       if (composingKey === k) composingKey = null;
@@ -145,7 +236,10 @@ export const useDraftStore = defineStore('drafts', {
       // source's is dropped rather than clobbering what the user typed there
       // — mirroring the server's merge (survivor's non-empty draft wins).
       const destHasState =
-        this.drafts[toKey] != null || pending.has(toKey) || flushTimers.has(toKey);
+        this.drafts[toKey] != null ||
+        this.replies[toKey] != null ||
+        pending.has(toKey) ||
+        flushTimers.has(toKey);
       const fromTimer = flushTimers.get(fromKey);
       if (fromTimer) {
         // Never move the old timeout: its closure captured the OLD name.
@@ -154,12 +248,17 @@ export const useDraftStore = defineStore('drafts', {
       }
       if (destHasState) {
         delete this.drafts[fromKey];
+        delete this.replies[fromKey];
         pending.delete(fromKey);
         return;
       }
       if (this.drafts[fromKey] != null) {
         this.drafts[toKey] = this.drafts[fromKey];
         delete this.drafts[fromKey];
+      }
+      if (this.replies[fromKey] != null) {
+        this.replies[toKey] = this.replies[fromKey];
+        delete this.replies[fromKey];
       }
       if (pending.has(fromKey)) {
         pending.delete(fromKey);
@@ -172,10 +271,20 @@ export const useDraftStore = defineStore('drafts', {
     // was actually queued — the sendBeacon return is best-effort either way.
     flushAllForBeacon() {
       if (!pending.size) return false;
-      const drafts: { networkId: number | string; target: string; body: string }[] = [];
+      const drafts: {
+        networkId: number | string;
+        target: string;
+        body: string;
+        reply: { messageId: number; addressed: boolean } | null;
+      }[] = [];
       for (const [k, ref] of pending) {
         const body = this.drafts[k] || '';
-        drafts.push({ networkId: ref.networkId, target: ref.target, body });
+        drafts.push({
+          networkId: ref.networkId,
+          target: ref.target,
+          body,
+          reply: replyRef(this.replies[k]),
+        });
         this.clearTimer(k);
       }
       pending.clear();
@@ -237,8 +346,9 @@ export const useDraftStore = defineStore('drafts', {
       pending.delete(k);
       this.clearTimer(k);
       const body = this.drafts[k] || '';
-      if (body.length > 0) {
-        socketSend({ type: 'draft-set', networkId, target, body });
+      const reply = replyRef(this.replies[k]);
+      if (body.length > 0 || reply) {
+        socketSend({ type: 'draft-set', networkId, target, body, reply });
       } else {
         socketSend({ type: 'draft-clear', networkId, target });
       }
