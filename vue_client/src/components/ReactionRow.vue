@@ -111,8 +111,9 @@ function onChipClick(value: string) {
   align-items: center;
   gap: var(--space-2);
   background: var(--bg-soft);
-  border: none;
-  border-radius: 0;
+  /* The same faint edge as ReactModal's unpicked quick buttons. */
+  border: 1px solid var(--border);
+  border-radius: 4px;
   color: var(--fg-muted);
   font: inherit;
   /* Real vertical padding rather than a tall line box: an emoji's glyph sits
@@ -148,6 +149,7 @@ function onChipClick(value: string) {
 /* Ours: an accent tint and accent text. */
 .chip.mine {
   background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
   color: var(--accent);
 }
 .chip.mine:hover:not(:disabled) {
