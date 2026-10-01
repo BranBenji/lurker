@@ -211,6 +211,19 @@ describe('classifyUpload — the client cannot talk us out of the truth', () => 
     );
   });
 
+  // file-type 22.1 reads `CD001` at byte 32769 as an ISO image, with nothing else to
+  // check. A long paste with those bytes there is still text, and binary bytes behind
+  // the same signature still don't get in.
+  it('decides an ISO 9660 signature by the UTF-8 check, not the sniff', async () => {
+    const at = (fill: Buffer) =>
+      Buffer.concat([fill.subarray(0, 32769), Buffer.from('CD001'), Buffer.from(' tail\n')]);
+    const text = await classifyUpload(write('log.txt', at(Buffer.alloc(32769, 'a'))), 'text/plain');
+    expect(text.contentClass).toBe('text');
+    await expect(
+      classifyUpload(write('disc.iso', at(Buffer.alloc(32769, 0xff))), 'text/plain'),
+    ).rejects.toBeInstanceOf(UnsupportedTypeError);
+  });
+
   // The long-message → .txt flow ALWAYS claims text/plain. Someone pasting raw SVG
   // markup into the composer must not have it reclassified as an image (which on
   // hosted, where SVG is refused, would turn a working upload into a 415).

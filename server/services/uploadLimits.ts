@@ -127,9 +127,12 @@ export function clampToTransport(ownLimitBytes: number): number {
 /** Clamp a candidate cap to the instance-wide ceilings. Floors at 1 byte so no
  *  configuration can resolve to a negative or zero cap; a genuinely tiny value is
  *  the operator's own declaration and is reported honestly rather than rounded up
- *  past the limit they set. */
+ *  past the limit they set. Whole bytes: this is multer's fileSize, and multer
+ *  (2.4+) THROWS on a fractional limit when it's constructed — per request, so a
+ *  fractional policy maxMb would 500 every upload. Before that, busboy just
+ *  ignored one. */
 export function clampUploadCapBytes(bytes: number): number {
-  return Math.max(1, Math.min(bytes, transportCapBytes(), MAX_CAP_BYTES));
+  return Math.max(1, Math.floor(Math.min(bytes, transportCapBytes(), MAX_CAP_BYTES)));
 }
 
 /**
