@@ -178,7 +178,7 @@ export function outgoingAddr(): string | undefined {
 // announcement — gives operators a quick read on what client + version is
 // being used. Per-disconnect overrides (network removal, no-nick failure,
 // etc.) pass their own reason and bypass this default.
-const DEFAULT_QUIT_MESSAGE = `Lurker ${APP_VERSION} (the truth is out there) https://lurker.chat`;
+const DEFAULT_QUIT_MESSAGE = `Lurker ${APP_VERSION} https://lurker.chat`;
 
 /**
  * The manager's policy check, asked before an auto-reconnect opens a socket (#616).

@@ -50,6 +50,7 @@ import {
 import { getPeerPresence, writePeerState } from '../db/peerPresence.js';
 import { setUserSetting, deleteUserSetting } from '../db/settings.js';
 import { typeCountsForUnread } from '../db/messages.js';
+import { APP_VERSION } from '../utils/userAgent.js';
 
 // The bare IrcConnections built below carry user_id: 1, and their join/part
 // handlers write system_messages (FK → users.id). Seed user id 1 in the
@@ -2107,9 +2108,7 @@ describe('disconnect quit message (#324)', () => {
     const quit = vi.fn<(reason?: string) => void>();
     conn.client.quit = quit;
     conn.disconnect();
-    const reason = quit.mock.calls[0][0] ?? '';
-    expect(reason).toContain('Lurker');
-    expect(reason).toContain('https://lurker.chat');
+    expect(quit).toHaveBeenCalledWith(`Lurker ${APP_VERSION} https://lurker.chat`);
   });
 
   it('uses the configured chat.quit_message when set', () => {

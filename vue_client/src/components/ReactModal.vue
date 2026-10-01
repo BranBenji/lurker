@@ -226,6 +226,7 @@ onMounted(() => {
 .quick-btn {
   background: var(--bg-soft);
   border: 1px solid var(--border);
+  border-radius: var(--radius-reaction);
   color: var(--fg);
   font: inherit;
   min-width: 2.4em;

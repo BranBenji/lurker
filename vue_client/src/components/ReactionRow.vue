@@ -5,7 +5,7 @@
 
 <!--
   A line's reactions as a row of chips under its text, one per value with its
-  count. Square and borderless on the soft background; ours tinted in the
+  count. Outlined faintly on the soft background; ours tinted in the
   accent. Clicking or tapping a chip adds our reaction or takes it back;
   hovering names who reacted. The trailing
   add chip (always shown while there are reactions, as Slack does) opens the
@@ -111,8 +111,8 @@ function onChipClick(value: string) {
   align-items: center;
   gap: var(--space-2);
   background: var(--bg-soft);
-  border: none;
-  border-radius: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-reaction);
   color: var(--fg-muted);
   font: inherit;
   /* Real vertical padding rather than a tall line box: an emoji's glyph sits
@@ -148,6 +148,7 @@ function onChipClick(value: string) {
 /* Ours: an accent tint and accent text. */
 .chip.mine {
   background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
   color: var(--accent);
 }
 .chip.mine:hover:not(:disabled) {
@@ -156,11 +157,13 @@ function onChipClick(value: string) {
 /* The add chip is a placeholder, not a reaction, so its heart is faded toward
    the background — further than main.css's `::placeholder` (55%), which still
    read as a reaction next to real ones. Mixing toward --bg keeps it dim in both
-   themes. It comes up to full strength on hover. */
+   themes, and its outline with it. It comes up to full strength on hover. */
 .chip.add {
   color: color-mix(in srgb, var(--fg-muted) 35%, var(--bg));
+  border-color: color-mix(in srgb, var(--border) 35%, var(--bg));
 }
 .chip.add:hover {
   color: var(--fg);
+  border-color: var(--border);
 }
 </style>
