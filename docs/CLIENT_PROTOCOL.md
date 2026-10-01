@@ -552,8 +552,10 @@ the same buffer: `{ id, nick, type, text, userhost, self }`, `text` clipped to
 300 characters with formatting codes intact, `self` true when it's your line. `parent` is `null` when no line we hold
 carries that msgid — retention took it, it predates your history, it was a
 reaction, or its author was ignored when it arrived — so show the reply without
-its context. Absent on a line that isn't a reply, and on rows from search, the
-activity feed and bookmarks, which don't resolve it. `id` is the jump target. A
+its context. Absent on a line that isn't a reply. Rows from search, highlights,
+bookmarks and the activity feed's highlight items carry it too, resolved the same
+way (a reaction item in the activity feed isn't a message row and has none).
+`id` is the jump target. A
 reply to one of your own lines, from someone else, is a highlight and carries
 `replyToSelf: true` (absent otherwise) with `matched: true`. Tint and count it
 from that stamp rather than from `parent.self`: the parent can be gone, or stored
