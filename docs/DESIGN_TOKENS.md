@@ -76,7 +76,7 @@ The app is intentionally flat — most things are square corners.
 | Token               | px  | Use                                     |
 | ------------------- | --- | --------------------------------------- |
 | `--radius-sm`       | 2   | subtle softening (chips, small buttons) |
-| `--radius-reaction` | 4   | reaction chips under a message          |
+| `--radius-reaction` | 4   | reaction chips (message list, picker)   |
 | `--radius-md`       | 6   | floating popups                         |
 | `--radius-pill`     | 999 | fully-rounded pills                     |
 
