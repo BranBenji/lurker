@@ -384,6 +384,35 @@ describe('a client’s AWAY', () => {
     expect(awayReplies(control)).toEqual([]);
   });
 
+  it('tells a control connection when one network’s change makes every network away, or not', async () => {
+    const acct = await seedAccount();
+    const [a, b] = acct.nets;
+    ircManager.setAway(acct.userId, a.networkId, 'gone');
+    const control = await attach(acct, null);
+    await settle(acct, [control]);
+    let mark = control.lines.length;
+
+    ircManager.setAway(acct.userId, b.networkId, 'gone too');
+    await settle(acct, [control]);
+    expect(awayReplies(control, mark)).toEqual([expect.stringMatching(/ 306 /)]);
+    mark = control.lines.length;
+
+    // A new message on one network changes nothing for it.
+    ircManager.setAway(acct.userId, b.networkId, 'still gone');
+    await settle(acct, [control]);
+    expect(awayReplies(control, mark)).toEqual([]);
+
+    ircManager.clearAway(acct.userId, a.networkId);
+    await settle(acct, [control]);
+    expect(awayReplies(control, mark)).toEqual([expect.stringMatching(/ 305 /)]);
+    mark = control.lines.length;
+
+    // Already not every network: another network back changes nothing for it.
+    ircManager.clearAway(acct.userId, b.networkId);
+    await settle(acct, [control]);
+    expect(awayReplies(control, mark)).toEqual([]);
+  });
+
   it('works on a control connection, which sets every network, and with a network down', async () => {
     const acct = await seedAccount();
     const [a, b] = acct.nets;
@@ -407,11 +436,12 @@ describe('a client’s AWAY', () => {
     marks = [control.lines.length, c.lines.length];
 
     // The client's network comes back with its socket down; the other stays away.
+    // Not every network is away now, so the control connection is back too.
     c.send('AWAY');
     await settle(acct, [control, c]);
     expect(acct.nets.map(isAway)).toEqual([false, true]);
     expect(awayReplies(c, marks[1])).toEqual([expect.stringMatching(/ 305 /)]);
-    expect(awayReplies(control, marks[0])).toEqual([]);
+    expect(awayReplies(control, marks[0])).toEqual([expect.stringMatching(/ 305 /)]);
     expect(aways(a)).toEqual(['AWAY :from control']);
     expect(aways(b)).toEqual(['AWAY :from control']);
     marks = [control.lines.length, c.lines.length];

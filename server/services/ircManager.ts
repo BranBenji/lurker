@@ -96,13 +96,11 @@ export function resolveAwayScope(
 }
 
 // Away turned on or off on some of the account's networks: what setAway and
-// clearAway emit as 'away'. `networkIds` are the networks whose state flipped;
-// `all` is whether the call covered every network. `origin` is whatever asked
-// for the change, if it passed itself.
+// clearAway emit as 'away'. `networkIds` are the networks whose state flipped.
+// `origin` is whatever asked for the change, if it passed itself.
 export interface AwayChange {
   userId: number;
   networkIds: number[];
-  all: boolean;
   active: boolean;
   origin?: unknown;
 }
@@ -1236,21 +1234,27 @@ class IrcManager extends EventEmitter {
     const rows = new Map(listNetworkAwayStates(userId).map((r) => [r.network_id, r]));
     const awayAt = (since ?? new Date()).toISOString();
     const state = { active: true, message: trimmed, since: awayAt, autoSet, backAt: null };
-    const changed: Network[] = [];
-    const turnedOn: number[] = [];
-    for (const network of networks) {
+    const changed = networks.filter((network) => {
       const row = rows.get(network.id);
-      const away = isAwayRow(row);
-      if (away && autoSet) continue;
+      if (!isAwayRow(row)) return true;
+      if (autoSet) return false;
       // The same manual away again changes nothing. irssi sends its /away to
       // every network, and through the bouncer each copy lands here.
-      if (away && !row!.auto_set && row!.away_message === trimmed) continue;
-      writeAwayMarker(userId, network.id, { awayDatetime: awayAt, awayMessage: trimmed, autoSet });
-      this.getConnection(userId, network.id)?.applyAwayState(state);
-      changed.push(network);
-      if (!away) turnedOn.push(network.id);
-    }
+      return !!row!.auto_set || row!.away_message !== trimmed;
+    });
     if (changed.length === 0) return 0;
+    const turnedOn = changed.filter((n) => !isAwayRow(rows.get(n.id))).map((n) => n.id);
+    // One transaction for the rows, then the wire: one fsync for an -all.
+    db.transaction(() => {
+      for (const network of changed) {
+        writeAwayMarker(userId, network.id, {
+          awayDatetime: awayAt,
+          awayMessage: trimmed,
+          autoSet,
+        });
+      }
+    }).immediate();
+    for (const network of changed) this.getConnection(userId, network.id)?.applyAwayState(state);
     // Past the no-op guards above, this only fires on a real change — not on
     // per-connection reconnect re-asserts (those call applyAwayState directly).
     systemLog.log({
@@ -1266,7 +1270,6 @@ class IrcManager extends EventEmitter {
       const change: AwayChange = {
         userId,
         networkIds: turnedOn,
-        all: scope === 'all',
         active: true,
         origin,
       };
@@ -1295,26 +1298,28 @@ class IrcManager extends EventEmitter {
     );
     if (rows.length === 0) return 0;
     const now = new Date().toISOString();
-    const changed: Network[] = [];
+    db.transaction(() => {
+      for (const row of rows) writeBackMarker(row.network_id, now);
+    }).immediate();
     for (const row of rows) {
-      writeBackMarker(row.network_id, now);
       const state = { ...awayStateFromRow(row), active: false, backAt: now };
       this.getConnection(userId, row.network_id)?.applyAwayState(state);
-      const network = getNetwork(row.network_id, userId);
-      if (network) changed.push(network);
+    }
+    let text = 'Auto-away cleared — welcome back';
+    if (!autoSet) {
+      const cleared = new Set(rows.map((r) => r.network_id));
+      const changed = listNetworksForUser(userId).filter((n) => cleared.has(n.id));
+      text = `You're no longer marked away${awayWhere(changed)}`;
     }
     systemLog.log({
       userId,
       scope: 'away',
       fields: scope === 'all' ? null : { networkId: scope },
-      text: autoSet
-        ? 'Auto-away cleared — welcome back'
-        : `You're no longer marked away${awayWhere(changed)}`,
+      text,
     });
     const change: AwayChange = {
       userId,
       networkIds: rows.map((r) => r.network_id),
-      all: scope === 'all',
       active: false,
       origin,
     };

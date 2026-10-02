@@ -3530,6 +3530,14 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       // -all or the away.all_networks setting (#994). From the system buffer
       // there's no network, so it's every network. Empty message → clear away.
       const { all, rest } = parseAwayFlag(argLine);
+      if (all === false && networkId == null) {
+        localInfo(
+          networkId,
+          target,
+          `/${verb} -one: there's no network here. Run it in a network's buffer.`,
+        );
+        return true;
+      }
       return sendOrToast(
         {
           type: verb,

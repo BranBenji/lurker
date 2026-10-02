@@ -79,6 +79,23 @@ describe('/away and /back', () => {
     ]);
   });
 
+  it('refuse -one where there’s no network, rather than reaching every network', async () => {
+    const networks = useNetworksStore();
+    const buffers = useBuffersStore();
+    buffers.buffers[':system:'] = {
+      networkId: null,
+      target: ':system:',
+      members: [],
+      messages: [],
+    } as never;
+    networks.activeKey = ':system:';
+    await run('/back -one');
+    expect(sent()).toEqual([]);
+    const lines = (buffers.buffers[':system:'] as unknown as { messages: { text: string }[] })
+      .messages;
+    expect(lines.map((m) => m.text).join('\n')).toContain("there's no network here");
+  });
+
   it('carry -all and -one', async () => {
     await run('/away -all lunch');
     await run('/away -one');

@@ -2558,10 +2558,10 @@ class BouncerSession implements MonitorHolder, ReplyClient {
 
   // --- AWAY ------------------------------------------------------------------
 
-  // A client's AWAY is the account's /away, on every network, as in the web and
-  // iOS apps: `AWAY :<message>` sets it and a bare `AWAY` clears it. `AWAY *`
-  // (draft/pre-away) says this connection isn't the user, as goguma's background
-  // sync says, so it stops counting for auto-away and the account is left alone.
+  // A client's AWAY is /away on its own network (see setAway): `AWAY :<message>`
+  // sets it and a bare `AWAY` clears it. `AWAY *` (draft/pre-away) says this
+  // connection isn't the user, as goguma's background sync says, so it stops
+  // counting for auto-away and the networks are left alone.
   // The client always gets its 305 or 306, before registration too: irssi takes
   // its own away state from them alone, and goguma waits for one.
   private handleAway(msg: ParsedClientLine): void {
@@ -3180,17 +3180,39 @@ function allNetworksAway(userId: number): boolean {
 
 // Away turned on or off on some of the account's networks: in the apps, by
 // auto-away, or from a client. Each client attached to one of those networks
-// hears it as a 305 or 306, so irssi and halloy stay in step; a control
-// connection hears a change that covered every network. A client whose AWAY
-// made the change sends its own.
+// hears it as a 305 or 306, so irssi and halloy stay in step. A control
+// connection is away when every network is (allNetworksAway), so it hears a
+// change that flipped that. A client whose AWAY made the change sends its own.
 function dispatchAway(change: AwayChange): void {
   const networks = new Set(change.networkIds);
+  let controlFlipped: boolean | undefined;
   for (const session of sessions) {
     if (session.userId !== change.userId || !session.isRegistered()) continue;
     if (session === change.origin) continue;
-    if (session.isControlSession() ? !change.all : !networks.has(session.networkId)) continue;
+    if (session.isControlSession()) {
+      controlFlipped ??= allNetworksAwayFlipped(change);
+      if (!controlFlipped) continue;
+    } else if (!networks.has(session.networkId)) {
+      continue;
+    }
     session.sendAwayReply(change.active);
   }
+}
+
+// Whether a change flipped allNetworksAway. Going away, it did if every network
+// is away now; coming back, if every network was: each one away still, or one
+// the change just brought back.
+function allNetworksAwayFlipped(change: AwayChange): boolean {
+  const awayNow = new Set(
+    listNetworkAwayStates(change.userId)
+      .filter(isAwayRow)
+      .map((r) => r.network_id),
+  );
+  const networks = listNetworksForUser(change.userId);
+  if (networks.length === 0) return false;
+  if (change.active) return networks.every((n) => awayNow.has(n.id));
+  const changed = new Set(change.networkIds);
+  return networks.every((n) => awayNow.has(n.id) || changed.has(n.id));
 }
 
 // How many of a user's clients count as the user being here: on any network,
