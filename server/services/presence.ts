@@ -6,7 +6,8 @@
 // - an IRC client attached to a network through the bouncer, unless it said
 //   with `AWAY *` (draft/pre-away) that it isn't the user (bouncer.ts).
 // When nothing has counted for `away.auto.delay_seconds`, the account goes away
-// on every network, and the first thing to count again brings it back.
+// on every network not already away, and the first thing to count again brings
+// back the networks auto-away set. A manual /away is left alone either way.
 //
 // Push asks a narrower question, only about visible sockets (wsHub.ts). An IRC
 // client has no visibility, and one left attached on a desktop would otherwise
@@ -47,7 +48,7 @@ export function isPresent(userId: number): boolean {
 export function evaluatePresence(userId: number): void {
   if (isPresent(userId)) {
     clearAutoAway(userId);
-    ircManager.clearAwayAll(userId, { autoSet: true });
+    ircManager.clearAway(userId, 'all', { autoSet: true });
   } else {
     scheduleAutoAway(userId);
   }
@@ -87,7 +88,7 @@ function scheduleAutoAway(userId: number): void {
     const user = findUserById(userId);
     if (!user || user.is_paused) return;
     const message = buildAutoAwayMessage(userId, afkSince);
-    ircManager.setAwayAll(userId, message, { autoSet: true, since: afkSince });
+    ircManager.setAway(userId, 'all', message, { autoSet: true, since: afkSince });
   }, delaySec * 1000);
   t.unref?.();
   timers.set(userId, t);

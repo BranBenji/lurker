@@ -26,7 +26,14 @@ import { hasMessageForTarget, replySendMsgid } from '../db/messages.js';
 import { DCC_ACTIVE_STATES, getDccTransfer, updateDccTransferState } from '../db/dccTransfers.js';
 import { findUserById } from '../db/users.js';
 import { isNetworkHostAllowed } from './networkPolicy.js';
-import { getUserAwayState, writeAwayMarker, writeBackMarker } from '../db/userAwayState.js';
+import { effectiveSetting } from './settingsService.js';
+import {
+  getNetworkAwayState,
+  listNetworkAwayStates,
+  isAwayRow,
+  writeAwayMarker,
+  writeBackMarker,
+} from '../db/networkAwayState.js';
 import { getReadState, setReadState } from '../db/bufferReads.js';
 import { listPinnedForUser } from '../db/pinnedBuffers.js';
 import { listCollapsedForUser } from '../db/nicklistCollapsed.js';
@@ -70,10 +77,32 @@ export interface ReadMarkerMove {
   lastReadId: number;
 }
 
-// The account's away turned on or off: what setAwayAll and clearAwayAll emit as
-// 'away'. `origin` is whatever asked for the change, if it passed itself.
+// Which networks an /away or /back covers: one network, or every network the
+// account has (#994).
+export type AwayScope = number | 'all';
+
+// The scope an /away or /back asked for. `networkId` is the network it was
+// typed on, if any; `all` is the -all (true) or -one (false) flag, if given.
+// No flag follows the away.all_networks setting, and no network means every
+// network: an older app, or luir, sends its away frame without one.
+export function resolveAwayScope(
+  userId: number,
+  networkId: number | null | undefined,
+  all?: boolean,
+): AwayScope {
+  if (networkId == null) return 'all';
+  const everywhere = all ?? !!effectiveSetting(userId, 'away.all_networks');
+  return everywhere ? 'all' : networkId;
+}
+
+// Away turned on or off on some of the account's networks: what setAway and
+// clearAway emit as 'away'. `networkIds` are the networks whose state flipped;
+// `all` is whether the call covered every network. `origin` is whatever asked
+// for the change, if it passed itself.
 export interface AwayChange {
   userId: number;
+  networkIds: number[];
+  all: boolean;
   active: boolean;
   origin?: unknown;
 }
@@ -82,7 +111,7 @@ export interface AwayChange {
 // pseudochannels (`@ident@host`) need the peer's server-stamped handle resolved
 // at send time, which the outbound path doesn't have yet — they're a fast-follow.
 
-// User away state row shape from userAwayState.ts (that file isn't typed yet).
+// The part of a network_away_state row the in-memory shape is made from.
 interface AwayStateRow {
   away_datetime: string | null;
   back_datetime: string | null;
@@ -90,7 +119,7 @@ interface AwayStateRow {
   auto_set: number | null;
 }
 
-// Translate a user_away_state row into the in-memory shape IrcConnection
+// Translate a network_away_state row into the in-memory shape IrcConnection
 // holds. Used both for seeding a brand-new connection on construction and
 // when a returning client triggers a snapshot.
 function awayStateFromRow(row: AwayStateRow | null) {
@@ -104,6 +133,13 @@ function awayStateFromRow(row: AwayStateRow | null) {
     autoSet: !!row.auto_set,
     backAt: row.back_datetime,
   };
+}
+
+// Where an away change landed, for the system log: " on Libera" for one
+// network, " on N networks" for several.
+function awayWhere(networks: Network[]): string {
+  if (networks.length === 1) return ` on ${networks[0].name}`;
+  return networks.length > 1 ? ` on ${networks.length} networks` : '';
 }
 
 // Plan the JOINs for auto-rejoin on (re)registration. A tight loop of single
@@ -479,7 +515,7 @@ class IrcManager extends EventEmitter {
     // so it must be in place before connect() resolves the socket. Safe to set
     // now even when the actual connect() is deferred — it only mutates
     // in-memory state and publishes (no AWAY emitted while disconnected).
-    conn.applyAwayState(awayStateFromRow(getUserAwayState(userId) as AwayStateRow | null));
+    conn.applyAwayState(awayStateFromRow(getNetworkAwayState(networkId)));
 
     const connRef = conn;
     // Open the socket. Logged here (not at enqueue) so the "Starting connection"
@@ -1175,91 +1211,122 @@ class IrcManager extends EventEmitter {
     return after;
   }
 
-  // Canonical /away writer. Persists the user-level state in user_away_state,
-  // then fans the new state out to every IrcConnection so each one issues
-  // AWAY on its IRC server and publishes an away-state event. Auto-away
-  // (autoSet=true) never replaces an away already set, manual or auto: the
-  // first one's time is when the user left, and a second would send every
-  // network a new message. Returns the count of connections that received the
-  // update.
+  // Canonical /away writer. Persists each covered network's row in
+  // network_away_state, then hands the new state to that network's
+  // IrcConnection, which issues AWAY on its IRC server and publishes an
+  // away-state event. A network with no connection picks the row up when one
+  // starts. Auto-away (autoSet=true) never replaces an away already set on a
+  // network, manual or auto: the first one's time is when the user left, and a
+  // second would send the network a new message. Returns the count of networks
+  // whose row changed.
   // `since` backdates the away timestamp — auto-away passes the moment the user
   // went idle rather than when the timer fired (#155). Manual /away omits it and
   // gets "now".
   // `origin` rides the 'away' event, so whatever asked can answer for itself: a
   // bouncer client sends its own 306.
-  setAwayAll(
+  setAway(
     userId: number,
+    scope: AwayScope,
     message: string,
     { autoSet = false, since, origin }: { autoSet?: boolean; since?: Date; origin?: unknown } = {},
   ): number {
     const trimmed = (message || '').trim();
     if (!trimmed) return 0;
-    const current = getUserAwayState(userId) as AwayStateRow | null;
-    const currentlyAway = !!(current && current.away_datetime && !current.back_datetime);
-    if (currentlyAway && autoSet) return 0;
-    // The same manual away again changes nothing. irssi sends its /away to every
-    // network, and through the bouncer each copy lands here.
-    if (currentlyAway && !current!.auto_set && current!.away_message === trimmed) return 0;
+    const networks = this.awayScopeNetworks(userId, scope);
+    const rows = new Map(listNetworkAwayStates(userId).map((r) => [r.network_id, r]));
     const awayAt = (since ?? new Date()).toISOString();
-    writeAwayMarker(userId, { awayDatetime: awayAt, awayMessage: trimmed, autoSet });
     const state = { active: true, message: trimmed, since: awayAt, autoSet, backAt: null };
-    let n = 0;
-    for (const conn of this.listConnections(userId)) {
-      conn.applyAwayState(state);
-      n += 1;
+    const changed: Network[] = [];
+    const turnedOn: number[] = [];
+    for (const network of networks) {
+      const row = rows.get(network.id);
+      const away = isAwayRow(row);
+      if (away && autoSet) continue;
+      // The same manual away again changes nothing. irssi sends its /away to
+      // every network, and through the bouncer each copy lands here.
+      if (away && !row!.auto_set && row!.away_message === trimmed) continue;
+      writeAwayMarker(userId, network.id, { awayDatetime: awayAt, awayMessage: trimmed, autoSet });
+      this.getConnection(userId, network.id)?.applyAwayState(state);
+      changed.push(network);
+      if (!away) turnedOn.push(network.id);
     }
-    // Away is user-scoped (every connection), so the system buffer is its home.
+    if (changed.length === 0) return 0;
     // Past the no-op guards above, this only fires on a real change — not on
     // per-connection reconnect re-asserts (those call applyAwayState directly).
     systemLog.log({
       userId,
       scope: 'away',
-      text: autoSet ? `Auto-away: ${trimmed}` : `You're now marked away: ${trimmed}`,
+      fields: scope === 'all' ? null : { networkId: scope },
+      text: autoSet
+        ? `Auto-away: ${trimmed}`
+        : `You're now marked away${awayWhere(changed)}: ${trimmed}`,
     });
     // A new message while already away is a change, but not of state.
-    if (!currentlyAway) {
-      const change: AwayChange = { userId, active: true, origin };
+    if (turnedOn.length > 0) {
+      const change: AwayChange = {
+        userId,
+        networkIds: turnedOn,
+        all: scope === 'all',
+        active: true,
+        origin,
+      };
       this.emit('away', change);
     }
-    return n;
+    return changed.length;
   }
 
-  // Canonical /back writer. Records back_datetime against the existing
-  // user_away_state row (away_datetime/away_message/auto_set are preserved so
-  // the client can render the completed pair) and pushes the new state to
-  // every connection. Auto-clear (autoSet=true) is a no-op when the current
-  // away was manual; that's how scheduleAutoAway → socket-reconnect leaves a
-  // manual /away undisturbed. `origin` is as for setAwayAll.
-  clearAwayAll(
+  // Canonical /back writer. Records back_datetime against each covered
+  // network's row (away_datetime/away_message/auto_set are preserved so the
+  // client can render the completed pair) and pushes the new state to that
+  // network's connection. Auto-clear (autoSet=true) only clears networks
+  // auto-away set; that's how a returning socket leaves a manual /away
+  // undisturbed, as ZNC's simple_away and The Lounge do. `origin` is as for
+  // setAway.
+  clearAway(
     userId: number,
+    scope: AwayScope,
     { autoSet = false, origin }: { autoSet?: boolean; origin?: unknown } = {},
   ): number {
-    const current = getUserAwayState(userId) as AwayStateRow | null;
-    const currentlyAway = !!(current && current.away_datetime && !current.back_datetime);
-    if (!currentlyAway) return 0;
-    if (autoSet && !current!.auto_set) return 0;
+    // From the rows, not the network list: a network that was never away has
+    // none, and presence calls this every time something comes back.
+    const rows = listNetworkAwayStates(userId).filter(
+      (r) =>
+        (scope === 'all' || r.network_id === scope) && isAwayRow(r) && (!autoSet || !!r.auto_set),
+    );
+    if (rows.length === 0) return 0;
     const now = new Date().toISOString();
-    writeBackMarker(userId, now);
-    const state = {
-      active: false,
-      message: current!.away_message,
-      since: current!.away_datetime,
-      autoSet: !!current!.auto_set,
-      backAt: now,
-    };
-    let n = 0;
-    for (const conn of this.listConnections(userId)) {
-      conn.applyAwayState(state);
-      n += 1;
+    const changed: Network[] = [];
+    for (const row of rows) {
+      writeBackMarker(row.network_id, now);
+      const state = { ...awayStateFromRow(row), active: false, backAt: now };
+      this.getConnection(userId, row.network_id)?.applyAwayState(state);
+      const network = getNetwork(row.network_id, userId);
+      if (network) changed.push(network);
     }
     systemLog.log({
       userId,
       scope: 'away',
-      text: autoSet ? 'Auto-away cleared — welcome back' : "You're no longer marked away",
+      fields: scope === 'all' ? null : { networkId: scope },
+      text: autoSet
+        ? 'Auto-away cleared — welcome back'
+        : `You're no longer marked away${awayWhere(changed)}`,
     });
-    const change: AwayChange = { userId, active: false, origin };
+    const change: AwayChange = {
+      userId,
+      networkIds: rows.map((r) => r.network_id),
+      all: scope === 'all',
+      active: false,
+      origin,
+    };
     this.emit('away', change);
-    return n;
+    return rows.length;
+  }
+
+  // The networks an away scope covers: one of the user's, or all of them.
+  private awayScopeNetworks(userId: number, scope: AwayScope): Network[] {
+    if (scope === 'all') return listNetworksForUser(userId);
+    const network = getNetwork(scope, userId);
+    return network ? [network] : [];
   }
 
   // Tear down all IRC connections for a user and drop their byUser entry.

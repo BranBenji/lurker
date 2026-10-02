@@ -163,8 +163,9 @@ invalid) — watch the server buffer for the outcome.
 
 ### `set_away` _(read-write)_
 
-Set or clear your away status across every network (user-wide). Pass `message`
-to go away; omit it to come back. Returns `{ ok: true, away }`.
+Set or clear your away status on one network (`networkId`), or on every network
+when `networkId` is omitted. Pass `message` to go away; omit it to come back.
+Returns `{ ok: true, away }`.
 
 ### `list_members` _(read)_
 

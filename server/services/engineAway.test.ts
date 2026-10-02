@@ -70,14 +70,14 @@ describe('away across an engine re-attach', () => {
 
       EngineLink.shared().simulateLoss();
       await until(() => conn.state !== 'connected', 5000, 'the link loss');
-      ircManager.setAwayAll(user.id, 'gone while the link was down');
+      ircManager.setAway(user.id, 'all', 'gone while the link was down');
       await until(live, 20000, 'live again');
       await settle();
       expect(aways()).toEqual(['AWAY :gone while the link was down']);
 
       EngineLink.shared().simulateLoss();
       await until(() => conn.state !== 'connected', 5000, 'the second link loss');
-      ircManager.clearAwayAll(user.id);
+      ircManager.clearAway(user.id, 'all');
       await until(live, 20000, 'live again');
       await settle();
       expect(aways()).toEqual(['AWAY :gone while the link was down', 'AWAY']);
@@ -112,7 +112,7 @@ describe('away across an engine re-attach', () => {
       if (event.networkId !== network.id || event.type !== 'state') return;
       if (event.state !== 'connected' || !conn.restoring || changedDuringReplay) return;
       changedDuringReplay = true;
-      ircManager.setAwayAll(user.id, 'during the replay');
+      ircManager.setAway(user.id, network.id, 'during the replay');
     };
     ircManager.on('event', hook);
     try {

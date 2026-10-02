@@ -279,12 +279,21 @@ export const EXPORT_TABLES = Object.freeze({
     ],
   },
 
-  user_away_state: {
+  // Replaced user_away_state (#994). An older archive's user_away_state is
+  // ignored on import: away is presence, and the next /away sets it again.
+  network_away_state: {
     mode: 'export',
     scope: 'user_id',
     section: 'data',
-    fkRekey: { user_id: 'users' },
-    columns: ['user_id', 'away_datetime', 'back_datetime', 'away_message', 'auto_set'],
+    fkRekey: { user_id: 'users', network_id: 'networks' },
+    columns: [
+      'network_id',
+      'user_id',
+      'away_datetime',
+      'back_datetime',
+      'away_message',
+      'auto_set',
+    ],
   },
 
   user_settings: {
@@ -832,7 +841,7 @@ export const IMPORT_ORDER = Object.freeze([
   'channel_notify_settings',
   'buffer_retention',
   'user_drafts',
-  'user_away_state',
+  'network_away_state',
   'input_history',
   'upload_history',
   // Messages depend on networks and highlight_rules.

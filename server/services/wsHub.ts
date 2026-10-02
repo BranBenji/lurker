@@ -15,7 +15,7 @@ import { parseDraftReplyRef } from '../../shared/replies.js';
 import { WebSocketServer } from 'ws';
 import cookie from 'cookie';
 import cookieParser from 'cookie-parser';
-import ircManager from './ircManager.js';
+import ircManager, { resolveAwayScope } from './ircManager.js';
 import type { IrcConnection } from './ircConnection.js';
 import { e2eManager } from './e2e/manager.js';
 import { MAX_IMPORT_BYTES } from './e2e/portable.js';
@@ -101,7 +101,7 @@ import {
   setChannelNotifyAlways,
   getChannelFlags,
 } from '../db/channelNotify.js';
-import { getUserAwayState } from '../db/userAwayState.js';
+import { getNetworkAwayState, isAwayRow, listNetworkAwayStates } from '../db/networkAwayState.js';
 import {
   evaluatePresence,
   clearAutoAway,
@@ -1883,12 +1883,14 @@ export interface PresenceDiagnosticRow {
   userId: number;
   openSockets: number;
   visibleSockets: number;
+  // One entry per network that has an away row (#994).
   away: {
+    networkId: number;
     active: boolean;
     autoSet: boolean;
     since: string | null;
     message: string | null;
-  } | null;
+  }[];
 }
 
 export function presenceDiagnostics(): PresenceDiagnosticRow[] {
@@ -1906,19 +1908,17 @@ export function presenceDiagnostics(): PresenceDiagnosticRow[] {
     // Skip those transient all-zero rows so the diagnostic only lists users with
     // a genuinely live socket — matching what this function claims to report.
     if (openSockets === 0) continue;
-    const awayRow = getUserAwayState(userId);
     rows.push({
       userId,
       openSockets,
       visibleSockets,
-      away: awayRow
-        ? {
-            active: !!(awayRow.away_datetime && !awayRow.back_datetime),
-            autoSet: !!awayRow.auto_set,
-            since: awayRow.away_datetime ?? null,
-            message: awayRow.away_message ?? null,
-          }
-        : null,
+      away: listNetworkAwayStates(userId).map((awayRow) => ({
+        networkId: awayRow.network_id,
+        active: isAwayRow(awayRow),
+        autoSet: !!awayRow.auto_set,
+        since: awayRow.away_datetime ?? null,
+        message: awayRow.away_message ?? null,
+      })),
     });
   }
   return rows;
@@ -2048,12 +2048,13 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   setPresenceSource('web', (userId) => (userHasVisibleClient(userId) ? 1 : 0));
 
   // Push-suppression gates shared by message and presence pushes: a manual
-  // /away (when mute_when_away is on — auto-away is the case push matters most,
-  // so it's not gated) and the user's configured quiet-hours window.
-  function pushQuietOrAway(userId: number): boolean {
+  // /away on the network the push comes from (when mute_when_away is on —
+  // auto-away is the case push matters most, so it's not gated) and the user's
+  // configured quiet-hours window.
+  function pushQuietOrAway(userId: number, networkId: number): boolean {
     if (effectiveSetting(userId, 'notifications.push.mute_when_away')) {
-      const away = getUserAwayState(userId);
-      if (away?.away_datetime && !away?.back_datetime && !away?.auto_set) return true;
+      const away = getNetworkAwayState(networkId);
+      if (isAwayRow(away) && !away!.auto_set) return true;
     }
     if (effectiveSetting(userId, 'notifications.push.quiet_hours.enabled')) {
       const startMin = parseHHMM(effectiveSetting(userId, 'notifications.push.quiet_hours.start'));
@@ -2122,7 +2123,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           ? 'highlight'
           : 'always_notify';
     if (!effectiveSetting(userId, `notifications.${kindKey}.enabled`)) return;
-    if (pushQuietOrAway(userId)) return;
+    if (pushQuietOrAway(userId, decorated.networkId)) return;
     const network = ircManager.getConnection(userId, decorated.networkId)?.network;
     pushService
       .deliver(userId, {
@@ -2162,7 +2163,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     if (userHasVisibleClient(userId)) return;
     if (!effectiveSetting(userId, 'notifications.friend_online.enabled')) return;
     if (!isFavoriteDmPeer(userId, networkId, nick)) return;
-    if (pushQuietOrAway(userId)) return;
+    if (pushQuietOrAway(userId, networkId)) return;
     const network = ircManager.getConnection(userId, networkId)?.network;
     pushService
       .deliver(userId, {
@@ -3274,16 +3275,21 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         });
         break;
       }
-      case 'away': {
+      case 'away':
+      case 'back': {
+        // `networkId` is the network the command was typed on; `all` is its
+        // -all (true) or -one (false) flag. See resolveAwayScope.
+        const scope = resolveAwayScope(
+          userId,
+          msg.networkId as number | null | undefined,
+          typeof msg.all === 'boolean' ? msg.all : undefined,
+        );
         // Empty/whitespace-only message → treat as /back (idiomatic IRC).
-        const message = ((msg.message as string) || '').trim();
-        if (!message) ircManager.clearAwayAll(userId, { autoSet: false });
-        else ircManager.setAwayAll(userId, message, { autoSet: false });
+        const message = msg.type === 'away' ? ((msg.message as string) || '').trim() : '';
+        if (!message) ircManager.clearAway(userId, scope, { autoSet: false });
+        else ircManager.setAway(userId, scope, message, { autoSet: false });
         break;
       }
-      case 'back':
-        ircManager.clearAwayAll(userId, { autoSet: false });
-        break;
       case 'typing':
         ircManager.typing(
           userId,

@@ -1087,10 +1087,9 @@ const compactMode = computed(() => {
 const effectiveCollapseAuthors = computed(() => compactMode.value || collapseAuthorsEnabled.value);
 const effectiveCollapseTimestamps = computed(() => collapseTimestampsEnabled.value);
 
-// User-level self-presence (driven by user_away_state on the server). Each
-// network broadcasts the same payload, so reading from this buffer's network
-// is equivalent to reading user state. The server pseudo-buffer doesn't get
-// presence markers — it's noise-only.
+// Self-presence on this buffer's network (network_away_state on the server):
+// away is per network (#994), so each buffer draws its own network's markers.
+// The server pseudo-buffer doesn't get presence markers — it's noise-only.
 
 const awayState = computed((): AwayState | null => {
   const b = buffer.value;

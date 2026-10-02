@@ -1259,6 +1259,20 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'placeholders as the VERSION reply. Leave EMPTY to not answer.',
   },
 
+  // ─── Away ─────────────────────────────────────────────────────────────
+  {
+    key: 'away.all_networks',
+    label: 'Scope away to all networks by default',
+    category: 'away',
+    group: 'away',
+    type: 'bool',
+    default: false,
+    description:
+      'Make /away and /back apply to every network, as irssi does. Off, they apply ' +
+      'to the network you type them on, and -all reaches every network. On, -one ' +
+      'limits them to the current network.',
+  },
+
   // ─── Auto-away (sets you AWAY when no client is connected) ────────────
   {
     key: 'away.auto.enabled',
@@ -1641,7 +1655,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: false,
     description:
-      'Suppress push notifications while you have a manual /away set. ' +
+      'Suppress push notifications from a network while you have a manual /away set on it. ' +
       "Auto-away (triggered when all your tabs close) is unaffected — that's " +
       'the case push exists to cover.',
   },
@@ -2057,6 +2071,7 @@ export const GROUPS: Readonly<Record<string, string>> = Object.freeze({
   'smart-filter': 'Smart filter tuning',
   connection: 'Connection',
   ctcp: 'CTCP replies',
+  away: 'Away',
   'auto-away': 'Auto-away',
   pipeline: 'Image pipeline',
   viewing: 'Viewing',

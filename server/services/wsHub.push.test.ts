@@ -65,8 +65,8 @@ let ircManager: typeof import('./ircManager.js').default;
 let ignoreRulesService: typeof import('./ignoreRulesService.js').default;
 let setUserSetting: typeof import('../db/settings.js').setUserSetting;
 let deleteUserSetting: typeof import('../db/settings.js').deleteUserSetting;
-let writeAwayMarker: typeof import('../db/userAwayState.js').writeAwayMarker;
-let writeBackMarker: typeof import('../db/userAwayState.js').writeBackMarker;
+let writeAwayMarker: typeof import('../db/networkAwayState.js').writeAwayMarker;
+let writeBackMarker: typeof import('../db/networkAwayState.js').writeBackMarker;
 let setChannelNotifyAlways: typeof import('../db/channelNotify.js').setChannelNotifyAlways;
 let createSession: typeof import('../db/sessions.js').createSession;
 let insertMessage: typeof import('../db/messages.js').insertMessage;
@@ -81,7 +81,7 @@ beforeAll(async () => {
   const { createUser } = await import('../db/users.js');
   const { createNetwork } = await import('../db/networks.js');
   ({ setUserSetting, deleteUserSetting } = await import('../db/settings.js'));
-  ({ writeAwayMarker, writeBackMarker } = await import('../db/userAwayState.js'));
+  ({ writeAwayMarker, writeBackMarker } = await import('../db/networkAwayState.js'));
   ({ setChannelNotifyAlways } = await import('../db/channelNotify.js'));
   ({ createSession } = await import('../db/sessions.js'));
   ({ insertMessage } = await import('../db/messages.js'));
@@ -141,7 +141,7 @@ beforeEach(() => {
   for (const rule of ignoreRulesService.listGlobal(userId)) {
     ignoreRulesService.removeById(userId, null, rule.id);
   }
-  writeBackMarker(userId, new Date().toISOString());
+  writeBackMarker(networkId, new Date().toISOString());
 });
 
 // A DM from bob. `notify` is derived, not passed: a non-channel, non-server
@@ -462,7 +462,7 @@ describe('maybePush gate chain', () => {
 
   it('does not push during a manual /away when mute_when_away is on', async () => {
     setUserSetting(userId, 'notifications.push.mute_when_away', true);
-    writeAwayMarker(userId, { awayDatetime: new Date().toISOString(), autoSet: false });
+    writeAwayMarker(userId, networkId, { awayDatetime: new Date().toISOString(), autoSet: false });
     emitDm();
     expect(await pushed()).toBe(false);
   });
@@ -471,13 +471,32 @@ describe('maybePush gate chain', () => {
     // Deliberate: auto-away means the user walked off, which is precisely when
     // push matters most. Only a manual /away means "leave me alone".
     setUserSetting(userId, 'notifications.push.mute_when_away', true);
-    writeAwayMarker(userId, { awayDatetime: new Date().toISOString(), autoSet: true });
+    writeAwayMarker(userId, networkId, { awayDatetime: new Date().toISOString(), autoSet: true });
     emitDm();
     expect(await pushed()).toBe(true);
   });
 
+  it('pushes when the manual /away is on another network', async () => {
+    setUserSetting(userId, 'notifications.push.mute_when_away', true);
+    const { createNetwork, deleteNetwork } = await import('../db/networks.js');
+    const other = createNetwork(userId, {
+      name: 'oftc',
+      host: 'irc.example',
+      port: 6697,
+      tls: true,
+      nick: 'pushuser',
+    })!.id;
+    try {
+      writeAwayMarker(userId, other, { awayDatetime: new Date().toISOString(), autoSet: false });
+      emitDm();
+      expect(await pushed()).toBe(true);
+    } finally {
+      deleteNetwork(other, userId);
+    }
+  });
+
   it('pushes during a manual /away when mute_when_away is off', async () => {
-    writeAwayMarker(userId, { awayDatetime: new Date().toISOString(), autoSet: false });
+    writeAwayMarker(userId, networkId, { awayDatetime: new Date().toISOString(), autoSet: false });
     emitDm();
     expect(await pushed()).toBe(true);
   });
@@ -583,22 +602,19 @@ describe('presence', () => {
   });
 
   it('clears auto-away for a visible socket, and starts it once that socket closes', async () => {
-    const { getUserAwayState } = await import('../db/userAwayState.js');
+    const { getNetworkAwayState, isAwayRow } = await import('../db/networkAwayState.js');
     const { until } = await import('../test-utils/until.js');
-    const isAway = () => {
-      const row = getUserAwayState(userId);
-      return !!row?.away_datetime && !row.back_datetime;
-    };
+    const isAway = () => isAwayRow(getNetworkAwayState(networkId));
     setUserSetting(userId, 'away.auto.delay_seconds', 0.05);
     try {
-      ircManager.setAwayAll(userId, 'afk', { autoSet: true });
+      ircManager.setAway(userId, 'all', 'afk', { autoSet: true });
       // Waited for rather than read at once: setting away logs a system line,
       // and that frame can land ahead of connectWithPresence's barrier reply.
       const close = await connectWithPresence(true);
       await until(() => !isAway(), 2000, 'auto-away cleared');
       await close();
       await until(isAway, 2000, 'auto-away');
-      expect(getUserAwayState(userId)?.auto_set).toBe(1);
+      expect(getNetworkAwayState(networkId)?.auto_set).toBe(1);
     } finally {
       deleteUserSetting(userId, 'away.auto.delay_seconds');
     }

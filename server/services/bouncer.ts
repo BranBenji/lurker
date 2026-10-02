@@ -87,7 +87,7 @@ import { evaluatePresence, setPresenceSource } from './presence.js';
 import { setAttachedIrcClientCounter } from './attachedIrcClients.js';
 import { changedSettings } from './settingsService.js';
 import { CTCP_ANSWER_SETTINGS, ctcpAnsweredBySettings, ctcpVersionVia } from './ctcp.js';
-import { getUserAwayState } from '../db/userAwayState.js';
+import { getNetworkAwayState, isAwayRow, listNetworkAwayStates } from '../db/networkAwayState.js';
 import { splitSay, splitAction } from './messageSplit.js';
 import { e2eManager } from './e2e/manager.js';
 import { contextKey, isChannelContext } from './e2e/context.js';
@@ -931,6 +931,10 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     return this.registered;
   }
 
+  isControlSession(): boolean {
+    return this.isControl;
+  }
+
   // `relayedAt` marks a line the network sent (see ClientLineFilter.apply).
   private write(line: string, relayedAt?: Date): void {
     if (this.closed) return;
@@ -1556,10 +1560,12 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     // registration completion for bound and control connections alike).
     if (this.caps.has(CAP_BOUNCER_NETWORKS_NOTIFY)) this.sendNetworkList();
 
-    // An account that's away says so, as ZNC does for a client that attaches
+    // A network that's away says so, as ZNC does for a client that attaches
     // (IRCNetwork.cpp:708), but after the channels: halloy keeps its own away
     // state on each channel's member list.
-    if (!this.awayAnswered && accountIsAway(this.userId)) this.sendAwayReply(true);
+    if (!this.awayAnswered && isAwayRow(getNetworkAwayState(this.networkId))) {
+      this.sendAwayReply(true);
+    }
 
     // Live relay attaches AFTER playback so replayed history and the live
     // stream don't interleave out of order.
@@ -1690,8 +1696,9 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     this.write(`:${SERVER_NAME} 422 ${nick} :MOTD File is missing`);
     // A -notify client gets the full network list up-front as a batch.
     if (this.caps.has(CAP_BOUNCER_NETWORKS_NOTIFY)) this.sendNetworkList();
-    // Away is the account's, so a control connection is told too.
-    if (!this.awayAnswered && accountIsAway(this.userId)) this.sendAwayReply(true);
+    // A control connection stands for the whole account: away when every
+    // network is, as its own AWAY sets every network.
+    if (!this.awayAnswered && allNetworksAway(this.userId)) this.sendAwayReply(true);
   }
 
   // --- BOUNCER command -------------------------------------------------------
@@ -2570,12 +2577,17 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     this.sendAwayReply(message !== '');
   }
 
-  // What a client's AWAY does: to this client's presence, and to the account.
+  // What a client's AWAY does: to this client's presence, and to the network
+  // it's attached to (#994), as in ZNC and soju. The away.all_networks setting
+  // doesn't reach here: the IRC client has its own scope (irssi sends its /away
+  // to every network, WeeChat's /away -all too). A control connection is bound
+  // to no network, so its AWAY sets every one.
   private setAway(message: string): void {
     this.notPresent = message === '*';
     if (this.notPresent) return;
-    if (message) ircManager.setAwayAll(this.userId, message, { origin: this });
-    else ircManager.clearAwayAll(this.userId, { origin: this });
+    const scope = this.isControl ? 'all' : this.networkId;
+    if (message) ircManager.setAway(this.userId, scope, message, { origin: this });
+    else ircManager.clearAway(this.userId, scope, { origin: this });
   }
 
   // An AWAY sent before registration, now that the account is known.
@@ -3154,19 +3166,29 @@ function dispatchReadMarker(move: ReadMarkerMove): void {
   }
 }
 
-// Whether the account is away, as the apps show it.
-function accountIsAway(userId: number): boolean {
-  const row = getUserAwayState(userId);
-  return !!row?.away_datetime && !row.back_datetime;
+// Whether every one of the account's networks is away: a control
+// connection's view, since it's bound to none.
+function allNetworksAway(userId: number): boolean {
+  const away = new Set(
+    listNetworkAwayStates(userId)
+      .filter(isAwayRow)
+      .map((r) => r.network_id),
+  );
+  const networks = listNetworksForUser(userId);
+  return networks.length > 0 && networks.every((n) => away.has(n.id));
 }
 
-// The account's away turned on or off: in the apps, by auto-away, or from a
-// client. Every client of the account hears it as a 305 or 306, so irssi and
-// halloy stay in step. A client whose AWAY made the change sends its own.
+// Away turned on or off on some of the account's networks: in the apps, by
+// auto-away, or from a client. Each client attached to one of those networks
+// hears it as a 305 or 306, so irssi and halloy stay in step; a control
+// connection hears a change that covered every network. A client whose AWAY
+// made the change sends its own.
 function dispatchAway(change: AwayChange): void {
+  const networks = new Set(change.networkIds);
   for (const session of sessions) {
     if (session.userId !== change.userId || !session.isRegistered()) continue;
     if (session === change.origin) continue;
+    if (session.isControlSession() ? !change.all : !networks.has(session.networkId)) continue;
     session.sendAwayReply(change.active);
   }
 }

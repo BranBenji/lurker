@@ -1897,7 +1897,7 @@ export class IrcConnection {
       }
       // Re-assert /away on reconnect so the IRC server keeps showing us as
       // away — both manual and auto-away. For auto, if a client returns soon
-      // after, the socket-reconnect path runs clearAwayAll({autoSet:true}) and
+      // after, the socket-reconnect path runs clearAway({autoSet:true}) and
       // clears it cleanly; if not, staying away across an IRC blip is the
       // correct behavior.
       // Not on a restore: that socket has been told before, and whatever changed
@@ -5457,7 +5457,7 @@ export class IrcConnection {
           topic: false,
         });
         this.rawQuiet('MODE', this.currentNick);
-        // The account's away state, sent again. This socket missed any change
+        // The network's away state, sent again. This socket missed any change
         // made while the link was down, or while no process was attached, and
         // nothing here knows what it was last told. The 305/306 is Lurker's.
         this.sendAwayState();
@@ -8371,7 +8371,7 @@ export class IrcConnection {
     this.client.tagmsg(target, { '+typing': state });
   }
 
-  // Mirror the user-level self-presence state onto this connection. Called by
+  // Mirror this network's self-presence row onto the connection. Called by
   // ircManager after it persists and is responsible for any guard logic — this
   // method is a dumb applier. Emits AWAY to the IRC server when the new state
   // differs from the last (active flips, or a new message while away), and
@@ -8396,7 +8396,7 @@ export class IrcConnection {
     this.publishAwayState();
   }
 
-  // The account's away state, to the network: `AWAY :<message>`, or a bare
+  // This network's away state, to the network: `AWAY :<message>`, or a bare
   // `AWAY`. It goes through the router as Lurker's, so its 305/306 reach no
   // bouncer client (each gets its own from the bouncer) and write no row.
   private sendAwayState(): void {
