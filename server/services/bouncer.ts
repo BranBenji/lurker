@@ -880,6 +880,11 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   // This client said `AWAY *`: it isn't the user, so it doesn't count as the
   // user being here (presence.ts).
   private notPresent = false;
+  // The last 305 (false) or 306 (true) this client was sent. A control
+  // connection is away when every network is (allNetworksAway), which a network
+  // added or deleted can change as well as an away, so it's reconciled against
+  // this rather than told about each change.
+  private reportedAway = false;
   // A pre-registration `BOUNCER BIND <id>` selector, consumed at completeAttach
   // (takes precedence over a username-embedded network name).
   private boundNetId: number | null = null;
@@ -1815,6 +1820,8 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   onNetworkChanged(networkId: number, network: Network | undefined): void {
     if (this.closed) return;
     if (network && this.networkId === networkId) this.network = network;
+    // A network added beside away ones, or the last one not away deleted.
+    this.reconcileControlAway();
     if (!this.caps.has(CAP_BOUNCER_NETWORKS_NOTIFY)) return;
     const sent = this.networksSent.get(networkId);
     if (!network) {
@@ -2604,8 +2611,18 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     return this.registered && !this.closed && !this.isControl && !this.notPresent;
   }
 
+  // A control connection whose last 305 or 306 no longer says whether every
+  // network is away is told again. `allAway` saves the lookup when the caller
+  // has it.
+  reconcileControlAway(allAway?: boolean): void {
+    if (!this.isControl || !this.registered || this.closed) return;
+    const away = allAway ?? allNetworksAway(this.userId);
+    if (away !== this.reportedAway) this.sendAwayReply(away);
+  }
+
   // RPL_NOWAWAY or RPL_UNAWAY.
   sendAwayReply(away: boolean): void {
+    this.reportedAway = away;
     if (away) this.numeric('306', ':You have been marked as being away');
     else this.numeric('305', ':You are no longer marked as being away');
   }
@@ -3181,38 +3198,21 @@ function allNetworksAway(userId: number): boolean {
 // Away turned on or off on some of the account's networks: in the apps, by
 // auto-away, or from a client. Each client attached to one of those networks
 // hears it as a 305 or 306, so irssi and halloy stay in step. A control
-// connection is away when every network is (allNetworksAway), so it hears a
-// change that flipped that. A client whose AWAY made the change sends its own.
+// connection is reconciled with allNetworksAway instead. A client whose AWAY
+// made the change sends its own.
 function dispatchAway(change: AwayChange): void {
   const networks = new Set(change.networkIds);
-  let controlFlipped: boolean | undefined;
+  let allAway: boolean | undefined;
   for (const session of sessions) {
     if (session.userId !== change.userId || !session.isRegistered()) continue;
     if (session === change.origin) continue;
     if (session.isControlSession()) {
-      controlFlipped ??= allNetworksAwayFlipped(change);
-      if (!controlFlipped) continue;
-    } else if (!networks.has(session.networkId)) {
-      continue;
+      allAway ??= allNetworksAway(change.userId);
+      session.reconcileControlAway(allAway);
+    } else if (networks.has(session.networkId)) {
+      session.sendAwayReply(change.active);
     }
-    session.sendAwayReply(change.active);
   }
-}
-
-// Whether a change flipped allNetworksAway. Going away, it did if every network
-// is away now; coming back, if every network was: each one away still, or one
-// the change just brought back.
-function allNetworksAwayFlipped(change: AwayChange): boolean {
-  const awayNow = new Set(
-    listNetworkAwayStates(change.userId)
-      .filter(isAwayRow)
-      .map((r) => r.network_id),
-  );
-  const networks = listNetworksForUser(change.userId);
-  if (networks.length === 0) return false;
-  if (change.active) return networks.every((n) => awayNow.has(n.id));
-  const changed = new Set(change.networkIds);
-  return networks.every((n) => awayNow.has(n.id) || changed.has(n.id));
 }
 
 // How many of a user's clients count as the user being here: on any network,

@@ -413,6 +413,40 @@ describe('a client’s AWAY', () => {
     expect(awayReplies(control, mark)).toEqual([]);
   });
 
+  it('tells a control connection when a network added or deleted changes whether every network is away', async () => {
+    const acct = await seedAccount();
+    ircManager.setAway(acct.userId, 'all', 'gone');
+    const control = await attach(acct, null);
+    await settle(acct, [control]);
+    expect(awayReplies(control)).toEqual([expect.stringMatching(/ 306 /)]);
+    let mark = control.lines.length;
+
+    // A network that was never away: not every network is away any more.
+    const added = networks.createNetwork(acct.userId, {
+      name: 'netc',
+      host: '127.0.0.1',
+      port: ircd.port,
+      tls: false,
+      nick: `netc${seq}`,
+      autoconnect: false,
+    } as Parameters<typeof networks.createNetwork>[1])!;
+    ircManager.networkChanged(acct.userId, added.id);
+    await settle(acct, [control]);
+    expect(awayReplies(control, mark)).toEqual([expect.stringMatching(/ 305 /)]);
+    mark = control.lines.length;
+
+    // An edit changes nothing for it.
+    ircManager.networkChanged(acct.userId, acct.nets[0].networkId);
+    await settle(acct, [control]);
+    expect(awayReplies(control, mark)).toEqual([]);
+
+    // The only network that wasn't away goes: every network is again.
+    networks.deleteNetwork(added.id, acct.userId);
+    ircManager.networkChanged(acct.userId, added.id);
+    await settle(acct, [control]);
+    expect(awayReplies(control, mark)).toEqual([expect.stringMatching(/ 306 /)]);
+  });
+
   it('works on a control connection, which sets every network, and with a network down', async () => {
     const acct = await seedAccount();
     const [a, b] = acct.nets;
