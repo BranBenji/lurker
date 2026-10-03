@@ -40,7 +40,7 @@ export interface PeerPresenceEntry {
   awayMessage: string | null;
 }
 
-// User-level self-presence, broadcast per network from the away-state stream.
+// Self-presence on one network (#994), from the away-state stream.
 // Mirrors the in-memory shape ircManager/IrcConnection hold (`AwayState`
 // there); `message` and `since` stay populated after /back so the buffer
 // dividers can render the completed away→back pair.

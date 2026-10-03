@@ -50,7 +50,7 @@ let insertUpload: typeof import('../db/uploadHistory.js').insertUpload;
 let setNicklistCollapsed: typeof import('../db/nicklistCollapsed.js').setNicklistCollapsed;
 let setChannelNotifyAlways: typeof import('../db/channelNotify.js').setChannelNotifyAlways;
 let upsertDraft: typeof import('../db/drafts.js').upsertDraft;
-let writeAwayMarker: typeof import('../db/userAwayState.js').writeAwayMarker;
+let writeAwayMarker: typeof import('../db/networkAwayState.js').writeAwayMarker;
 let addInputHistory: typeof import('../db/inputHistory.js').addEntry;
 let EXPORT_TABLES: typeof import('../db/exportSchema.js').EXPORT_TABLES;
 let buildExportZip: typeof import('./exportService.js').buildExportZip;
@@ -77,7 +77,7 @@ beforeAll(async () => {
   ({ setNicklistCollapsed } = await import('../db/nicklistCollapsed.js'));
   ({ setChannelNotifyAlways } = await import('../db/channelNotify.js'));
   ({ upsertDraft } = await import('../db/drafts.js'));
-  ({ writeAwayMarker } = await import('../db/userAwayState.js'));
+  ({ writeAwayMarker } = await import('../db/networkAwayState.js'));
   const ih = await import('../db/inputHistory.js');
   addInputHistory = ih.addEntry;
   ({ buildExportZip } = await import('./exportService.js'));
@@ -1309,7 +1309,7 @@ describe('importFromZipBuffer — end-to-end equivalence', () => {
     removeReaction(m1.id as number, 'carol', '🎉', false, '2026-05-17T10:05:00Z');
     // (Left behind by the export — see the tombstone test.)
     setReadState(user.id, net1.id, '#general', m2.id as number);
-    writeAwayMarker(user.id, {
+    writeAwayMarker(user.id, net1.id, {
       awayDatetime: '2026-05-17T11:00:00Z',
       awayMessage: 'brb',
       autoSet: false,

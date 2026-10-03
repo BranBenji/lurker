@@ -723,12 +723,12 @@ anything at all.
 
 ### Presence & status
 
-| `type`              | Fields                     | Notes                                                                               |
-| ------------------- | -------------------------- | ----------------------------------------------------------------------------------- |
-| `presence`          | `visible: bool`            | **Per-socket, resets to `false` on every new socket** — re-assert on connect (§9.5) |
-| `typing` ⏸          | `networkId, target, state` | Sends `+typing` TAGMSG                                                              |
-| `away` ⏸ / `back` ⏸ | `message` / —              | User-scoped: hits every network                                                     |
-| `probe-presence` ⏸  | `networkId, nick`          | Silent WHOIS; answer arrives as a `peer-presence` event                             |
+| `type`              | Fields                                        | Notes                                                                                                                                                |
+| ------------------- | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `presence`          | `visible: bool`                               | **Per-socket, resets to `false` on every new socket** — re-assert on connect (§9.5)                                                                  |
+| `typing` ⏸          | `networkId, target, state`                    | Sends `+typing` TAGMSG                                                                                                                               |
+| `away` ⏸ / `back` ⏸ | `message` / —, plus optional `networkId, all` | The network named, or every network when `all` is true, `networkId` is absent, or the `away.all_networks` setting is on and `all` isn't false (#994) |
+| `probe-presence` ⏸  | `networkId, nick`                             | Silent WHOIS; answer arrives as a `peer-presence` event                                                                                              |
 
 ### Sync & fetch
 

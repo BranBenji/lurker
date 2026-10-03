@@ -602,7 +602,7 @@ function resetImportedData(userId: number): void {
     db.prepare('DELETE FROM user_settings WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM user_themes WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM upload_history WHERE user_id = ?').run(userId);
-    db.prepare('DELETE FROM user_away_state WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM network_away_state WHERE user_id = ?').run(userId);
     // Network-scoped buffers cascade with networks above, but an app-scoped row
     // (network_id NULL — the reserved system/server kinds) only cascades on
     // user delete; without this a failed-then-retried import of an archive

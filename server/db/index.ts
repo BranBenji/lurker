@@ -165,22 +165,26 @@ function migrate() {
       FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
     );
 
-    -- User-level self-presence state. /away applies across every IRC connection
-    -- the user has, so the truth lives once per user. The completed-pair shape
-    -- (both away_datetime and back_datetime set, kept until the next /away) is
-    -- what lets a returning client render both markers — "you went away here"
-    -- and "you came back here" — anchored by message timestamps. auto_set
-    -- preserves the manual-vs-auto distinction across server restarts so the
-    -- reconnect re-assert and the auto-clear-on-socket-return paths keep
-    -- working correctly after a process bounce.
-    CREATE TABLE IF NOT EXISTS user_away_state (
-      user_id INTEGER PRIMARY KEY,
+    -- Self-presence, one row per network (#994): /away sets the network you're
+    -- on, /away -all sets every one, as in WeeChat and Quassel. A network that
+    -- was never away has no row. The completed-pair shape (both away_datetime
+    -- and back_datetime set, kept until the next /away) is what lets a
+    -- returning client render both markers — "you went away here" and "you
+    -- came back here" — anchored by message timestamps. auto_set preserves the
+    -- manual-vs-auto distinction across server restarts, so auto-back clears
+    -- only the networks auto-away set, after a process bounce too.
+    -- user_id is the network's owner, carried for the per-user reads.
+    CREATE TABLE IF NOT EXISTS network_away_state (
+      network_id INTEGER PRIMARY KEY,
+      user_id INTEGER NOT NULL,
       away_datetime TEXT,
       back_datetime TEXT,
       away_message TEXT,
       auto_set INTEGER NOT NULL DEFAULT 0,
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
+    CREATE INDEX IF NOT EXISTS idx_network_away_state_user ON network_away_state(user_id);
 
     CREATE TABLE IF NOT EXISTS user_settings (
       user_id INTEGER NOT NULL,
@@ -1495,7 +1499,7 @@ ensureColumn('push_subscriptions', 'transport', "TEXT NOT NULL DEFAULT 'webpush'
 // Schema versioning lets us retire one-shot recovery blocks once every
 // production DB has run through them. Bump SCHEMA_VERSION when adding a new
 // recovery block, and delete blocks for versions far enough in the past.
-const SCHEMA_VERSION = 20;
+const SCHEMA_VERSION = 21;
 const schemaVersionRow = db
   .prepare(`SELECT value FROM app_meta WHERE key = 'schema_version'`)
   .get() as { value: string } | undefined;
@@ -2600,6 +2604,28 @@ if (schemaVersion < 20) {
       console.log(`[db] closed ${purged} invite(s) resurrected by a user deletion (#590)`);
     }
   }
+}
+
+// #994: away moved from one row per user to one row per network. An account
+// that's away now is away on each of its networks, as it was on the wire, so
+// the row is copied to every network the user has; then the old table goes.
+// Gated on the old table: fresh installs never create it.
+if (schemaVersion < 21 && tableExists('user_away_state')) {
+  const split = db.transaction(() => {
+    const copied = db
+      .prepare(
+        `INSERT OR IGNORE INTO network_away_state
+           (network_id, user_id, away_datetime, back_datetime, away_message, auto_set)
+         SELECT n.id, a.user_id, a.away_datetime, a.back_datetime, a.away_message, a.auto_set
+         FROM user_away_state a JOIN networks n ON n.user_id = a.user_id`,
+      )
+      .run().changes;
+    db.exec(`DROP TABLE user_away_state`);
+    return copied;
+  });
+  // .immediate(): see the v20 block above (lurker#603).
+  const copied = split.immediate();
+  if (copied > 0) console.log(`[db] split away state onto ${copied} network(s) (#994)`);
 }
 
 // Issue #510: seed the uploader data model — instance x0/catbox rows +

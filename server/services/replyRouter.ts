@@ -3,7 +3,7 @@
 
 // Who each reply on a network connection is for. Three kinds of asker share the
 // connection: Lurker itself (the MODE and WHO it sends when it joins a channel,
-// a restore's NAMES, TOPIC and MODE, the AWAY carrying the account's away state),
+// a restore's NAMES, TOPIC and MODE, the AWAY carrying the network's away state),
 // the user (the web and iOS apps, MCP, connect commands), and each IRC client
 // attached through the bouncer. A server's replies don't say who asked, so each
 // one used to reach all of them:

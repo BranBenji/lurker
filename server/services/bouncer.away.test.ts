@@ -1,11 +1,12 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// Away through the bouncer (the plan's "Away" section). A client's AWAY is the
-// account's, on every network, as in the web and iOS apps, and every client hears
-// a change as a 305 or 306. `AWAY *` (draft/pre-away) marks a connection that
-// isn't the user, and any other attached client holds auto-away off. Against
-// real IrcConnections on the fake ircd, with the real bouncer in front of them.
+// Away through the bouncer (the plan's "Away" section). A client's AWAY sets the
+// network it's attached to (#994), as in ZNC and soju, and that network's clients
+// hear a change as a 305 or 306. A control connection's sets every network.
+// `AWAY *` (draft/pre-away) marks a connection that isn't the user, and any other
+// attached client holds auto-away off. Against real IrcConnections on the fake
+// ircd, with the real bouncer in front of them.
 
 import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
 import { setupTestDb } from '../test-utils/testApp.js';
@@ -21,7 +22,7 @@ let presence: typeof import('./presence.js');
 let users: typeof import('../db/users.js');
 let networks: typeof import('../db/networks.js');
 let settings: typeof import('../db/settings.js');
-let getUserAwayState: typeof import('../db/userAwayState.js').getUserAwayState;
+let awayState: typeof import('../db/networkAwayState.js');
 let hashPassword: typeof import('./password.js').hashPassword;
 let harness: import('../test-utils/bouncerHarness.js').Harness;
 let ircd: FakeIrcd;
@@ -39,7 +40,7 @@ beforeAll(async () => {
   users = await import('../db/users.js');
   networks = await import('../db/networks.js');
   settings = await import('../db/settings.js');
-  ({ getUserAwayState } = await import('../db/userAwayState.js'));
+  awayState = await import('../db/networkAwayState.js');
   ({ hashPassword } = await import('./password.js'));
   ircd = await FakeIrcd.start({});
   harness = await harnessMod.startHarness();
@@ -172,9 +173,12 @@ function awayReplies(c: Client, from = 0): string[] {
   return c.lines.slice(from).filter((line) => ['305', '306'].includes(commandOf(line)));
 }
 
-function isAway(userId: number): boolean {
-  const row = getUserAwayState(userId);
-  return !!row?.away_datetime && !row.back_datetime;
+function rowOf(net: Net) {
+  return awayState.getNetworkAwayState(net.networkId);
+}
+
+function isAway(net: Net): boolean {
+  return awayState.isAwayRow(rowOf(net));
 }
 
 // The server-buffer rows a network's connection published after `from`.
@@ -218,7 +222,7 @@ async function settle(acct: Account, clients: Client[]): Promise<void> {
 }
 
 describe('a client’s AWAY', () => {
-  it('goes to every network, and every client hears it once, from the bouncer', async () => {
+  it('goes to its own network, and that network’s clients hear it once, from the bouncer', async () => {
     const acct = await seedAccount();
     const [a, b] = acct.nets;
     const c1 = await attach(acct, 'neta');
@@ -232,38 +236,36 @@ describe('a client’s AWAY', () => {
     await settle(acct, [c1, c2, cb]);
 
     expect(aways(a)).toEqual(['AWAY :lunch']);
-    expect(aways(b)).toEqual(['AWAY :lunch']);
-    expect(getUserAwayState(acct.userId)).toMatchObject({
-      away_message: 'lunch',
-      back_datetime: null,
-      auto_set: 0,
-    });
-    // c1's reply and the others' news are the bouncer's. The networks' 306s
-    // answer Lurker, so they reach no client and write no server-buffer row.
-    [c1, c2, cb].forEach((c, i) => {
+    expect(aways(b)).toEqual([]);
+    expect(rowOf(a)).toMatchObject({ away_message: 'lunch', back_datetime: null, auto_set: 0 });
+    expect(rowOf(b)).toBeNull();
+    // c1's reply and c2's news are the bouncer's. The network's 306 answers
+    // Lurker, so it reaches no client and writes no server-buffer row.
+    [c1, c2].forEach((c, i) => {
       expect(awayReplies(c, marks[i])).toEqual([
         expect.stringMatching(/^:lurker\.bouncer 306 \S+ :You have been marked as being away$/),
       ]);
     });
+    expect(awayReplies(cb, marks[2])).toEqual([]);
     expect(acct.events.slice(published).filter((e) => e.type === 'motd')).toEqual([]);
   });
 
-  it('sends a new message to the networks, and only the client that sent it hears back', async () => {
+  it('sends a new message to the network, and only the client that sent it hears back', async () => {
     const acct = await seedAccount();
     const [a, b] = acct.nets;
     const c1 = await attach(acct, 'neta');
-    const cb = await attach(acct, 'netb');
+    const c2 = await attach(acct, 'neta');
     c1.send('AWAY :lunch');
-    await settle(acct, [c1, cb]);
-    const marks = [c1.lines.length, cb.lines.length];
+    await settle(acct, [c1, c2]);
+    const marks = [c1.lines.length, c2.lines.length];
 
     c1.send('AWAY :dinner');
-    await settle(acct, [c1, cb]);
+    await settle(acct, [c1, c2]);
 
     expect(aways(a)).toEqual(['AWAY :lunch', 'AWAY :dinner']);
-    expect(aways(b)).toEqual(['AWAY :lunch', 'AWAY :dinner']);
+    expect(aways(b)).toEqual([]);
     expect(awayReplies(c1, marks[0])).toEqual([expect.stringMatching(/ 306 /)]);
-    expect(awayReplies(cb, marks[1])).toEqual([]);
+    expect(awayReplies(c2, marks[1])).toEqual([]);
   });
 
   it('answers a bare AWAY while not away, and sends the networks nothing', async () => {
@@ -280,7 +282,7 @@ describe('a client’s AWAY', () => {
     ]);
   });
 
-  it('changes the account once when a client sends it on every network, as irssi does', async () => {
+  it('sets each network once when a client sends it on every network, as irssi does', async () => {
     const acct = await seedAccount();
     const [a, b] = acct.nets;
     const ca = await attach(acct, 'neta');
@@ -295,14 +297,14 @@ describe('a client’s AWAY', () => {
 
     expect(aways(a)).toEqual(['AWAY :gone']);
     expect(aways(b)).toEqual(['AWAY :gone']);
-    // Each got its own 306, and whichever came second heard the first's change.
-    const replies = [awayReplies(ca, marks[0]).length, awayReplies(cb, marks[1]).length];
-    expect(replies.toSorted()).toEqual([1, 2]);
-    // One change, so the apps' away divider moved once on each network.
+    // Each got its own 306 and nothing from the other network.
+    expect(awayReplies(ca, marks[0])).toHaveLength(1);
+    expect(awayReplies(cb, marks[1])).toHaveLength(1);
+    // The apps' away divider moved once on each network.
     expect(acct.events.slice(published).filter((e) => e.type === 'away-state')).toHaveLength(2);
   });
 
-  it('reaches every client when the apps change it, and a client’s bare AWAY undoes it', async () => {
+  it('reaches the clients when the apps change it, and a client’s bare AWAY undoes only its own network', async () => {
     const acct = await seedAccount();
     const [a, b] = acct.nets;
     const ca = await attach(acct, 'neta');
@@ -310,7 +312,7 @@ describe('a client’s AWAY', () => {
     await settle(acct, [ca, cb]);
     let marks = [ca.lines.length, cb.lines.length];
 
-    ircManager.setAwayAll(acct.userId, 'from the apps');
+    ircManager.setAway(acct.userId, 'all', 'from the apps');
     await settle(acct, [ca, cb]);
     expect(awayReplies(ca, marks[0])).toEqual([expect.stringMatching(/ 306 /)]);
     expect(awayReplies(cb, marks[1])).toEqual([expect.stringMatching(/ 306 /)]);
@@ -318,14 +320,35 @@ describe('a client’s AWAY', () => {
 
     cb.send('AWAY');
     await settle(acct, [ca, cb]);
-    expect(isAway(acct.userId)).toBe(false);
-    expect(aways(a)).toEqual(['AWAY :from the apps', 'AWAY']);
+    expect(isAway(a)).toBe(true);
+    expect(isAway(b)).toBe(false);
+    expect(aways(a)).toEqual(['AWAY :from the apps']);
     expect(aways(b)).toEqual(['AWAY :from the apps', 'AWAY']);
-    expect(awayReplies(ca, marks[0])).toEqual([expect.stringMatching(/ 305 /)]);
+    expect(awayReplies(ca, marks[0])).toEqual([]);
     expect(awayReplies(cb, marks[1])).toEqual([expect.stringMatching(/ 305 /)]);
   });
 
-  it('tells a client that attaches while away, after its channels, and a control connection too', async () => {
+  it('reaches only that network’s clients when the apps set one network away', async () => {
+    const acct = await seedAccount();
+    const [a, b] = acct.nets;
+    const ca = await attach(acct, 'neta');
+    const cb = await attach(acct, 'netb');
+    const control = await attach(acct, null);
+    await settle(acct, [ca, cb, control]);
+    const marks = [ca, cb, control].map((c) => c.lines.length);
+
+    ircManager.setAway(acct.userId, a.networkId, 'just here');
+    await settle(acct, [ca, cb, control]);
+
+    expect(aways(a)).toEqual(['AWAY :just here']);
+    expect(aways(b)).toEqual([]);
+    expect(awayReplies(ca, marks[0])).toEqual([expect.stringMatching(/ 306 /)]);
+    expect(awayReplies(cb, marks[1])).toEqual([]);
+    // A control connection hears a change that covered every network.
+    expect(awayReplies(control, marks[2])).toEqual([]);
+  });
+
+  it('tells a client that attaches while its network is away, after its channels, and a control connection too', async () => {
     const acct = await seedAccount();
     const [a] = acct.nets;
     a.conn.join('#away');
@@ -334,7 +357,7 @@ describe('a client’s AWAY', () => {
       5000,
       'joined #away',
     );
-    ircManager.setAwayAll(acct.userId, 'gone');
+    ircManager.setAway(acct.userId, 'all', 'gone');
 
     const c = await attach(acct, 'neta');
     const control = await attach(acct, null);
@@ -347,7 +370,84 @@ describe('a client’s AWAY', () => {
     expect(awayReplies(control)).toHaveLength(1);
   });
 
-  it('works on a control connection, and with the network down', async () => {
+  it('tells a client nothing on attach when only another network is away', async () => {
+    const acct = await seedAccount();
+    const [a] = acct.nets;
+    ircManager.setAway(acct.userId, a.networkId, 'gone');
+
+    const cb = await attach(acct, 'netb');
+    // A control connection is away only when every network is.
+    const control = await attach(acct, null);
+    await settle(acct, [cb, control]);
+
+    expect(awayReplies(cb)).toEqual([]);
+    expect(awayReplies(control)).toEqual([]);
+  });
+
+  it('tells a control connection when one network’s change makes every network away, or not', async () => {
+    const acct = await seedAccount();
+    const [a, b] = acct.nets;
+    ircManager.setAway(acct.userId, a.networkId, 'gone');
+    const control = await attach(acct, null);
+    await settle(acct, [control]);
+    let mark = control.lines.length;
+
+    ircManager.setAway(acct.userId, b.networkId, 'gone too');
+    await settle(acct, [control]);
+    expect(awayReplies(control, mark)).toEqual([expect.stringMatching(/ 306 /)]);
+    mark = control.lines.length;
+
+    // A new message on one network changes nothing for it.
+    ircManager.setAway(acct.userId, b.networkId, 'still gone');
+    await settle(acct, [control]);
+    expect(awayReplies(control, mark)).toEqual([]);
+
+    ircManager.clearAway(acct.userId, a.networkId);
+    await settle(acct, [control]);
+    expect(awayReplies(control, mark)).toEqual([expect.stringMatching(/ 305 /)]);
+    mark = control.lines.length;
+
+    // Already not every network: another network back changes nothing for it.
+    ircManager.clearAway(acct.userId, b.networkId);
+    await settle(acct, [control]);
+    expect(awayReplies(control, mark)).toEqual([]);
+  });
+
+  it('tells a control connection when a network added or deleted changes whether every network is away', async () => {
+    const acct = await seedAccount();
+    ircManager.setAway(acct.userId, 'all', 'gone');
+    const control = await attach(acct, null);
+    await settle(acct, [control]);
+    expect(awayReplies(control)).toEqual([expect.stringMatching(/ 306 /)]);
+    let mark = control.lines.length;
+
+    // A network that was never away: not every network is away any more.
+    const added = networks.createNetwork(acct.userId, {
+      name: 'netc',
+      host: '127.0.0.1',
+      port: ircd.port,
+      tls: false,
+      nick: `netc${seq}`,
+      autoconnect: false,
+    } as Parameters<typeof networks.createNetwork>[1])!;
+    ircManager.networkChanged(acct.userId, added.id);
+    await settle(acct, [control]);
+    expect(awayReplies(control, mark)).toEqual([expect.stringMatching(/ 305 /)]);
+    mark = control.lines.length;
+
+    // An edit changes nothing for it.
+    ircManager.networkChanged(acct.userId, acct.nets[0].networkId);
+    await settle(acct, [control]);
+    expect(awayReplies(control, mark)).toEqual([]);
+
+    // The only network that wasn't away goes: every network is again.
+    networks.deleteNetwork(added.id, acct.userId);
+    ircManager.networkChanged(acct.userId, added.id);
+    await settle(acct, [control]);
+    expect(awayReplies(control, mark)).toEqual([expect.stringMatching(/ 306 /)]);
+  });
+
+  it('works on a control connection, which sets every network, and with a network down', async () => {
     const acct = await seedAccount();
     const [a, b] = acct.nets;
     const control = await attach(acct, null);
@@ -357,8 +457,9 @@ describe('a client’s AWAY', () => {
 
     control.send('AWAY :from control');
     await settle(acct, [control, c]);
-    expect(isAway(acct.userId)).toBe(true);
+    expect(acct.nets.map(isAway)).toEqual([true, true]);
     expect(aways(a)).toEqual(['AWAY :from control']);
+    expect(aways(b)).toEqual(['AWAY :from control']);
     expect(awayReplies(control, marks[0])).toEqual([expect.stringMatching(/ 306 /)]);
     expect(awayReplies(c, marks[1])).toEqual([expect.stringMatching(/ 306 /)]);
     expect(control.lines.slice(marks[0]).filter((l) => commandOf(l) === 'NOTICE')).toEqual([]);
@@ -368,12 +469,22 @@ describe('a client’s AWAY', () => {
     await settle(acct, [control, c]);
     marks = [control.lines.length, c.lines.length];
 
+    // The client's network comes back with its socket down; the other stays away.
+    // Not every network is away now, so the control connection is back too.
     c.send('AWAY');
     await settle(acct, [control, c]);
-    expect(isAway(acct.userId)).toBe(false);
+    expect(acct.nets.map(isAway)).toEqual([false, true]);
     expect(awayReplies(c, marks[1])).toEqual([expect.stringMatching(/ 305 /)]);
     expect(awayReplies(control, marks[0])).toEqual([expect.stringMatching(/ 305 /)]);
     expect(aways(a)).toEqual(['AWAY :from control']);
+    expect(aways(b)).toEqual(['AWAY :from control']);
+    marks = [control.lines.length, c.lines.length];
+
+    control.send('AWAY');
+    await settle(acct, [control, c]);
+    expect(acct.nets.map(isAway)).toEqual([false, false]);
+    expect(awayReplies(control, marks[0])).toEqual([expect.stringMatching(/ 305 /)]);
+    expect(awayReplies(c, marks[1])).toEqual([]);
     expect(aways(b)).toEqual(['AWAY :from control', 'AWAY']);
   });
 });
@@ -387,7 +498,7 @@ describe('the AWAY Lurker sends', () => {
 
     // Lurker's AWAY goes out first, then a bare one the user typed. The network
     // answers in that order, and only the second answer is the user's to see.
-    ircManager.setAwayAll(acct.userId, 'lunch');
+    ircManager.setAway(acct.userId, 'all', 'lunch');
     a.conn.raw('AWAY', 'user');
     await settle(acct, []);
 
@@ -396,10 +507,10 @@ describe('the AWAY Lurker sends', () => {
     ]);
   });
 
-  it('sends the account’s away again when a network reconnects', async () => {
+  it('sends the network’s away again when it reconnects', async () => {
     const acct = await seedAccount();
     const [a] = acct.nets;
-    ircManager.setAwayAll(acct.userId, 'lunch');
+    ircManager.setAway(acct.userId, a.networkId, 'lunch');
     await settle(acct, []);
     const before = fakeOf(a.nick);
     const published = acct.events.length;
@@ -421,7 +532,7 @@ describe('the AWAY Lurker sends', () => {
   it('sends a message with a line break in it as one line', async () => {
     const acct = await seedAccount();
     const [a] = acct.nets;
-    ircManager.setAwayAll(acct.userId, 'out\nPRIVMSG #elsewhere :injected');
+    ircManager.setAway(acct.userId, 'all', 'out\nPRIVMSG #elsewhere :injected');
     await settle(acct, []);
 
     expect(aways(a)).toEqual(['AWAY :out PRIVMSG #elsewhere :injected']);
@@ -431,11 +542,11 @@ describe('the AWAY Lurker sends', () => {
   it('sends nothing for an away with nothing left to say once the line is made safe', async () => {
     const acct = await seedAccount();
     // A NUL survives the trim, and becomes a space the line then loses. A bare
-    // AWAY in its place would clear the networks' away while the account is away.
-    ircManager.setAwayAll(acct.userId, String.fromCharCode(0));
+    // AWAY in its place would clear the networks' away while they're away.
+    ircManager.setAway(acct.userId, 'all', String.fromCharCode(0));
     await settle(acct, []);
 
-    expect(isAway(acct.userId)).toBe(true);
+    expect(acct.nets.map(isAway)).toEqual([true, true]);
     expect(acct.nets.map(aways)).toEqual([[], []]);
   });
 });
@@ -449,9 +560,9 @@ describe('draft/pre-away', () => {
     expect(ls.replace(/^.* :/, '').split(' ')).toContain('draft/pre-away');
   });
 
-  it('takes goguma’s AWAY * before CAP END, and leaves the account and auto-away alone', async () => {
+  it('takes goguma’s AWAY * before CAP END, and leaves the networks and auto-away alone', async () => {
     const acct = await seedAccount();
-    ircManager.setAwayAll(acct.userId, 'afk', { autoSet: true });
+    ircManager.setAway(acct.userId, 'all', 'afk', { autoSet: true });
 
     // goguma's background sync, as it connects.
     const sync = await attach(acct, 'neta', {
@@ -466,16 +577,14 @@ describe('draft/pre-away', () => {
     expect(reply).toBeLessThan(sync.lines.findIndex((l) => commandOf(l) === '001'));
     expect(awayReplies(sync)).toHaveLength(1);
     // It isn't the user, so the auto-away it found stays, and no `*` goes out.
-    expect(getUserAwayState(acct.userId)).toMatchObject({
-      away_message: 'afk',
-      back_datetime: null,
-      auto_set: 1,
-    });
+    for (const net of acct.nets) {
+      expect(rowOf(net)).toMatchObject({ away_message: 'afk', back_datetime: null, auto_set: 1 });
+    }
     expect(acct.nets.map(aways)).toEqual([['AWAY :afk'], ['AWAY :afk']]);
 
-    // A client that is the user brings the account back.
+    // A client that is the user brings every network back.
     await attach(acct, 'netb');
-    expect(isAway(acct.userId)).toBe(false);
+    expect(acct.nets.map(isAway)).toEqual([false, false]);
   });
 
   it('takes AWAY * after registration from a client without the cap', async () => {
@@ -489,25 +598,25 @@ describe('draft/pre-away', () => {
     expect(awayReplies(c, mark)).toEqual([expect.stringMatching(/ 306 /)]);
 
     // Nothing counts as the user now, so auto-away comes, with its own message.
-    await until(() => isAway(acct.userId), 2000, 'auto-away');
-    const row = getUserAwayState(acct.userId)!;
+    await until(() => acct.nets.every(isAway), 2000, 'auto-away');
+    const row = rowOf(acct.nets[0])!;
     expect(row.auto_set).toBe(1);
     expect(row.away_message).toMatch(/^afk since /);
     expect(acct.nets.flatMap(aways).filter((l) => l.endsWith('*'))).toEqual([]);
   });
 
-  it('applies an AWAY sent before registration once the account is known', async () => {
+  it('applies an AWAY sent before registration once the network is known', async () => {
     const acct = await seedAccount();
     const c = await attach(acct, 'neta', { before: ['AWAY :early'] });
     await settle(acct, [c]);
     // One 306: its reply. The burst doesn't repeat it.
     expect(awayReplies(c)).toHaveLength(1);
-    expect(getUserAwayState(acct.userId)).toMatchObject({
+    expect(rowOf(acct.nets[0])).toMatchObject({
       away_message: 'early',
       back_datetime: null,
       auto_set: 0,
     });
-    expect(acct.nets.map(aways)).toEqual([['AWAY :early'], ['AWAY :early']]);
+    expect(acct.nets.map(aways)).toEqual([['AWAY :early'], []]);
   });
 });
 
@@ -515,14 +624,14 @@ describe('auto-away', () => {
   it('is held off by an attached client, and starts when the last one goes', async () => {
     const acct = await seedAccount();
     fastAutoAway(acct);
-    ircManager.setAwayAll(acct.userId, 'afk', { autoSet: true });
+    ircManager.setAway(acct.userId, 'all', 'afk', { autoSet: true });
 
     const c = await attach(acct, 'neta');
-    expect(isAway(acct.userId)).toBe(false);
+    expect(acct.nets.map(isAway)).toEqual([false, false]);
 
     c.close();
-    await until(() => isAway(acct.userId), 2000, 'auto-away');
-    expect(getUserAwayState(acct.userId)?.auto_set).toBe(1);
+    await until(() => acct.nets.every(isAway), 2000, 'auto-away');
+    expect(acct.nets.map((net) => rowOf(net)?.auto_set)).toEqual([1, 1]);
   });
 
   it('isn’t held off by a control connection or an AWAY * client', async () => {
@@ -530,8 +639,8 @@ describe('auto-away', () => {
     fastAutoAway(acct);
     await attach(acct, null);
     await attach(acct, 'neta', { caps: 'sasl draft/pre-away', before: ['AWAY *'] });
-    await until(() => isAway(acct.userId), 2000, 'auto-away');
-    expect(getUserAwayState(acct.userId)?.auto_set).toBe(1);
+    await until(() => acct.nets.every(isAway), 2000, 'auto-away');
+    expect(acct.nets.map((net) => rowOf(net)?.auto_set)).toEqual([1, 1]);
   });
 
   it('doesn’t come for an account paused while its clients were attached', async () => {
@@ -544,17 +653,48 @@ describe('auto-away', () => {
     ircManager.suspendUser(acct.userId);
     // Well past the delay.
     await new Promise((resolve) => setTimeout(resolve, 250));
-    expect(isAway(acct.userId)).toBe(false);
+    expect(acct.nets.map(isAway)).toEqual([false, false]);
   });
 
   it('never replaces an away already set', async () => {
     const acct = await seedAccount();
-    ircManager.setAwayAll(acct.userId, 'afk since earlier', { autoSet: true });
-    expect(ircManager.setAwayAll(acct.userId, 'afk since later', { autoSet: true })).toBe(0);
-    expect(getUserAwayState(acct.userId)?.away_message).toBe('afk since earlier');
+    const [a] = acct.nets;
+    ircManager.setAway(acct.userId, 'all', 'afk since earlier', { autoSet: true });
+    expect(ircManager.setAway(acct.userId, 'all', 'afk since later', { autoSet: true })).toBe(0);
+    expect(rowOf(a)?.away_message).toBe('afk since earlier');
 
-    ircManager.setAwayAll(acct.userId, 'lunch');
-    expect(ircManager.setAwayAll(acct.userId, 'afk', { autoSet: true })).toBe(0);
-    expect(getUserAwayState(acct.userId)).toMatchObject({ away_message: 'lunch', auto_set: 0 });
+    ircManager.setAway(acct.userId, a.networkId, 'lunch');
+    expect(ircManager.setAway(acct.userId, 'all', 'afk', { autoSet: true })).toBe(0);
+    expect(rowOf(a)).toMatchObject({ away_message: 'lunch', auto_set: 0 });
+  });
+
+  it('skips a network set away by hand, and auto-back leaves it away', async () => {
+    const acct = await seedAccount();
+    const [a, b] = acct.nets;
+    ircManager.setAway(acct.userId, a.networkId, 'lunch');
+
+    expect(ircManager.setAway(acct.userId, 'all', 'afk', { autoSet: true })).toBe(1);
+    expect(rowOf(a)).toMatchObject({ away_message: 'lunch', auto_set: 0 });
+    expect(rowOf(b)).toMatchObject({ away_message: 'afk', auto_set: 1 });
+
+    expect(ircManager.clearAway(acct.userId, 'all', { autoSet: true })).toBe(1);
+    expect(acct.nets.map(isAway)).toEqual([true, false]);
+    expect(rowOf(a)?.away_message).toBe('lunch');
+  });
+});
+
+describe('resolveAwayScope', () => {
+  it('is the typed-on network unless -all, or the setting, says every network', async () => {
+    const acct = await seedAccount();
+    const { resolveAwayScope } = await import('./ircManager.js');
+    const [a] = acct.nets;
+    expect(resolveAwayScope(acct.userId, a.networkId)).toBe(a.networkId);
+    expect(resolveAwayScope(acct.userId, a.networkId, true)).toBe('all');
+    // An older app, or luir, names no network.
+    expect(resolveAwayScope(acct.userId, null)).toBe('all');
+
+    settings.setUserSetting(acct.userId, 'away.all_networks', true);
+    expect(resolveAwayScope(acct.userId, a.networkId)).toBe('all');
+    expect(resolveAwayScope(acct.userId, a.networkId, false)).toBe(a.networkId);
   });
 });

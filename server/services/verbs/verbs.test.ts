@@ -845,12 +845,28 @@ describe('agent control verbs', () => {
   });
 
   describe('set_away', () => {
-    it('is user-wide, reports state, and needs no connection', () => {
+    it('is every network without a networkId, reports state, and needs no connection', () => {
       expect(callVerb('set_away', rwCtx(owner.id), { message: 'brb' })).toEqual({
         ok: true,
         away: true,
       });
       expect(callVerb('set_away', rwCtx(owner.id), {})).toEqual({ ok: true, away: false });
+    });
+
+    it('sets one network with a networkId, and refuses one the user doesn’t own', async () => {
+      const { getNetworkAwayState, isAwayRow } = await import('../../db/networkAwayState.js');
+      expect(
+        callVerb('set_away', rwCtx(owner.id), { networkId: net.id, message: 'here only' }),
+      ).toEqual({ ok: true, away: true });
+      expect(isAwayRow(getNetworkAwayState(net.id))).toBe(true);
+      expect(callVerb('set_away', rwCtx(owner.id), { networkId: net.id })).toEqual({
+        ok: true,
+        away: false,
+      });
+      expect(isAwayRow(getNetworkAwayState(net.id))).toBe(false);
+      expect(() =>
+        callVerb('set_away', rwCtx(owner.id), { networkId: 999999, message: 'nope' }),
+      ).toThrow('unknown network');
     });
   });
 
@@ -1257,8 +1273,8 @@ describe('agent control verbs', () => {
     });
 
     it('rejects an injected away message', () => {
-      // set_away is user-wide, so this would have gone out on EVERY connected
-      // network at once.
+      // Without a networkId, set_away is every network, so this would have gone
+      // out on EVERY connected network at once.
       expect(callVerb('set_away', rwCtx(owner.id), { message: 'brb\r\nJOIN #evil' })).toEqual({
         ok: false,
         error: 'message-must-be-single-line',

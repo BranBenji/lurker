@@ -221,6 +221,7 @@ import { applySpoilerMarkup } from '../utils/spoilerMarkup.js';
 import { buildNickCandidates } from '../utils/nickCompletion.js';
 import { buildChannelCandidates } from '../utils/channelCompletion.js';
 import { ensureChannelPrefix } from '../utils/channelTarget.js';
+import { parseAwayFlag } from '../utils/awayFlag.js';
 import {
   findActiveShortcode,
   findCompletedShortcode,
@@ -2576,8 +2577,9 @@ const COMMANDS_LINES = [
   '  /close                 — close current buffer (parts if joined)',
   '  /clear [off]           — hide buffer up to now (off = undo, show again)',
   '  /retention [n|off|default] — per-buffer history cap (no arg = show current)',
-  '  /away [message]        — set away across every network (no arg clears)',
-  '  /back                  — clear away',
+  '  /away [-all|-one] [msg] — set away (no msg clears)',
+  '  /back [-all|-one]      — clear away',
+  '                           -all: every network; -one: just this one',
   '  /whois <nick>          — query user info (renders in server buffer)',
   '  /ctcp <nick> <type>    — CTCP query (VERSION/PING/TIME/CLIENTINFO/SOURCE)',
   '  /ping [nick]           — CTCP ping a user for round-trip latency',
@@ -3514,8 +3516,8 @@ function handleCommand(line: string, networkId: number | null, target: string): 
   const verb = cmd.toLowerCase();
 
   // Network-agnostic commands act on global / user-wide state (the local command
-  // cheatsheet, the cross-network away flag, the per-user ignore list), so they
-  // run whether or not a network is active — including from the system buffer.
+  // cheatsheet, away on every network, the per-user ignore list), so they run
+  // whether or not a network is active — including from the system buffer.
   // Handled before the network gate, which then narrows networkId to a number
   // for the switch below.
   switch (verb) {
@@ -3523,11 +3525,29 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       for (const commandLine of COMMANDS_LINES) localInfo(networkId, target, commandLine);
       return true;
     case 'away':
-      // Empty arg → clear away. User-scoped (applies across every connection),
-      // so it carries no networkId.
-      return sendOrToast({ type: 'away', message: argLine }, line);
-    case 'back':
-      return sendOrToast({ type: 'back' }, line);
+    case 'back': {
+      // The network it's typed on, which the server widens to every network for
+      // -all or the away.all_networks setting (#994). From the system buffer
+      // there's no network, so it's every network. Empty message → clear away.
+      const { all, rest } = parseAwayFlag(argLine);
+      if (all === false && networkId == null) {
+        localInfo(
+          networkId,
+          target,
+          `/${verb} -one: there's no network here. Run it in a network's buffer.`,
+        );
+        return true;
+      }
+      return sendOrToast(
+        {
+          type: verb,
+          ...(verb === 'away' ? { message: rest } : {}),
+          ...(networkId != null ? { networkId } : {}),
+          ...(all !== undefined ? { all } : {}),
+        },
+        line,
+      );
+    }
     case 'ignore':
       return runIgnore(argLine, networkId, target);
     case 'unignore':

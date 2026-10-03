@@ -20,7 +20,10 @@ If you know the command, you never need to reach for the mouse.
 - `/help` — list available commands.
 - `/network` — view and manage your network connections.
 - `/set`, `/get` — read and change settings from the keyboard.
-- `/away` — set your away status (applies to every connection).
+- `/away [message]` — set your away status on the current network; `/back` (or
+  `/away` with no message) clears it. Add `-all` for every network. The **Scope
+  away to all networks by default** setting flips this, and `-one` then limits it
+  to the current network.
 
 ## Reference
 

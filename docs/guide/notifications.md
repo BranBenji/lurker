@@ -21,7 +21,8 @@ How Lurker keeps you informed across all your devices.
 
 - Auto-away when no client is in front of you and no IRC client is attached through
   the bouncer, and automatic return. A client's background connection that sends
-  `AWAY *` doesn't count.
+  `AWAY *` doesn't count. A network you set away yourself keeps that away: auto-away
+  skips it, and returning doesn't clear it.
 
 ## See also
 
