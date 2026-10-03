@@ -14,7 +14,7 @@ Lurker is a beautiful self-hosted IRC bouncer and client with a retro aesthetic 
 # Features
 
 - **Always-on and multi-user.** Each invited user connects to their own set of IRC networks, and Lurker stays connected when they're away. Admins can restrict which networks users can connect to, and make channel recommendations for newcomers.
-- **Modern conveniences.** Peer presence, automatic nick regain, join/part summarization, smart nickname completion, cross-client message drafts, bookmark messages, user notes, reactions, replies, and more.
+- **Modern conveniences.** Peer presence, automatic nick regain, join/part summarization, smart nickname completion, cross-client message drafts, bookmarks, user notes, a powerful highlight & ignore system, reactions, replies, and more.
 - **Full search.** Search your message history, filter by nick, channel, or network; and jump to any message instantly, no matter how old it is.
 - **Image uploads.** Paste an image into the input box, and Lurker optimizes it, anonymizes it, and uploads it to local storage, S3, Zipline, Chibisafe, or external services like x0.at or catbox.moe.
 - **Customizable UI.** The beautiful retro terminal-style PWA interface has 40+ settings to customize it how you want.
@@ -51,7 +51,7 @@ Lurker is a beautiful self-hosted IRC bouncer and client with a retro aesthetic 
 
 ## Quick Start
 
-Docker is the officially supported way to run Lurker. Get started by downloading the example `docker-compose.yml` file.
+Docker is the officially supported way to run Lurker*. Get started by downloading the example `docker-compose.yml` file.
 
 ```bash
 curl -O https://raw.githubusercontent.com/amiantos/lurker/main/docker-compose.yml
@@ -59,6 +59,8 @@ docker compose up -d
 ```
 
 Then open <http://localhost:8015> and create your admin account.
+
+<small>* You can [run it without Docker](https://github.com/amiantos/lurker/blob/main/docs/MIGRATION_ENGINE.md#running-without-docker-running-without-docker), if you must.</small>
 
 ## Next Steps
 
