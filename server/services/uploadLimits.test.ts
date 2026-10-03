@@ -113,6 +113,49 @@ describe('effectiveUploadCapBytes', () => {
   });
 });
 
+// #872: the longest edge the pipeline keeps, resolved in ONE place so the number a
+// client is told and the maxDim sharp is handed can't disagree.
+describe('staticImageMaxDimension', () => {
+  it("is the user's own setting when the uploader bakes no policy", () => {
+    expect(limits.staticImageMaxDimension(null, { 'uploads.image.max_dimension': 1024 })).toBe(
+      1024,
+    );
+    expect(limits.staticImageMaxDimension({}, { 'uploads.image.max_dimension': 1024 })).toBe(1024);
+  });
+
+  // The hosted trap: on a cell the operator's value wins and the tenant's is
+  // ignored — the tenant's being exactly what a client reading settings would see.
+  it("lets an operator-baked policy override the user's setting, in either direction", () => {
+    const settings = { 'uploads.image.max_dimension': 8192 };
+    expect(limits.staticImageMaxDimension({ maxDim: 512 }, settings)).toBe(512);
+    expect(
+      limits.staticImageMaxDimension({ maxDim: 4096 }, { 'uploads.image.max_dimension': 1024 }),
+    ).toBe(4096);
+  });
+
+  it('falls back to the registry default, not a second hardcoded one', async () => {
+    const { getOption } = await import('./settingsRegistry.js');
+    expect(limits.staticImageMaxDimension(null, { 'uploads.image.max_dimension': 'junk' })).toBe(
+      getOption('uploads.image.max_dimension')!.default,
+    );
+  });
+});
+
+describe('advertisedUploadLimits', () => {
+  it('carries the cap and the dimension the pipeline would use for this user', () => {
+    setUserSetting(user.id, 'uploads.image.max_upload_mb', 30);
+    setUserSetting(user.id, 'uploads.image.max_dimension', 1600);
+    expect(limits.advertisedUploadLimits(user.id, false)).toEqual({
+      maxUploadBytes: 30 * MIB,
+      maxStaticImageDimension: 1600,
+    });
+  });
+
+  it('answers for a user with no settings row at all (registry default applies)', () => {
+    expect(limits.advertisedUploadLimits(fresh.id, true).maxStaticImageDimension).toBe(2048);
+  });
+});
+
 // #649: a caller with its own, larger limit (imports allow 500 MB) needs the raw
 // declaration. transportCapBytes() reports "unset" as the upload path's 200 MB
 // hard cap, so reusing it would have silently cost imports 300 MB of headroom.

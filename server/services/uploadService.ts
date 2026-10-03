@@ -18,6 +18,7 @@ import {
   userCapBytes,
   clampUploadCapBytes,
   formatCapMb,
+  staticImageMaxDimension,
 } from './uploadLimits.js';
 import * as imagePipeline from './imagePipeline.js';
 import { thumbnailFormat } from './thumbnailFormat.js';
@@ -225,7 +226,7 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
     let optimized: imagePipeline.OptimizeResult;
     try {
       optimized = await imagePipeline.optimize(input.tempPath, {
-        maxDim: resolved.policy.maxDim ?? (Number(settings['uploads.image.max_dimension']) || 2048),
+        maxDim: staticImageMaxDimension(resolved.policy, settings),
         quality,
         format,
         // SVG is rejected only where the resolved uploader's policy says so

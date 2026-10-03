@@ -30,7 +30,7 @@ import ignoreRulesService from './ignoreRulesService.js';
 import { parseIgnoreInput, maskToRuleInput } from './ignoreRuleInput.js';
 import { findSession } from '../db/sessions.js';
 import { findUserById, touchUserLastSeen } from '../db/users.js';
-import { effectiveUploadCapBytes } from './uploadLimits.js';
+import { advertisedUploadLimits } from './uploadLimits.js';
 import {
   listMessages,
   listMessagesCounted,
@@ -2406,15 +2406,18 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // already has a delivery path right here, so recompute rather than leaving
     // them compressing against a stale number until they next reconnect (lower it
     // and every upload 413s; raise it and they over-compress for nothing).
-    const touchedCap = changes && 'uploads.image.max_upload_mb' in changes;
+    // #872: the advertised image dimension rides the same way, for the same
+    // reason. Either key re-sends both — they're resolved together, and each is
+    // an absolute value a client can simply re-apply.
+    const touchedLimits =
+      changes &&
+      ('uploads.image.max_upload_mb' in changes || 'uploads.image.max_dimension' in changes);
     fanOut(userId, {
       kind: 'settings',
       changes: changes || {},
       ...(Array.isArray(resets) && resets.length ? { resets } : {}),
-      ...(touchedCap
-        ? {
-            maxUploadBytes: effectiveUploadCapBytes(userId, findUserById(userId)?.role === 'admin'),
-          }
+      ...(touchedLimits
+        ? advertisedUploadLimits(userId, findUserById(userId)?.role === 'admin')
         : {}),
     });
     // If the user toggled / shortened auto-away while nothing counts as them
@@ -2679,7 +2682,13 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // number, and hardcoded a Cloudflare-safe guess until it existed. Advisory: it
     // is resolved for the user's DEFAULT uploader at connect time, so a per-upload
     // override or an operator change mid-session is still settled by the 413.
-    const maxUploadBytes = effectiveUploadCapBytes(userId, findUserById(userId)?.role === 'admin');
+    // #872: `maxStaticImageDimension` rides beside it — the longest edge the
+    // pipeline keeps of a static image, so a phone can shrink a 48MP photo before
+    // sending it instead of uploading ~100 MB to produce a ~300 KB WebP.
+    const { maxUploadBytes, maxStaticImageDimension } = advertisedUploadLimits(
+      userId,
+      findUserById(userId)?.role === 'admin',
+    );
     // Global ignore rules (network_id NULL) aren't tied to any one network blob,
     // so they ride alongside the per-network snapshot as their own field (#350).
     send(ws, {
@@ -2689,6 +2698,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       // server speaks and can degrade knowingly.
       protocolVersion: PROTOCOL_VERSION,
       maxUploadBytes,
+      maxStaticImageDimension,
       networks,
       globalIgnores: ircManager.listGlobalIgnoresFor(userId),
       ...(isFreshConnect ? { cursor } : {}),

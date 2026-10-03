@@ -243,6 +243,15 @@ describe('POST /api/uploads (node edition)', () => {
     });
   });
 
+  // #872: the advertised dimension must be the one the pipeline just used above —
+  // the operator's 512 — not the tenant's 8192, which is what a client reading the
+  // settings registry would have shrunk to.
+  it("advertises the operator's image dimension, not the tenant setting", async () => {
+    const res = await agent.get('/api/uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.maxStaticImageDimension).toBe(512);
+  });
+
   it('honors a tenant who forces jpeg, even in node edition', async () => {
     // Imported here, not at module scope: db/settings.js has to load against the
     // test DB beforeAll installs (same reason beforeAll does it).
