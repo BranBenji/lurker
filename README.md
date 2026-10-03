@@ -51,7 +51,7 @@ Lurker is a beautiful self-hosted IRC bouncer and client with a retro aesthetic 
 
 ## Quick Start
 
-Docker is the officially supported way to run Lurker*. Get started by downloading the example `docker-compose.yml` file.
+Docker is the officially supported way to run Lurker[^1]. Get started by downloading the example `docker-compose.yml` file.
 
 ```bash
 curl -O https://raw.githubusercontent.com/amiantos/lurker/main/docker-compose.yml
@@ -60,7 +60,7 @@ docker compose up -d
 
 Then open <http://localhost:8015> and create your admin account.
 
-<small>* You can [run it without Docker](https://github.com/amiantos/lurker/blob/main/docs/MIGRATION_ENGINE.md#running-without-docker-running-without-docker), if you must.</small>
+[^1]: You can [run it without Docker](https://github.com/amiantos/lurker/blob/main/docs/MIGRATION_ENGINE.md#running-without-docker-running-without-docker), if you must.
 
 ## Next Steps
 
