@@ -210,9 +210,11 @@ export interface AdvertisedUploadLimits {
  * Both numbers a client sizes an upload against, resolved for the user's DEFAULT
  * uploader in one pass — the snapshot and `GET /api/uploads` carry exactly this.
  * Advisory, like the cap alone: a per-upload `uploaderId` override with a
- * different policy is still settled server-side. A client that pre-shrinks to the
- * dimension can only be wrong in the harmless direction (a smaller image than it
- * had to send).
+ * different policy is still settled server-side. The two err differently under an
+ * override, though. Compressing to the default's cap only costs bandwidth, but an
+ * override may keep MORE pixels than the default's dimension, and pixels a client
+ * shrank away can't be recovered — so a client sending an override should upload
+ * images as-is (CLIENT_PROTOCOL.md says so).
  */
 export function advertisedUploadLimits(userId: number, isAdmin: boolean): AdvertisedUploadLimits {
   const policy = defaultUploaderPolicy(userId, isAdmin);
