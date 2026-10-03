@@ -45,10 +45,11 @@
 //   (replyRouter.ts, #931).
 // - Detaching (client QUIT / socket drop) never touches the upstream
 //   connection; Lurker stays online exactly like ZNC.
-// - Away is the account's, as in the web and iOS apps: a client's AWAY sets or
-//   clears it on every network, and every client hears the change as a 305 or
-//   306. `AWAY *` (draft/pre-away) marks a connection that isn't the user, and
-//   any other attached client holds auto-away off (presence.ts).
+// - Away is per network (#994), as in ZNC and soju: a client's AWAY sets or
+//   clears it on the network it's attached to, and that network's clients hear
+//   the change as a 305 or 306. A control connection's AWAY covers every
+//   network. `AWAY *` (draft/pre-away) marks a connection that isn't the user,
+//   and any other attached client holds auto-away off (presence.ts).
 
 import net from 'net';
 import tls from 'tls';
