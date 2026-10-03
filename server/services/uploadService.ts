@@ -15,9 +15,9 @@ import { randomId } from './uploadProviders/objectKey.js';
 import { bufferSource, fileSource, type UploadSource } from './uploadProviders/source.js';
 import {
   effectiveSettings,
-  userCapBytes,
-  clampUploadCapBytes,
+  capBytesFor,
   formatCapMb,
+  staticImageMaxDimension,
 } from './uploadLimits.js';
 import * as imagePipeline from './imagePipeline.js';
 import { thumbnailFormat } from './thumbnailFormat.js';
@@ -142,10 +142,7 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
   // instance's transport ceiling last (#627), so a body the proxy in front of
   // us would have rejected anyway is refused with a real 413 rather than an
   // edge-level connection reset.
-  const policyMb = resolved.policy.maxMb;
-  const maxBytes = clampUploadCapBytes(
-    policyMb == null ? userCapBytes(settings) : policyMb * 1024 * 1024,
-  );
+  const maxBytes = capBytesFor(resolved.policy, settings);
   if (input.size > maxBytes) {
     throw new UploadRequestError(413, `file exceeds ${formatCapMb(maxBytes)} MB`);
   }
@@ -225,7 +222,7 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
     let optimized: imagePipeline.OptimizeResult;
     try {
       optimized = await imagePipeline.optimize(input.tempPath, {
-        maxDim: resolved.policy.maxDim ?? (Number(settings['uploads.image.max_dimension']) || 2048),
+        maxDim: staticImageMaxDimension(resolved.policy, settings),
         quality,
         format,
         // SVG is rejected only where the resolved uploader's policy says so

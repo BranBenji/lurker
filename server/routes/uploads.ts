@@ -7,7 +7,11 @@ import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { requireAuth } from '../middleware/auth.js';
-import { effectiveUploadCapBytes, formatCapMb } from '../services/uploadLimits.js';
+import {
+  advertisedUploadLimits,
+  effectiveUploadCapBytes,
+  formatCapMb,
+} from '../services/uploadLimits.js';
 import { thumbnailFormat } from '../services/thumbnailFormat.js';
 import { driverIds } from '../services/uploadProviders/index.js';
 import { loadDriverForRef, deletableWith } from '../services/uploadProviders/resolve.js';
@@ -236,10 +240,11 @@ router.get('/', (req: Request, res: Response) => {
       return { ...item, favorite, can_delete, ...(thumb ? { thumbnail_url: thumb } : {}) };
     }),
     providers: driverIds,
-    // The same number the snapshot advertises (#627), repeated here so a
-    // REST-only client browsing its uploads doesn't need the WebSocket to learn
-    // what it may send. Single source of truth, so the two can't drift.
-    maxUploadBytes: effectiveUploadCapBytes(req.user!.id, req.user!.role === 'admin'),
+    // The same numbers the snapshot advertises (#627 cap, #872 static-image
+    // dimension), repeated here so a REST-only client browsing its uploads doesn't
+    // need the WebSocket to learn what it may send. Single source of truth, so the
+    // two can't drift.
+    ...advertisedUploadLimits(req.user!.id, req.user!.role === 'admin'),
   });
 });
 

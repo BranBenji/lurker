@@ -13,7 +13,7 @@
 // wsHub.upgrade.test.ts, because seeding networks and buffers to make the burst
 // interesting would change what those upgrade tests see on connect.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import http from 'http';
 import { WebSocket } from 'ws';
 import { setupTestDb } from '../test-utils/testApp.js';
@@ -198,46 +198,88 @@ describe('connect burst terminator (#635)', () => {
       deleteUserSetting(userId, 'uploads.image.max_upload_mb');
     }
   });
+
+  // #872: the image dimension rides beside the cap, for the same reason.
+  it('carries the effective static-image dimension on the snapshot frame', async () => {
+    const { setUserSetting } = await import('../db/settings.js');
+    setUserSetting(userId, 'uploads.image.max_dimension', 1536);
+    try {
+      const [snapshot] = (await collectBurst()) as unknown as [
+        { maxStaticImageDimension?: number },
+      ];
+      expect(snapshot.maxStaticImageDimension).toBe(1536);
+    } finally {
+      const { deleteUserSetting } = await import('../db/settings.js');
+      deleteUserSetting(userId, 'uploads.image.max_dimension');
+    }
+  });
 });
 
 // #627: the snapshot's number is only current until the user edits their cap.
 // Their own edit already fans out a `settings` frame, so the recomputed cap rides
 // it rather than leaving them compressing against a stale value until reconnect.
-describe('upload cap on the settings frame (#627)', () => {
-  it('re-sends the effective cap when the user changes their own cap', async () => {
-    const settingsService = (await import('./settingsService.js')).default;
-    const { deleteUserSetting } = await import('../db/settings.js');
-    const { token } = createSession(userId);
-
-    const frame = await new Promise<Record<string, unknown>>((resolve, reject) => {
-      const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
-      const timer = setTimeout(() => {
-        ws.close();
-        reject(new Error('no settings frame arrived'));
-      }, 3000);
-      ws.on('message', (raw) => {
-        const f = JSON.parse(raw.toString()) as Record<string, unknown>;
-        // Change the setting only once the connect burst is done, so the frame
-        // we're waiting for can't be confused with anything in the burst.
-        if (f.kind === 'backlog-complete') {
-          settingsService.update(userId, { 'uploads.image.max_upload_mb': 7 });
-          return;
-        }
-        if (f.kind !== 'settings') return;
-        clearTimeout(timer);
-        ws.close();
-        resolve(f);
-      });
-      ws.on('error', (err) => {
-        clearTimeout(timer);
-        reject(err);
-      });
+// #872: the image dimension rides it the same way.
+//
+// Connect, wait out the burst, apply `changes`, and hand back the settings frame
+// they fan out. Changing the setting only once the burst is done means the frame
+// we're waiting for can't be confused with anything in the burst.
+async function settingsFrameAfter(
+  changes: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const settingsService = (await import('./settingsService.js')).default;
+  const { token } = createSession(userId);
+  return new Promise<Record<string, unknown>>((resolve, reject) => {
+    const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
+    const timer = setTimeout(() => {
+      ws.close();
+      reject(new Error('no settings frame arrived'));
+    }, 3000);
+    let applied = false;
+    ws.on('message', (raw) => {
+      const f = JSON.parse(raw.toString()) as Record<string, unknown>;
+      if (f.kind === 'backlog-complete' && !applied) {
+        applied = true;
+        settingsService.update(userId, changes);
+        return;
+      }
+      if (f.kind !== 'settings') return;
+      clearTimeout(timer);
+      ws.close();
+      resolve(f);
     });
+    ws.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+}
 
-    try {
-      expect(frame.maxUploadBytes).toBe(7 * 1024 * 1024);
-    } finally {
-      deleteUserSetting(userId, 'uploads.image.max_upload_mb');
-    }
+describe('upload limits on the settings frame (#627, #872)', () => {
+  afterEach(async () => {
+    const { deleteUserSetting } = await import('../db/settings.js');
+    deleteUserSetting(userId, 'uploads.image.max_upload_mb');
+    deleteUserSetting(userId, 'uploads.image.max_dimension');
+    deleteUserSetting(userId, 'uploads.image.quality');
+  });
+
+  it('re-sends the effective cap when the user changes their own cap', async () => {
+    const frame = await settingsFrameAfter({ 'uploads.image.max_upload_mb': 7 });
+    expect(frame.maxUploadBytes).toBe(7 * 1024 * 1024);
+  });
+
+  it('re-sends the image dimension when the user changes it', async () => {
+    const frame = await settingsFrameAfter({ 'uploads.image.max_dimension': 1024 });
+    expect(frame.maxStaticImageDimension).toBe(1024);
+    // Resolved together, so the cap comes along — an absolute value, harmless to re-apply.
+    expect(frame.maxUploadBytes).toEqual(expect.any(Number));
+  });
+
+  // Absent on the settings frame means "unchanged" — a client patches only what
+  // arrives. Sending them on every unrelated change would be noise, and a client
+  // that treated the frame as authoritative would have nothing to tell them apart.
+  it('omits both on an unrelated settings change', async () => {
+    const frame = await settingsFrameAfter({ 'uploads.image.quality': 70 });
+    expect(frame).not.toHaveProperty('maxUploadBytes');
+    expect(frame).not.toHaveProperty('maxStaticImageDimension');
   });
 });

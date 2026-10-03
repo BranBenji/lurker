@@ -683,6 +683,23 @@ describe('GET /api/uploads — advertised size cap', () => {
   });
 });
 
+// #872: the longest edge the pipeline keeps, so a client can shrink a 48MP photo
+// instead of uploading ~100 MB to produce a ~300 KB WebP.
+describe('GET /api/uploads — advertised image dimension', () => {
+  afterEach(async () => {
+    const { deleteUserSetting } = await import('../db/settings.js');
+    deleteUserSetting(user.id, 'uploads.image.max_dimension');
+  });
+
+  it("advertises the user's effective static-image dimension", async () => {
+    const { setUserSetting } = await import('../db/settings.js');
+    setUserSetting(user.id, 'uploads.image.max_dimension', 1280);
+    const res = await agent.get('/api/uploads');
+    expect(res.status).toBe(200);
+    expect(res.body.maxStaticImageDimension).toBe(1280);
+  });
+});
+
 describe('POST /api/uploads — transport ceiling (#627)', () => {
   afterEach(async () => {
     delete process.env.LURKER_MAX_UPLOAD_MB;

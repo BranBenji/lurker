@@ -28,8 +28,8 @@
 // ceiling's headroom below can be expressed honestly.
 
 import { getUserSettings } from '../db/settings.js';
-import { defaultsAsObject } from './settingsRegistry.js';
-import { resolveUploader } from './uploadProviders/resolve.js';
+import { defaultsAsObject, getOption } from './settingsRegistry.js';
+import { resolveUploader, type UploaderPolicy } from './uploadProviders/resolve.js';
 
 /** The registry's own ceiling; a per-user cap can't exceed it, so neither can multer. */
 export const MAX_CAP_MB = 200;
@@ -135,26 +135,94 @@ export function clampUploadCapBytes(bytes: number): number {
   return Math.max(1, Math.floor(Math.min(bytes, transportCapBytes(), MAX_CAP_BYTES)));
 }
 
+/** The policy of the user's DEFAULT uploader, or null when none is usable. An
+ *  unusable uploader is not an error here: "how big may I upload" has an answer
+ *  even when the answer to "where does it go" is currently 400/503 — falling back
+ *  to the user's own settings keeps this from being a second failure surface. */
+function defaultUploaderPolicy(userId: number, isAdmin: boolean): UploaderPolicy | null {
+  try {
+    return resolveUploader({ userId, isAdmin, requestedId: null }).policy;
+  } catch {
+    return null;
+  }
+}
+
+/** The cap for a resolved uploader's policy and the user's effective settings: the
+ *  operator-baked policy wins, else the user's own setting, clamped to the instance
+ *  ceilings. The handler's 413 (the actually-resolved uploader) and the advertised
+ *  number (the default one) both come through here. */
+export function capBytesFor(
+  policy: Pick<UploaderPolicy, 'maxMb'> | null,
+  settings: Record<string, unknown>,
+): number {
+  const policyMb = policy?.maxMb;
+  return clampUploadCapBytes(policyMb == null ? userCapBytes(settings) : policyMb * 1024 * 1024);
+}
+
 /**
  * The effective cap for this user, in bytes — what a client should size media to
  * fit and what the server will actually accept. Resolves the user's DEFAULT
  * uploader: a per-upload `uploaderId` override with a tighter policy cap is caught
  * by the handler's own re-check, which is the number that ends up in the 413.
- *
- * An unusable uploader is not an error here. "How big may I upload" has an answer
- * even when the answer to "where does it go" is currently 400/503 — reporting the
- * user's own clamped cap keeps this from being a second failure surface.
  */
 export function effectiveUploadCapBytes(userId: number, isAdmin: boolean): number {
-  const fallback = userCapBytes(effectiveSettings(userId));
-  let cap = fallback;
-  try {
-    const policyMb = resolveUploader({ userId, isAdmin, requestedId: null }).policy.maxMb;
-    cap = policyMb == null ? fallback : policyMb * 1024 * 1024;
-  } catch {
-    // No usable uploader configured — fall through to the user's own cap.
-  }
-  return clampUploadCapBytes(cap);
+  return capBytesFor(defaultUploaderPolicy(userId, isAdmin), effectiveSettings(userId));
+}
+
+/**
+ * The longest edge, in pixels, the pipeline keeps of a STATIC image (#872) — the
+ * `maxDim` it hands sharp. The operator-baked policy wins (a hosted cell fills it
+ * from LURKER_NODE_UPLOAD_MAX_DIM), else the user's own setting. This is the ONE
+ * resolution of that number: the upload pipeline enforces it and the advertised
+ * `maxStaticImageDimension` reports it, so the two can't disagree the way a client
+ * reading the raw setting would (on a cell the tenant's value is ignored).
+ *
+ * Static only. Animated GIF/WebP/APNG bypass the resize and go up verbatim, and SVG
+ * is a vector passed through as-is — a client that shrank those would destroy them.
+ */
+export function staticImageMaxDimension(
+  policy: Pick<UploaderPolicy, 'maxDim'> | null,
+  settings: Record<string, unknown>,
+): number {
+  // Whole positive pixels or nothing: sharp rejects a resize to 0 or a fraction, and
+  // a client told 0 would be asked for an image with no pixels. The seed clamps the
+  // policy value, but resolve.ts accepts any finite number from the config row.
+  const usable = (v: unknown): number | null => {
+    const n = Math.floor(Number(v));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  // effectiveSettings() has already merged the registry default in; the last
+  // fallback only covers a stored value that isn't usable, and reads the same
+  // registry default rather than repeating it.
+  return (
+    usable(policy?.maxDim) ??
+    usable(settings['uploads.image.max_dimension']) ??
+    (getOption('uploads.image.max_dimension')?.default as number)
+  );
+}
+
+export interface AdvertisedUploadLimits {
+  maxUploadBytes: number;
+  maxStaticImageDimension: number;
+}
+
+/**
+ * Both numbers a client sizes an upload against, resolved for the user's DEFAULT
+ * uploader in one pass — the snapshot and `GET /api/uploads` carry exactly this.
+ * Advisory, like the cap alone: a per-upload `uploaderId` override with a
+ * different policy is still settled server-side. The two err differently under an
+ * override, though. Compressing to the default's cap only costs bandwidth, but an
+ * override may keep MORE pixels than the default's dimension, and pixels a client
+ * shrank away can't be recovered — so a client sending an override should upload
+ * images as-is (CLIENT_PROTOCOL.md says so).
+ */
+export function advertisedUploadLimits(userId: number, isAdmin: boolean): AdvertisedUploadLimits {
+  const policy = defaultUploaderPolicy(userId, isAdmin);
+  const settings = effectiveSettings(userId);
+  return {
+    maxUploadBytes: capBytesFor(policy, settings),
+    maxStaticImageDimension: staticImageMaxDimension(policy, settings),
+  };
 }
 
 /** The cap as a human-readable MB string for the 413 body. At most one decimal,
