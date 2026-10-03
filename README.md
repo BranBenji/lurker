@@ -9,17 +9,17 @@
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](LICENSE)
 [![IRC: #lurker](https://img.shields.io/badge/IRC-%23lurker%20on%20Libera.Chat-1459b8)](https://web.libera.chat/#lurker)
 
-Lurker is a beautiful self-hosted IRC client with a retro aesthetic and modern conveniences.
+Lurker is a beautiful self-hosted IRC bouncer and client with a retro aesthetic and modern conveniences.
 
 # Features
 
 - **Always-on and multi-user.** Each invited user connects to their own set of IRC networks, and Lurker stays connected when they're away. Admins can restrict which networks users can connect to, and make channel recommendations for newcomers.
-- **Modern conveniences.** Peer presence, automatic nick regain, join/part summarization, smart nickname completion, message drafts, saved messages, user notes, and more.
-- **Fully working search.** Search your message history, filter by nick, channel, or network; and jump to any message instantly, no matter how old it is.
-- **Image uploads.** Paste an image into the input box, and Lurker optimizes it, sanitizes it, and uploads it to local storage, S3, Zipline, Chibisafe, or external services like x0.at or catbox.moe.
+- **Modern conveniences.** Peer presence, automatic nick regain, join/part summarization, smart nickname completion, cross-client message drafts, bookmark messages, user notes, reactions, replies, and more.
+- **Full search.** Search your message history, filter by nick, channel, or network; and jump to any message instantly, no matter how old it is.
+- **Image uploads.** Paste an image into the input box, and Lurker optimizes it, anonymizes it, and uploads it to local storage, S3, Zipline, Chibisafe, or external services like x0.at or catbox.moe.
 - **Customizable UI.** The beautiful retro terminal-style PWA interface has 40+ settings to customize it how you want.
-- **Native apps.** Lurker has official native apps [for iOS](https://github.com/amiantos/lurker-ios) (in beta) and [for Android](https://github.com/amiantos/lurker-android) (in beta). There are also third-party clients such as [Spooky](https://github.com/JawshTheDark/lurker-android-upstream) (Android), and [luir](https://luir.org) (TUI), which bring their own flavor to Lurker.
-- **Built-in bouncer.** Don't want to use the Lurker clients? Then don't. Lurker has a best-in-class IRC bouncer built in, complete with `soju.im/bouncer-networks`, `soju.im/FILEHOST` support and more, so you can use any IRC client you want, like [clircs](https://github.com/rekkals/clircs), [Halloy](https://github.com/squidowl/halloy), [Goguma](https://codeberg.org/emersion/goguma), [HexDroid](https://github.com/boxlabss/hexdroid) and others.
+- **Native apps.** Lurker has official native apps [for iOS](https://github.com/amiantos/lurker-ios) and [for Android](https://github.com/amiantos/lurker-android). There are also third-party clients such as [Spooky](https://github.com/JawshTheDark/lurker-android-upstream) (Android), and [luir](https://luir.org) (TUI), which bring their own flavor to Lurker.
+- **Built-in bouncer.** Don't want to use the Lurker clients? Then don't. Lurker has a best-in-class IRC bouncer built in, complete with `soju.im/bouncer-networks`, `soju.im/FILEHOST` support and more, so you can use any IRC client you want, like [clircs](https://github.com/rekkals/clircs), [Halloy](https://github.com/squidowl/halloy), [Goguma](https://codeberg.org/emersion/goguma), [HexDroid](https://github.com/boxlabss/hexdroid) and many others.
 - **Inline link & media previews.** Links, images, _and_ videos get proper preview images in every client. Implemented as a separate container, to isolate malicious links from your users' data. (Optional, requires `lurker-previews` container.)
 - **Decoupled IRC connections.** Say goodbye to disconnect/reconnect floods when updating Lurker — a secondary container keeps the connections alive while the main service restarts. (Optional, requires `lurker-engine` container.)
 
@@ -27,11 +27,11 @@ Lurker is a beautiful self-hosted IRC client with a retro aesthetic and modern c
 
 <img src="docs/assets/screenshot.png" alt="Lurker IRC client screenshot" width="100%">
 
-# Screenshot (iOS)
+# Screenshots ([iOS](https://github.com/amiantos/lurker-ios))
 
 <img src="docs/assets/ios-screenshots.png" alt="Lurker IRC client screenshots on iOS" width="100%">
 
-# Screenshot (Android)
+# Screenshots ([Android](https://github.com/amiantos/lurker-android))
 
 <img src="docs/assets/android-screenshots.png" alt="Lurker IRC client screenshots on Android" width="100%">
 
