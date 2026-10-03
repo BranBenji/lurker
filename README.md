@@ -9,7 +9,7 @@
 [![License: MPL 2.0](https://img.shields.io/badge/License-MPL_2.0-brightgreen.svg)](LICENSE)
 [![IRC: #lurker](https://img.shields.io/badge/IRC-%23lurker%20on%20Libera.Chat-1459b8)](https://web.libera.chat/#lurker)
 
-Lurker is a beautiful self-hosted IRC bouncer and client with a retro aesthetic and modern conveniences.
+Lurker is a delightful self-hosted IRC bouncer and client with a retro aesthetic and modern conveniences.
 
 # Features
 
