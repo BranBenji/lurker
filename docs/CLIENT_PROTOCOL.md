@@ -1406,7 +1406,7 @@ frames never compresses against a stale number.
 `maxUploadBytes` — is the longest edge, in pixels, the server keeps of a
 **static** image. The pipeline downscales anything larger to fit, then re-encodes
 it, so a client may **shrink** a static image to this longest edge before
-uploading rather than send pixels the server will throw away (a 48 MP photo is
+uploading rather than send pixels the server will throw away (a 48 MP ProRAW is
 ~100 MB on the wire and ~300 KB once processed). Read this number, never the
 `uploads.image.max_dimension` setting: on a hosted instance the operator's limit
 overrides the user's, so the setting is wrong exactly where it matters.
@@ -1422,10 +1422,11 @@ overrides the user's, so the setting is wrong exactly where it matters.
   field to target.
 - **Absent means the server didn't say.** An older server never sends it; upload
   images as-is. Never substitute a default.
-- Advisory, like the cap: resolved for the **default** uploader, so a per-upload
-  `uploaderId` override may keep more or fewer pixels. Shrinking to it can only
-  err toward a smaller image than was needed. Re-sent on the `settings` frame
-  beside `maxUploadBytes` whenever the user changes either limit.
+- It describes the **default** uploader. A per-upload `uploaderId` override may
+  keep more pixels, and pixels shrunk away on the device are gone for good — so
+  when you send an override, upload the image as-is and let the server resize it.
+  Re-sent on the `settings` frame beside `maxUploadBytes` whenever the user
+  changes either limit.
 
 **Imports are capped separately.** `POST /api/imports` has its own, much larger
 limit (500 MB) and is **not** bound by the 200 MB upload ceiling — so

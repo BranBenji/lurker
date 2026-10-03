@@ -147,7 +147,14 @@ function defaultUploaderPolicy(userId: number, isAdmin: boolean): UploaderPolicy
   }
 }
 
-function capBytesFor(policy: UploaderPolicy | null, settings: Record<string, unknown>): number {
+/** The cap for a resolved uploader's policy and the user's effective settings: the
+ *  operator-baked policy wins, else the user's own setting, clamped to the instance
+ *  ceilings. The handler's 413 (the actually-resolved uploader) and the advertised
+ *  number (the default one) both come through here. */
+export function capBytesFor(
+  policy: Pick<UploaderPolicy, 'maxMb'> | null,
+  settings: Record<string, unknown>,
+): number {
   const policyMb = policy?.maxMb;
   return clampUploadCapBytes(policyMb == null ? userCapBytes(settings) : policyMb * 1024 * 1024);
 }
@@ -177,12 +184,21 @@ export function staticImageMaxDimension(
   policy: Pick<UploaderPolicy, 'maxDim'> | null,
   settings: Record<string, unknown>,
 ): number {
-  if (policy?.maxDim != null) return policy.maxDim;
-  // effectiveSettings() has already merged the registry default in; the fallback
-  // here only covers a stored value that isn't a number, and reads the same
+  // Whole positive pixels or nothing: sharp rejects a resize to 0 or a fraction, and
+  // a client told 0 would be asked for an image with no pixels. The seed clamps the
+  // policy value, but resolve.ts accepts any finite number from the config row.
+  const usable = (v: unknown): number | null => {
+    const n = Math.floor(Number(v));
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  // effectiveSettings() has already merged the registry default in; the last
+  // fallback only covers a stored value that isn't usable, and reads the same
   // registry default rather than repeating it.
-  const n = Number(settings['uploads.image.max_dimension']);
-  return n || (getOption('uploads.image.max_dimension')?.default as number);
+  return (
+    usable(policy?.maxDim) ??
+    usable(settings['uploads.image.max_dimension']) ??
+    (getOption('uploads.image.max_dimension')?.default as number)
+  );
 }
 
 export interface AdvertisedUploadLimits {

@@ -133,6 +133,15 @@ describe('staticImageMaxDimension', () => {
     ).toBe(4096);
   });
 
+  // sharp rejects a resize to 0 or a fraction, and a client told 0 would be asked for
+  // an image with no pixels. The seed clamps, but resolve.ts takes any finite number.
+  it('never resolves to a dimension that is not whole positive pixels', () => {
+    const settings = { 'uploads.image.max_dimension': 1024 };
+    expect(limits.staticImageMaxDimension({ maxDim: 0 }, settings)).toBe(1024);
+    expect(limits.staticImageMaxDimension({ maxDim: -5 }, settings)).toBe(1024);
+    expect(limits.staticImageMaxDimension({ maxDim: 1500.7 }, settings)).toBe(1500);
+  });
+
   it('falls back to the registry default, not a second hardcoded one', async () => {
     const { getOption } = await import('./settingsRegistry.js');
     expect(limits.staticImageMaxDimension(null, { 'uploads.image.max_dimension': 'junk' })).toBe(
@@ -142,13 +151,19 @@ describe('staticImageMaxDimension', () => {
 });
 
 describe('advertisedUploadLimits', () => {
-  it('carries the cap and the dimension the pipeline would use for this user', () => {
+  it('carries the cap and the dimension the pipeline would use for this user', async () => {
     setUserSetting(user.id, 'uploads.image.max_upload_mb', 30);
     setUserSetting(user.id, 'uploads.image.max_dimension', 1600);
-    expect(limits.advertisedUploadLimits(user.id, false)).toEqual({
-      maxUploadBytes: 30 * MIB,
-      maxStaticImageDimension: 1600,
-    });
+    try {
+      expect(limits.advertisedUploadLimits(user.id, false)).toEqual({
+        maxUploadBytes: 30 * MIB,
+        maxStaticImageDimension: 1600,
+      });
+    } finally {
+      const { deleteUserSetting } = await import('../db/settings.js');
+      deleteUserSetting(user.id, 'uploads.image.max_upload_mb');
+      deleteUserSetting(user.id, 'uploads.image.max_dimension');
+    }
   });
 
   it('answers for a user with no settings row at all (registry default applies)', () => {
