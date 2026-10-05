@@ -126,6 +126,18 @@ describe('deliver dispatches by transport', () => {
     expect(apnsContent).toEqual(webContent);
   });
 
+  it('clamps long text before any transport sees it', async () => {
+    addWebpush(user.id, `https://push.test/${user.id}`);
+    addNative(user.id, 'fcm', `fcm-${user.id}`);
+    await pushService.deliver(user.id, { ...payload, text: 'x'.repeat(5000) });
+    for (const stub of [stubs.webpush, stubs.fcm]) {
+      const [, sent, content] = stub.send.mock.calls[0] as [unknown, PushPayload, { body: string }];
+      expect(Buffer.byteLength(sent.text!)).toBeLessThanOrEqual(1024);
+      expect(sent.text!.endsWith('…')).toBe(true);
+      expect(content.body).toBe(sent.text);
+    }
+  });
+
   it('one transport failing does not stop the others', async () => {
     addWebpush(user.id, `https://push.test/${user.id}`);
     addNative(user.id, 'apns', `apns-${user.id}`);

@@ -9,15 +9,16 @@
 // and trade it with Google for an access token, instead of signing the bearer
 // APNs accepts directly.
 //
-// ⚠ Android is paused (see APP_1.0_SCOPE.md), so nothing here has ever pushed to
-// a real device. Auth, token minting/refresh, request shape and error mapping are
-// all exercised — FCM answers a bogus token with a well-formed UNREGISTERED — but
-// "a phone rendered this correctly" is NOT proven and won't be until Android
-// unpauses. Built now anyway because designing the seam against one provider is a
-// guess about where the variation lives; against two it's a measurement.
+// ⚠ Nothing here has pushed to a real device yet (#588). Auth, token
+// minting/refresh, request shape and error mapping are all exercised — FCM
+// answers a bogus token with a well-formed UNREGISTERED — but "a phone rendered
+// this correctly" is NOT proven until the Android app's receiver ships
+// (lurker-android#16). Built ahead of the app because designing the seam against
+// one provider is a guess about where the variation lives; against two it's a
+// measurement.
 
 import type { PushSubscription } from '../../db/pushSubscriptions.js';
-import type { NotificationContent, PushPayload } from '../notificationContent.js';
+import { pushBody, type NotificationContent, type PushPayload } from '../notificationContent.js';
 import type { FailureClass, PushSender } from './types.js';
 import { configuredFcm } from './credentials.js';
 import { signJwt, TokenCache } from './jwt.js';
@@ -88,35 +89,46 @@ function isCredentialRejection(status: number | null, reason: string | null): bo
 
 /**
  * The FCM v1 message body, as pure data. Split out from send() for the same
- * reason as buildApnsRequest — and more urgently here, since Android is paused
- * and this is the only check on the shape until it isn't.
+ * reason as buildApnsRequest — and more urgently here, since this is the only
+ * check on the shape until a real device has received one (#588).
+ *
+ * Data-only: there is no `notification` block. With one, Android draws the
+ * notification itself whenever the app is in the background and never calls the
+ * app's FirebaseMessagingService, so the app could not pick a channel per kind,
+ * group by buffer, or replace an earlier notification by tag. It also could not
+ * render a push relayed for a self-hosted server (#1045), which arrives
+ * encrypted and has to be decrypted by the app before anything can be shown.
+ * One renderer serves both because the data map below carries the same keys as
+ * the Web Push body.
+ *
+ * No `collapse_key`: FCM keeps at most four collapse keys per device while it is
+ * offline and drops the rest with no rule for which, so keying per buffer would
+ * lose whole buffers' notifications for a phone with more than four of them
+ * pending. Firebase's guidance for chat is non-collapsible; replacing an earlier
+ * notification for the same buffer is the app's job, using `tag`.
  */
 export function buildFcmMessage(
   sub: PushSubscription,
   payload: PushPayload,
   content: NotificationContent,
 ): Record<string, unknown> {
+  // FCM requires every data value to be a string — a number is rejected with a
+  // 400 INVALID_ARGUMENT, which classify() reads as permanent and DELETES the
+  // device over. Null and undefined are left out rather than stringified into
+  // "null"/"undefined", which a client would parse into nonsense; an absent key
+  // reads the same as the Web Push body's null.
+  const data: Record<string, string> = {};
+  for (const [key, value] of Object.entries(pushBody(payload, content))) {
+    if (value != null) data[key] = String(value);
+  }
   return {
     message: {
       token: sub.endpoint,
-      notification: { title: content.title, body: content.body },
-      android: {
-        priority: 'HIGH',
-        // Same role as the Notification API's tag / APNs' thread-id: a later
-        // notification for a buffer replaces the earlier one.
-        collapse_key: content.tag,
-        notification: { tag: content.tag },
-      },
-      // FCM requires every data value to be a string — a number here is rejected
-      // outright, so this is not the place to be clever about types.
-      data: {
-        kind: payload.kind,
-        networkId: String(payload.networkId),
-        target: payload.target,
-        ...(payload.messageId != null ? { messageId: String(payload.messageId) } : {}),
-        ...(payload.bufferId != null ? { bufferId: String(payload.bufferId) } : {}),
-        ...(typeof payload.badge === 'number' ? { badge: String(payload.badge) } : {}),
-      },
+      // HIGH so a dozing phone wakes to run the app's handler now. Android
+      // deprioritizes an app whose high-priority messages don't end in a visible
+      // notification, so the handler must always post one.
+      android: { priority: 'HIGH' },
+      data,
     },
   };
 }

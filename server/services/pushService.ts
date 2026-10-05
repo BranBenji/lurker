@@ -3,7 +3,7 @@
 
 import webpush from 'web-push';
 import type { PushSubscription } from '../db/pushSubscriptions.js';
-import { composeNotification, type PushPayload } from './notificationContent.js';
+import { clampPushText, composeNotification, type PushPayload } from './notificationContent.js';
 import { senderFor, warnUnconfiguredOnce } from './push/index.js';
 import {
   listEnabledForUser,
@@ -73,13 +73,17 @@ function describeSub(sub: PushSubscription): string {
 
 export async function deliver(
   userId: number,
-  payload: PushPayload,
+  message: PushPayload,
 ): Promise<{ sent: number; dropped: number }> {
   // VAPID is Web Push's business, but it's cheap and idempotent, and hoisting it
   // here keeps the "which transports does this user have?" question out of it.
   ensureVapid();
   const subs = listEnabledForUser(userId);
   if (!subs.length) return { sent: 0, dropped: 0 };
+
+  // Clamped once, here, so no transport can be handed a message over its size
+  // cap — see MAX_PUSH_TEXT_BYTES.
+  const payload = message.text ? { ...message, text: clampPushText(message.text) } : message;
 
   // Composition is transport-neutral and identical for every device, so it
   // happens once rather than per sub. Each sender renders it its own way — JSON

@@ -56,10 +56,28 @@ export interface NotificationContent {
   body: string;
   /**
    * Collapse key: later notifications for the same buffer replace earlier ones
-   * rather than stacking. Maps to the Notification API's `tag` on Web Push,
-   * `aps.thread-id` on APNs, and `android.collapse_key`/`tag` on FCM.
+   * rather than stacking. Maps to the Notification API's `tag` on Web Push and
+   * `aps.thread-id` on APNs. On FCM it rides in the data map and the app passes
+   * it to its own notify() call — see buildFcmMessage.
    */
   tag: string;
+}
+
+/**
+ * Everything a notification needs, as one flat object: the semantic payload plus
+ * the composed copy. This is the Web Push message body, and the FCM data map is
+ * the same keys stringified, so one renderer on the device reads either. That
+ * matters beyond today's two transports: a push relayed for a self-hosted server
+ * (#1045) arrives as an encrypted Web Push body, and the app decrypts it to
+ * exactly this object.
+ *
+ * Composed fields spread LAST, so they win a name clash. A service worker cached
+ * before #490 phase 2 ignores them and composes locally. See sw.js.
+ */
+export type PushBody = PushPayload & NotificationContent;
+
+export function pushBody(payload: PushPayload, content: NotificationContent): PushBody {
+  return { ...payload, ...content };
 }
 
 // "nostimo came online (Libera)". Byte-for-byte the composition sw.js's
@@ -100,6 +118,33 @@ function title(payload: PushPayload): string {
   if (payload.kind === 'friend_online') return friendOnlineTitle(payload);
   if (payload.kind === 'kicked') return kickedTitle(payload);
   return `${payload.nick || 'someone'} in ${payload.target || ''}`;
+}
+
+/**
+ * The most message text a push carries, in UTF-8 bytes. Every transport caps the
+ * whole message at 4 KB (Web Push's encrypted record, the APNs payload, FCM's
+ * message), and the text rides twice: raw as `text`, and stripped as `body`. An
+ * inbound draft/multiline batch is reassembled into one message, so a pasted
+ * block can be several KB on its own — over the cap, FCM answers
+ * INVALID_ARGUMENT, which classify() reads as a dead device and deletes. 1 KB
+ * is more than a lock screen shows, and leaves room for both copies plus the
+ * title and routing keys. The app opens the full message on tap.
+ */
+export const MAX_PUSH_TEXT_BYTES = 1024;
+
+/** Cut `text` to the push budget on a code point, marking the cut with an ellipsis. */
+export function clampPushText(text: string): string {
+  if (Buffer.byteLength(text) <= MAX_PUSH_TEXT_BYTES) return text;
+  const budget = MAX_PUSH_TEXT_BYTES - Buffer.byteLength('…');
+  let out = '';
+  let bytes = 0;
+  for (const ch of text) {
+    const size = Buffer.byteLength(ch);
+    if (bytes + size > budget) break;
+    out += ch;
+    bytes += size;
+  }
+  return `${out}…`;
 }
 
 export function composeNotification(payload: PushPayload): NotificationContent {

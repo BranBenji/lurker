@@ -11,7 +11,7 @@
 
 import webpush from 'web-push';
 import type { PushSubscription } from '../../db/pushSubscriptions.js';
-import type { NotificationContent, PushPayload } from '../notificationContent.js';
+import { pushBody, type NotificationContent, type PushPayload } from '../notificationContent.js';
 import type { FailureClass, PushSender } from './types.js';
 
 interface WebPushErrorish {
@@ -33,9 +33,7 @@ const bodyCache = new WeakMap<NotificationContent, string>();
 function webpushBody(payload: PushPayload, content: NotificationContent): string {
   const cached = bodyCache.get(content);
   if (cached !== undefined) return cached;
-  // Composed fields ride ALONGSIDE the semantic ones so a service worker cached
-  // before #490 phase 2 can still compose locally. See sw.js.
-  const body = JSON.stringify({ ...payload, ...content });
+  const body = JSON.stringify(pushBody(payload, content));
   bodyCache.set(content, body);
   return body;
 }

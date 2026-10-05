@@ -17,7 +17,12 @@ import { buildApnsRequest } from './apnsSender.js';
 import { buildFcmMessage } from './fcmSender.js';
 import type { ApnsCredentials } from './credentials.js';
 import type { PushSubscription } from '../../db/pushSubscriptions.js';
-import { composeNotification, type PushPayload } from '../notificationContent.js';
+import {
+  clampPushText,
+  composeNotification,
+  pushBody,
+  type PushPayload,
+} from '../notificationContent.js';
 
 const creds: ApnsCredentials = {
   keyPem: '-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----',
@@ -140,17 +145,77 @@ describe('buildFcmMessage', () => {
       message: Record<string, any>;
     };
 
-  it('addresses the device and carries the composed copy', () => {
+  it('addresses the device with a data-only message', () => {
     const { message } = build();
     expect(message.token).toBe('fcmtoken456');
-    expect(message.notification).toEqual({ title: 'bob (Libera)', body: 'hey there' });
+    // A `notification` block (top-level or under `android`) makes Android draw
+    // the alert itself while the app is backgrounded, and the app's handler
+    // never runs — no channel per kind, no tag replacement, and no way to
+    // decrypt a relayed push (#1045).
+    expect('notification' in message).toBe(false);
+    expect('notification' in message.android).toBe(false);
   });
 
-  it('asks for high priority and collapses per buffer', () => {
+  it('asks for high priority and stays non-collapsible', () => {
     const { message } = build();
     expect(message.android.priority).toBe('HIGH');
-    expect(message.android.collapse_key).toBe('7::bob');
-    expect(message.android.notification.tag).toBe('7::bob');
+    // FCM keeps only four collapse keys per offline device, dropping the rest at
+    // random — per-buffer keys would lose whole buffers' notifications.
+    expect('collapse_key' in message.android).toBe(false);
+  });
+
+  it('carries the Web Push body, key for key', () => {
+    // One renderer on the device reads both, so the data map must be the Web
+    // Push body with its values stringified — no key added, none lost.
+    const p = payload({ bufferId: 9, time: '2026-10-05T12:00:00.000Z' });
+    const content = composeNotification(p);
+    const { message } = build(p);
+    const webBody = JSON.parse(JSON.stringify(pushBody(p, content))) as Record<string, unknown>;
+    const expected = Object.fromEntries(
+      Object.entries(webBody)
+        .filter(([, v]) => v != null)
+        .map(([k, v]) => [k, String(v)]),
+    );
+    expect(message.data).toEqual(expected);
+    expect(message.data).toMatchObject({
+      title: 'bob (Libera)',
+      body: 'hey there',
+      tag: '7::bob',
+      networkId: '7',
+      bufferId: '9',
+    });
+  });
+
+  it('uses no key FCM reserves', () => {
+    // FCM refuses these in `data` with INVALID_ARGUMENT, which classify() reads
+    // as permanent — every device would be deleted on its first push.
+    const kinds: PushPayload['kind'][] = [
+      'dm',
+      'highlight',
+      'always_notify',
+      'friend_online',
+      'kicked',
+    ];
+    const reserved = (key: string) =>
+      ['from', 'notification', 'message_type'].includes(key) || /^(google|gcm)/i.test(key);
+    for (const kind of kinds) {
+      const { message } = build(
+        payload({ kind, bufferId: 1, time: 't', displayName: 'bob', messageId: 1 }),
+      );
+      expect(Object.keys(message.data).filter(reserved)).toEqual([]);
+    }
+  });
+
+  it('fits a long multiline paste under the 4 KB message cap once clamped', () => {
+    // Four-byte characters are the worst case for the byte budget, and the text
+    // rides twice (raw and as the stripped body).
+    const p = payload({
+      kind: 'highlight',
+      target: '#lurker',
+      text: clampPushText('😀'.repeat(4000)),
+    });
+    const { message } = build(p);
+    expect(Buffer.byteLength(JSON.stringify(message.data))).toBeLessThan(4096);
   });
 
   it('stringifies every data value', () => {
@@ -161,20 +226,14 @@ describe('buildFcmMessage', () => {
     for (const [key, value] of Object.entries(message.data)) {
       expect(typeof value, `data.${key} must be a string`).toBe('string');
     }
-    expect(message.data).toEqual({
-      kind: 'dm',
-      networkId: '7',
-      target: 'bob',
-      messageId: '42',
-      badge: '3',
-    });
   });
 
   it('omits optional data keys rather than sending "undefined"', () => {
     // String(undefined) is the string "undefined" — which FCM would happily
     // accept and the client would happily parse into nonsense.
-    const { message } = build(payload({ messageId: null, badge: undefined }));
+    const { message } = build(payload({ messageId: null, badge: undefined, nick: null }));
     expect('messageId' in message.data).toBe(false);
     expect('badge' in message.data).toBe(false);
+    expect('nick' in message.data).toBe(false);
   });
 });

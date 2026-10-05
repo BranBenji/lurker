@@ -6,7 +6,12 @@ import fs from 'fs';
 import path from 'path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'url';
-import { composeNotification, type PushPayload } from './notificationContent.js';
+import {
+  clampPushText,
+  composeNotification,
+  MAX_PUSH_TEXT_BYTES,
+  type PushPayload,
+} from './notificationContent.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SW_PATH = path.resolve(here, '../../vue_client/public/sw.js');
@@ -145,6 +150,28 @@ describe('composeNotification', () => {
     expect(composeNotification(payload({ kind: 'highlight', target: '#other' })).tag).not.toBe(
       a.tag,
     );
+  });
+});
+
+describe('clampPushText', () => {
+  it('leaves text within the budget untouched', () => {
+    const exact = 'a'.repeat(MAX_PUSH_TEXT_BYTES);
+    expect(clampPushText('hey there')).toBe('hey there');
+    expect(clampPushText(exact)).toBe(exact);
+  });
+
+  it('cuts over-budget text to the budget, ellipsis included', () => {
+    const out = clampPushText('a'.repeat(MAX_PUSH_TEXT_BYTES + 1));
+    expect(out.endsWith('…')).toBe(true);
+    expect(Buffer.byteLength(out)).toBe(MAX_PUSH_TEXT_BYTES);
+  });
+
+  it('never splits a multi-byte character', () => {
+    // A cut mid-sequence would leave a lone surrogate or a broken UTF-8 tail,
+    // which JSON-encodes as garbage on the lock screen.
+    const out = clampPushText('😀'.repeat(MAX_PUSH_TEXT_BYTES));
+    expect(Buffer.byteLength(out)).toBeLessThanOrEqual(MAX_PUSH_TEXT_BYTES);
+    expect(out.slice(0, -1)).toBe('😀'.repeat((out.length - 1) / 2));
   });
 });
 
