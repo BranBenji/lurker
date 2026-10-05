@@ -35,10 +35,35 @@ export class FcmError extends Error {
     /** Google's machine-readable error status, e.g. 'UNREGISTERED'. */
     readonly reason: string | null,
     message: string,
+    /** Whether Google named the registration token as the bad argument, rather
+     *  than something we built (an oversized message, a reserved data key). */
+    readonly tokenRejected = false,
   ) {
     super(message);
     this.name = 'FcmError';
   }
+}
+
+interface FcmErrorBody {
+  error?: {
+    status?: string;
+    message?: string;
+    details?: { fieldViolations?: { field?: string }[] }[];
+  };
+}
+
+// INVALID_ARGUMENT covers a bad token AND a bad message — over 4 KB, a reserved
+// data key — and only the first is the device's fault. Google's documented
+// answer to a bad token is "The registration token is not a valid FCM
+// registration token"; a field violation on `message.token` is the structured
+// form. Anything else is ours, and must never read as permanent: one payload bug
+// would otherwise delete every Android device that received it.
+function namesTheToken(body: FcmErrorBody): boolean {
+  const error = body.error;
+  if (!error) return false;
+  const violations = (error.details ?? []).flatMap((d) => d.fieldViolations ?? []);
+  if (violations.some((v) => v.field === 'message.token')) return true;
+  return /registration token/i.test(error.message ?? '');
 }
 
 const accessToken = new TokenCache(async () => {
@@ -168,8 +193,11 @@ export const fcmSender: PushSender = {
     if (res.ok) return;
     const text = await res.text();
     let reason: string | null = null;
+    let tokenRejected = false;
     try {
-      reason = (JSON.parse(text) as { error?: { status?: string } }).error?.status ?? null;
+      const body = JSON.parse(text) as FcmErrorBody;
+      reason = body.error?.status ?? null;
+      tokenRejected = namesTheToken(body);
     } catch {
       /* a non-JSON body just means no reason to read */
     }
@@ -177,6 +205,7 @@ export const fcmSender: PushSender = {
       res.status,
       reason,
       `FCM rejected: ${res.status} ${reason ?? text.slice(0, 300)}`,
+      tokenRejected,
     );
   },
 
@@ -187,9 +216,13 @@ export const fcmSender: PushSender = {
 
     // The app was uninstalled or the token was replaced.
     if (reason === 'UNREGISTERED' || reason === 'NOT_FOUND') return 'permanent';
-    // A token that isn't a token — or, notably, one minted for a DIFFERENT
-    // Firebase project (MismatchSenderId). Retrying never fixes either.
-    if (reason === 'INVALID_ARGUMENT' || reason === 'SENDER_ID_MISMATCH') return 'permanent';
+    // A token minted for a DIFFERENT Firebase project (MismatchSenderId).
+    // Retrying never fixes it.
+    if (reason === 'SENDER_ID_MISMATCH') return 'permanent';
+    // A token that isn't a token is permanent; any other INVALID_ARGUMENT is a
+    // message WE built wrong, so it strikes rather than deletes — see
+    // namesTheToken.
+    if (reason === 'INVALID_ARGUMENT') return e?.tokenRejected ? 'permanent' : 'strike';
     if (status === 404) return 'permanent';
 
     // OUR service account is broken, not this device — same reasoning as APNs'

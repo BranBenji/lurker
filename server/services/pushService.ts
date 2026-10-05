@@ -87,7 +87,7 @@ export async function deliver(
 
   // Composition is transport-neutral and identical for every device, so it
   // happens once rather than per sub. Each sender renders it its own way — JSON
-  // for a service worker, an `aps` dict for APNs, a `notification` for FCM.
+  // for a service worker, an `aps` dict for APNs, a string data map for FCM.
   const content = composeNotification(payload);
 
   // Skip transports with no credentials rather than attempting them. A

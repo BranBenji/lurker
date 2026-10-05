@@ -154,6 +154,8 @@ describe('composeNotification', () => {
 });
 
 describe('clampPushText', () => {
+  const jsonBytes = (s: string) => Buffer.byteLength(JSON.stringify(s)) - 2;
+
   it('leaves text within the budget untouched', () => {
     const exact = 'a'.repeat(MAX_PUSH_TEXT_BYTES);
     expect(clampPushText('hey there')).toBe('hey there');
@@ -163,15 +165,24 @@ describe('clampPushText', () => {
   it('cuts over-budget text to the budget, ellipsis included', () => {
     const out = clampPushText('a'.repeat(MAX_PUSH_TEXT_BYTES + 1));
     expect(out.endsWith('…')).toBe(true);
-    expect(Buffer.byteLength(out)).toBe(MAX_PUSH_TEXT_BYTES);
+    expect(jsonBytes(out)).toBe(MAX_PUSH_TEXT_BYTES);
   });
 
-  it('never splits a multi-byte character', () => {
-    // A cut mid-sequence would leave a lone surrogate or a broken UTF-8 tail,
-    // which JSON-encodes as garbage on the lock screen.
-    const out = clampPushText('😀'.repeat(MAX_PUSH_TEXT_BYTES));
-    expect(Buffer.byteLength(out)).toBeLessThanOrEqual(MAX_PUSH_TEXT_BYTES);
-    expect(out.slice(0, -1)).toBe('😀'.repeat((out.length - 1) / 2));
+  it('measures what JSON makes of formatting codes, not the raw bytes', () => {
+    // \x02 is one byte raw and six escaped. Counting raw bytes let 1 KB of bold
+    // toggles through as 6 KB of JSON — over every transport's 4 KB cap.
+    for (const text of ['\x02'.repeat(MAX_PUSH_TEXT_BYTES), '"\\'.repeat(MAX_PUSH_TEXT_BYTES)]) {
+      expect(jsonBytes(clampPushText(text))).toBeLessThanOrEqual(MAX_PUSH_TEXT_BYTES);
+    }
+  });
+
+  it('never splits an emoji sequence', () => {
+    // A family emoji is five code points joined by ZWJs; a cut inside it would
+    // leave a lone person on the lock screen.
+    const family = '👨\u200d👩\u200d👧';
+    const out = clampPushText(family.repeat(MAX_PUSH_TEXT_BYTES));
+    expect(jsonBytes(out)).toBeLessThanOrEqual(MAX_PUSH_TEXT_BYTES);
+    expect(out.slice(0, -1)).toBe(family.repeat((out.length - 1) / family.length));
   });
 });
 

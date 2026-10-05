@@ -121,30 +121,43 @@ function title(payload: PushPayload): string {
 }
 
 /**
- * The most message text a push carries, in UTF-8 bytes. Every transport caps the
- * whole message at 4 KB (Web Push's encrypted record, the APNs payload, FCM's
- * message), and the text rides twice: raw as `text`, and stripped as `body`. An
- * inbound draft/multiline batch is reassembled into one message, so a pasted
- * block can be several KB on its own — over the cap, FCM answers
- * INVALID_ARGUMENT, which classify() reads as a dead device and deletes. 1 KB
+ * The most message text a push carries, measured as JSON-encoded UTF-8 bytes —
+ * how the transports measure it. Every transport caps the whole message at 4 KB
+ * (Web Push's encrypted record, the APNs payload, FCM's message), and the text
+ * rides twice: raw as `text`, and stripped as `body`. An inbound draft/multiline
+ * batch is reassembled into one message, so a pasted block can be several KB on
+ * its own. Raw bytes undercount: mIRC formatting codes are control characters,
+ * which JSON escapes to six bytes each (`\u0002`). Over the cap, Web Push
+ * answers 413 and FCM answers INVALID_ARGUMENT — a failed push either way. 1 KB
  * is more than a lock screen shows, and leaves room for both copies plus the
  * title and routing keys. The app opens the full message on tap.
  */
 export const MAX_PUSH_TEXT_BYTES = 1024;
 
-/** Cut `text` to the push budget on a code point, marking the cut with an ellipsis. */
+const ELLIPSIS = '…';
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+/** What `s` costs inside a JSON string, in UTF-8 bytes (no quotes). */
+function jsonBytes(s: string): number {
+  return Buffer.byteLength(JSON.stringify(s)) - 2;
+}
+
+/**
+ * Cut `text` to the push budget, marking the cut with an ellipsis. Cuts between
+ * graphemes, so an emoji sequence or a flag is never split into its parts.
+ */
 export function clampPushText(text: string): string {
-  if (Buffer.byteLength(text) <= MAX_PUSH_TEXT_BYTES) return text;
-  const budget = MAX_PUSH_TEXT_BYTES - Buffer.byteLength('…');
+  if (jsonBytes(text) <= MAX_PUSH_TEXT_BYTES) return text;
+  const budget = MAX_PUSH_TEXT_BYTES - jsonBytes(ELLIPSIS);
   let out = '';
   let bytes = 0;
-  for (const ch of text) {
-    const size = Buffer.byteLength(ch);
+  for (const { segment } of graphemes.segment(text)) {
+    const size = jsonBytes(segment);
     if (bytes + size > budget) break;
-    out += ch;
+    out += segment;
     bytes += size;
   }
-  return `${out}…`;
+  return `${out}${ELLIPSIS}`;
 }
 
 export function composeNotification(payload: PushPayload): NotificationContent {

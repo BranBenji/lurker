@@ -164,31 +164,53 @@ describe('buildFcmMessage', () => {
     expect('collapse_key' in message.android).toBe(false);
   });
 
+  // Every PushPayload field set. Typed Required so a field added to the payload
+  // later must be added here too — and then the reserved-key and scalar checks
+  // below cover it.
+  const full: Required<PushPayload> = {
+    kind: 'dm',
+    networkId: 7,
+    networkName: 'Libera',
+    target: 'bob',
+    bufferId: 9,
+    nick: 'bob',
+    text: 'hey there',
+    time: '2026-10-05T12:00:00.000Z',
+    messageId: 42,
+    displayName: 'bob',
+    badge: 3,
+  };
+
   it('carries the Web Push body, key for key', () => {
     // One renderer on the device reads both, so the data map must be the Web
-    // Push body with its values stringified — no key added, none lost.
-    const p = payload({ bufferId: 9, time: '2026-10-05T12:00:00.000Z' });
-    const content = composeNotification(p);
-    const { message } = build(p);
-    const webBody = JSON.parse(JSON.stringify(pushBody(p, content))) as Record<string, unknown>;
-    const expected = Object.fromEntries(
-      Object.entries(webBody)
-        .filter(([, v]) => v != null)
-        .map(([k, v]) => [k, String(v)]),
-    );
-    expect(message.data).toEqual(expected);
-    expect(message.data).toMatchObject({
+    // Push body's keys with their values stringified — no key added, none lost.
+    const { message } = build(full);
+    expect(message.data).toEqual({
+      kind: 'dm',
+      networkId: '7',
+      networkName: 'Libera',
+      target: 'bob',
+      bufferId: '9',
+      nick: 'bob',
+      text: 'hey there',
+      time: '2026-10-05T12:00:00.000Z',
+      messageId: '42',
+      displayName: 'bob',
+      badge: '3',
       title: 'bob (Libera)',
       body: 'hey there',
       tag: '7::bob',
-      networkId: '7',
-      bufferId: '9',
     });
+    expect(Object.keys(message.data).toSorted()).toEqual(
+      Object.keys(pushBody(full, composeNotification(full))).toSorted(),
+    );
   });
 
-  it('uses no key FCM reserves', () => {
-    // FCM refuses these in `data` with INVALID_ARGUMENT, which classify() reads
-    // as permanent — every device would be deleted on its first push.
+  it('uses no key FCM reserves, and no value that is not a scalar', () => {
+    // FCM refuses a reserved key in `data` with INVALID_ARGUMENT, and an object
+    // value would arrive as "[object Object]".
+    const reserved = (key: string) =>
+      ['from', 'notification', 'message_type'].includes(key) || /^(google|gcm)/i.test(key);
     const kinds: PushPayload['kind'][] = [
       'dm',
       'highlight',
@@ -196,26 +218,24 @@ describe('buildFcmMessage', () => {
       'friend_online',
       'kicked',
     ];
-    const reserved = (key: string) =>
-      ['from', 'notification', 'message_type'].includes(key) || /^(google|gcm)/i.test(key);
     for (const kind of kinds) {
-      const { message } = build(
-        payload({ kind, bufferId: 1, time: 't', displayName: 'bob', messageId: 1 }),
-      );
+      const { message } = build({ ...full, kind });
       expect(Object.keys(message.data).filter(reserved)).toEqual([]);
+      expect(Object.values(message.data).filter((v) => String(v).startsWith('[object'))).toEqual(
+        [],
+      );
     }
   });
 
   it('fits a long multiline paste under the 4 KB message cap once clamped', () => {
-    // Four-byte characters are the worst case for the byte budget, and the text
-    // rides twice (raw and as the stripped body).
-    const p = payload({
-      kind: 'highlight',
-      target: '#lurker',
-      text: clampPushText('😀'.repeat(4000)),
-    });
-    const { message } = build(p);
-    expect(Buffer.byteLength(JSON.stringify(message.data))).toBeLessThan(4096);
+    // The text rides twice (raw and as the stripped body). Four-byte characters
+    // are the worst case for raw bytes; control characters (formatting codes)
+    // and quotes are the worst case once JSON escapes them.
+    for (const raw of ['😀'.repeat(4000), '\x02'.repeat(4000), '"'.repeat(4000)]) {
+      const p = payload({ kind: 'highlight', target: '#lurker', text: clampPushText(raw) });
+      const { message } = build(p);
+      expect(Buffer.byteLength(JSON.stringify(message))).toBeLessThan(4096);
+    }
   });
 
   it('stringifies every data value', () => {
