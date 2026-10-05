@@ -2946,15 +2946,22 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   // host of the network's HOSTLEN (63 where it doesn't say) — so a line never
   // goes up whole only to be truncated for everyone else. Tags have a budget of
   // their own.
+  //
+  // ⚠ Counted, never padded out: HOSTLEN is the network's to say, and a string
+  // built to its length is an allocation a server chooses (#1042 review). A
+  // huge one just means nothing fits, and every line is split.
   private fitsOneLine(command: string, target: string, text: string): boolean {
     const nick = this.currentNick() || this.clientNick || '*';
     const known = this.conn?.knownSelfUserhost();
     const hostlen = Number(this.conn?.client.network?.supports('HOSTLEN'));
-    const longestHost = Number.isInteger(hostlen) && hostlen > 0 ? hostlen : 63;
-    const userhost = known
-      ? `${known.user}@${known.host}`
-      : `~${this.conn?.client.user?.username || 'lurker'}@${'x'.repeat(longestHost)}`;
-    return Buffer.byteLength(`:${nick}!${userhost} ${command} ${target} :${text}\r\n`) <= 512;
+    const user = known ? known.user : `~${this.conn?.client.user?.username || 'lurker'}`;
+    const hostBytes = known
+      ? Buffer.byteLength(known.host)
+      : Number.isInteger(hostlen) && hostlen > 0
+        ? hostlen
+        : 63;
+    const rest = Buffer.byteLength(`:${nick}!${user}@ ${command} ${target} :${text}\r\n`);
+    return rest + hostBytes <= 512;
   }
 
   // The stored line a client's reply names, in the buffer the message goes to:

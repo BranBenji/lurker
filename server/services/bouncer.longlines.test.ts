@@ -318,4 +318,23 @@ describe('the line budget', () => {
       expect(sent).toHaveLength(lines);
     }
   });
+
+  // HOSTLEN is the network's to say. One that no string could be built to must
+  // still leave the message sent — split, since nothing fits behind a host
+  // that long — and the bouncer up.
+  it('survives an absurd HOSTLEN', async () => {
+    const absurd = await FakeIrcd.start({ isupport: ['HOSTLEN=1000000000'] });
+    cleanups.push(() => void absurd.close());
+    const live = await seedLive(absurd);
+    const c = await attachIn(live, null, `${BASE_CAPS} echo-message`);
+    const text = 'a'.repeat(400);
+
+    c.send(`PRIVMSG bob :${text}`);
+    await until(
+      () => upstreamTexts(absurd, live, 'PRIVMSG', 'bob').length >= 2,
+      5000,
+      'the split lines upstream',
+    );
+    expect(upstreamTexts(absurd, live, 'PRIVMSG', 'bob').join('')).toBe(text);
+  });
 });
