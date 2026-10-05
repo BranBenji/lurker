@@ -126,16 +126,25 @@ describe('deliver dispatches by transport', () => {
     expect(apnsContent).toEqual(webContent);
   });
 
-  it('clamps long text before any transport sees it', async () => {
+  it('clamps a long body before any transport sees it', async () => {
     addWebpush(user.id, `https://push.test/${user.id}`);
     addNative(user.id, 'fcm', `fcm-${user.id}`);
     await pushService.deliver(user.id, { ...payload, text: 'x'.repeat(5000) });
     for (const stub of [stubs.webpush, stubs.fcm]) {
-      const [, sent, content] = stub.send.mock.calls[0] as [unknown, PushPayload, { body: string }];
-      expect(Buffer.byteLength(sent.text!)).toBeLessThanOrEqual(1024);
-      expect(sent.text!.endsWith('…')).toBe(true);
-      expect(content.body).toBe(sent.text);
+      const [, , content] = stub.send.mock.calls[0] as [unknown, PushPayload, { body: string }];
+      expect(Buffer.byteLength(content.body)).toBeLessThanOrEqual(1024);
+      expect(content.body.endsWith('…')).toBe(true);
     }
+  });
+
+  it('measures the body after stripping, not the raw text', async () => {
+    // Every word coloured: 10 raw bytes per word of 4, and over 1 KB raw, but the
+    // stripped body is short enough to go whole.
+    addNative(user.id, 'fcm', `fcm-${user.id}`);
+    const words = Array.from({ length: 150 }, () => '\x0304word\x03').join(' ');
+    await pushService.deliver(user.id, { ...payload, text: words });
+    const [, , content] = stubs.fcm.send.mock.calls[0] as [unknown, PushPayload, { body: string }];
+    expect(content.body).toBe(Array.from({ length: 150 }, () => 'word').join(' '));
   });
 
   it('clamps a long network name, which rides in the title too', async () => {

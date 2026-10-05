@@ -103,10 +103,32 @@ describe('deliver', () => {
     // Composed here rather than in the service worker, because APNs/FCM have no
     // worker to compose for them.
     expect(body).toMatchObject({ title: 'bob (Libera)', body: 'hi', tag: '3::bob' });
-    // ...and the semantic fields still ride along, which is what lets a service
-    // worker cached before this change keep composing locally instead of
-    // rendering an empty notification.
-    expect(body).toMatchObject({ kind: 'dm', nick: 'bob', text: 'hi', networkId: 3 });
+    // ...and the routing fields ride along, for a tap to land in the buffer.
+    expect(body).toMatchObject({ kind: 'dm', target: 'bob', networkId: 3 });
+    // The raw text does not: `body` carries the same words, formatting stripped,
+    // and a second copy doubled the biggest field on a 4 KB wire (#1045).
+    expect('text' in body).toBe(false);
+  });
+
+  it('sends messages with a 48-hour lifetime and high urgency, and no topic', async () => {
+    sendNotification.mockResolvedValue({ statusCode: 201 });
+    await pushService.deliver(alice.id, samplePayload());
+    // Not web-push's four-week default, and not `normal`, which a push service
+    // may hold for a sleeping phone. No Topic: on Chrome it's an FCM collapse
+    // key, and FCM keeps only four per offline device.
+    expect(sendNotification.mock.calls[0][2]).toEqual({ TTL: 48 * 60 * 60, urgency: 'high' });
+  });
+
+  it('lets a came-online wait', async () => {
+    sendNotification.mockResolvedValue({ statusCode: 201 });
+    await pushService.deliver(alice.id, {
+      kind: 'friend_online',
+      networkId: 3,
+      networkName: 'Libera',
+      target: 'bob',
+      displayName: 'bob',
+    });
+    expect(sendNotification.mock.calls[0][2]).toMatchObject({ urgency: 'normal' });
   });
 
   // 410/transient/strike rejection paths exist in pushService but vitest's

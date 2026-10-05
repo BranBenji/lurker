@@ -86,12 +86,12 @@ export async function deliver(
   const subs = listEnabledForUser(userId);
   if (!subs.length) return { sent: 0, dropped: 0 };
 
-  // Clamped once, here, so no transport can be handed a message over its size
-  // cap — see MAX_PUSH_TEXT_BYTES and MAX_PUSH_NETWORK_NAME_BYTES.
+  // The network name is clamped once, here, so no transport can be handed a
+  // message over its size cap — see MAX_PUSH_NETWORK_NAME_BYTES. (The body is
+  // clamped where it's composed, on the words that go on the wire.)
   const payload: PushPayload = {
     ...message,
     networkName: clampPushText(message.networkName, MAX_PUSH_NETWORK_NAME_BYTES),
-    ...(message.text ? { text: clampPushText(message.text) } : {}),
   };
 
   // Composition is transport-neutral and identical for every device, so it

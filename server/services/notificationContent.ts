@@ -14,10 +14,10 @@
 // because it wasn't on the server at all.
 //
 // The strings below are a deliberate byte-for-byte port of the service worker's,
-// so the move is invisible to anyone already running Lurker. sw.js keeps its copy
-// for now and prefers these when present — an old cached worker must not break
-// when the server starts sending them. Once every client has cycled, the worker's
-// copy is dead code and goes.
+// so the move was invisible to anyone already running Lurker. sw.js keeps its copy
+// and prefers these when present. The raw `text` it composed a body from is no
+// longer sent (see PushBody), so a worker cached before #490 phase 2 now shows a
+// title alone; its title fields still ride.
 
 import { stripFormatting } from './textMatch.js';
 
@@ -71,14 +71,28 @@ export interface NotificationContent {
  * (#1045) arrives as an encrypted Web Push body, and the app decrypts it to
  * exactly this object.
  *
- * Composed fields spread LAST, so they win a name clash. A service worker cached
- * before #490 phase 2 ignores them and composes locally. See sw.js.
+ * Without the raw `text`: `body` is the same words with the formatting stripped,
+ * and every reader shows `body`. The raw copy only served a service worker cached
+ * before #490 phase 2 (July 2026), which composed locally; such a worker now shows
+ * the title alone. It doubled the largest field on a wire capped at 4 KB, and a
+ * relayed push has to fit an APNs payload once encrypted and encoded.
+ *
+ * Composed fields spread LAST, so they win a name clash.
  */
-export type PushBody = PushPayload & NotificationContent;
+export type PushBody = Omit<PushPayload, 'text'> & NotificationContent;
 
 export function pushBody(payload: PushPayload, content: NotificationContent): PushBody {
-  return { ...payload, ...content };
+  const { text: _text, ...semantic } = payload;
+  return { ...semantic, ...content };
 }
+
+/**
+ * How long a push is worth delivering, in seconds: an undelivered push expires
+ * after this rather than the four weeks web-push and FCM default to. A DM that
+ * reaches a phone switched on two weeks later is noise, not news. Mastodon uses
+ * the same 48 hours.
+ */
+export const PUSH_TTL_SECONDS = 48 * 60 * 60;
 
 // "nostimo came online (Libera)". Byte-for-byte the composition sw.js's
 // legacyTitle applies (the parity suite runs the real worker against this).
@@ -121,15 +135,16 @@ function title(payload: PushPayload): string {
 }
 
 /**
- * The most message text a push carries, measured as JSON-encoded UTF-8 bytes —
+ * The most message body a push carries (formatting stripped), measured as
+ * JSON-encoded UTF-8 bytes —
  * how the transports measure it. Every transport caps the whole message at 4 KB
- * (Web Push's encrypted record, the APNs payload, FCM's message), and the text
- * rides twice: raw as `text`, and stripped as `body`. An inbound draft/multiline
- * batch is reassembled into one message, so a pasted block can be several KB on
- * its own. Raw bytes undercount: mIRC formatting codes are control characters,
- * which JSON escapes to six bytes each (`\u0002`). Over the cap, Web Push
- * answers 413 and FCM answers INVALID_ARGUMENT — a failed push either way. 1 KB
- * is more than a lock screen shows, and leaves room for both copies plus the
+ * (Web Push's encrypted record, the APNs payload, FCM's message), and a relayed
+ * push must also fit an APNs payload once encrypted and encoded (#1045). An
+ * inbound draft/multiline batch is reassembled into one message, so a pasted
+ * block can be several KB on its own. Raw bytes undercount: the control characters
+ * stripping leaves (a CTCP `\x01`, a bell) JSON-escape to six bytes each. Over
+ * the cap, Web Push answers 413 and FCM answers INVALID_ARGUMENT — a failed push
+ * either way. 1 KB is more than a lock screen shows, and leaves room for the
  * title and routing keys. The app opens the full message on tap.
  */
 export const MAX_PUSH_TEXT_BYTES = 1024;
@@ -168,6 +183,10 @@ export function clampPushText(text: string, maxBytes = MAX_PUSH_TEXT_BYTES): str
   return `${out}${ELLIPSIS}`;
 }
 
+function bufferTag(payload: PushPayload): string {
+  return `${payload.networkId || 0}::${(payload.target || '').toLowerCase()}`;
+}
+
 export function composeNotification(payload: PushPayload): NotificationContent {
   return {
     title: title(payload),
@@ -175,7 +194,9 @@ export function composeNotification(payload: PushPayload): NotificationContent {
     // Strip mIRC formatting codes (\x03 colors, \x02 bold, …): a native alert
     // renders body as plain text, so the codes would otherwise arrive as literal
     // control chars on the lock screen (#606).
-    body: stripFormatting(payload.text || ''),
+    // Clamped here, on the words that go on the wire, not on the raw text: a
+    // formatting-heavy line would otherwise be cut for codes the body never carries.
+    body: clampPushText(stripFormatting(payload.text || '')),
     // Presence transitions collapse among THEMSELVES, never with the peer's
     // message notifications: the shared per-buffer tag meant "bob came online"
     // silently REPLACED an unread "bob: hey" alert on a connection flap (the
@@ -184,11 +205,15 @@ export function composeNotification(payload: PushPayload): NotificationContent {
     // same reason and it matters more here: a collapse key shared with the
     // channel would let the next line in a channel you were just removed from
     // REPLACE the notification telling you that you were removed.
+    //
+    // The target is case-folded (house style: toLowerCase): IRC sends `Bob` and
+    // `bob` for the same buffer, and two spellings would be two tags — two
+    // notifications for one buffer instead of the newer replacing the older.
     tag:
       payload.kind === 'friend_online'
-        ? `${payload.networkId || 0}::${payload.target || ''}::presence`
+        ? `${bufferTag(payload)}::presence`
         : payload.kind === 'kicked'
-          ? `${payload.networkId || 0}::${payload.target || ''}::kick`
-          : `${payload.networkId || 0}::${payload.target || ''}`,
+          ? `${bufferTag(payload)}::kick`
+          : bufferTag(payload),
   };
 }

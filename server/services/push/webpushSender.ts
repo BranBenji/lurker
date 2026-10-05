@@ -11,7 +11,12 @@
 
 import webpush from 'web-push';
 import type { PushSubscription } from '../../db/pushSubscriptions.js';
-import { pushBody, type NotificationContent, type PushPayload } from '../notificationContent.js';
+import {
+  PUSH_TTL_SECONDS,
+  pushBody,
+  type NotificationContent,
+  type PushPayload,
+} from '../notificationContent.js';
 import type { FailureClass, PushSender } from './types.js';
 
 interface WebPushErrorish {
@@ -38,6 +43,22 @@ function webpushBody(payload: PushPayload, content: NotificationContent): string
   return body;
 }
 
+/**
+ * The delivery policy every Web Push goes out with: a 48-hour lifetime, and `high`
+ * urgency for a message, which is wanted now — at `normal` a push service may hold
+ * it for a sleeping phone (Android's Doze, on FCM's Web Push endpoint), and a relay
+ * reads urgency as APNs/FCM priority (#1045). A came-online can wait, and
+ * shouldn't wake a dozing phone every time a favorite's connection flaps.
+ *
+ * No `Topic`, though it would collapse a buffer's undelivered pushes into its
+ * latest: Chrome's Web Push runs on FCM, which takes the topic as a collapse key
+ * and keeps at most four per offline device, dropping the rest with no rule for
+ * which — the reason fcmSender sends no collapse key either.
+ */
+function webpushOptions(payload: PushPayload): webpush.RequestOptions {
+  return { TTL: PUSH_TTL_SECONDS, urgency: payload.kind === 'friend_online' ? 'normal' : 'high' };
+}
+
 export const webpushSender: PushSender = {
   transport: 'webpush',
 
@@ -60,6 +81,7 @@ export const webpushSender: PushSender = {
     await webpush.sendNotification(
       { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
       webpushBody(payload, content),
+      webpushOptions(payload),
     );
   },
 
