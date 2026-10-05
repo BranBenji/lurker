@@ -183,6 +183,10 @@ export function clampPushText(text: string, maxBytes = MAX_PUSH_TEXT_BYTES): str
   return `${out}${ELLIPSIS}`;
 }
 
+function bufferTag(payload: PushPayload): string {
+  return `${payload.networkId || 0}::${(payload.target || '').toLowerCase()}`;
+}
+
 export function composeNotification(payload: PushPayload): NotificationContent {
   return {
     title: title(payload),
@@ -201,11 +205,15 @@ export function composeNotification(payload: PushPayload): NotificationContent {
     // same reason and it matters more here: a collapse key shared with the
     // channel would let the next line in a channel you were just removed from
     // REPLACE the notification telling you that you were removed.
+    //
+    // The target is case-folded (house style: toLowerCase): IRC sends `Bob` and
+    // `bob` for the same buffer, and two spellings would be two tags — two
+    // notifications for one buffer instead of the newer replacing the older.
     tag:
       payload.kind === 'friend_online'
-        ? `${payload.networkId || 0}::${payload.target || ''}::presence`
+        ? `${bufferTag(payload)}::presence`
         : payload.kind === 'kicked'
-          ? `${payload.networkId || 0}::${payload.target || ''}::kick`
-          : `${payload.networkId || 0}::${payload.target || ''}`,
+          ? `${bufferTag(payload)}::kick`
+          : bufferTag(payload),
   };
 }

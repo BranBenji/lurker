@@ -142,6 +142,16 @@ describe('composeNotification', () => {
     ).toBe(presence.tag);
   });
 
+  it('tags a buffer the same whatever case IRC spelled it in', () => {
+    // Two spellings would be two tags: two notifications for one buffer.
+    expect(composeNotification(payload({ target: 'Bob' })).tag).toBe(
+      composeNotification(payload({ target: 'bob' })).tag,
+    );
+    expect(composeNotification(payload({ kind: 'kicked', target: '#Lurker' })).tag).toBe(
+      '7::#lurker::kick',
+    );
+  });
+
   it('tags by buffer so a burst in one channel collapses', () => {
     const a = composeNotification(payload({ kind: 'highlight', target: '#lurker', text: 'one' }));
     const b = composeNotification(payload({ kind: 'highlight', target: '#lurker', text: 'two' }));

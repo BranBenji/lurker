@@ -82,7 +82,7 @@ self.addEventListener('push', (event) => {
   // but the legacy expression yields '' there too, so the two agree either way.
   const title = data.title || legacyTitle(data);
   const body = data.body || data.text || '';
-  const tag = data.tag || `${data.networkId || 0}::${data.target || ''}`;
+  const tag = data.tag || `${data.networkId || 0}::${(data.target || '').toLowerCase()}`;
   event.waitUntil(
     Promise.all([
       self.registration.showNotification(title, {
