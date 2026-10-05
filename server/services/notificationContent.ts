@@ -56,10 +56,28 @@ export interface NotificationContent {
   body: string;
   /**
    * Collapse key: later notifications for the same buffer replace earlier ones
-   * rather than stacking. Maps to the Notification API's `tag` on Web Push,
-   * `aps.thread-id` on APNs, and `android.collapse_key`/`tag` on FCM.
+   * rather than stacking. Maps to the Notification API's `tag` on Web Push and
+   * `aps.thread-id` on APNs. On FCM it rides in the data map and the app passes
+   * it to its own notify() call — see buildFcmMessage.
    */
   tag: string;
+}
+
+/**
+ * Everything a notification needs, as one flat object: the semantic payload plus
+ * the composed copy. This is the Web Push message body, and the FCM data map is
+ * the same keys stringified, so one renderer on the device reads either. That
+ * matters beyond today's two transports: a push relayed for a self-hosted server
+ * (#1045) arrives as an encrypted Web Push body, and the app decrypts it to
+ * exactly this object.
+ *
+ * Composed fields spread LAST, so they win a name clash. A service worker cached
+ * before #490 phase 2 ignores them and composes locally. See sw.js.
+ */
+export type PushBody = PushPayload & NotificationContent;
+
+export function pushBody(payload: PushPayload, content: NotificationContent): PushBody {
+  return { ...payload, ...content };
 }
 
 // "nostimo came online (Libera)". Byte-for-byte the composition sw.js's
@@ -100,6 +118,54 @@ function title(payload: PushPayload): string {
   if (payload.kind === 'friend_online') return friendOnlineTitle(payload);
   if (payload.kind === 'kicked') return kickedTitle(payload);
   return `${payload.nick || 'someone'} in ${payload.target || ''}`;
+}
+
+/**
+ * The most message text a push carries, measured as JSON-encoded UTF-8 bytes —
+ * how the transports measure it. Every transport caps the whole message at 4 KB
+ * (Web Push's encrypted record, the APNs payload, FCM's message), and the text
+ * rides twice: raw as `text`, and stripped as `body`. An inbound draft/multiline
+ * batch is reassembled into one message, so a pasted block can be several KB on
+ * its own. Raw bytes undercount: mIRC formatting codes are control characters,
+ * which JSON escapes to six bytes each (`\u0002`). Over the cap, Web Push
+ * answers 413 and FCM answers INVALID_ARGUMENT — a failed push either way. 1 KB
+ * is more than a lock screen shows, and leaves room for both copies plus the
+ * title and routing keys. The app opens the full message on tap.
+ */
+export const MAX_PUSH_TEXT_BYTES = 1024;
+
+/**
+ * The most network name a push carries, same measure. The name is user-entered
+ * with no length limit, and rides twice (`networkName`, and inside `title`), so
+ * a long one would overflow the 4 KB cap with no message text at all. IRC
+ * bounds the other names (nick, target) on the wire; this one it doesn't.
+ */
+export const MAX_PUSH_NETWORK_NAME_BYTES = 128;
+
+const ELLIPSIS = '…';
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+/** What `s` costs inside a JSON string, in UTF-8 bytes (no quotes). */
+function jsonBytes(s: string): number {
+  return Buffer.byteLength(JSON.stringify(s)) - 2;
+}
+
+/**
+ * Cut `text` to the push budget, marking the cut with an ellipsis. Cuts between
+ * graphemes, so an emoji sequence or a flag is never split into its parts.
+ */
+export function clampPushText(text: string, maxBytes = MAX_PUSH_TEXT_BYTES): string {
+  if (jsonBytes(text) <= maxBytes) return text;
+  const budget = maxBytes - jsonBytes(ELLIPSIS);
+  let out = '';
+  let bytes = 0;
+  for (const { segment } of graphemes.segment(text)) {
+    const size = jsonBytes(segment);
+    if (bytes + size > budget) break;
+    out += segment;
+    bytes += size;
+  }
+  return `${out}${ELLIPSIS}`;
 }
 
 export function composeNotification(payload: PushPayload): NotificationContent {

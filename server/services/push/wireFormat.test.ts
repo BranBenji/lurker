@@ -17,7 +17,12 @@ import { buildApnsRequest } from './apnsSender.js';
 import { buildFcmMessage } from './fcmSender.js';
 import type { ApnsCredentials } from './credentials.js';
 import type { PushSubscription } from '../../db/pushSubscriptions.js';
-import { composeNotification, type PushPayload } from '../notificationContent.js';
+import {
+  clampPushText,
+  composeNotification,
+  pushBody,
+  type PushPayload,
+} from '../notificationContent.js';
 
 const creds: ApnsCredentials = {
   keyPem: '-----BEGIN PRIVATE KEY-----\nx\n-----END PRIVATE KEY-----',
@@ -140,17 +145,97 @@ describe('buildFcmMessage', () => {
       message: Record<string, any>;
     };
 
-  it('addresses the device and carries the composed copy', () => {
+  it('addresses the device with a data-only message', () => {
     const { message } = build();
     expect(message.token).toBe('fcmtoken456');
-    expect(message.notification).toEqual({ title: 'bob (Libera)', body: 'hey there' });
+    // A `notification` block (top-level or under `android`) makes Android draw
+    // the alert itself while the app is backgrounded, and the app's handler
+    // never runs — no channel per kind, no tag replacement, and no way to
+    // decrypt a relayed push (#1045).
+    expect('notification' in message).toBe(false);
+    expect('notification' in message.android).toBe(false);
   });
 
-  it('asks for high priority and collapses per buffer', () => {
+  it('asks for high priority and stays non-collapsible', () => {
     const { message } = build();
     expect(message.android.priority).toBe('HIGH');
-    expect(message.android.collapse_key).toBe('7::bob');
-    expect(message.android.notification.tag).toBe('7::bob');
+    // FCM keeps only four collapse keys per offline device, dropping the rest at
+    // random — per-buffer keys would lose whole buffers' notifications.
+    expect('collapse_key' in message.android).toBe(false);
+  });
+
+  // Every PushPayload field set. Typed Required so a field added to the payload
+  // later must be added here too — and then the reserved-key and scalar checks
+  // below cover it.
+  const full: Required<PushPayload> = {
+    kind: 'dm',
+    networkId: 7,
+    networkName: 'Libera',
+    target: 'bob',
+    bufferId: 9,
+    nick: 'bob',
+    text: 'hey there',
+    time: '2026-10-05T12:00:00.000Z',
+    messageId: 42,
+    displayName: 'bob',
+    badge: 3,
+  };
+
+  it('carries the Web Push body, key for key', () => {
+    // One renderer on the device reads both, so the data map must be the Web
+    // Push body's keys with their values stringified — no key added, none lost.
+    const { message } = build(full);
+    expect(message.data).toEqual({
+      kind: 'dm',
+      networkId: '7',
+      networkName: 'Libera',
+      target: 'bob',
+      bufferId: '9',
+      nick: 'bob',
+      text: 'hey there',
+      time: '2026-10-05T12:00:00.000Z',
+      messageId: '42',
+      displayName: 'bob',
+      badge: '3',
+      title: 'bob (Libera)',
+      body: 'hey there',
+      tag: '7::bob',
+    });
+    expect(Object.keys(message.data).toSorted()).toEqual(
+      Object.keys(pushBody(full, composeNotification(full))).toSorted(),
+    );
+  });
+
+  it('uses no key FCM reserves, and no value that is not a scalar', () => {
+    // FCM refuses a reserved key in `data` with INVALID_ARGUMENT, and an object
+    // value would arrive as "[object Object]".
+    const reserved = (key: string) =>
+      ['from', 'notification', 'message_type'].includes(key) || /^(google|gcm)/i.test(key);
+    const kinds: PushPayload['kind'][] = [
+      'dm',
+      'highlight',
+      'always_notify',
+      'friend_online',
+      'kicked',
+    ];
+    for (const kind of kinds) {
+      const { message } = build({ ...full, kind });
+      expect(Object.keys(message.data).filter(reserved)).toEqual([]);
+      expect(Object.values(message.data).filter((v) => String(v).startsWith('[object'))).toEqual(
+        [],
+      );
+    }
+  });
+
+  it('fits a long multiline paste under the 4 KB message cap once clamped', () => {
+    // The text rides twice (raw and as the stripped body). Four-byte characters
+    // are the worst case for raw bytes; control characters (formatting codes)
+    // and quotes are the worst case once JSON escapes them.
+    for (const raw of ['😀'.repeat(4000), '\x02'.repeat(4000), '"'.repeat(4000)]) {
+      const p = payload({ kind: 'highlight', target: '#lurker', text: clampPushText(raw) });
+      const { message } = build(p);
+      expect(Buffer.byteLength(JSON.stringify(message))).toBeLessThan(4096);
+    }
   });
 
   it('stringifies every data value', () => {
@@ -161,20 +246,14 @@ describe('buildFcmMessage', () => {
     for (const [key, value] of Object.entries(message.data)) {
       expect(typeof value, `data.${key} must be a string`).toBe('string');
     }
-    expect(message.data).toEqual({
-      kind: 'dm',
-      networkId: '7',
-      target: 'bob',
-      messageId: '42',
-      badge: '3',
-    });
   });
 
   it('omits optional data keys rather than sending "undefined"', () => {
     // String(undefined) is the string "undefined" — which FCM would happily
     // accept and the client would happily parse into nonsense.
-    const { message } = build(payload({ messageId: null, badge: undefined }));
+    const { message } = build(payload({ messageId: null, badge: undefined, nick: null }));
     expect('messageId' in message.data).toBe(false);
     expect('badge' in message.data).toBe(false);
+    expect('nick' in message.data).toBe(false);
   });
 });

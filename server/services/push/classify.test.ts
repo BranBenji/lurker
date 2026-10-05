@@ -93,7 +93,15 @@ describe('fcm classify', () => {
     // exact failure a self-hoster would hit trying to push to our build, which
     // is why self-hosted native push isn't a goal (see #490).
     expect(c(403, 'SENDER_ID_MISMATCH')).toBe('permanent');
-    expect(c(400, 'INVALID_ARGUMENT')).toBe('permanent');
+    expect(fcmSender.classify(new FcmError(400, 'INVALID_ARGUMENT', 'bad token', true))).toBe(
+      'permanent',
+    );
+  });
+
+  it('strikes, never deletes, for a message we built wrong', () => {
+    // INVALID_ARGUMENT also means "over 4 KB" or "reserved data key" — our bug,
+    // identical for every device. Permanent would delete the whole fleet.
+    expect(c(400, 'INVALID_ARGUMENT')).toBe('strike');
   });
 
   it('never strikes a device for OUR broken service account', () => {

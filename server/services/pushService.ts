@@ -3,7 +3,12 @@
 
 import webpush from 'web-push';
 import type { PushSubscription } from '../db/pushSubscriptions.js';
-import { composeNotification, type PushPayload } from './notificationContent.js';
+import {
+  clampPushText,
+  composeNotification,
+  MAX_PUSH_NETWORK_NAME_BYTES,
+  type PushPayload,
+} from './notificationContent.js';
 import { senderFor, warnUnconfiguredOnce } from './push/index.js';
 import {
   listEnabledForUser,
@@ -73,7 +78,7 @@ function describeSub(sub: PushSubscription): string {
 
 export async function deliver(
   userId: number,
-  payload: PushPayload,
+  message: PushPayload,
 ): Promise<{ sent: number; dropped: number }> {
   // VAPID is Web Push's business, but it's cheap and idempotent, and hoisting it
   // here keeps the "which transports does this user have?" question out of it.
@@ -81,9 +86,17 @@ export async function deliver(
   const subs = listEnabledForUser(userId);
   if (!subs.length) return { sent: 0, dropped: 0 };
 
+  // Clamped once, here, so no transport can be handed a message over its size
+  // cap — see MAX_PUSH_TEXT_BYTES and MAX_PUSH_NETWORK_NAME_BYTES.
+  const payload: PushPayload = {
+    ...message,
+    networkName: clampPushText(message.networkName, MAX_PUSH_NETWORK_NAME_BYTES),
+    ...(message.text ? { text: clampPushText(message.text) } : {}),
+  };
+
   // Composition is transport-neutral and identical for every device, so it
   // happens once rather than per sub. Each sender renders it its own way — JSON
-  // for a service worker, an `aps` dict for APNs, a `notification` for FCM.
+  // for a service worker, an `aps` dict for APNs, a string data map for FCM.
   const content = composeNotification(payload);
 
   // Skip transports with no credentials rather than attempting them. A

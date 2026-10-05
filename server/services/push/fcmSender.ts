@@ -9,15 +9,16 @@
 // and trade it with Google for an access token, instead of signing the bearer
 // APNs accepts directly.
 //
-// ⚠ Android is paused (see APP_1.0_SCOPE.md), so nothing here has ever pushed to
-// a real device. Auth, token minting/refresh, request shape and error mapping are
-// all exercised — FCM answers a bogus token with a well-formed UNREGISTERED — but
-// "a phone rendered this correctly" is NOT proven and won't be until Android
-// unpauses. Built now anyway because designing the seam against one provider is a
-// guess about where the variation lives; against two it's a measurement.
+// ⚠ Nothing here has pushed to a real device yet (#588). Auth, token
+// minting/refresh, request shape and error mapping are all exercised — FCM
+// answers a bogus token with a well-formed UNREGISTERED — but "a phone rendered
+// this correctly" is NOT proven until the Android app's receiver ships
+// (lurker-android#16). Built ahead of the app because designing the seam against
+// one provider is a guess about where the variation lives; against two it's a
+// measurement.
 
 import type { PushSubscription } from '../../db/pushSubscriptions.js';
-import type { NotificationContent, PushPayload } from '../notificationContent.js';
+import { pushBody, type NotificationContent, type PushPayload } from '../notificationContent.js';
 import type { FailureClass, PushSender } from './types.js';
 import { configuredFcm } from './credentials.js';
 import { signJwt, TokenCache } from './jwt.js';
@@ -34,10 +35,35 @@ export class FcmError extends Error {
     /** Google's machine-readable error status, e.g. 'UNREGISTERED'. */
     readonly reason: string | null,
     message: string,
+    /** Whether Google named the registration token as the bad argument, rather
+     *  than something we built (an oversized message, a reserved data key). */
+    readonly tokenRejected = false,
   ) {
     super(message);
     this.name = 'FcmError';
   }
+}
+
+interface FcmErrorBody {
+  error?: {
+    status?: string;
+    message?: string;
+    details?: { fieldViolations?: { field?: string }[] }[];
+  };
+}
+
+// INVALID_ARGUMENT covers a bad token AND a bad message — over 4 KB, a reserved
+// data key — and only the first is the device's fault. Google's documented
+// answer to a bad token is "The registration token is not a valid FCM
+// registration token"; a field violation on `message.token` is the structured
+// form. Anything else is ours, and must never read as permanent: one payload bug
+// would otherwise delete every Android device that received it.
+function namesTheToken(body: FcmErrorBody): boolean {
+  const error = body.error;
+  if (!error) return false;
+  const violations = (error.details ?? []).flatMap((d) => d.fieldViolations ?? []);
+  if (violations.some((v) => v.field === 'message.token')) return true;
+  return /registration token/i.test(error.message ?? '');
 }
 
 const accessToken = new TokenCache(async () => {
@@ -88,35 +114,46 @@ function isCredentialRejection(status: number | null, reason: string | null): bo
 
 /**
  * The FCM v1 message body, as pure data. Split out from send() for the same
- * reason as buildApnsRequest — and more urgently here, since Android is paused
- * and this is the only check on the shape until it isn't.
+ * reason as buildApnsRequest — and more urgently here, since this is the only
+ * check on the shape until a real device has received one (#588).
+ *
+ * Data-only: there is no `notification` block. With one, Android draws the
+ * notification itself whenever the app is in the background and never calls the
+ * app's FirebaseMessagingService, so the app could not pick a channel per kind,
+ * group by buffer, or replace an earlier notification by tag. It also could not
+ * render a push relayed for a self-hosted server (#1045), which arrives
+ * encrypted and has to be decrypted by the app before anything can be shown.
+ * One renderer serves both because the data map below carries the same keys as
+ * the Web Push body.
+ *
+ * No `collapse_key`: FCM keeps at most four collapse keys per device while it is
+ * offline and drops the rest with no rule for which, so keying per buffer would
+ * lose whole buffers' notifications for a phone with more than four of them
+ * pending. Firebase's guidance for chat is non-collapsible; replacing an earlier
+ * notification for the same buffer is the app's job, using `tag`.
  */
 export function buildFcmMessage(
   sub: PushSubscription,
   payload: PushPayload,
   content: NotificationContent,
 ): Record<string, unknown> {
+  // FCM requires every data value to be a string — a number is rejected with a
+  // 400 INVALID_ARGUMENT, which classify() reads as permanent and DELETES the
+  // device over. Null and undefined are left out rather than stringified into
+  // "null"/"undefined", which a client would parse into nonsense; an absent key
+  // reads the same as the Web Push body's null.
+  const data: Record<string, string> = {};
+  for (const [key, value] of Object.entries(pushBody(payload, content))) {
+    if (value != null) data[key] = String(value);
+  }
   return {
     message: {
       token: sub.endpoint,
-      notification: { title: content.title, body: content.body },
-      android: {
-        priority: 'HIGH',
-        // Same role as the Notification API's tag / APNs' thread-id: a later
-        // notification for a buffer replaces the earlier one.
-        collapse_key: content.tag,
-        notification: { tag: content.tag },
-      },
-      // FCM requires every data value to be a string — a number here is rejected
-      // outright, so this is not the place to be clever about types.
-      data: {
-        kind: payload.kind,
-        networkId: String(payload.networkId),
-        target: payload.target,
-        ...(payload.messageId != null ? { messageId: String(payload.messageId) } : {}),
-        ...(payload.bufferId != null ? { bufferId: String(payload.bufferId) } : {}),
-        ...(typeof payload.badge === 'number' ? { badge: String(payload.badge) } : {}),
-      },
+      // HIGH so a dozing phone wakes to run the app's handler now. Android
+      // deprioritizes an app whose high-priority messages don't end in a visible
+      // notification, so the handler must always post one.
+      android: { priority: 'HIGH' },
+      data,
     },
   };
 }
@@ -156,8 +193,11 @@ export const fcmSender: PushSender = {
     if (res.ok) return;
     const text = await res.text();
     let reason: string | null = null;
+    let tokenRejected = false;
     try {
-      reason = (JSON.parse(text) as { error?: { status?: string } }).error?.status ?? null;
+      const body = JSON.parse(text) as FcmErrorBody;
+      reason = body.error?.status ?? null;
+      tokenRejected = namesTheToken(body);
     } catch {
       /* a non-JSON body just means no reason to read */
     }
@@ -165,6 +205,7 @@ export const fcmSender: PushSender = {
       res.status,
       reason,
       `FCM rejected: ${res.status} ${reason ?? text.slice(0, 300)}`,
+      tokenRejected,
     );
   },
 
@@ -175,9 +216,13 @@ export const fcmSender: PushSender = {
 
     // The app was uninstalled or the token was replaced.
     if (reason === 'UNREGISTERED' || reason === 'NOT_FOUND') return 'permanent';
-    // A token that isn't a token — or, notably, one minted for a DIFFERENT
-    // Firebase project (MismatchSenderId). Retrying never fixes either.
-    if (reason === 'INVALID_ARGUMENT' || reason === 'SENDER_ID_MISMATCH') return 'permanent';
+    // A token minted for a DIFFERENT Firebase project (MismatchSenderId).
+    // Retrying never fixes it.
+    if (reason === 'SENDER_ID_MISMATCH') return 'permanent';
+    // A token that isn't a token is permanent; any other INVALID_ARGUMENT is a
+    // message WE built wrong, so it strikes rather than deletes — see
+    // namesTheToken.
+    if (reason === 'INVALID_ARGUMENT') return e?.tokenRejected ? 'permanent' : 'strike';
     if (status === 404) return 'permanent';
 
     // OUR service account is broken, not this device — same reasoning as APNs'
