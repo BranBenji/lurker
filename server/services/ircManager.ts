@@ -830,12 +830,17 @@ class IrcManager extends EventEmitter {
   // several messages and only the first is the reply. Dropped silently where it
   // can't apply — a line from another buffer, one with no msgid, a network that
   // can't carry the tags, an E2E channel — and the text goes out as written.
+  //
+  // `opts.whole`: `text` is one line its sender already fitted to the wire (an
+  // attached bouncer client's, #1041), so it goes out and is recorded as that
+  // one line, unsplit. An E2E channel still chunks it: ciphertext has its own
+  // budget.
   send(
     userId: number,
     networkId: number,
     target: string,
     text: string,
-    opts: { replyTo?: number } = {},
+    opts: { replyTo?: number; whole?: boolean } = {},
   ): boolean {
     // ⚠⚠ A `=nick` buffer is a DCC CHAT, not IRC. Its text rides a TCP socket we
     // own and must NEVER reach the wire as a target. This is THE chokepoint for
@@ -961,10 +966,10 @@ class IrcManager extends EventEmitter {
       }
       return true;
     }
-    const chunks = splitSay(text);
+    const chunks = opts.whole && text ? [text] : splitSay(text);
     chunks.forEach((chunk, i) => {
       const first = i === 0 && reply;
-      conn.say(target, chunk, first ? reply.tags : null);
+      conn.say(target, chunk, first ? reply.tags : null, opts.whole ?? false);
       if (adoptEcho) return;
       conn.publish({
         type: 'message',
@@ -1019,13 +1024,13 @@ class IrcManager extends EventEmitter {
     return true;
   }
 
-  // `opts.replyTo` as for send(): a /me can answer a line too.
+  // `opts.replyTo` and `opts.whole` as for send(): a /me can answer a line too.
   action(
     userId: number,
     networkId: number,
     target: string,
     text: string,
-    opts: { replyTo?: number } = {},
+    opts: { replyTo?: number; whole?: boolean } = {},
   ): boolean {
     // ⚠⚠ A `=nick` buffer is a DCC CHAT, not IRC. Its text rides a TCP socket we
     // own and must NEVER reach the wire as a target. This is THE chokepoint for
@@ -1050,10 +1055,10 @@ class IrcManager extends EventEmitter {
     // Same echo-adoption gating as send() — see the comment there.
     const adoptEcho = conn.echoActive();
     const reply = this.replyFor(conn, userId, networkId, target, opts.replyTo);
-    const chunks = splitAction(text);
+    const chunks = opts.whole && text ? [text] : splitAction(text);
     chunks.forEach((chunk, i) => {
       const first = i === 0 && reply;
-      conn.action(target, chunk, first ? reply.tags : null);
+      conn.action(target, chunk, first ? reply.tags : null, opts.whole ?? false);
       if (adoptEcho) return;
       conn.publish({
         type: 'action',
@@ -1073,8 +1078,14 @@ class IrcManager extends EventEmitter {
   // own NOTICEs (the cap covers PRIVMSG/NOTICE/TAGMSG alike), so the local
   // self copy is published only where the cap is absent — exactly like
   // send/action. splitSay applies because NOTICE shares PRIVMSG's length
-  // budget.
-  notice(userId: number, networkId: number, target: string, text: string): boolean {
+  // budget, and `opts.whole` as for send().
+  notice(
+    userId: number,
+    networkId: number,
+    target: string,
+    text: string,
+    opts: { whole?: boolean } = {},
+  ): boolean {
     // ⚠⚠ A `=nick` buffer is a DCC CHAT, not IRC. Its text rides a TCP socket we
     // own and must NEVER reach the wire as a target. This is THE chokepoint for
     // that: the composer (wsHub `send`), the MCP `send_message` verb — which
@@ -1096,9 +1107,9 @@ class IrcManager extends EventEmitter {
     if (!conn) return false;
     if (this.refuseCleartextOnE2eChannel(conn, userId, networkId, target, 'notice')) return true;
     const adoptEcho = conn.echoActive();
-    const chunks = splitSay(text);
+    const chunks = opts.whole && text ? [text] : splitSay(text);
     for (const chunk of chunks) {
-      conn.notice(target, chunk);
+      conn.notice(target, chunk, opts.whole ?? false);
       if (adoptEcho) continue;
       conn.publish({
         type: 'notice',

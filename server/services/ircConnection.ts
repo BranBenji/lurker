@@ -5857,10 +5857,15 @@ export class IrcConnection {
     this.client.part(channel, reason);
   }
   // `tags`: client-only tags for this line — a reply's (replyTags).
-  say(target: string, text: string, tags?: Record<string, string> | null): void {
+  // `whole`: write `text` as exactly ONE line, never re-split at irc-framework's
+  // 350 bytes — for a line its sender already fitted to the wire, an attached
+  // bouncer client's (#1041). Re-splitting it moves the boundaries the client
+  // chose, and then its own lines and their echoes no longer match.
+  say(target: string, text: string, tags?: Record<string, string> | null, whole = false): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
     this.noteUserSend(target);
-    this.client.say(target, text, tags ?? undefined);
+    if (whole) this.writeWhole('PRIVMSG', target, text, tags);
+    else this.client.say(target, text, tags ?? undefined);
     // Arm AFTER the send, and never let a DB hiccup in arming break delivery of
     // the user's actual message.
     try {
@@ -5869,9 +5874,13 @@ export class IrcConnection {
       /* arming is best-effort */
     }
   }
-  action(target: string, text: string, tags?: Record<string, string> | null): void {
+  action(target: string, text: string, tags?: Record<string, string> | null, whole = false): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
     this.noteUserSend(target);
+    if (whole) {
+      this.writeWhole('PRIVMSG', target, `\x01ACTION ${text}\x01`, tags);
+      return;
+    }
     if (!tags) {
       this.client.action(target, text);
       return;
@@ -5881,12 +5890,24 @@ export class IrcConnection {
     // splitAction chunk, already within the budget action() would split to.
     this.raw(`@${IRC.MessageTags.encode(tags)} PRIVMSG ${target} :\x01ACTION ${text}\x01`);
   }
-  notice(target: string, text: string): void {
+  notice(target: string, text: string, whole = false): void {
     // Unlike say/action we don't trackDmPeer here: outgoing NOTICEs mirror the
     // inbound rule (NOTICEs don't establish a tracked DM peer), so notice-ing a
     // service or bot doesn't spin up presence tracking for it.
     this.noteUserSend(target);
-    this.client.notice(target, text);
+    if (whole) this.writeWhole('NOTICE', target, text, null);
+    else this.client.notice(target, text);
+  }
+  // One PRIVMSG/NOTICE line, written where irc-framework's sendMessage writes
+  // each block it splits, minus the split.
+  private writeWhole(
+    command: string,
+    target: string,
+    text: string,
+    tags: Record<string, string> | null | undefined,
+  ): void {
+    const tagged = tags && Object.keys(tags).length ? `@${IRC.MessageTags.encode(tags)} ` : '';
+    this.client.raw(`${tagged}${command} ${target} :${text}`);
   }
 
   // --- CTCP (#263) -----------------------------------------------------------

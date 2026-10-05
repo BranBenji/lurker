@@ -2904,24 +2904,40 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         replyMsgid && msg.command === 'PRIVMSG'
           ? this.clientReplyTo(replyMsgid, target)
           : undefined;
+      // The client already split its message to fit the wire, so its line goes
+      // up as it is, the way soju and ZNC relay one: split again at our 350
+      // bytes, its echoes came back on boundaries it never sent and matched
+      // none of its lines (#1041). Only a line that wouldn't fit — a client that
+      // doesn't split at all — is split here, rather than truncated by the
+      // network.
+      const whole = this.fitsOneLine(msg.command, target, text);
       if (isAction) {
         // eslint-disable-next-line no-control-regex
         const body = text.replace(/^\u0001ACTION ?/, '').replace(/\u0001$/, '');
-        for (const chunk of splitAction(body)) this.registerEcho('action', target, chunk);
-        ircManager.action(this.userId, this.networkId, target, body, { replyTo });
+        const chunks = whole ? [body] : splitAction(body);
+        for (const chunk of chunks) this.registerEcho('action', target, chunk);
+        ircManager.action(this.userId, this.networkId, target, body, { replyTo, whole });
       } else if (msg.command === 'PRIVMSG') {
-        const chunks = splitSay(text);
+        const chunks = whole ? [text] : splitSay(text);
         for (const chunk of chunks) this.registerEcho('message', target, chunk);
         // On an E2E channel the self event carries the full body as ONE event
         // (not per wire chunk), so register the whole text too when it split.
         // The unmatched leftover key expires harmlessly (see pendingEcho).
         if (chunks.length > 1) this.registerEcho('message', target, text);
-        ircManager.send(this.userId, this.networkId, target, text, { replyTo });
+        ircManager.send(this.userId, this.networkId, target, text, { replyTo, whole });
       } else {
-        for (const chunk of splitSay(text)) this.registerEcho('notice', target, chunk);
-        ircManager.notice(this.userId, this.networkId, target, text);
+        const chunks = whole ? [text] : splitSay(text);
+        for (const chunk of chunks) this.registerEcho('notice', target, chunk);
+        ircManager.notice(this.userId, this.networkId, target, text, { whole });
       }
     }
+  }
+
+  // Whether `text` fits one IRC line as the network relays it to everyone else,
+  // our prefix in front: the prefix this client was told is ours, so the budget
+  // it split by is the one we check. Tags have a budget of their own.
+  private fitsOneLine(command: string, target: string, text: string): boolean {
+    return Buffer.byteLength(`:${this.selfPrefix()} ${command} ${target} :${text}\r\n`) <= 512;
   }
 
   // The stored line a client's reply names, in the buffer the message goes to:

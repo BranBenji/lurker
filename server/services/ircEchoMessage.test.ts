@@ -456,9 +456,9 @@ describe('ircManager optimistic-publish gating', () => {
     ircManager.action(userId, networkId, '#gate', 'waves');
     ircManager.notice(userId, networkId, '#gate', 'psst');
     // The third argument is a reply's tags — none here.
-    expect(say).toHaveBeenCalledWith('#gate', 'hi', null);
-    expect(action).toHaveBeenCalledWith('#gate', 'waves', null);
-    expect(notice).toHaveBeenCalledWith('#gate', 'psst');
+    expect(say).toHaveBeenCalledWith('#gate', 'hi', null, false);
+    expect(action).toHaveBeenCalledWith('#gate', 'waves', null, false);
+    expect(notice).toHaveBeenCalledWith('#gate', 'psst', false);
     expect(publish).not.toHaveBeenCalled();
   });
 
