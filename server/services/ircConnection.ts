@@ -5932,6 +5932,13 @@ export class IrcConnection {
 
   // One PRIVMSG/NOTICE line, written where irc-framework's sendMessage writes
   // each block it splits, minus the split.
+  //
+  // ⚠ Stripped of CR/LF/NUL first, as raw() strips its lines: irc-framework
+  // writes a line verbatim and appends its own CRLF, so a newline inside the
+  // text would end this command and start another. splitSay cuts on newlines,
+  // but a /me body is never pre-split — `waves\r\nQUIT` would have gone out as
+  // a QUIT (#1044 review; the untagged /me was open to it before, through
+  // client.action).
   private writeLine(
     command: string,
     target: string,
@@ -5939,7 +5946,8 @@ export class IrcConnection {
     tags: Record<string, string> | null | undefined,
   ): void {
     const tagged = tags && Object.keys(tags).length ? `@${IRC.MessageTags.encode(tags)} ` : '';
-    this.client.raw(`${tagged}${command} ${target} :${text}`);
+    // eslint-disable-next-line no-control-regex
+    this.client.raw(`${tagged}${command} ${target} :${text}`.replace(/[\u000d\u000a\u0000]/g, ''));
   }
 
   // --- Line budget (#1043) ---------------------------------------------------

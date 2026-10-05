@@ -207,4 +207,32 @@ describe('the line budget', () => {
     await until(() => conn.userhostBytes() === real, 5000, 'learned from the echo');
     expect(events.some((e) => e.type === 'line-budget' && e.userhostBytes === real)).toBe(true);
   });
+
+  // Every PRIVMSG/NOTICE goes out through one writer, and a newline inside the
+  // text must not end the command and start another: a /me body is never
+  // pre-split on newlines, so it can carry one to the wire.
+  it('writes one command per line, whatever the text carries', async () => {
+    const { networkId, nick } = await joined(plain);
+    const conn = ircManager.getConnection(userId, networkId)!;
+    const before = plain.client(nick)!.sent.length;
+
+    conn.action('#room', 'waves\r\nQUIT :untagged');
+    conn.action('#room', 'nods\r\nQUIT :tagged', { '+draft/reply': 'm1' });
+    conn.say('#room', 'hi\nQUIT :say');
+    conn.notice('#room', 'psst\u0000\rQUIT :notice');
+    await until(
+      () => upstream(plain, nick, 'NOTICE', '#room').length >= 1,
+      5000,
+      'the lines upstream',
+    );
+
+    const sent = plain.client(nick)!.sent.slice(before);
+    expect(sent.map((l) => ircLineParser(l)?.command)).toEqual([
+      'PRIVMSG',
+      'PRIVMSG',
+      'PRIVMSG',
+      'NOTICE',
+    ]);
+    expect(conn.state).toBe('connected');
+  });
 });
