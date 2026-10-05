@@ -30,8 +30,10 @@ const MAX_PER_BUFFER = 500;
 const MAX_MERGE_ROWS = 250;
 const MAX_SPEAKERS = 128;
 
-// Drop the oldest speakers past MAX_SPEAKERS, never one of `keep` — the entry just written, and on
-// a rename the old nick too, since the pair is what the smart filter asks about.
+// Drop the oldest speakers past MAX_SPEAKERS, never one of `keep`. Only a rename protects keys —
+// its old/new pair is what the smart filter asks about, and the copy shares the old nick's time,
+// so either could be the oldest. Everything else keeps the newest timestamps, even when the
+// entry just written is the stale one (a backfilled line from a new nick).
 function capSpeakers(speakers: Record<string, SpeakerEntry>, ...keep: string[]): void {
   const keys = Object.keys(speakers);
   for (let excess = keys.length - MAX_SPEAKERS; excess > 0; excess--) {
@@ -1277,7 +1279,7 @@ export const useBuffersStore = defineStore('buffers', {
       const existing = buf.speakers[lc];
       if (existing && existing.lastTime >= time) return;
       buf.speakers[lc] = { nick, lastTime: time };
-      capSpeakers(buf.speakers, lc);
+      capSpeakers(buf.speakers);
     },
     seedSpeakers(networkId: number | string, target: string, list: SpeakerEntry[]) {
       if (!Array.isArray(list)) return;

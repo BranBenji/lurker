@@ -1350,4 +1350,15 @@ describe('speakers across a rename', () => {
     expect(sp['alice_afk']).toBeTruthy();
     expect(sp['u0']).toBeUndefined();
   });
+  it('keeps the newest times when a stale speaker arrives at the cap', () => {
+    // Only a rename protects keys. A new nick with an OLDER time than everyone held is the one
+    // that goes, not the oldest of the rest.
+    const store = useBuffersStore();
+    for (let i = 0; i < 128; i++) store.recordSpeaker(1, '#a', `u${i}`, 100 + i);
+    store.recordSpeaker(1, '#a', 'late', 1);
+    const sp = store.byKey('1::#a')!.speakers;
+    expect(Object.keys(sp)).toHaveLength(128);
+    expect(sp['late']).toBeUndefined();
+    expect(sp['u0']).toBeTruthy();
+  });
 });
