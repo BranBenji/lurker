@@ -72,7 +72,9 @@ export function trimTrailingPunctuation(s: string): string {
   let end = s.length;
   while (end > 0) {
     const ch = s[end - 1];
-    if ('.,;:!?\'"'.includes(ch)) {
+    // ⚠ `…` is sentence punctuation too: macOS substitutes it for `...` as you type, so
+    // `see https://example.com/a…` otherwise links to an address ending in an ellipsis.
+    if ('.,;:!?\'"…'.includes(ch)) {
       end--;
       continue;
     }
@@ -116,12 +118,18 @@ function urlHref(matched: string): string {
  * the `>` and the brackets stop being recognised on exactly the URLs whose ends are ambiguous —
  * which is the case the convention exists for.
  *
- * ⚠ No scheme test, deliberately: `<www.example.com>` is the same convention, and the callers
- * apply their own scheme rules afterwards.
+ * ⚠⚠ Only a match that carries a scheme or `www.` — a bare email address never counts.
+ * `<foo@bar.com>` is the mail-address convention (`Co-Authored-By: X <a@b.com>`), where the
+ * brackets are part of what was written, and treating them as plumbing dropped them from the
+ * rendered line. `<www.example.com>` is the URL convention all the same.
  */
 export function isBracketedUrl(text: string, index: number, rawMatch: string): boolean {
   // `text[-1]` is undefined rather than an error, so a match at position 0 falls out here.
-  return text[index - 1] === '<' && text[index + rawMatch.length] === '>';
+  return (
+    text[index - 1] === '<' &&
+    text[index + rawMatch.length] === '>' &&
+    /^(?:(?:https?|ftps?):\/\/|mailto:|www\.)/i.test(rawMatch)
+  );
 }
 
 interface UrlSegment {

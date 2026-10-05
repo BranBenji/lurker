@@ -86,6 +86,7 @@ describe('previewableUrls — what counts as a URL', () => {
     expect(previewableUrls('go to https://e.test/page.', BOTH)).toEqual(['https://e.test/page']);
     expect(previewableUrls('really? https://e.test/x!', BOTH)).toEqual(['https://e.test/x']);
     expect(previewableUrls('(https://e.test/y)', BOTH)).toEqual(['https://e.test/y']);
+    expect(previewableUrls('see https://e.test/a…', BOTH)).toEqual(['https://e.test/a']);
   });
 
   it('keeps a path that legitimately contains punctuation', () => {
@@ -328,6 +329,7 @@ describe('hideableUrls — when the address stops being worth showing', () => {
     expect([...hideableUrls(`look at this ${A}!`, all(A))]).toEqual([A]);
     expect([...hideableUrls(`look at this ${A}?`, all(A))]).toEqual([A]);
     expect([...hideableUrls(`look at this ${A}...`, all(A))]).toEqual([A]);
+    expect([...hideableUrls(`look at this ${A}…`, all(A))]).toEqual([A]);
     // ...and prose still wins over punctuation, which is the rule the fix must not soften.
     expect([...hideableUrls(`I read ${A}. this morning`, all(A))]).toEqual([]);
   });
@@ -387,6 +389,11 @@ describe('segmentsWithoutUrls — closing the gap', () => {
   // its own, and the end-trim below strips whitespace only.
   it('takes the punctuation the address trim split off with it', () => {
     const segs = [{ text: 'look at this ' }, { text: A, url: A }, { text: '.' }];
+    expect(segmentsWithoutUrls(segs, new Set([A]))).toEqual([{ text: 'look at this' }]);
+  });
+
+  it('takes a trailing ellipsis with it too', () => {
+    const segs = [{ text: 'look at this ' }, { text: A, url: A }, { text: '…' }];
     expect(segmentsWithoutUrls(segs, new Set([A]))).toEqual([{ text: 'look at this' }]);
   });
 
