@@ -830,8 +830,9 @@ export class IrcConnection {
   // full line overflow, so every source that can carry a change is read.
   private selfUser: string | null = null;
   private selfHost: string | null = null;
-  // The ident our identd answers for this connection, when it does: what the
-  // network shows in place of `~username` (#643).
+  // The ident our identd answers for this connection, when it does — ours on a
+  // direct socket, the engine's when it holds the socket: what the network
+  // shows in place of `~username` (#643).
   private identdIdent: string | null = null;
   disposed: boolean;
   connectCommandTimer: ReturnType<typeof setTimeout> | null;
@@ -5432,11 +5433,13 @@ export class IrcConnection {
     return {
       transport: EngineTransport,
       engineConnId: engineConnectionId(this.network.user_id, this.network.id),
-      engineIdent: deriveIdent({
+      // Kept for the line budget too, as the direct socket's identd answer is:
+      // the network shows it in place of `~username` (#1043).
+      engineIdent: (this.identdIdent = deriveIdent({
         nodeMode: isNodeMode(),
         accountUsername: account?.username || '',
         accountIdent: account?.ident || null,
-      }),
+      })),
       engineHooks: {
         onTransport: (t) => {
           this.engineTransport = t as EngineTransport;
