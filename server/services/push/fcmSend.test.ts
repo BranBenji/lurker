@@ -79,7 +79,8 @@ afterEach(() => {
 
 describe('fcm send reads INVALID_ARGUMENT', () => {
   it('deletes a device whose token Google names as invalid', async () => {
-    // Google's documented body for a bad token (FCM error-codes page).
+    // Captured from live FCM v1 on 2026-10-05, answering a send to a made-up
+    // token. It carries BOTH signals namesTheToken reads.
     const verdict = await verdictFor({
       error: {
         code: 400,
@@ -90,7 +91,28 @@ describe('fcm send reads INVALID_ARGUMENT', () => {
             '@type': 'type.googleapis.com/google.firebase.fcm.v1.FcmError',
             errorCode: 'INVALID_ARGUMENT',
           },
+          {
+            '@type': 'type.googleapis.com/google.rpc.BadRequest',
+            fieldViolations: [
+              {
+                field: 'message.token',
+                description: 'The registration token is not a valid FCM registration token',
+              },
+            ],
+          },
         ],
+      },
+    });
+    expect(verdict).toBe('permanent');
+  });
+
+  it('deletes a device on the message wording alone', async () => {
+    // The body Firebase's error-codes page documents: no field violation.
+    const verdict = await verdictFor({
+      error: {
+        code: 400,
+        message: 'The registration token is not a valid FCM registration token',
+        status: 'INVALID_ARGUMENT',
       },
     });
     expect(verdict).toBe('permanent');
