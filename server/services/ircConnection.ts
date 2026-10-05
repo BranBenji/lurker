@@ -813,6 +813,12 @@ export class IrcConnection {
     monitorTargets: () => this.rawMonitored.values(),
     onMonitorDropped: (nicks, limit) => this.dropRawMonitors(nicks, limit),
   };
+  // Our user@host as the network relays it, from a line that carried our own
+  // prefix: our JOIN, our CHGHOST. Null until one has, and again on each new
+  // registration. irc-framework only learns these from a WHO or a 396, and
+  // never follows a CHGHOST, so the bouncer's line budget (#1041) and the
+  // prefix it shows its clients were a guess without this.
+  private selfUserhost: { user: string; host: string } | null = null;
   disposed: boolean;
   connectCommandTimer: ReturnType<typeof setTimeout> | null;
   lagMs: number | null;
@@ -1783,6 +1789,7 @@ export class IrcConnection {
     on('registered', (event: Record<string, unknown>) => {
       this.userModes.clear();
       this.lagMs = null;
+      this.selfUserhost = null;
       // A full, registered connection is the only signal that the network is
       // genuinely reachable again — reset the backoff so a later drop starts a
       // fresh, fast retry ladder instead of inheriting a long prior interval.
@@ -2348,6 +2355,7 @@ export class IrcConnection {
       if (!mask) return;
 
       if (isSelf) {
+        this.learnSelfUserhost(newIdent, newHost);
         // Keep the long-standing server-buffer line for your own host change —
         // it's the SASL-cloak confirmation, and it belongs where you'll see it
         // even when you share no channels yet.
@@ -2744,6 +2752,7 @@ export class IrcConnection {
       // line replayed for a channel we have since left, say. Fold-aware, like
       // the NAMES and TOPIC handlers.
       const ch = isSelf ? this.upsertChannel(eventChannel) : this.channelState(eventChannel);
+      if (isSelf) this.learnSelfUserhost(event.ident as string, event.hostname as string);
       // extended-join: irc-framework parses the account param when the cap is
       // enabled, and omits the key when it isn't (#508).
       const joinAccount = normalizeAccount(event.account);
@@ -5857,10 +5866,15 @@ export class IrcConnection {
     this.client.part(channel, reason);
   }
   // `tags`: client-only tags for this line — a reply's (replyTags).
-  say(target: string, text: string, tags?: Record<string, string> | null): void {
+  // `whole`: write `text` as exactly ONE line, never re-split at irc-framework's
+  // 350 bytes — for a line its sender already fitted to the wire, an attached
+  // bouncer client's (#1041). Re-splitting it moves the boundaries the client
+  // chose, and then its own lines and their echoes no longer match.
+  say(target: string, text: string, tags?: Record<string, string> | null, whole = false): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
     this.noteUserSend(target);
-    this.client.say(target, text, tags ?? undefined);
+    if (whole) this.writeWhole('PRIVMSG', target, text, tags);
+    else this.client.say(target, text, tags ?? undefined);
     // Arm AFTER the send, and never let a DB hiccup in arming break delivery of
     // the user's actual message.
     try {
@@ -5869,9 +5883,13 @@ export class IrcConnection {
       /* arming is best-effort */
     }
   }
-  action(target: string, text: string, tags?: Record<string, string> | null): void {
+  action(target: string, text: string, tags?: Record<string, string> | null, whole = false): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
     this.noteUserSend(target);
+    if (whole) {
+      this.writeWhole('PRIVMSG', target, `\x01ACTION ${text}\x01`, tags);
+      return;
+    }
     if (!tags) {
       this.client.action(target, text);
       return;
@@ -5881,12 +5899,36 @@ export class IrcConnection {
     // splitAction chunk, already within the budget action() would split to.
     this.raw(`@${IRC.MessageTags.encode(tags)} PRIVMSG ${target} :\x01ACTION ${text}\x01`);
   }
-  notice(target: string, text: string): void {
+  notice(target: string, text: string, whole = false): void {
     // Unlike say/action we don't trackDmPeer here: outgoing NOTICEs mirror the
     // inbound rule (NOTICEs don't establish a tracked DM peer), so notice-ing a
     // service or bot doesn't spin up presence tracking for it.
     this.noteUserSend(target);
-    this.client.notice(target, text);
+    if (whole) this.writeWhole('NOTICE', target, text, null);
+    else this.client.notice(target, text);
+  }
+  /** Our user@host as the network relays it, or null while no line of ours
+   *  has shown it (see selfUserhost). */
+  knownSelfUserhost(): { user: string; host: string } | null {
+    return this.selfUserhost;
+  }
+  private learnSelfUserhost(user: string | undefined, host: string | undefined): void {
+    if (!user || !host) return;
+    this.selfUserhost = { user, host };
+    this.client.user.username = user;
+    this.client.user.host = host;
+  }
+
+  // One PRIVMSG/NOTICE line, written where irc-framework's sendMessage writes
+  // each block it splits, minus the split.
+  private writeWhole(
+    command: string,
+    target: string,
+    text: string,
+    tags: Record<string, string> | null | undefined,
+  ): void {
+    const tagged = tags && Object.keys(tags).length ? `@${IRC.MessageTags.encode(tags)} ` : '';
+    this.client.raw(`${tagged}${command} ${target} :${text}`);
   }
 
   // --- CTCP (#263) -----------------------------------------------------------
