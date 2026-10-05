@@ -134,6 +134,14 @@ function title(payload: PushPayload): string {
  */
 export const MAX_PUSH_TEXT_BYTES = 1024;
 
+/**
+ * The most network name a push carries, same measure. The name is user-entered
+ * with no length limit, and rides twice (`networkName`, and inside `title`), so
+ * a long one would overflow the 4 KB cap with no message text at all. IRC
+ * bounds the other names (nick, target) on the wire; this one it doesn't.
+ */
+export const MAX_PUSH_NETWORK_NAME_BYTES = 128;
+
 const ELLIPSIS = '…';
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 
@@ -146,9 +154,9 @@ function jsonBytes(s: string): number {
  * Cut `text` to the push budget, marking the cut with an ellipsis. Cuts between
  * graphemes, so an emoji sequence or a flag is never split into its parts.
  */
-export function clampPushText(text: string): string {
-  if (jsonBytes(text) <= MAX_PUSH_TEXT_BYTES) return text;
-  const budget = MAX_PUSH_TEXT_BYTES - jsonBytes(ELLIPSIS);
+export function clampPushText(text: string, maxBytes = MAX_PUSH_TEXT_BYTES): string {
+  if (jsonBytes(text) <= maxBytes) return text;
+  const budget = maxBytes - jsonBytes(ELLIPSIS);
   let out = '';
   let bytes = 0;
   for (const { segment } of graphemes.segment(text)) {

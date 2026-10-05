@@ -138,6 +138,18 @@ describe('deliver dispatches by transport', () => {
     }
   });
 
+  it('clamps a long network name, which rides in the title too', async () => {
+    addNative(user.id, 'fcm', `fcm-${user.id}`);
+    await pushService.deliver(user.id, { ...payload, networkName: 'n'.repeat(2100) });
+    const [, sent, content] = stubs.fcm.send.mock.calls[0] as [
+      unknown,
+      PushPayload,
+      { title: string },
+    ];
+    expect(Buffer.byteLength(sent.networkName)).toBeLessThanOrEqual(128);
+    expect(content.title).toBe(`bob (${sent.networkName})`);
+  });
+
   it('one transport failing does not stop the others', async () => {
     addWebpush(user.id, `https://push.test/${user.id}`);
     addNative(user.id, 'apns', `apns-${user.id}`);
