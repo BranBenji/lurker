@@ -103,10 +103,30 @@ describe('deliver', () => {
     // Composed here rather than in the service worker, because APNs/FCM have no
     // worker to compose for them.
     expect(body).toMatchObject({ title: 'bob (Libera)', body: 'hi', tag: '3::bob' });
-    // ...and the semantic fields still ride along, which is what lets a service
-    // worker cached before this change keep composing locally instead of
-    // rendering an empty notification.
-    expect(body).toMatchObject({ kind: 'dm', nick: 'bob', text: 'hi', networkId: 3 });
+    // ...and the routing fields ride along, for a tap to land in the buffer.
+    expect(body).toMatchObject({ kind: 'dm', target: 'bob', networkId: 3 });
+    // The raw text does not: `body` carries the same words, formatting stripped,
+    // and a second copy doubled the biggest field on a 4 KB wire (#1045).
+    expect('text' in body).toBe(false);
+  });
+
+  it('sends with a 48-hour lifetime, high urgency, and a topic per buffer', async () => {
+    sendNotification.mockResolvedValue({ statusCode: 201 });
+    await pushService.deliver(alice.id, samplePayload());
+    await pushService.deliver(alice.id, { ...samplePayload(), text: 'later' });
+    await pushService.deliver(alice.id, { ...samplePayload(), target: 'carol', nick: 'carol' });
+    const options = sendNotification.mock.calls.map(
+      (call) => call[2] as { TTL: number; urgency: string; topic: string },
+    );
+    // Not web-push's four-week default, and not `normal`, which a push service
+    // may hold for a sleeping phone.
+    expect(options[0]).toMatchObject({ TTL: 48 * 60 * 60, urgency: 'high' });
+    // RFC 8030: at most 32 characters of the URL-safe base64 alphabet.
+    expect(options[0].topic).toMatch(/^[A-Za-z0-9_-]{1,32}$/);
+    // A later push to the same buffer replaces an undelivered one; another
+    // buffer's doesn't. (Two subscriptions each, hence the stride.)
+    expect(options[2].topic).toBe(options[0].topic);
+    expect(options[4].topic).not.toBe(options[0].topic);
   });
 
   // 410/transient/strike rejection paths exist in pushService but vitest's

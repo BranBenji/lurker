@@ -9,9 +9,15 @@
 // measured against: it went first through the seam precisely to check the seam
 // could hold something real.
 
+import crypto from 'crypto';
 import webpush from 'web-push';
 import type { PushSubscription } from '../../db/pushSubscriptions.js';
-import { pushBody, type NotificationContent, type PushPayload } from '../notificationContent.js';
+import {
+  PUSH_TTL_SECONDS,
+  pushBody,
+  type NotificationContent,
+  type PushPayload,
+} from '../notificationContent.js';
 import type { FailureClass, PushSender } from './types.js';
 
 interface WebPushErrorish {
@@ -38,6 +44,28 @@ function webpushBody(payload: PushPayload, content: NotificationContent): string
   return body;
 }
 
+/**
+ * The Web Push `Topic` for a collapse tag (RFC 8030 §5.4): a push service holding
+ * an undelivered push replaces it with a newer one on the same topic, so a phone
+ * that was off gets the buffer's latest rather than a queue of them — what the tag
+ * already does to notifications on screen. A topic is at most 32 characters of the
+ * URL-safe base64 alphabet, and a tag (`7::#lurker`) is neither, so it's hashed.
+ * A relay maps it to the APNs collapse id / FCM collapse key (#1045).
+ */
+export function webpushTopic(tag: string): string {
+  return crypto.createHash('sha256').update(tag).digest('base64url').slice(0, 32);
+}
+
+/**
+ * The delivery policy every Web Push goes out with. `high` urgency because a chat
+ * message is wanted now: at `normal`, a push service may hold it for a sleeping
+ * phone (Android's Doze, on FCM's Web Push endpoint), and a relay reads urgency as
+ * APNs/FCM priority.
+ */
+export function webpushOptions(content: NotificationContent): webpush.RequestOptions {
+  return { TTL: PUSH_TTL_SECONDS, urgency: 'high', topic: webpushTopic(content.tag) };
+}
+
 export const webpushSender: PushSender = {
   transport: 'webpush',
 
@@ -60,6 +88,7 @@ export const webpushSender: PushSender = {
     await webpush.sendNotification(
       { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
       webpushBody(payload, content),
+      webpushOptions(content),
     );
   },
 

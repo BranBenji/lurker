@@ -20,6 +20,7 @@ import type { PushSubscription } from '../../db/pushSubscriptions.js';
 import {
   clampPushText,
   composeNotification,
+  MAX_PUSH_NETWORK_NAME_BYTES,
   pushBody,
   type PushPayload,
 } from '../notificationContent.js';
@@ -159,6 +160,8 @@ describe('buildFcmMessage', () => {
   it('asks for high priority and stays non-collapsible', () => {
     const { message } = build();
     expect(message.android.priority).toBe('HIGH');
+    // The same 48 hours as Web Push, not FCM's four-week default.
+    expect(message.android.ttl).toBe('172800s');
     // FCM keeps only four collapse keys per offline device, dropping the rest at
     // random — per-buffer keys would lose whole buffers' notifications.
     expect('collapse_key' in message.android).toBe(false);
@@ -192,7 +195,6 @@ describe('buildFcmMessage', () => {
       target: 'bob',
       bufferId: '9',
       nick: 'bob',
-      text: 'hey there',
       time: '2026-10-05T12:00:00.000Z',
       messageId: '42',
       displayName: 'bob',
@@ -227,14 +229,41 @@ describe('buildFcmMessage', () => {
     }
   });
 
+  // The worst push deliver() can build: every name at its longest (a channel
+  // name is IRC-bounded; 64 is a generous CHANNELLEN), the text at its clamp.
+  // Four-byte characters are the worst case for raw bytes; quotes and control
+  // characters (formatting codes) are the worst case once JSON escapes them.
+  const worstCases = ['😀'.repeat(4000), '"'.repeat(4000), '\x02'.repeat(4000)].map((raw) =>
+    payload({
+      kind: 'highlight',
+      networkId: 123456,
+      networkName: clampPushText('n'.repeat(500), MAX_PUSH_NETWORK_NAME_BYTES),
+      target: `#${'c'.repeat(63)}`,
+      bufferId: 9999999,
+      nick: 'n'.repeat(30),
+      text: clampPushText(raw),
+      time: '2026-10-05T12:00:00.000Z',
+      messageId: 123456789012,
+      badge: 9999,
+    }),
+  );
+
   it('fits a long multiline paste under the 4 KB message cap once clamped', () => {
-    // The text rides twice (raw and as the stripped body). Four-byte characters
-    // are the worst case for raw bytes; control characters (formatting codes)
-    // and quotes are the worst case once JSON escapes them.
-    for (const raw of ['😀'.repeat(4000), '\x02'.repeat(4000), '"'.repeat(4000)]) {
-      const p = payload({ kind: 'highlight', target: '#lurker', text: clampPushText(raw) });
+    for (const p of worstCases) {
       const { message } = build(p);
       expect(Buffer.byteLength(JSON.stringify(message))).toBeLessThan(4096);
+    }
+  });
+
+  it('leaves a relayed push room inside an APNs payload (#1045)', () => {
+    // A self-hosted server's push reaches the iOS app through a relay that puts
+    // the encrypted Web Push body, base64, into an APNs payload — also capped at
+    // 4 KB, with the relay's own `aps` wrapper around it. aes128gcm adds an
+    // 86-byte header, a padding delimiter and a 16-byte tag (RFC 8188/8291).
+    for (const p of worstCases) {
+      const plain = Buffer.byteLength(JSON.stringify(pushBody(p, composeNotification(p))));
+      const base64 = Math.ceil((86 + plain + 1 + 16) / 3) * 4;
+      expect(base64).toBeLessThan(3000);
     }
   });
 

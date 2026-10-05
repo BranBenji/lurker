@@ -18,7 +18,12 @@
 // measurement.
 
 import type { PushSubscription } from '../../db/pushSubscriptions.js';
-import { pushBody, type NotificationContent, type PushPayload } from '../notificationContent.js';
+import {
+  PUSH_TTL_SECONDS,
+  pushBody,
+  type NotificationContent,
+  type PushPayload,
+} from '../notificationContent.js';
 import type { FailureClass, PushSender } from './types.js';
 import { configuredFcm } from './credentials.js';
 import { signJwt, TokenCache } from './jwt.js';
@@ -152,7 +157,7 @@ export function buildFcmMessage(
       // HIGH so a dozing phone wakes to run the app's handler now. Android
       // deprioritizes an app whose high-priority messages don't end in a visible
       // notification, so the handler must always post one.
-      android: { priority: 'HIGH' },
+      android: { priority: 'HIGH', ttl: `${PUSH_TTL_SECONDS}s` },
       data,
     },
   };
