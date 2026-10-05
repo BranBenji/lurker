@@ -29,6 +29,22 @@ const MAX_PER_BUFFER = 500;
 // regardless of what the server reported for the full page.
 const MAX_MERGE_ROWS = 250;
 const MAX_SPEAKERS = 128;
+
+// Drop the oldest speakers past MAX_SPEAKERS, never one of `keep` — the entry just written, and on
+// a rename the old nick too, since the pair is what the smart filter asks about.
+function capSpeakers(speakers: Record<string, SpeakerEntry>, ...keep: string[]): void {
+  const keys = Object.keys(speakers);
+  for (let excess = keys.length - MAX_SPEAKERS; excess > 0; excess--) {
+    let oldestKey: string | null = null;
+    for (const k of keys) {
+      if (keep.includes(k) || !(k in speakers)) continue;
+      if (oldestKey == null || speakers[k].lastTime < speakers[oldestKey].lastTime) oldestKey = k;
+    }
+    if (oldestKey == null) return;
+    delete speakers[oldestKey];
+  }
+}
+
 const TYPING_DURATIONS: Record<string, number> = { active: 6000, paused: 30000 };
 
 const typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1243,8 +1259,14 @@ export const useBuffersStore = defineStore('buffers', {
       if (oldLc && newLc && buf.speakers[oldLc]) {
         const lastTime = buf.speakers[oldLc].lastTime;
         const existing = buf.speakers[newLc];
-        if (!existing || existing.lastTime < lastTime) {
-          buf.speakers[newLc] = { nick: newNick, lastTime };
+        // A case-only rename folds to the same key, which still has to take the new spelling or
+        // completion goes on offering the old one.
+        if (!existing || existing.lastTime < lastTime || oldLc === newLc) {
+          buf.speakers[newLc] = {
+            nick: newNick,
+            lastTime: Math.max(lastTime, existing?.lastTime ?? 0),
+          };
+          capSpeakers(buf.speakers, oldLc, newLc);
         }
       }
     },
@@ -1255,14 +1277,7 @@ export const useBuffersStore = defineStore('buffers', {
       const existing = buf.speakers[lc];
       if (existing && existing.lastTime >= time) return;
       buf.speakers[lc] = { nick, lastTime: time };
-      const keys = Object.keys(buf.speakers);
-      if (keys.length > MAX_SPEAKERS) {
-        let oldestKey = keys[0];
-        for (const k of keys) {
-          if (buf.speakers[k].lastTime < buf.speakers[oldestKey].lastTime) oldestKey = k;
-        }
-        delete buf.speakers[oldestKey];
-      }
+      capSpeakers(buf.speakers, lc);
     },
     seedSpeakers(networkId: number | string, target: string, list: SpeakerEntry[]) {
       if (!Array.isArray(list)) return;

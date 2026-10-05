@@ -74,7 +74,7 @@ describe('MessageList — smart filter and renames', () => {
     const said = row('message', 'alice', 0);
     const renamed = row('nick', 'alice', 1, { newNick: 'alice_afk' });
     buffers.recordSpeaker(1, '#chan', 'alice', at(0));
-    // What useSocket does as the nick event lands: the speaker entry moves to the new name.
+    // What useSocket does as the nick event lands: the speaker entry is copied to the new name.
     buffers.renameMember(1, '#chan', 'alice', 'alice_afk');
     const w = mountWith([said, renamed]);
     expect(shown(w, said.id)).toBe(true);
