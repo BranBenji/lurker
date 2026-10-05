@@ -1235,9 +1235,13 @@ export const useBuffersStore = defineStore('buffers', {
       }
       const oldLc = oldNick?.toLowerCase();
       const newLc = newNick?.toLowerCase();
+      // ⚠⚠ Copied, not moved. The smart filter asks whether a rename's actor spoke just BEFORE
+      // it, and one time per nick can't answer that once the new nick speaks: the moved entry is
+      // overwritten and the rename row hides again. Keeping the old entry is also the shape the
+      // server's history seed has (speakers grouped by the nick each line was sent under).
+      // Channel completion filters speakers by membership, so the old nick isn't offered there.
       if (oldLc && newLc && buf.speakers[oldLc]) {
         const lastTime = buf.speakers[oldLc].lastTime;
-        delete buf.speakers[oldLc];
         const existing = buf.speakers[newLc];
         if (!existing || existing.lastTime < lastTime) {
           buf.speakers[newLc] = { nick: newNick, lastTime };

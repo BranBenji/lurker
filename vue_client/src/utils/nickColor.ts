@@ -118,7 +118,7 @@ function urlHref(matched: string): string {
  * the `>` and the brackets stop being recognised on exactly the URLs whose ends are ambiguous —
  * which is the case the convention exists for.
  *
- * ⚠⚠ Only a match that carries a scheme or `www.` — a bare email address never counts.
+ * ⚠⚠ A bare email address never counts.
  * `<foo@bar.com>` is the mail-address convention (`Co-Authored-By: X <a@b.com>`), where the
  * brackets are part of what was written, and treating them as plumbing dropped them from the
  * rendered line. `<www.example.com>` is the URL convention all the same.
@@ -128,7 +128,9 @@ export function isBracketedUrl(text: string, index: number, rawMatch: string): b
   return (
     text[index - 1] === '<' &&
     text[index + rawMatch.length] === '>' &&
-    /^(?:(?:https?|ftps?):\/\/|mailto:|www\.)/i.test(rawMatch)
+    // The same bare-email test urlHref makes, so a scheme added to the shared pattern can't
+    // silently fall out of the convention.
+    !/^[^:]+@/.test(rawMatch)
   );
 }
 

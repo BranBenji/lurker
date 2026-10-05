@@ -1136,19 +1136,22 @@ const renderRows = computed((): RenderRow[] => {
   // line doesn't allocate a pair of closures it will never call.
   const lastSpokeOf = (nick: string): number | undefined =>
     buf?.speakers[nick.toLowerCase()]?.lastTime;
-  // ⚠⚠ A rename is the one event whose actor has two names, and renameMember carries the speaker
-  // entry from the old nick to the new one as the event lands — so by render time the nick
-  // printed on the row is the one no longer in the map. Asking under it alone hid the rename of
-  // somebody who had just been talking. The later of the two wins, as in the kit's EventFilter.
-  const actorLastSpoke = (m: ChatMessage): number | undefined => {
-    const old = m.nick ? lastSpokeOf(m.nick) : undefined;
-    const renamed = m.newNick ? lastSpokeOf(m.newNick) : undefined;
-    if (old == null) return renamed;
-    return renamed == null ? old : Math.max(old, renamed);
+  const spokeRecently = (nick: string, at: number): boolean => {
+    const lastSpoke = lastSpokeOf(nick);
+    return lastSpoke != null && lastSpoke <= at && at - lastSpoke <= delayMs;
   };
-  const spokeWithin = (lastSpoke: number | undefined, at: number): boolean =>
-    lastSpoke != null && lastSpoke <= at && at - lastSpoke <= delayMs;
-  const spokeRecently = (nick: string, at: number): boolean => spokeWithin(lastSpokeOf(nick), at);
+  // ⚠⚠ A rename is the one event whose actor has two names, and either can hold the time they
+  // last spoke: a history seed groups speakers by the nick each line was sent under, and the
+  // store copies the old nick's entry to the new one as the event lands. Each name is asked on
+  // its own — taking the later of the two lets a line spoken AFTER the rename mask the one
+  // before it.
+  const actorSpokeRecently = (m: ChatMessage, at: number): boolean =>
+    (!!m.nick && spokeRecently(m.nick, at)) || (!!m.newNick && spokeRecently(m.newNick, at));
+  // Our own churn is never hidden. A rename is checked under BOTH nicks: nick rows carry no self
+  // flag, and own-nick can land before the row renders, leaving the OLD name failing the test.
+  const isOurs = (m: ChatMessage): boolean =>
+    ownNickLc != null &&
+    (m.nick?.toLowerCase() === ownNickLc || m.newNick?.toLowerCase() === ownNickLc);
 
   const dividerAfterId = buf?.dividerAfterId || 0;
   // Skip divider insertion entirely when there's nothing to mark (no pointer
@@ -1307,13 +1310,8 @@ const renderRows = computed((): RenderRow[] => {
           // dedicated smart_filter_chghost for the same reason (#591).
           ((m.type === 'part' || m.type === 'quit' || m.type === 'chghost') && fQuit) ||
           (m.type === 'nick' && fNick);
-        // Our own rename is checked under BOTH nicks: nick rows carry no self flag, and own-nick
-        // can land before the row is rendered, leaving the OLD name failing the comparison.
-        const ours =
-          ownNickLc != null &&
-          (m.nick.toLowerCase() === ownNickLc || m.newNick?.toLowerCase() === ownNickLc);
-        if (filterable && !ours) {
-          const lastSpoke = actorLastSpoke(m);
+        if (filterable && !isOurs(m)) {
+          const lastSpoke = lastSpokeOf(m.nick);
           const unmasked =
             m.type === 'join' &&
             unmaskMs > 0 &&
@@ -1322,7 +1320,7 @@ const renderRows = computed((): RenderRow[] => {
             lastSpoke - mTimeMs <= unmaskMs;
           // Joins only: a mode is never revived by what its target says next.
           // weechat scopes smart_filter_join_unmask the same way.
-          if (!spokeWithin(lastSpoke, mTimeMs) && !unmasked) hidden = true;
+          if (!actorSpokeRecently(m, mTimeMs) && !unmasked) hidden = true;
         }
       }
     }

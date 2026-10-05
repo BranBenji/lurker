@@ -81,6 +81,35 @@ describe('MessageList — smart filter and renames', () => {
     expect(shown(w, renamed.id)).toBe(true);
   });
 
+  it('keeps showing it after the new nick speaks too', () => {
+    // One time per nick: had the store MOVED the entry, the new nick's next line would overwrite
+    // the only record of the line before the rename, and the row would hide again.
+    const buffers = useBuffersStore();
+    const said = row('message', 'alice', 0);
+    const renamed = row('nick', 'alice', 1, { newNick: 'alice_afk' });
+    const again = row('message', 'alice_afk', 2);
+    buffers.recordSpeaker(1, '#chan', 'alice', at(0));
+    buffers.renameMember(1, '#chan', 'alice', 'alice_afk');
+    buffers.recordSpeaker(1, '#chan', 'alice_afk', at(2));
+    const w = mountWith([said, renamed, again]);
+    expect(shown(w, renamed.id)).toBe(true);
+  });
+
+  it('shows it in a buffer seeded from history, where each nick has its own time', () => {
+    // The server groups speakers by the nick each line was sent under. Taking the later of the two
+    // times would judge the rename by a line spoken AFTER it.
+    const buffers = useBuffersStore();
+    const said = row('message', 'alice', 0);
+    const renamed = row('nick', 'alice', 1, { newNick: 'alice_afk' });
+    const again = row('message', 'alice_afk', 5);
+    buffers.ensure(1, '#chan', 9).speakers = {
+      alice: { nick: 'alice', lastTime: at(0) },
+      alice_afk: { nick: 'alice_afk', lastTime: at(5) },
+    };
+    const w = mountWith([said, renamed, again]);
+    expect(shown(w, renamed.id)).toBe(true);
+  });
+
   it('still hides the rename of somebody who never spoke', () => {
     const buffers = useBuffersStore();
     const said = row('message', 'alice', 0);
