@@ -87,7 +87,7 @@ import {
   splitAction,
   splitSay,
 } from './messageSplit.js';
-import { DEFAULT_HOSTLEN, textBudget } from '../../shared/wireBudget.js';
+import { DEFAULT_HOSTLEN, MAX_HOSTLEN, textBudget } from '../../shared/wireBudget.js';
 import type { MultilineLimits } from './messageSplit.js';
 import { e2eManager } from './e2e/manager.js';
 import type { UserNotice } from './e2e/manager.js';
@@ -822,12 +822,17 @@ export class IrcConnection {
     monitorTargets: () => this.rawMonitored.values(),
     onMonitorDropped: (nicks, limit) => this.dropRawMonitors(nicks, limit),
   };
-  // Our user@host as the network relays it, from a line that carried our own
-  // prefix: our JOIN, our CHGHOST. Null until one has, and again on each new
-  // registration. irc-framework only learns these from a WHO or a 396, and
-  // never follows a CHGHOST, so the bouncer's line budget (#1041) and the
-  // prefix it shows its clients were a guess without this.
-  private selfUserhost: { user: string; host: string } | null = null;
+  // Our ident and host as the network relays them, from whatever last showed
+  // them: our JOIN, a CHGHOST, a 396 (host only), the echo of our own line.
+  // Null until one has, and again on each new registration. The line budget
+  // (#1043) and the prefix the bouncer shows its clients were a guess without
+  // this — and a STALE one is worse: a cloak set after we joined made every
+  // full line overflow, so every source that can carry a change is read.
+  private selfUser: string | null = null;
+  private selfHost: string | null = null;
+  // The ident our identd answers for this connection, when it does: what the
+  // network shows in place of `~username` (#643).
+  private identdIdent: string | null = null;
   disposed: boolean;
   connectCommandTimer: ReturnType<typeof setTimeout> | null;
   lagMs: number | null;
@@ -1798,7 +1803,8 @@ export class IrcConnection {
     on('registered', (event: Record<string, unknown>) => {
       this.userModes.clear();
       this.lagMs = null;
-      this.selfUserhost = null;
+      this.selfUser = null;
+      this.selfHost = null;
       this.publishLineBudgetIfChanged();
       // A full, registered connection is the only signal that the network is
       // genuinely reachable again — reset the backoff so a later drop starts a
@@ -2321,11 +2327,11 @@ export class IrcConnection {
           localPort,
           remoteAddress: socket.remoteAddress || '',
           remotePort,
-          ident: deriveIdent({
+          ident: (this.identdIdent = deriveIdent({
             nodeMode: isNodeMode(),
             accountUsername: account?.username || '',
             accountIdent: account?.ident || null,
-          }),
+          })),
         });
       },
     );
@@ -2354,6 +2360,15 @@ export class IrcConnection {
     // nicklist host there, and renders ONE native line. No client synthesizes
     // the fake QUIT/rejoin — that's a server/bouncer compat shim (znc does it
     // only when relaying to a downstream that didn't negotiate the cap).
+    // 396 RPL_HOSTHIDDEN / RPL_VISIBLEHOST: our displayed host changed — a cloak
+    // or vhost applied after we connected (+x, a NickServ IDENTIFY), on a
+    // network or connection without CHGHOST. The line budget (#1043) follows.
+    on('displayed host', (event: Record<string, unknown>) => {
+      if (this.isSelfNick(event.nick as string)) {
+        this.learnSelf(undefined, event.hostname as string | undefined);
+      }
+    });
+
     on('user updated', (event: Record<string, unknown>) => {
       if (!event || !event.nick) return;
       if (!event.new_hostname && !event.new_ident) return; // SETNAME — not ours
@@ -2368,7 +2383,7 @@ export class IrcConnection {
       if (!mask) return;
 
       if (isSelf) {
-        this.learnSelfUserhost(newIdent, newHost);
+        this.learnSelf(newIdent, newHost);
         // Keep the long-standing server-buffer line for your own host change —
         // it's the SASL-cloak confirmation, and it belongs where you'll see it
         // even when you share no channels yet.
@@ -2474,6 +2489,9 @@ export class IrcConnection {
       // the server's msgid + @time (the only way our own sends learn their
       // msgid, #450).
       if (eventNick && me && eventNick.toLowerCase() === me.toLowerCase()) {
+        // Our prefix exactly as the network relays it, on every echo: the one
+        // source that keeps up with a host change nothing announced.
+        this.learnSelf(event.ident as string | undefined, eventHostname);
         if (!this.echoActive()) return;
         if (!eventTarget || typeof eventMessage !== 'string') return;
         // Our own E2E ciphertext coming back: the optimistic PLAINTEXT row
@@ -2765,7 +2783,7 @@ export class IrcConnection {
       // line replayed for a channel we have since left, say. Fold-aware, like
       // the NAMES and TOPIC handlers.
       const ch = isSelf ? this.upsertChannel(eventChannel) : this.channelState(eventChannel);
-      if (isSelf) this.learnSelfUserhost(event.ident as string, event.hostname as string);
+      if (isSelf) this.learnSelf(event.ident as string, event.hostname as string);
       // extended-join: irc-framework parses the account param when the cap is
       // enabled, and omits the key when it isn't (#508).
       const joinAccount = normalizeAccount(event.account);
@@ -5923,36 +5941,52 @@ export class IrcConnection {
 
   // --- Line budget (#1043) ---------------------------------------------------
 
-  /** Our user@host as the network relays it, or null while no line of ours
-   *  has shown it (see selfUserhost). */
-  knownSelfUserhost(): { user: string; host: string } | null {
-    return this.selfUserhost;
-  }
-  private learnSelfUserhost(user: string | undefined, host: string | undefined): void {
-    if (!user || !host) return;
-    this.selfUserhost = { user, host };
-    this.client.user.username = user;
-    this.client.user.host = host;
-    this.publishLineBudgetIfChanged();
+  // Either half may come alone (a 396 carries only the host).
+  private learnSelf(user: string | undefined, host: string | undefined): void {
+    if (user) {
+      this.selfUser = user;
+      this.client.user.username = user;
+    }
+    if (host) {
+      this.selfHost = host;
+      this.client.user.host = host;
+    }
+    if (user || host) this.publishLineBudgetIfChanged();
   }
 
-  /** Bytes of the user@host the network puts in front of our lines: the real
-   *  one once a line of ours has shown it, else the longest it could be — a
-   *  `~` on our ident and a host of the network's HOSTLEN. */
+  /** Bytes of the user@host the network puts in front of our lines: each half
+   *  the real one once something has shown it, else the longest it could be —
+   *  our ident with a `~` (or identd's answer, if longer), and a host of the
+   *  network's HOSTLEN. */
   userhostBytes(): number {
-    const known = this.selfUserhost;
-    if (known) return Buffer.byteLength(`${known.user}@${known.host}`);
-    // ⚠ Counted, never padded out: HOSTLEN is the network's to say, and a
-    // string built to its length is an allocation a server chooses. And
-    // supports() hands back a token's value — a string — or `true` for a bare
-    // token, which is no length at all (Number(true) would be a 1-byte host).
+    const user =
+      this.selfUser != null
+        ? Buffer.byteLength(this.selfUser)
+        : Math.max(
+            // The ident we registered with (connect() sends the same), before
+            // the network adds its `~`…
+            Buffer.byteLength(`~${this.network.username || this.network.nick}`),
+            // …or the one identd answered, which replaces it.
+            Buffer.byteLength(this.identdIdent ?? ''),
+          );
+    return (
+      user + 1 + (this.selfHost != null ? Buffer.byteLength(this.selfHost) : this.longestHost())
+    );
+  }
+
+  // The longest host this network says it gives: its HOSTLEN, else 63.
+  // ⚠ Counted, never padded out: HOSTLEN is the network's to say, and a string
+  // built to its length is an allocation a server chooses. supports() hands
+  // back a token's value — a string — or `true` for a bare token, which is no
+  // length at all (Number(true) would be a 1-byte host). And capped at
+  // MAX_HOSTLEN: past any real host, a bigger number only shreds a paste into
+  // more lines, each overflowing anyway.
+  private longestHost(): number {
     const advertised = this.client.network?.supports('HOSTLEN');
     const hostlen = typeof advertised === 'string' ? Number(advertised) : NaN;
-    const host = Number.isInteger(hostlen) && hostlen > 0 ? hostlen : DEFAULT_HOSTLEN;
-    // The ident we registered with (connect() sends the same), before the
-    // network adds its `~`.
-    const ident = this.network.username || this.network.nick;
-    return Buffer.byteLength(`~${ident}@`) + host;
+    return Number.isInteger(hostlen) && hostlen > 0
+      ? Math.min(hostlen, MAX_HOSTLEN)
+      : DEFAULT_HOSTLEN;
   }
 
   /** Bytes of text one PRIVMSG/NOTICE to `target` can carry here. */

@@ -14,23 +14,28 @@
 // at import time rather than silently diverging.
 //
 // The send path splits to the network's real line budget (shared/wireBudget,
-// #1043), so `bytes` is the caller's. The defaults are irc-framework's fixed
-// message_max_length=350 and 350 - ('ACTION'.length + 3) = 341 for CTCP
-// ACTION (the 3 covers the type name's leading space and the two \x01 SOH
-// chars) — what a caller with no connection to measure against still gets.
+// #1043), so `bytes` is the caller's. The defaults are the fixed budgets
+// irc-framework split by — what a caller with no connection to measure
+// against still gets.
 import { lineBreak } from 'irc-framework/src/linebreak.js';
+import { LEGACY_ACTION_BUDGET, LEGACY_TEXT_BUDGET } from '../../shared/wireBudget.js';
 
-export const MESSAGE_MAX_BYTES = 350;
-const ACTION_MAX_BYTES = MESSAGE_MAX_BYTES - ('ACTION'.length + 3);
+export const MESSAGE_MAX_BYTES = LEGACY_TEXT_BUDGET;
+const ACTION_MAX_BYTES = LEGACY_ACTION_BUDGET;
 
 function chunk(text: string, bytes: number): string[] {
-  return [
+  const pieces = [
     ...lineBreak(text, {
       bytes,
       allowBreakingWords: true,
       allowBreakingGraphemes: true,
     }),
   ];
+  // lineBreak drops a line that is all whitespace. One that fits still goes as
+  // written: it's a line someone sent — an attached bouncer client's would
+  // otherwise vanish with no echo and no error (#1043 review).
+  if (pieces.length === 0 && text && Buffer.byteLength(text) <= bytes) return [text];
+  return pieces;
 }
 
 // Split a PRIVMSG body the way irc-framework would: first on line breaks

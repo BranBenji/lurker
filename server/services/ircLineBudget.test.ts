@@ -158,4 +158,53 @@ describe('the line budget', () => {
     const conn = ircManager.getConnection(userId, networkId)!;
     expect(conn.snapshot().userhostBytes).toBe(real);
   });
+
+  // A cloak or vhost applied AFTER we joined, announced only by 396 (no
+  // CHGHOST): a budget left on the old, shorter host overflows every full line.
+  it('follows a host change a 396 announces after we joined', async () => {
+    const { networkId, nick, events } = await joined(plain);
+    const user = plain.client(nick)!.user;
+    const cloak = `${'c'.repeat(80)}.cloak`;
+
+    plain.sendRaw(nick, `:fake.test 396 ${nick} ${cloak} :is now your displayed host`);
+    const bytes = Buffer.byteLength(`~${user}@${cloak}`);
+    await until(
+      () => events.some((e) => e.type === 'line-budget' && e.userhostBytes === bytes),
+      5000,
+      'a line-budget frame for the cloak',
+    );
+    expect(ircManager.getConnection(userId, networkId)!.userhostBytes()).toBe(bytes);
+  });
+
+  // Our own echo carries our prefix exactly as the network relays it, so even a
+  // connection in no channel learns it from its first line.
+  it('learns our prefix from the echo of our own line', async () => {
+    const nick = `budget${++seq}`;
+    const network = createNetwork(userId, {
+      name: `budget-${seq}`,
+      host: '127.0.0.1',
+      port: plain.port,
+      tls: false,
+      nick,
+      autoconnect: false,
+    })!;
+    const events: Ev[] = [];
+    const onEvent = (e: Ev) => {
+      if (e.networkId === network.id) events.push(e);
+    };
+    ircManager.on('event', onEvent);
+    const conn = ircManager.startNetwork(userId, network.id)!;
+    cleanups.push(() => {
+      ircManager.off('event', onEvent);
+      conn.dispose();
+      ircManager.connectionsForUser(userId).delete(network.id);
+    });
+    await until(() => conn.state === 'connected', 5000, 'connected');
+    const real = Buffer.byteLength(`~${plain.client(nick)!.user}@fake.host`);
+    expect(conn.userhostBytes()).not.toBe(real);
+
+    ircManager.send(userId, network.id, nick, 'note to self');
+    await until(() => conn.userhostBytes() === real, 5000, 'learned from the echo');
+    expect(events.some((e) => e.type === 'line-budget' && e.userhostBytes === real)).toBe(true);
+  });
 });

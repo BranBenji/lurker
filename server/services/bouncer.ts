@@ -2908,27 +2908,31 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       // soju and ZNC relay one, so its echoes come back on the boundaries it
       // sent (#1041). Only a line too long for the wire — a client that doesn't
       // split at all — is cut, rather than truncated by the network.
-      if (isAction) {
-        // eslint-disable-next-line no-control-regex
-        const body = text.replace(/^\u0001ACTION ?/, '').replace(/\u0001$/, '');
-        for (const chunk of conn.actionChunks(target, body)) {
-          this.registerEcho('action', target, chunk);
-        }
-        ircManager.action(this.userId, this.networkId, target, body, { replyTo });
+      const body = isAction
+        ? // eslint-disable-next-line no-control-regex
+          text.replace(/^\u0001ACTION ?/, '').replace(/\u0001$/, '')
+        : text;
+      const chunks = isAction
+        ? conn.actionChunks(target, body)
+        : conn.sayChunks(msg.command === 'NOTICE' ? 'NOTICE' : 'PRIVMSG', target, text);
+      // Nothing would reach the wire (an empty /me, or nothing but spaces for
+      // longer than a line): answer as a server would, rather than let the
+      // client's line vanish with no echo and no error.
+      if (chunks.length === 0) {
+        this.numeric('412', ':No text to send');
         continue;
       }
-      if (msg.command === 'PRIVMSG') {
-        const chunks = conn.sayChunks('PRIVMSG', target, text);
-        for (const chunk of chunks) this.registerEcho('message', target, chunk);
+      const kind = isAction ? 'action' : msg.command === 'PRIVMSG' ? 'message' : 'notice';
+      for (const chunk of chunks) this.registerEcho(kind, target, chunk);
+      if (isAction) {
+        ircManager.action(this.userId, this.networkId, target, body, { replyTo });
+      } else if (msg.command === 'PRIVMSG') {
         // On an E2E channel the self event carries the full body as ONE event
         // (not per wire chunk), so register the whole text too when it split.
         // The unmatched leftover key expires harmlessly (see pendingEcho).
         if (chunks.length > 1) this.registerEcho('message', target, text);
         ircManager.send(this.userId, this.networkId, target, text, { replyTo });
       } else {
-        for (const chunk of conn.sayChunks('NOTICE', target, text)) {
-          this.registerEcho('notice', target, chunk);
-        }
         ircManager.notice(this.userId, this.networkId, target, text);
       }
     }

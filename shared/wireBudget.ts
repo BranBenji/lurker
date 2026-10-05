@@ -13,8 +13,16 @@
 export const IRC_LINE_BYTES = 512;
 
 // The host length to assume while ours is unknown, where the network doesn't
-// advertise a HOSTLEN.
+// advertise a HOSTLEN — and the most we'll believe one that does: past any
+// real host, a bigger number only shreds a paste into more lines.
 export const DEFAULT_HOSTLEN = 63;
+export const MAX_HOSTLEN = 255;
+
+// The fixed budgets irc-framework split by, for an estimate with nothing to
+// measure against (no connection, a server from before #1043): 350 bytes of
+// text, and 350 - ('ACTION'.length + 3) = 341 for a /me body.
+export const LEGACY_TEXT_BUDGET = 350;
+export const LEGACY_ACTION_BUDGET = LEGACY_TEXT_BUDGET - ('ACTION'.length + 3);
 
 // Never split into pieces smaller than this, whatever the arithmetic says: a
 // network advertising an absurd HOSTLEN would otherwise leave no room at all.

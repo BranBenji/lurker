@@ -15,11 +15,15 @@
 // user@host — as `userhostBytes`; textBudgetFor measures by the same formula.
 // Without it (a server from before #1043) we fall back to the fixed budgets
 // irc-framework split by, which server/services/messageSplit.ts keeps as its
-// defaults.
-import { textBudget } from '../../../shared/wireBudget.js';
+// defaults too.
+import {
+  LEGACY_ACTION_BUDGET,
+  LEGACY_TEXT_BUDGET,
+  textBudget,
+} from '../../../shared/wireBudget.js';
 
-export const MESSAGE_MAX_BYTES = 350;
-export const ACTION_MAX_BYTES = MESSAGE_MAX_BYTES - ('ACTION'.length + 3);
+export const MESSAGE_MAX_BYTES = LEGACY_TEXT_BUDGET;
+export const ACTION_MAX_BYTES = LEGACY_ACTION_BUDGET;
 
 /** Bytes of text one line to `target` carries on this network, as the server
  *  will split it. */
