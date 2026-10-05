@@ -9,7 +9,9 @@ import {
   splitGateFor,
   MESSAGE_MAX_BYTES,
   ACTION_MAX_BYTES,
+  textBudgetFor,
 } from './messageSplit.js';
+import { textBudget } from '../../../shared/wireBudget.js';
 
 describe('chunkCountForSay', () => {
   it('returns 0 for empty input', () => {
@@ -179,5 +181,38 @@ describe('multilineMessageCount', () => {
     // line opens a batch first → 3 total.
     const body = `x\n${'a'.repeat(900)}`;
     expect(multilineMessageCount(body, { maxBytes: 4096, maxLines: 2 })).toBe(3);
+  });
+});
+
+// The server splits by the network's real line budget (#1043) and tells us the
+// bytes of our user@host; the estimate measures by the same formula.
+describe('textBudgetFor', () => {
+  const net = { nick: 'alice', userhostBytes: 18 };
+
+  it("is the server's budget for this target", () => {
+    expect(textBudgetFor(net, '#room')).toBe(
+      textBudget({ nick: 'alice', userhostBytes: 18, command: 'PRIVMSG', target: '#room' }),
+    );
+    expect(textBudgetFor(net, '#room', true)).toBe(
+      textBudget({
+        nick: 'alice',
+        userhostBytes: 18,
+        command: 'PRIVMSG',
+        target: '#room',
+        action: true,
+      }),
+    );
+  });
+
+  it('falls back to the fixed budgets from a server that does not say', () => {
+    expect(textBudgetFor({ nick: 'alice' }, '#room')).toBe(MESSAGE_MAX_BYTES);
+    expect(textBudgetFor({ nick: 'alice' }, '#room', true)).toBe(ACTION_MAX_BYTES);
+    expect(textBudgetFor(undefined, '#room')).toBe(MESSAGE_MAX_BYTES);
+  });
+
+  it('counts a 420-byte message as one line where the budget allows it', () => {
+    const text = 'word '.repeat(84).trim();
+    expect(chunkCountForSay(text)).toBe(2);
+    expect(chunkCountForSay(text, textBudgetFor(net, '#room'))).toBe(1);
   });
 });

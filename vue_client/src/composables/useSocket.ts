@@ -352,6 +352,9 @@ function applyEvent(event: any): boolean {
     case 'react-support':
       networks.applyReactSupport(event);
       break;
+    case 'line-budget':
+      networks.applyLineBudget(event);
+      break;
     case 'lag':
       networks.applyLag(event);
       break;

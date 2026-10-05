@@ -89,7 +89,6 @@ import { setAttachedIrcClientCounter } from './attachedIrcClients.js';
 import { changedSettings } from './settingsService.js';
 import { CTCP_ANSWER_SETTINGS, ctcpAnsweredBySettings, ctcpVersionVia } from './ctcp.js';
 import { getNetworkAwayState, isAwayRow, listNetworkAwayStates } from '../db/networkAwayState.js';
-import { wireChunks } from './messageSplit.js';
 import { e2eManager } from './e2e/manager.js';
 import { contextKey, isChannelContext } from './e2e/context.js';
 import { APP_NAME, APP_VERSION } from '../utils/userAgent.js';
@@ -2904,67 +2903,39 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         replyMsgid && msg.command === 'PRIVMSG'
           ? this.clientReplyTo(replyMsgid, target)
           : undefined;
-      // The client already split its message to fit the wire, so its line goes
-      // up as it is, the way soju and ZNC relay one: split again at our 350
-      // bytes, its echoes came back on boundaries it never sent and matched
-      // none of its lines (#1041). Only a line that wouldn't fit — a client that
-      // doesn't split at all — is split here, rather than truncated by the
-      // network.
-      if (isAction) {
-        // eslint-disable-next-line no-control-regex
-        const body = text.replace(/^\u0001ACTION ?/, '').replace(/\u0001$/, '');
-        // Measured as it will be written: with the closing \x01 a client may
-        // have left off.
-        const whole = this.fitsOneLine(msg.command, target, `\u0001ACTION ${body}\u0001`);
-        for (const chunk of wireChunks('action', body, whole)) {
-          this.registerEcho('action', target, chunk);
-        }
-        ircManager.action(this.userId, this.networkId, target, body, { replyTo, whole });
+      // Split the way ircManager will, to the network's line budget (#1043):
+      // a line the client already fitted to the wire goes up as it is, the way
+      // soju and ZNC relay one, so its echoes come back on the boundaries it
+      // sent (#1041). Only a line too long for the wire — a client that doesn't
+      // split at all — is cut, rather than truncated by the network.
+      const body = isAction
+        ? // eslint-disable-next-line no-control-regex
+          text.replace(/^\u0001ACTION ?/, '').replace(/\u0001$/, '')
+        : text;
+      const chunks = isAction
+        ? conn.actionChunks(target, body)
+        : conn.sayChunks(msg.command === 'NOTICE' ? 'NOTICE' : 'PRIVMSG', target, text);
+      // Nothing would reach the wire (an empty /me, or nothing but spaces for
+      // longer than a line): answer as a server would, rather than let the
+      // client's line vanish with no echo and no error.
+      if (chunks.length === 0) {
+        this.numeric('412', ':No text to send');
         continue;
       }
-      const whole = this.fitsOneLine(msg.command, target, text);
-      if (msg.command === 'PRIVMSG') {
-        const chunks = wireChunks('say', text, whole);
-        for (const chunk of chunks) this.registerEcho('message', target, chunk);
+      const kind = isAction ? 'action' : msg.command === 'PRIVMSG' ? 'message' : 'notice';
+      for (const chunk of chunks) this.registerEcho(kind, target, chunk);
+      if (isAction) {
+        ircManager.action(this.userId, this.networkId, target, body, { replyTo });
+      } else if (msg.command === 'PRIVMSG') {
         // On an E2E channel the self event carries the full body as ONE event
         // (not per wire chunk), so register the whole text too when it split.
         // The unmatched leftover key expires harmlessly (see pendingEcho).
         if (chunks.length > 1) this.registerEcho('message', target, text);
-        ircManager.send(this.userId, this.networkId, target, text, { replyTo, whole });
+        ircManager.send(this.userId, this.networkId, target, text, { replyTo });
       } else {
-        for (const chunk of wireChunks('say', text, whole)) {
-          this.registerEcho('notice', target, chunk);
-        }
-        ircManager.notice(this.userId, this.networkId, target, text, { whole });
+        ircManager.notice(this.userId, this.networkId, target, text);
       }
     }
-  }
-
-  // Whether `text` fits one IRC line as the network relays it to everyone else,
-  // our real prefix in front. Until a line of ours has shown the network's
-  // user@host for us, assume the longest it could be — a `~` on the ident and a
-  // host of the network's HOSTLEN (63 where it doesn't say) — so a line never
-  // goes up whole only to be truncated for everyone else. Tags have a budget of
-  // their own.
-  //
-  // ⚠ Counted, never padded out: HOSTLEN is the network's to say, and a string
-  // built to its length is an allocation a server chooses (#1042 review). A
-  // huge one just means nothing fits, and every line is split.
-  private fitsOneLine(command: string, target: string, text: string): boolean {
-    const nick = this.currentNick() || this.clientNick || '*';
-    const known = this.conn?.knownSelfUserhost();
-    // supports() hands back the token's value — a string — or `true` for a bare
-    // token, which is no length at all (Number(true) would budget a 1-byte host).
-    const advertised = this.conn?.client.network?.supports('HOSTLEN');
-    const hostlen = typeof advertised === 'string' ? Number(advertised) : NaN;
-    const user = known ? known.user : `~${this.conn?.client.user?.username || 'lurker'}`;
-    const hostBytes = known
-      ? Buffer.byteLength(known.host)
-      : Number.isInteger(hostlen) && hostlen > 0
-        ? hostlen
-        : 63;
-    const rest = Buffer.byteLength(`:${nick}!${user}@ ${command} ${target} :${text}\r\n`);
-    return rest + hostBytes <= 512;
   }
 
   // The stored line a client's reply names, in the buffer the message goes to:

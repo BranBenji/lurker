@@ -2,18 +2,47 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Client-side estimate of how many IRC lines a message will split into when
-// the server hands it to irc-framework. We can't import the server-side
-// helper (it imports from irc-framework's source tree) so this is a
-// deliberately simpler port — word-greedy, byte-aware, accurate for ASCII
-// and well-formed UTF-8. Pathological input (a 10kB string with no
-// whitespace) might miscount by one chunk, which we accept: the UI hint is
-// guidance, not a wire-level decision. The actual splitting still happens
-// server-side via irc-framework's lineBreak().
+// the server splits it. We can't import the server-side helper (it imports
+// from irc-framework's source tree) so this is a deliberately simpler port —
+// word-greedy, byte-aware, accurate for ASCII and well-formed UTF-8.
+// Pathological input (a 10kB string with no whitespace) might miscount by one
+// chunk, which we accept: the UI hint is guidance, not a wire-level decision.
+// The actual splitting still happens server-side via irc-framework's
+// lineBreak().
 //
-// Constants mirror server/services/messageSplit.js — keep in sync if
-// irc-framework ever bumps its message_max_length default.
-export const MESSAGE_MAX_BYTES = 350;
-export const ACTION_MAX_BYTES = MESSAGE_MAX_BYTES - ('ACTION'.length + 3);
+// The server splits to the network's real line budget (shared/wireBudget,
+// #1043) and tells us the one input we can't know — the bytes of our
+// user@host — as `userhostBytes`; textBudgetFor measures by the same formula.
+// Without it (a server from before #1043) we fall back to the fixed budgets
+// irc-framework split by, which server/services/messageSplit.ts keeps as its
+// defaults too.
+import {
+  LEGACY_ACTION_BUDGET,
+  LEGACY_TEXT_BUDGET,
+  textBudget,
+} from '../../../shared/wireBudget.js';
+
+export const MESSAGE_MAX_BYTES = LEGACY_TEXT_BUDGET;
+export const ACTION_MAX_BYTES = LEGACY_ACTION_BUDGET;
+
+/** Bytes of text one line to `target` carries on this network, as the server
+ *  will split it. */
+export function textBudgetFor(
+  net: { nick?: string; userhostBytes?: number | null } | null | undefined,
+  target: string,
+  action = false,
+): number {
+  if (!net?.nick || typeof net.userhostBytes !== 'number') {
+    return action ? ACTION_MAX_BYTES : MESSAGE_MAX_BYTES;
+  }
+  return textBudget({
+    nick: net.nick,
+    userhostBytes: net.userhostBytes,
+    command: 'PRIVMSG',
+    target,
+    action,
+  });
+}
 
 const encoder = new TextEncoder();
 function byteLen(s: string): number {
@@ -82,21 +111,27 @@ function chunksForLine(line: string, bytes: number): number {
 
 // PRIVMSG path: split on newlines first (each line independently chunked),
 // matching what irc-framework's sendMessage() does.
-export function chunkCountForSay(text: string | null | undefined): number {
+export function chunkCountForSay(
+  text: string | null | undefined,
+  bytes = MESSAGE_MAX_BYTES,
+): number {
   if (!text) return 0;
   let total = 0;
   for (const line of text.split(/\r\n|\n|\r/)) {
     if (!line) continue;
-    total += chunksForLine(line, MESSAGE_MAX_BYTES);
+    total += chunksForLine(line, bytes);
   }
   return total;
 }
 
 // CTCP ACTION path: no newline pre-split (matches irc-framework), tighter
 // budget to leave room for the \x01ACTION ... \x01 wrapper.
-export function chunkCountForAction(text: string | null | undefined): number {
+export function chunkCountForAction(
+  text: string | null | undefined,
+  bytes = ACTION_MAX_BYTES,
+): number {
   if (!text) return 0;
-  return chunksForLine(text, ACTION_MAX_BYTES);
+  return chunksForLine(text, bytes);
 }
 
 // What the composer should do with a draft that spans more than one message.
@@ -141,6 +176,7 @@ export interface MultilineLimits {
 export function multilineMessageCount(
   text: string | null | undefined,
   limits: MultilineLimits | null | undefined,
+  bytes = MESSAGE_MAX_BYTES,
 ): number {
   if (!text || !limits) return 0;
   // A max-bytes below one full wire line can't carry a PRIVMSG in a batch — the
@@ -159,7 +195,7 @@ export function multilineMessageCount(
     }
   };
   for (const line of body.split(/\r\n|\n|\r/)) {
-    const wireLines = Math.max(1, chunksForLine(line, MESSAGE_MAX_BYTES));
+    const wireLines = Math.max(1, chunksForLine(line, bytes));
     const lineBytes = byteLen(line);
     if (
       curLines > 0 &&

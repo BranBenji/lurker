@@ -54,7 +54,7 @@ import {
 } from '../db/relayBots.js';
 import type { RelayBotResult } from '../db/relayBots.js';
 import { unfavoriteBuffer } from '../db/favoriteBuffers.js';
-import { wireChunks, hasInteriorNewline } from './messageSplit.js';
+import { hasInteriorNewline } from './messageSplit.js';
 import { e2eManager } from './e2e/manager.js';
 import { contextKey, isChannelContext } from './e2e/context.js';
 import { e2eDbg } from './e2e/debug.js';
@@ -819,28 +819,25 @@ class IrcManager extends EventEmitter {
     }
   }
 
-  // Long messages need to be split: irc-framework breaks anything past ~350
-  // bytes into separate PRIVMSGs on the wire, but we used to publish the full
-  // text as a single self-message event — so the sender saw one bubble while
-  // peers saw N. Splitting on our side and publishing per chunk keeps the
-  // local view symmetric with what was actually transmitted.
+  // Long messages need to be split, to what one line can carry as the network
+  // relays it (conn.sayChunks, #1043). We used to publish the full text as a
+  // single self-message event — so the sender saw one bubble while peers saw
+  // N. Splitting on our side and publishing per chunk keeps the local view
+  // symmetric with what was actually transmitted. A bouncer client's line that
+  // already fits goes as that one line, which is what keeps its echoes on the
+  // boundaries it sent (#1041).
   //
   // `opts.replyTo`: the id of the user's stored line this answers (IRCv3 reply,
   // #993). The first line out carries the reply tags; a paste that splits is
   // several messages and only the first is the reply. Dropped silently where it
   // can't apply — a line from another buffer, one with no msgid, a network that
   // can't carry the tags, an E2E channel — and the text goes out as written.
-  //
-  // `opts.whole`: `text` is one line its sender already fitted to the wire (an
-  // attached bouncer client's, #1041), so it goes out and is recorded as that
-  // one line, unsplit. An E2E channel still chunks it: ciphertext has its own
-  // budget.
   send(
     userId: number,
     networkId: number,
     target: string,
     text: string,
-    opts: { replyTo?: number; whole?: boolean } = {},
+    opts: { replyTo?: number } = {},
   ): boolean {
     // ⚠⚠ A `=nick` buffer is a DCC CHAT, not IRC. Its text rides a TCP socket we
     // own and must NEVER reach the wire as a target. This is THE chokepoint for
@@ -966,10 +963,10 @@ class IrcManager extends EventEmitter {
       }
       return true;
     }
-    const chunks = wireChunks('say', text, opts.whole);
+    const chunks = conn.sayChunks('PRIVMSG', target, text);
     chunks.forEach((chunk, i) => {
       const first = i === 0 && reply;
-      conn.say(target, chunk, first ? reply.tags : null, opts.whole ?? false);
+      conn.say(target, chunk, first ? reply.tags : null);
       if (adoptEcho) return;
       conn.publish({
         type: 'message',
@@ -1024,13 +1021,13 @@ class IrcManager extends EventEmitter {
     return true;
   }
 
-  // `opts.replyTo` and `opts.whole` as for send(): a /me can answer a line too.
+  // `opts.replyTo` as for send(): a /me can answer a line too.
   action(
     userId: number,
     networkId: number,
     target: string,
     text: string,
-    opts: { replyTo?: number; whole?: boolean } = {},
+    opts: { replyTo?: number } = {},
   ): boolean {
     // ⚠⚠ A `=nick` buffer is a DCC CHAT, not IRC. Its text rides a TCP socket we
     // own and must NEVER reach the wire as a target. This is THE chokepoint for
@@ -1055,10 +1052,10 @@ class IrcManager extends EventEmitter {
     // Same echo-adoption gating as send() — see the comment there.
     const adoptEcho = conn.echoActive();
     const reply = this.replyFor(conn, userId, networkId, target, opts.replyTo);
-    const chunks = wireChunks('action', text, opts.whole);
+    const chunks = conn.actionChunks(target, text);
     chunks.forEach((chunk, i) => {
       const first = i === 0 && reply;
-      conn.action(target, chunk, first ? reply.tags : null, opts.whole ?? false);
+      conn.action(target, chunk, first ? reply.tags : null);
       if (adoptEcho) return;
       conn.publish({
         type: 'action',
@@ -1077,15 +1074,8 @@ class IrcManager extends EventEmitter {
   // NOTICE shares send()'s echo model: echo-message servers DO reflect your
   // own NOTICEs (the cap covers PRIVMSG/NOTICE/TAGMSG alike), so the local
   // self copy is published only where the cap is absent — exactly like
-  // send/action. splitSay applies because NOTICE shares PRIVMSG's length
-  // budget, and `opts.whole` as for send().
-  notice(
-    userId: number,
-    networkId: number,
-    target: string,
-    text: string,
-    opts: { whole?: boolean } = {},
-  ): boolean {
+  // send/action, and splits the same way: NOTICE shares PRIVMSG's line budget.
+  notice(userId: number, networkId: number, target: string, text: string): boolean {
     // ⚠⚠ A `=nick` buffer is a DCC CHAT, not IRC. Its text rides a TCP socket we
     // own and must NEVER reach the wire as a target. This is THE chokepoint for
     // that: the composer (wsHub `send`), the MCP `send_message` verb — which
@@ -1107,9 +1097,9 @@ class IrcManager extends EventEmitter {
     if (!conn) return false;
     if (this.refuseCleartextOnE2eChannel(conn, userId, networkId, target, 'notice')) return true;
     const adoptEcho = conn.echoActive();
-    const chunks = wireChunks('say', text, opts.whole);
+    const chunks = conn.sayChunks('NOTICE', target, text);
     for (const chunk of chunks) {
-      conn.notice(target, chunk, opts.whole ?? false);
+      conn.notice(target, chunk);
       if (adoptEcho) continue;
       conn.publish({
         type: 'notice',

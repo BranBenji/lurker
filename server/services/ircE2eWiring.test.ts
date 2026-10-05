@@ -20,6 +20,7 @@ import { e2eManager } from './e2e/manager.js';
 import * as keyring from '../db/e2e.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
+import { splitAction, splitSay } from './messageSplit.js';
 
 const CTCP = '';
 const WIRE = '+RPE2E01';
@@ -82,6 +83,9 @@ describe('outbound encrypt (ircManager.send)', () => {
       state: 'connected', // the writable gate (#809) refuses anything else
       noteSentCiphertext: () => {},
       flushE2eRekeys: () => {},
+      // The send path splits through the connection's line budget (#1043).
+      sayChunks: (_command: string, _target: string, text: string) => splitSay(text),
+      actionChunks: (_target: string, text: string) => splitAction(text),
     } as unknown as IrcConnection;
     vi.spyOn(ircManager, 'getConnection').mockReturnValue(fakeConn);
     e2eManager.setChannelConfig(1, 1, '#enc', true, 'normal');
@@ -122,13 +126,16 @@ describe('outbound encrypt (ircManager.send)', () => {
       state: 'connected', // the writable gate (#809) refuses anything else
       noteSentCiphertext: () => {},
       flushE2eRekeys: () => {},
+      // The send path splits through the connection's line budget (#1043).
+      sayChunks: (_command: string, _target: string, text: string) => splitSay(text),
+      actionChunks: (_target: string, text: string) => splitAction(text),
     } as unknown as IrcConnection;
     vi.spyOn(ircManager, 'getConnection').mockReturnValue(fakeConn);
 
     ircManager.send(1, 1, '#plain', 'hello world');
 
-    // The third argument is a reply's tags — none here. The fourth is `whole`, off.
-    expect(say).toHaveBeenCalledWith('#plain', 'hello world', null, false);
+    // The third argument is a reply's tags — none here.
+    expect(say).toHaveBeenCalledWith('#plain', 'hello world', null);
     expect(publish).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'message', target: '#plain', text: 'hello world' }),
     );
@@ -329,6 +336,9 @@ describe('egress refuses cleartext actions/notices on an E2E channel (#2)', () =
       echoActive: () => false,
       state: 'connected', // the writable gate (#809) refuses anything else
       client: { user: { nick: 'alice' } },
+      // The send path splits through the connection's line budget (#1043).
+      sayChunks: (_command: string, _target: string, text: string) => splitSay(text),
+      actionChunks: (_target: string, text: string) => splitAction(text),
     } as unknown as IrcConnection;
     return { conn, action, notice, publishEphemeral };
   }
@@ -368,7 +378,7 @@ describe('egress refuses cleartext actions/notices on an E2E channel (#2)', () =
 
     ircManager.action(1, 1, '#plainchan', 'waves');
 
-    expect(action).toHaveBeenCalledWith('#plainchan', 'waves', null, false);
+    expect(action).toHaveBeenCalledWith('#plainchan', 'waves', null);
     vi.restoreAllMocks();
   });
 });

@@ -53,6 +53,9 @@ export interface FakeIrcdOptions {
   // Inject the replies you want too, or join for real.
   burstLines?: (c: FakeClient) => string[];
   serverName?: string;
+  // The host in every client's hostmask (default `fake.host`) — a long one for
+  // the line-budget tests (#1043).
+  clientHost?: string;
   network?: string;
   // Ask every TLS client for a certificate and record what it presents, the way
   // an ircd doing CertFP does — it hashes what you show it rather than
@@ -352,7 +355,7 @@ export class FakeIrcd extends EventEmitter {
   }
 
   private hostmask(c: FakeClient): string {
-    return `${c.nick}!~${c.user ?? 'u'}@fake.host`;
+    return `${c.nick}!~${c.user ?? 'u'}@${this.opts.clientHost ?? 'fake.host'}`;
   }
 
   private members(channel: string): FakeClient[] {
