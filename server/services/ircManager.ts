@@ -54,7 +54,7 @@ import {
 } from '../db/relayBots.js';
 import type { RelayBotResult } from '../db/relayBots.js';
 import { unfavoriteBuffer } from '../db/favoriteBuffers.js';
-import { splitSay, splitAction, hasInteriorNewline } from './messageSplit.js';
+import { wireChunks, hasInteriorNewline } from './messageSplit.js';
 import { e2eManager } from './e2e/manager.js';
 import { contextKey, isChannelContext } from './e2e/context.js';
 import { e2eDbg } from './e2e/debug.js';
@@ -966,7 +966,7 @@ class IrcManager extends EventEmitter {
       }
       return true;
     }
-    const chunks = opts.whole && text ? [text] : splitSay(text);
+    const chunks = wireChunks('say', text, opts.whole);
     chunks.forEach((chunk, i) => {
       const first = i === 0 && reply;
       conn.say(target, chunk, first ? reply.tags : null, opts.whole ?? false);
@@ -1055,7 +1055,7 @@ class IrcManager extends EventEmitter {
     // Same echo-adoption gating as send() — see the comment there.
     const adoptEcho = conn.echoActive();
     const reply = this.replyFor(conn, userId, networkId, target, opts.replyTo);
-    const chunks = opts.whole && text ? [text] : splitAction(text);
+    const chunks = wireChunks('action', text, opts.whole);
     chunks.forEach((chunk, i) => {
       const first = i === 0 && reply;
       conn.action(target, chunk, first ? reply.tags : null, opts.whole ?? false);
@@ -1107,7 +1107,7 @@ class IrcManager extends EventEmitter {
     if (!conn) return false;
     if (this.refuseCleartextOnE2eChannel(conn, userId, networkId, target, 'notice')) return true;
     const adoptEcho = conn.echoActive();
-    const chunks = opts.whole && text ? [text] : splitSay(text);
+    const chunks = wireChunks('say', text, opts.whole);
     for (const chunk of chunks) {
       conn.notice(target, chunk, opts.whole ?? false);
       if (adoptEcho) continue;

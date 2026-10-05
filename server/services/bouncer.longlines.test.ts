@@ -14,6 +14,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach } from
 import { setupTestDb } from '../test-utils/testApp.js';
 import { FakeIrcd, DEFAULT_CAPS } from '../test-utils/fakeIrcd.js';
 import { until } from '../test-utils/until.js';
+import { ircLineParser } from 'irc-framework';
 
 const ctx = setupTestDb('services-bouncer-longlines');
 
@@ -97,7 +98,9 @@ const NUL = String.fromCharCode(0);
 const CTCP = String.fromCharCode(1);
 const BASE_CAPS = 'sasl batch server-time message-tags';
 
-async function attachIn(live: Live, channel: string, caps: string): Promise<Client> {
+// Attach with `caps` and join `channel` — or none, so no line of ours has yet
+// shown the network's user@host for us.
+async function attachIn(live: Live, channel: string | null, caps: string): Promise<Client> {
   const c = await harness.connect();
   cleanups.push(() => c.close());
   c.send('CAP LS 302');
@@ -113,8 +116,10 @@ async function attachIn(live: Live, channel: string, caps: string): Promise<Clie
   await c.waitForCommand('903');
   c.send('CAP END');
   await c.waitForCommand('422');
-  c.send(`JOIN ${channel}`);
-  await c.waitFor((l) => l.includes(' 366 ') && l.includes(` ${channel} `));
+  if (channel) {
+    c.send(`JOIN ${channel}`);
+    await c.waitFor((l) => l.includes(' 366 ') && l.includes(` ${channel} `));
+  }
   return c;
 }
 
@@ -126,13 +131,13 @@ function words(from: number, to: number): string {
 }
 
 // The text of every PRIVMSG/NOTICE to `target` our connection put on the wire.
+// Parsed, not matched: irc-framework drops the `:` on a one-word last param.
 function upstreamTexts(ircd: FakeIrcd, live: Live, command: string, target: string): string[] {
-  const prefix = `${command} ${target} :`;
   return ircd
     .client(live.nick)!
-    .sent.map((l) => (l.startsWith('@') ? l.slice(l.indexOf(' ') + 1) : l))
-    .filter((l) => l.startsWith(prefix))
-    .map((l) => l.slice(prefix.length));
+    .sent.map((l) => ircLineParser(l))
+    .filter((m) => m?.command === command && m.params[0] === target)
+    .map((m) => m!.params[1] ?? '');
 }
 
 // The text of every PRIVMSG/NOTICE to `target` the client got after `mark`,
@@ -242,5 +247,51 @@ describe.each([
     expect(sent.length).toBeGreaterThan(1);
     expect(sent.join(' ')).toBe(all);
     expect(await clientTexts(ircd, c, mark, 'PRIVMSG', '#room')).toEqual(sent);
+  });
+});
+
+// The budget is the line as the network relays it, our REAL prefix in front —
+// learned from our own JOIN, not guessed — so a client that filled its line to
+// the byte against that prefix still goes up whole.
+describe('the line budget', () => {
+  it('is our real prefix, learned from our own JOIN', async () => {
+    const live = await seedLive(echoing);
+    const c = await attachIn(live, '#room', `${BASE_CAPS} echo-message`);
+    const ident = echoing.client(live.nick)!.user;
+    const head = `:${live.nick}!~${ident}@fake.host PRIVMSG #room :`;
+    const room = 512 - 2 - Buffer.byteLength(head);
+    const exact = 'x'.repeat(room);
+    const over = 'y'.repeat(room + 1);
+
+    const mark = c.lines.length;
+    c.send(`PRIVMSG #room :${exact}`);
+    c.send(`PRIVMSG #room :${over}`);
+    await until(
+      () => upstreamTexts(echoing, live, 'PRIVMSG', '#room').length >= 3,
+      5000,
+      'the lines upstream',
+    );
+    const sent = upstreamTexts(echoing, live, 'PRIVMSG', '#room');
+    expect(sent[0]).toBe(exact);
+    expect(sent.slice(1).join('')).toBe(over);
+    expect(sent.length).toBe(3);
+    expect(await clientTexts(echoing, c, mark, 'PRIVMSG', '#room')).toEqual(sent);
+  });
+
+  // Nothing of ours has crossed the network yet, so we can't know what it puts
+  // in front: assume the longest, rather than send a line it would truncate.
+  it('assumes the longest prefix before it has seen ours', async () => {
+    const live = await seedLive(echoing);
+    const c = await attachIn(live, null, `${BASE_CAPS} echo-message`);
+    // Fits behind `nick!~ident@fake.host`, not behind a 63-byte host.
+    const text = 'z'.repeat(440);
+
+    c.send(`PRIVMSG bob :${text}`);
+    await until(
+      () => upstreamTexts(echoing, live, 'PRIVMSG', 'bob').length >= 2,
+      5000,
+      'the split lines upstream',
+    );
+    expect(upstreamTexts(echoing, live, 'PRIVMSG', 'bob').join('')).toBe(text);
   });
 });

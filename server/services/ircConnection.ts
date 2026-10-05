@@ -813,6 +813,12 @@ export class IrcConnection {
     monitorTargets: () => this.rawMonitored.values(),
     onMonitorDropped: (nicks, limit) => this.dropRawMonitors(nicks, limit),
   };
+  // Our user@host as the network relays it, from a line that carried our own
+  // prefix: our JOIN, our CHGHOST. Null until one has, and again on each new
+  // registration. irc-framework only learns these from a WHO or a 396, and
+  // never follows a CHGHOST, so the bouncer's line budget (#1041) and the
+  // prefix it shows its clients were a guess without this.
+  private selfUserhost: { user: string; host: string } | null = null;
   disposed: boolean;
   connectCommandTimer: ReturnType<typeof setTimeout> | null;
   lagMs: number | null;
@@ -1783,6 +1789,7 @@ export class IrcConnection {
     on('registered', (event: Record<string, unknown>) => {
       this.userModes.clear();
       this.lagMs = null;
+      this.selfUserhost = null;
       // A full, registered connection is the only signal that the network is
       // genuinely reachable again — reset the backoff so a later drop starts a
       // fresh, fast retry ladder instead of inheriting a long prior interval.
@@ -2348,6 +2355,7 @@ export class IrcConnection {
       if (!mask) return;
 
       if (isSelf) {
+        this.learnSelfUserhost(newIdent, newHost);
         // Keep the long-standing server-buffer line for your own host change —
         // it's the SASL-cloak confirmation, and it belongs where you'll see it
         // even when you share no channels yet.
@@ -2744,6 +2752,7 @@ export class IrcConnection {
       // line replayed for a channel we have since left, say. Fold-aware, like
       // the NAMES and TOPIC handlers.
       const ch = isSelf ? this.upsertChannel(eventChannel) : this.channelState(eventChannel);
+      if (isSelf) this.learnSelfUserhost(event.ident as string, event.hostname as string);
       // extended-join: irc-framework parses the account param when the cap is
       // enabled, and omits the key when it isn't (#508).
       const joinAccount = normalizeAccount(event.account);
@@ -5898,6 +5907,18 @@ export class IrcConnection {
     if (whole) this.writeWhole('NOTICE', target, text, null);
     else this.client.notice(target, text);
   }
+  /** Our user@host as the network relays it, or null while no line of ours
+   *  has shown it (see selfUserhost). */
+  knownSelfUserhost(): { user: string; host: string } | null {
+    return this.selfUserhost;
+  }
+  private learnSelfUserhost(user: string | undefined, host: string | undefined): void {
+    if (!user || !host) return;
+    this.selfUserhost = { user, host };
+    this.client.user.username = user;
+    this.client.user.host = host;
+  }
+
   // One PRIVMSG/NOTICE line, written where irc-framework's sendMessage writes
   // each block it splits, minus the split.
   private writeWhole(

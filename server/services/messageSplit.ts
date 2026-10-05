@@ -51,6 +51,16 @@ export function splitAction(text: string | null | undefined): string[] {
   return chunk(text, ACTION_MAX_BYTES);
 }
 
+// The wire lines a PRIVMSG/NOTICE body (`say`) or a /me body (`action`) goes
+// out as. `whole`: the body is one line its sender already fitted to the wire —
+// an attached bouncer client's (#1041) — so it goes as that line. The bouncer
+// registers its echo keys from this and ircManager writes from it, so the two
+// can't disagree about where a message was cut.
+export function wireChunks(kind: 'say' | 'action', text: string, whole = false): string[] {
+  if (whole) return text ? [text] : [];
+  return kind === 'action' ? splitAction(text) : splitSay(text);
+}
+
 // One PRIVMSG inside a `draft/multiline` batch. `concat` true means the line
 // re-joins the previous one with NO newline — used when a single logical line
 // overflowed the per-message byte budget and had to be split across the wire.

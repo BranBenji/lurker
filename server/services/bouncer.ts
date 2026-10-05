@@ -89,7 +89,7 @@ import { setAttachedIrcClientCounter } from './attachedIrcClients.js';
 import { changedSettings } from './settingsService.js';
 import { CTCP_ANSWER_SETTINGS, ctcpAnsweredBySettings, ctcpVersionVia } from './ctcp.js';
 import { getNetworkAwayState, isAwayRow, listNetworkAwayStates } from '../db/networkAwayState.js';
-import { splitSay, splitAction } from './messageSplit.js';
+import { wireChunks } from './messageSplit.js';
 import { e2eManager } from './e2e/manager.js';
 import { contextKey, isChannelContext } from './e2e/context.js';
 import { APP_NAME, APP_VERSION } from '../utils/userAgent.js';
@@ -2910,15 +2910,21 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       // none of its lines (#1041). Only a line that wouldn't fit — a client that
       // doesn't split at all — is split here, rather than truncated by the
       // network.
-      const whole = this.fitsOneLine(msg.command, target, text);
       if (isAction) {
         // eslint-disable-next-line no-control-regex
         const body = text.replace(/^\u0001ACTION ?/, '').replace(/\u0001$/, '');
-        const chunks = whole ? [body] : splitAction(body);
-        for (const chunk of chunks) this.registerEcho('action', target, chunk);
+        // Measured as it will be written: with the closing \x01 a client may
+        // have left off.
+        const whole = this.fitsOneLine(msg.command, target, `\u0001ACTION ${body}\u0001`);
+        for (const chunk of wireChunks('action', body, whole)) {
+          this.registerEcho('action', target, chunk);
+        }
         ircManager.action(this.userId, this.networkId, target, body, { replyTo, whole });
-      } else if (msg.command === 'PRIVMSG') {
-        const chunks = whole ? [text] : splitSay(text);
+        continue;
+      }
+      const whole = this.fitsOneLine(msg.command, target, text);
+      if (msg.command === 'PRIVMSG') {
+        const chunks = wireChunks('say', text, whole);
         for (const chunk of chunks) this.registerEcho('message', target, chunk);
         // On an E2E channel the self event carries the full body as ONE event
         // (not per wire chunk), so register the whole text too when it split.
@@ -2926,18 +2932,26 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         if (chunks.length > 1) this.registerEcho('message', target, text);
         ircManager.send(this.userId, this.networkId, target, text, { replyTo, whole });
       } else {
-        const chunks = whole ? [text] : splitSay(text);
-        for (const chunk of chunks) this.registerEcho('notice', target, chunk);
+        for (const chunk of wireChunks('say', text, whole)) {
+          this.registerEcho('notice', target, chunk);
+        }
         ircManager.notice(this.userId, this.networkId, target, text, { whole });
       }
     }
   }
 
   // Whether `text` fits one IRC line as the network relays it to everyone else,
-  // our prefix in front: the prefix this client was told is ours, so the budget
-  // it split by is the one we check. Tags have a budget of their own.
+  // our real prefix in front. Until a line of ours has shown the network's
+  // user@host for us, assume the longest it could be — a `~` on the ident and a
+  // 63-byte host (HOSTLEN) — so a line never goes up whole only to be truncated
+  // for everyone else. Tags have a budget of their own.
   private fitsOneLine(command: string, target: string, text: string): boolean {
-    return Buffer.byteLength(`:${this.selfPrefix()} ${command} ${target} :${text}\r\n`) <= 512;
+    const nick = this.currentNick() || this.clientNick || '*';
+    const known = this.conn?.knownSelfUserhost();
+    const userhost = known
+      ? `${known.user}@${known.host}`
+      : `~${this.conn?.client.user?.username || 'lurker'}@${'x'.repeat(63)}`;
+    return Buffer.byteLength(`:${nick}!${userhost} ${command} ${target} :${text}\r\n`) <= 512;
   }
 
   // The stored line a client's reply names, in the buffer the message goes to:
