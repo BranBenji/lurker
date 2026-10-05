@@ -2943,14 +2943,17 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   // Whether `text` fits one IRC line as the network relays it to everyone else,
   // our real prefix in front. Until a line of ours has shown the network's
   // user@host for us, assume the longest it could be — a `~` on the ident and a
-  // 63-byte host (HOSTLEN) — so a line never goes up whole only to be truncated
-  // for everyone else. Tags have a budget of their own.
+  // host of the network's HOSTLEN (63 where it doesn't say) — so a line never
+  // goes up whole only to be truncated for everyone else. Tags have a budget of
+  // their own.
   private fitsOneLine(command: string, target: string, text: string): boolean {
     const nick = this.currentNick() || this.clientNick || '*';
     const known = this.conn?.knownSelfUserhost();
+    const hostlen = Number(this.conn?.client.network?.supports('HOSTLEN'));
+    const longestHost = Number.isInteger(hostlen) && hostlen > 0 ? hostlen : 63;
     const userhost = known
       ? `${known.user}@${known.host}`
-      : `~${this.conn?.client.user?.username || 'lurker'}@${'x'.repeat(63)}`;
+      : `~${this.conn?.client.user?.username || 'lurker'}@${'x'.repeat(longestHost)}`;
     return Buffer.byteLength(`:${nick}!${userhost} ${command} ${target} :${text}\r\n`) <= 512;
   }
 

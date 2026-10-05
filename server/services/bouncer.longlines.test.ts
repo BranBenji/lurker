@@ -294,4 +294,28 @@ describe('the line budget', () => {
     );
     expect(upstreamTexts(echoing, live, 'PRIVMSG', 'bob').join('')).toBe(text);
   });
+
+  // "The longest" is the network's HOSTLEN where it says one: the same line
+  // goes whole behind a 63-byte host and splits behind a 200-byte one.
+  it("takes the longest host from the network's HOSTLEN", async () => {
+    const roomy = await FakeIrcd.start({ isupport: ['HOSTLEN=200'] });
+    cleanups.push(() => void roomy.close());
+    const text = 'h'.repeat(400);
+    for (const [ircd, lines] of [
+      [echoing, 1],
+      [roomy, 2],
+    ] as const) {
+      const live = await seedLive(ircd);
+      const c = await attachIn(live, null, `${BASE_CAPS} echo-message`);
+      c.send(`PRIVMSG bob :${text}`);
+      await until(
+        () => upstreamTexts(ircd, live, 'PRIVMSG', 'bob').length >= lines,
+        5000,
+        'the line upstream',
+      );
+      const sent = upstreamTexts(ircd, live, 'PRIVMSG', 'bob');
+      expect(sent.join('')).toBe(text);
+      expect(sent).toHaveLength(lines);
+    }
+  });
 });
