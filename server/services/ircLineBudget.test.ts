@@ -1,0 +1,161 @@
+// Copyright (c) 2026 Brad Root
+// SPDX-License-Identifier: MPL-2.0
+
+// A long message is split to what one line can carry as the network relays it
+// — `:nick!user@host PRIVMSG target :text\r\n` within 512 bytes — not to
+// irc-framework's fixed 350 (#1043). That left ~100 bytes of every line unused
+// on most networks, and still overflowed behind a long enough host, where the
+// network truncated the line for everyone else. Against a real IrcConnection on
+// the fake ircd.
+
+import '../test-utils/isolateDb.js';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { ircLineParser } from 'irc-framework';
+import { createUser } from '../db/users.js';
+import { createNetwork } from '../db/networks.js';
+import { FakeIrcd } from '../test-utils/fakeIrcd.js';
+import { until } from '../test-utils/until.js';
+
+type Ev = Record<string, unknown>;
+
+let ircManager: typeof import('./ircManager.js').default;
+let plain: FakeIrcd;
+// Every client's host here is 200 bytes: a 350-byte line behind it is ~570.
+let longHost: FakeIrcd;
+const LONG_HOST = `${'h'.repeat(190)}.long.host`;
+let userId: number;
+let seq = 0;
+
+beforeAll(async () => {
+  ircManager = (await import('./ircManager.js')).default;
+  plain = await FakeIrcd.start({});
+  longHost = await FakeIrcd.start({ clientHost: LONG_HOST });
+  userId = createUser('line-budget').id;
+});
+
+afterAll(async () => {
+  await plain.close();
+  await longHost.close();
+});
+
+const cleanups: Array<() => void> = [];
+afterEach(() => {
+  for (const cleanup of cleanups.splice(0)) cleanup();
+});
+
+// Connect a fresh network to `ircd` and join `#room`, which is what shows the
+// connection its own user@host.
+async function joined(ircd: FakeIrcd): Promise<{ networkId: number; nick: string; events: Ev[] }> {
+  const nick = `budget${++seq}`;
+  const network = createNetwork(userId, {
+    name: `budget-${seq}`,
+    host: '127.0.0.1',
+    port: ircd.port,
+    tls: false,
+    nick,
+    autoconnect: false,
+  })!;
+  const events: Ev[] = [];
+  const onEvent = (e: Ev) => {
+    if (e.networkId === network.id) events.push(e);
+  };
+  ircManager.on('event', onEvent);
+  const conn = ircManager.startNetwork(userId, network.id)!;
+  cleanups.push(() => {
+    ircManager.off('event', onEvent);
+    conn.dispose();
+    ircManager.connectionsForUser(userId).delete(network.id);
+  });
+  await until(() => conn.state === 'connected', 5000, 'connected');
+  ircManager.joinChannel(userId, network.id, '#room');
+  await until(() => conn.isChannelJoined('#room'), 5000, 'joined #room');
+  return { networkId: network.id, nick, events };
+}
+
+// Every PRIVMSG/NOTICE our connection sent to `target`, parsed.
+function upstream(ircd: FakeIrcd, nick: string, command: string, target: string): string[] {
+  return ircd
+    .client(nick)!
+    .sent.map((l) => ircLineParser(l))
+    .filter((m) => m?.command === command && m.params[0] === target)
+    .map((m) => m!.params[1] ?? '');
+}
+
+// The line as the network relays it to everyone else, CRLF included.
+function relayedBytes(ircd: FakeIrcd, nick: string, command: string, text: string): number {
+  const c = ircd.client(nick)!;
+  const host = ircd === longHost ? LONG_HOST : 'fake.host';
+  return Buffer.byteLength(`:${nick}!~${c.user}@${host} ${command} #room :${text}\r\n`);
+}
+
+function words(count: number): string {
+  return Array.from({ length: count }, (_, i) => `w${String(i + 1).padStart(3, '0')}`).join(' ');
+}
+
+describe('the line budget', () => {
+  it('sends a message that fits the real line as ONE line, past 350 bytes', async () => {
+    const { networkId, nick, events } = await joined(plain);
+    const text = words(85); // 424 bytes
+    expect(Buffer.byteLength(text)).toBeGreaterThan(350);
+
+    ircManager.send(userId, networkId, '#room', text);
+    await until(
+      () => events.some((e) => e.type === 'message' && e.self && e.id != null),
+      5000,
+      'our own line',
+    );
+    expect(upstream(plain, nick, 'PRIVMSG', '#room')).toEqual([text]);
+    expect(relayedBytes(plain, nick, 'PRIVMSG', text)).toBeLessThanOrEqual(512);
+    // One self row, the whole message: what the channel saw.
+    expect(events.filter((e) => e.type === 'message' && e.self).map((e) => e.text)).toEqual([text]);
+  });
+
+  it('splits so every line fits 512 bytes as relayed behind a long host', async () => {
+    const { networkId, nick } = await joined(longHost);
+    const text = words(240);
+
+    ircManager.send(userId, networkId, '#room', text);
+    ircManager.notice(userId, networkId, '#room', text);
+    ircManager.action(userId, networkId, '#room', text);
+    await until(
+      () =>
+        upstream(longHost, nick, 'PRIVMSG', '#room').filter((t) => t.startsWith('\x01ACTION '))
+          .length > 1,
+      5000,
+      'the /me lines',
+    );
+
+    const said = upstream(longHost, nick, 'PRIVMSG', '#room').filter(
+      (t) => !t.startsWith('\x01ACTION '),
+    );
+    const noticed = upstream(longHost, nick, 'NOTICE', '#room');
+    const acted = upstream(longHost, nick, 'PRIVMSG', '#room').filter((t) =>
+      t.startsWith('\x01ACTION '),
+    );
+    expect(said.join(' ')).toBe(text);
+    expect(noticed.join(' ')).toBe(text);
+    expect(acted.map((t) => t.slice('\x01ACTION '.length, -1)).join(' ')).toBe(text);
+    for (const t of said)
+      expect(relayedBytes(longHost, nick, 'PRIVMSG', t)).toBeLessThanOrEqual(512);
+    for (const t of noticed)
+      expect(relayedBytes(longHost, nick, 'NOTICE', t)).toBeLessThanOrEqual(512);
+    for (const t of acted)
+      expect(relayedBytes(longHost, nick, 'PRIVMSG', t)).toBeLessThanOrEqual(512);
+  });
+
+  // The composer estimates where a message will split by the same budget; the
+  // user@host bytes are the one input it can't know, so the server tells it.
+  it('tells clients the user@host bytes it learned from our JOIN', async () => {
+    const { networkId, nick, events } = await joined(plain);
+    const user = plain.client(nick)!.user;
+    const real = Buffer.byteLength(`~${user}@fake.host`);
+
+    await until(
+      () => events.some((e) => e.type === 'line-budget' && e.userhostBytes === real),
+      5000,
+      'a line-budget frame with the real bytes',
+    );
+    const conn = ircManager.getConnection(userId, networkId)!;
+    expect(conn.snapshot().userhostBytes).toBe(real);
+  });
+});

@@ -387,6 +387,7 @@ One per network inside `kind:'snapshot'` (`ircConnection.snapshot()`,
   modeSpec: { list, always, onSet, flags, prefix: [ { mode, symbol } ],
               maxModes, topicLen },
   canReact,                           // reactions can be sent here — see below
+  userhostBytes,                      // for estimating where a long message splits — see below
   away: { active, since, message, autoSet, backAt } | null,
   channels: [ { name, topic, topicSetBy, topicSetAt,
                 modes, modeParams: { "<letter>": "<value>" }, createdAt,
@@ -432,6 +433,18 @@ saying so. Treat null as "unknown", not as the RFC defaults. It arrives as a
 `false` until the burst ends (CLIENTTAGDENY rides a 005), then kept current by
 `react-support` frames (§7.2). Absent on a disconnected network — treat as
 `false`, and offer reacting only while `state` is `'connected'`.
+
+`userhostBytes` is the byte length of the `user@host` the network puts in front
+of your lines. It's the real one once a line of yours has shown it (your JOIN,
+a CHGHOST), else the longest it could be: a `~` on your ident and a host of the
+network's `HOSTLEN` (63 if it doesn't say). The server splits a long message
+so each line still fits 512 bytes as the network relays it —
+`:nick!user@host PRIVMSG target :text\r\n` — and this is the one input to that
+budget a client can't know. With it, a composer can show where a message will split:
+`shared/wireBudget.ts` `textBudget()` is the formula (a `/me` body loses 9
+bytes to its `\x01ACTION ` … `\x01` wrapper; never below 64). Kept current by
+`line-budget` frames (§7.2). Absent from a server before it: assume 350 bytes
+of text per line (341 for `/me`), which is what the server split by.
 
 Per channel, `modeParams` holds the values of the set param modes
 (`{ l: '50' }`). ⚠ Channel state **never carries the key** (`k`): it shows in
@@ -808,6 +821,7 @@ Also the `type` of rows inside `backlog`/`history` `events[]`. **P** = persisted
 | `channel-modes`               | E   | `modes` (full letter string), `modeParams`, `createdAt` — never the key       |
 | `mode-spec`                   | E   | `modeSpec` — the network's channel-mode vocabulary changed (§5.1)             |
 | `react-support`               | E   | `canReact` — whether reactions can be sent here changed (§5.1)                |
+| `line-budget`                 | E   | `userhostBytes` — the bytes ahead of your text on each line changed (§5.1)    |
 | `channel-joined`              | E   | **you** are in the channel — the materialization signal (§9.1)                |
 | `channel-parted`              | E   | you left, were removed, or lost the connection — mark parted, keep history    |
 | `join-error`                  | E   | join failed — `text`, `reason`; do **not** create a buffer                    |

@@ -13,9 +13,11 @@
 // is stable for now; if a future irc-framework adds one, this will fail loudly
 // at import time rather than silently diverging.
 //
-// Defaults match irc-framework: message_max_length=350 for PRIVMSG, and
-// 350 - ('ACTION'.length + 3) = 341 for CTCP ACTION (the 3 covers the type
-// name's leading space and the two \x01 SOH chars).
+// The send path splits to the network's real line budget (shared/wireBudget,
+// #1043), so `bytes` is the caller's. The defaults are irc-framework's fixed
+// message_max_length=350 and 350 - ('ACTION'.length + 3) = 341 for CTCP
+// ACTION (the 3 covers the type name's leading space and the two \x01 SOH
+// chars) — what a caller with no connection to measure against still gets.
 import { lineBreak } from 'irc-framework/src/linebreak.js';
 
 export const MESSAGE_MAX_BYTES = 350;
@@ -34,31 +36,21 @@ function chunk(text: string, bytes: number): string[] {
 // Split a PRIVMSG body the way irc-framework would: first on line breaks
 // (each becomes its own series of wire messages — \n inside a PRIVMSG is
 // illegal anyway), then byte-chunk each line.
-export function splitSay(text: string | null | undefined): string[] {
+export function splitSay(text: string | null | undefined, bytes = MESSAGE_MAX_BYTES): string[] {
   if (text == null || text === '') return [];
   const out: string[] = [];
   for (const line of text.split(/\r\n|\n|\r/)) {
     if (!line) continue;
-    out.push(...chunk(line, MESSAGE_MAX_BYTES));
+    out.push(...chunk(line, bytes));
   }
   return out;
 }
 
 // CTCP ACTION doesn't pre-split on newlines (matching irc-framework). The
 // budget is tighter to leave room for the wrapping \x01ACTION ... \x01.
-export function splitAction(text: string | null | undefined): string[] {
+export function splitAction(text: string | null | undefined, bytes = ACTION_MAX_BYTES): string[] {
   if (text == null || text === '') return [];
-  return chunk(text, ACTION_MAX_BYTES);
-}
-
-// The wire lines a PRIVMSG/NOTICE body (`say`) or a /me body (`action`) goes
-// out as. `whole`: the body is one line its sender already fitted to the wire —
-// an attached bouncer client's (#1041) — so it goes as that line. The bouncer
-// registers its echo keys from this and ircManager writes from it, so the two
-// can't disagree about where a message was cut.
-export function wireChunks(kind: 'say' | 'action', text: string, whole = false): string[] {
-  if (whole) return text ? [text] : [];
-  return kind === 'action' ? splitAction(text) : splitSay(text);
+  return chunk(text, bytes);
 }
 
 // One PRIVMSG inside a `draft/multiline` batch. `concat` true means the line
@@ -80,7 +72,10 @@ export interface MultilineWireMessage {
 // does; the 2nd+ chunk of an over-long line carries concat so the receiver glues
 // it back without inserting a newline mid-line. The whole-batch max-bytes /
 // max-lines budget is enforced by partitionMultiline, not here.
-export function splitMultiline(text: string | null | undefined): MultilineWireMessage[] {
+export function splitMultiline(
+  text: string | null | undefined,
+  bytes = MESSAGE_MAX_BYTES,
+): MultilineWireMessage[] {
   if (text == null || text === '') return [];
   const out: MultilineWireMessage[] = [];
   for (const line of text.split(/\r\n|\n|\r/)) {
@@ -88,7 +83,7 @@ export function splitMultiline(text: string | null | undefined): MultilineWireMe
       out.push({ content: '', concat: false });
       continue;
     }
-    chunk(line, MESSAGE_MAX_BYTES).forEach((part, i) => {
+    chunk(line, bytes).forEach((part, i) => {
       out.push({ content: part, concat: i > 0 });
     });
   }
@@ -124,8 +119,9 @@ export interface MultilineLimits {
 export function partitionMultiline(
   text: string | null | undefined,
   limits: MultilineLimits,
+  bytes = MESSAGE_MAX_BYTES,
 ): MultilineWireMessage[][] {
-  const wires = splitMultiline(text);
+  const wires = splitMultiline(text, bytes);
   if (wires.length === 0) return [];
   // Re-group wire messages into logical lines (a head plus its concat tail).
   const logical: MultilineWireMessage[][] = [];
@@ -159,10 +155,11 @@ export function partitionMultiline(
     } else {
       // Bigger than a whole batch on its own — tear it across batches at wire
       // boundaries so no single batch exceeds the server's budget. A wire
-      // message is ≤350B, so it can exceed maxBytes only if the server set
-      // max-bytes below a full wire line; re-chunk it smaller in that case so a
-      // batch never overflows. (The caller gates max-bytes < 350 to the legacy
-      // splitter, so this is a belt-and-suspenders.)
+      // message is at most one line's budget (`bytes`), so it can exceed
+      // maxBytes only if the server set max-bytes below a full wire line;
+      // re-chunk it smaller in that case so a batch never overflows. (The
+      // caller gates max-bytes < 350 to the legacy splitter, but a line's
+      // budget can be more than 350.)
       flush();
       const pieces = line.flatMap((w) =>
         byteLen(w.content) > limits.maxBytes

@@ -17,6 +17,7 @@ import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import { listMessages } from '../db/messages.js';
 import { ensureOpen } from '../db/buffers.js';
+import { splitAction, splitSay } from './messageSplit.js';
 
 let userId: number;
 let networkId: number;
@@ -444,6 +445,9 @@ describe('ircManager optimistic-publish gating', () => {
       echoActive: () => true,
       noteSentCiphertext: () => {},
       flushE2eRekeys: () => {},
+      // The send path splits through the connection's line budget (#1043).
+      sayChunks: (_command: string, _target: string, text: string) => splitSay(text),
+      actionChunks: (_target: string, text: string) => splitAction(text),
       ...overrides,
     } as unknown as IrcConnection;
     return { conn, say, action, notice, publish };
@@ -456,9 +460,9 @@ describe('ircManager optimistic-publish gating', () => {
     ircManager.action(userId, networkId, '#gate', 'waves');
     ircManager.notice(userId, networkId, '#gate', 'psst');
     // The third argument is a reply's tags — none here.
-    expect(say).toHaveBeenCalledWith('#gate', 'hi', null, false);
-    expect(action).toHaveBeenCalledWith('#gate', 'waves', null, false);
-    expect(notice).toHaveBeenCalledWith('#gate', 'psst', false);
+    expect(say).toHaveBeenCalledWith('#gate', 'hi', null);
+    expect(action).toHaveBeenCalledWith('#gate', 'waves', null);
+    expect(notice).toHaveBeenCalledWith('#gate', 'psst');
     expect(publish).not.toHaveBeenCalled();
   });
 

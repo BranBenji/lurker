@@ -79,6 +79,11 @@ export interface NetworkState {
   // echo-message, not denied by CLIENTTAGDENY). False until the registration
   // burst ends; seeded by the snapshot, replaced by `react-support` frames.
   canReact?: boolean;
+  // Bytes of our user@host as the network relays it (or the longest it could
+  // be), the input to the composer's split estimate (#1043). Seeded by the
+  // snapshot, replaced by `line-budget` frames; absent from a server that
+  // predates it.
+  userhostBytes?: number;
 }
 
 export interface ActiveBuffer {
@@ -323,6 +328,11 @@ export const useNetworksStore = defineStore('networks', {
     applyReactSupport(event: any) {
       const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };
       this.states[event.networkId] = { ...existing, canReact: !!event.canReact };
+    },
+    applyLineBudget(event: any) {
+      if (typeof event.userhostBytes !== 'number') return;
+      const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };
+      this.states[event.networkId] = { ...existing, userhostBytes: event.userhostBytes };
     },
     applyAwayState(event: any) {
       const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };

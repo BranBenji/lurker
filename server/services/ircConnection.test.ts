@@ -3090,13 +3090,18 @@ describe('IRCv3 draft/multiline (#381)', () => {
   function enableMultiline(conn: IrcConnection, advertised = 'max-bytes=4096,max-lines=24'): void {
     (
       conn.client as unknown as {
-        network: { cap: { enabled: string[]; available: Map<string, string> } };
+        network: {
+          cap: { enabled: string[]; available: Map<string, string> };
+          supports: (name: string) => unknown;
+        };
       }
     ).network = {
       cap: {
         enabled: ['message-tags', 'batch', 'draft/multiline'],
         available: new Map([['draft/multiline', advertised]]),
       },
+      // No ISUPPORT: the line budget (#1043) assumes the default HOSTLEN.
+      supports: () => undefined,
     };
   }
 
@@ -3275,12 +3280,15 @@ describe('IRCv3 draft/multiline (#381)', () => {
       enableMultiline(conn);
       const raw = vi.fn<(line: string) => void>();
       conn.client.raw = raw;
-      conn.sendMultiline('#chan', `short\n${'a'.repeat(400)}`);
+      conn.sendMultiline('#chan', `short\n${'a'.repeat(600)}`);
       const lines = raw.mock.calls.map((c) => c[0]);
       const ref = lines[0].match(/^BATCH \+(\S+)/)![1];
-      expect(lines[2]).toBe(`@batch=${ref} PRIVMSG #chan :${'a'.repeat(350)}`);
+      // Cut where one line runs out, as the network relays it (#1043).
+      const budget = conn.textBudget('PRIVMSG', '#chan');
+      expect(budget).toBeGreaterThan(350);
+      expect(lines[2]).toBe(`@batch=${ref} PRIVMSG #chan :${'a'.repeat(budget)}`);
       expect(lines[3]).toBe(
-        `@batch=${ref};draft/multiline-concat PRIVMSG #chan :${'a'.repeat(50)}`,
+        `@batch=${ref};draft/multiline-concat PRIVMSG #chan :${'a'.repeat(600 - budget)}`,
       );
     });
 

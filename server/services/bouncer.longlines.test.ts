@@ -339,8 +339,8 @@ describe('the line budget', () => {
   });
 
   // HOSTLEN is the network's to say. One that no string could be built to must
-  // still leave the message sent — split, since nothing fits behind a host
-  // that long — and the bouncer up.
+  // still leave the message sent — split to the smallest budget, since nothing
+  // fits behind a host that long — and the bouncer up.
   it('survives an absurd HOSTLEN', async () => {
     const absurd = await FakeIrcd.start({ isupport: ['HOSTLEN=1000000000'] });
     cleanups.push(() => void absurd.close());
@@ -350,10 +350,13 @@ describe('the line budget', () => {
 
     c.send(`PRIVMSG bob :${text}`);
     await until(
-      () => upstreamTexts(absurd, live, 'PRIVMSG', 'bob').length >= 2,
+      () => upstreamTexts(absurd, live, 'PRIVMSG', 'bob').join('') === text,
       5000,
-      'the split lines upstream',
+      'the whole message upstream',
     );
-    expect(upstreamTexts(absurd, live, 'PRIVMSG', 'bob').join('')).toBe(text);
+    // Split to the smallest budget there is (shared/wireBudget MIN_TEXT_BUDGET).
+    for (const t of upstreamTexts(absurd, live, 'PRIVMSG', 'bob')) {
+      expect(Buffer.byteLength(t)).toBeLessThanOrEqual(64);
+    }
   });
 });

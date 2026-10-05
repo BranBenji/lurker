@@ -315,3 +315,31 @@ describe('hasInteriorNewline', () => {
     expect(hasInteriorNewline('hello\nworld\n')).toBe(true); // edges trimmed, interior remains
   });
 });
+
+// The send path passes the network's real line budget (#1043); every splitter
+// cuts to it instead of irc-framework's fixed 350.
+describe('a line budget other than 350', () => {
+  const line = 'word '.repeat(80).trim(); // 399 bytes
+
+  it('keeps a line that fits the budget whole, in every splitter', () => {
+    expect(splitSay(line, 420)).toEqual([line]);
+    expect(splitAction(line, 420)).toEqual([line]);
+    expect(splitMultiline(`${line}\nnext`, 420)).toEqual([
+      { content: line, concat: false },
+      { content: 'next', concat: false },
+    ]);
+    expect(partitionMultiline(`${line}\nnext`, { maxBytes: 4096, maxLines: 24 }, 420)).toEqual([
+      [
+        { content: line, concat: false },
+        { content: 'next', concat: false },
+      ],
+    ]);
+  });
+
+  it('cuts to a budget below 350 too', () => {
+    const pieces = splitSay(line, 100);
+    expect(pieces.length).toBeGreaterThan(3);
+    for (const p of pieces) expect(Buffer.byteLength(p)).toBeLessThanOrEqual(100);
+    expect(pieces.join(' ')).toBe(line);
+  });
+});

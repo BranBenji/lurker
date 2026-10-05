@@ -214,6 +214,7 @@ import {
   chunkCountForAction,
   multilineMessageCount,
   splitGateFor,
+  textBudgetFor,
   type MultilineLimits,
 } from '../utils/messageSplit.js';
 import { shouldRepinOnSend } from '../utils/sendScroll.js';
@@ -560,7 +561,9 @@ function chatBody(text: string): string {
 // some other target, but the wire chunks are the same. Other slash commands
 // (/raw, /join, etc.) don't pass through the splitter — return null to
 // signal "no split risk".
-function bodyForSplit(raw: string): { body: string; isAction: boolean } {
+// `target` is set where the command names its own (/msg); otherwise the body
+// goes to the active buffer.
+function bodyForSplit(raw: string): { body: string; isAction: boolean; target?: string } {
   if (!raw) return { body: '', isAction: false };
   // // escape: `//foo` is a literal `/foo` message, not a command, so it does
   // pass through PRIVMSG and is subject to the splitter. Plain and //-escaped
@@ -596,14 +599,23 @@ function bodyForSplit(raw: string): { body: string; isAction: boolean } {
     // a trailing-space string yields a final empty element — so `/msg bob hi ` really does put
     // `hi ` on the wire. The estimator's job is to match the payload, not to tidy it.
     const words = m[2].split(/\s+/);
-    return { body: chatBody(words.slice(1).join(' ')), isAction: false };
+    return { body: chatBody(words.slice(1).join(' ')), isAction: false, target: words[0] };
   }
   return { body: '', isAction: false };
 }
 
+// The bytes one line to `target` carries on the active network: the budget the
+// server will split by (#1043).
+function lineBudget(target: string | undefined, action: boolean): number {
+  const nid = active.value?.networkId;
+  const net = nid == null ? null : networks.states[nid];
+  return textBudgetFor(net, target ?? active.value?.target ?? '', action);
+}
+
 function computeChunks(raw: string): { chunks: number; isAction: boolean } {
-  const { body, isAction } = bodyForSplit(raw);
-  const chunks = isAction ? chunkCountForAction(body) : chunkCountForSay(body);
+  const { body, isAction, target } = bodyForSplit(raw);
+  const bytes = lineBudget(target, isAction);
+  const chunks = isAction ? chunkCountForAction(body, bytes) : chunkCountForSay(body, bytes);
   return { chunks, isAction };
 }
 
@@ -625,7 +637,7 @@ function multilineCountFor(raw: string): number {
   const isPlainSend = !raw.startsWith('/') || raw.startsWith('//');
   if (!isPlainSend) return 0;
   const wireBody = applySpoilerMarkup(raw.startsWith('//') ? raw.slice(1) : raw);
-  return multilineMessageCount(wireBody, currentMultilineLimits());
+  return multilineMessageCount(wireBody, currentMultilineLimits(), lineBudget(undefined, false));
 }
 
 // Recompute and broadcast the composing state (drives StatusBar). Single source

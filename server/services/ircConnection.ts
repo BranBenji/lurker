@@ -80,7 +80,14 @@ import { registerIdent, unregisterIdent, isIdentdEnabled, isOidentdFileEnabled }
 import { EngineLink, engineConfigured, engineConnectionId } from './engineLink.js';
 import { ENGINE_CLOSE, EngineTransport, engineCloseCode } from './engineTransport.js';
 import type { EnginePhase, EnginePhaseInfo } from './engineTransport.js';
-import { MESSAGE_MAX_BYTES, partitionMultiline, reassembleMultiline } from './messageSplit.js';
+import {
+  MESSAGE_MAX_BYTES,
+  partitionMultiline,
+  reassembleMultiline,
+  splitAction,
+  splitSay,
+} from './messageSplit.js';
+import { DEFAULT_HOSTLEN, textBudget } from '../../shared/wireBudget.js';
 import type { MultilineLimits } from './messageSplit.js';
 import { e2eManager } from './e2e/manager.js';
 import type { UserNotice } from './e2e/manager.js';
@@ -795,6 +802,8 @@ export class IrcConnection {
   // The last canReact sent as a `react-support` frame; null = none sent on
   // this connection yet.
   private publishedCanReact: boolean | null = null;
+  // The last userhostBytes sent as a `line-budget` frame (#1043).
+  private publishedUserhostBytes: number | null = null;
   // List fetches on the wire, by folded channel + letter (fetchModeList).
   private readonly modeListFetches = new Map<string, Promise<ModeListResult>>();
   pendingMonitorSeed: boolean;
@@ -1790,6 +1799,7 @@ export class IrcConnection {
       this.userModes.clear();
       this.lagMs = null;
       this.selfUserhost = null;
+      this.publishLineBudgetIfChanged();
       // A full, registered connection is the only signal that the network is
       // genuinely reachable again — reset the backoff so a later drop starts a
       // fresh, fast retry ladder instead of inheriting a long prior interval.
@@ -1966,6 +1976,7 @@ export class IrcConnection {
       // end must send a frame even if the network's spec hasn't changed.
       this.publishedModeSpec = null;
       this.publishedCanReact = null;
+      this.publishedUserhostBytes = null;
       this.rawMonitored.clear();
       // Safety-net presence sweep. The primary one runs in 'socket close',
       // which fires on every disconnect (including auto-reconnect blips), so it
@@ -2047,6 +2058,8 @@ export class IrcConnection {
     on('server options', () => {
       this.publishModeSpecIfChanged();
       this.publishReactSupportIfChanged();
+      // A HOSTLEN changes the worst case while our own host is unknown.
+      this.publishLineBudgetIfChanged();
       // 005 lines arrive in multiple bursts; this handler fires once per
       // line as irc-framework accumulates options. The MONITOR token isn't
       // necessarily in the first line, so only act when we transition
@@ -5865,16 +5878,16 @@ export class IrcConnection {
     this.notePartSent(channel);
     this.client.part(channel, reason);
   }
+  // One line each: the send path has already split the text to this network's
+  // line budget (sayChunks/actionChunks, #1043), so irc-framework's own fixed
+  // 350-byte split must not cut it again — that moved the boundaries the
+  // sender chose, an attached bouncer client's among them (#1041), and its
+  // lines and their echoes no longer matched.
   // `tags`: client-only tags for this line — a reply's (replyTags).
-  // `whole`: write `text` as exactly ONE line, never re-split at irc-framework's
-  // 350 bytes — for a line its sender already fitted to the wire, an attached
-  // bouncer client's (#1041). Re-splitting it moves the boundaries the client
-  // chose, and then its own lines and their echoes no longer match.
-  say(target: string, text: string, tags?: Record<string, string> | null, whole = false): void {
+  say(target: string, text: string, tags?: Record<string, string> | null): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
     this.noteUserSend(target);
-    if (whole) this.writeWhole('PRIVMSG', target, text, tags);
-    else this.client.say(target, text, tags ?? undefined);
+    this.writeLine('PRIVMSG', target, text, tags);
     // Arm AFTER the send, and never let a DB hiccup in arming break delivery of
     // the user's actual message.
     try {
@@ -5883,30 +5896,33 @@ export class IrcConnection {
       /* arming is best-effort */
     }
   }
-  action(target: string, text: string, tags?: Record<string, string> | null, whole = false): void {
+  action(target: string, text: string, tags?: Record<string, string> | null): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
     this.noteUserSend(target);
-    if (whole) {
-      this.writeWhole('PRIVMSG', target, `\x01ACTION ${text}\x01`, tags);
-      return;
-    }
-    if (!tags) {
-      this.client.action(target, text);
-      return;
-    }
-    // irc-framework's action() takes no tags, so write the CTCP ACTION line
-    // ourselves, the way sendMultiline writes its tagged lines. `text` is one
-    // splitAction chunk, already within the budget action() would split to.
-    this.raw(`@${IRC.MessageTags.encode(tags)} PRIVMSG ${target} :\x01ACTION ${text}\x01`);
+    this.writeLine('PRIVMSG', target, `\x01ACTION ${text}\x01`, tags);
   }
-  notice(target: string, text: string, whole = false): void {
+  notice(target: string, text: string): void {
     // Unlike say/action we don't trackDmPeer here: outgoing NOTICEs mirror the
     // inbound rule (NOTICEs don't establish a tracked DM peer), so notice-ing a
     // service or bot doesn't spin up presence tracking for it.
     this.noteUserSend(target);
-    if (whole) this.writeWhole('NOTICE', target, text, null);
-    else this.client.notice(target, text);
+    this.writeLine('NOTICE', target, text, null);
   }
+
+  // One PRIVMSG/NOTICE line, written where irc-framework's sendMessage writes
+  // each block it splits, minus the split.
+  private writeLine(
+    command: string,
+    target: string,
+    text: string,
+    tags: Record<string, string> | null | undefined,
+  ): void {
+    const tagged = tags && Object.keys(tags).length ? `@${IRC.MessageTags.encode(tags)} ` : '';
+    this.client.raw(`${tagged}${command} ${target} :${text}`);
+  }
+
+  // --- Line budget (#1043) ---------------------------------------------------
+
   /** Our user@host as the network relays it, or null while no line of ours
    *  has shown it (see selfUserhost). */
   knownSelfUserhost(): { user: string; host: string } | null {
@@ -5917,18 +5933,57 @@ export class IrcConnection {
     this.selfUserhost = { user, host };
     this.client.user.username = user;
     this.client.user.host = host;
+    this.publishLineBudgetIfChanged();
   }
 
-  // One PRIVMSG/NOTICE line, written where irc-framework's sendMessage writes
-  // each block it splits, minus the split.
-  private writeWhole(
-    command: string,
-    target: string,
-    text: string,
-    tags: Record<string, string> | null | undefined,
-  ): void {
-    const tagged = tags && Object.keys(tags).length ? `@${IRC.MessageTags.encode(tags)} ` : '';
-    this.client.raw(`${tagged}${command} ${target} :${text}`);
+  /** Bytes of the user@host the network puts in front of our lines: the real
+   *  one once a line of ours has shown it, else the longest it could be — a
+   *  `~` on our ident and a host of the network's HOSTLEN. */
+  userhostBytes(): number {
+    const known = this.selfUserhost;
+    if (known) return Buffer.byteLength(`${known.user}@${known.host}`);
+    // ⚠ Counted, never padded out: HOSTLEN is the network's to say, and a
+    // string built to its length is an allocation a server chooses. And
+    // supports() hands back a token's value — a string — or `true` for a bare
+    // token, which is no length at all (Number(true) would be a 1-byte host).
+    const advertised = this.client.network?.supports('HOSTLEN');
+    const hostlen = typeof advertised === 'string' ? Number(advertised) : NaN;
+    const host = Number.isInteger(hostlen) && hostlen > 0 ? hostlen : DEFAULT_HOSTLEN;
+    // The ident we registered with (connect() sends the same), before the
+    // network adds its `~`.
+    const ident = this.network.username || this.network.nick;
+    return Buffer.byteLength(`~${ident}@`) + host;
+  }
+
+  /** Bytes of text one PRIVMSG/NOTICE to `target` can carry here. */
+  textBudget(command: 'PRIVMSG' | 'NOTICE', target: string, action = false): number {
+    return textBudget({
+      nick: this.currentNick || this.network.nick,
+      userhostBytes: this.userhostBytes(),
+      command,
+      target,
+      action,
+    });
+  }
+
+  /** The wire lines a PRIVMSG/NOTICE body to `target` goes out as. The send
+   *  path writes these and the bouncer keys its echoes by them, so the two
+   *  always cut a message in the same place. */
+  sayChunks(command: 'PRIVMSG' | 'NOTICE', target: string, text: string): string[] {
+    return splitSay(text, this.textBudget(command, target));
+  }
+  /** As sayChunks, for a /me body. */
+  actionChunks(target: string, text: string): string[] {
+    return splitAction(text, this.textBudget('PRIVMSG', target, true));
+  }
+
+  // Tell clients when the user@host bytes change, so the composer's split
+  // estimate measures by the same budget the send path splits by.
+  private publishLineBudgetIfChanged(): void {
+    const userhostBytes = this.userhostBytes();
+    if (userhostBytes === this.publishedUserhostBytes) return;
+    this.publishedUserhostBytes = userhostBytes;
+    this.publishEphemeral({ type: 'line-budget', target: this.serverTarget(), userhostBytes });
   }
 
   // --- CTCP (#263) -----------------------------------------------------------
@@ -8113,7 +8168,7 @@ export class IrcConnection {
     if (!limits) return [];
     const echoes: string[] = [];
     let batchTags = tags ? IRC.MessageTags.encode(tags) : '';
-    for (const batch of partitionMultiline(text, limits)) {
+    for (const batch of partitionMultiline(text, limits, this.textBudget('PRIVMSG', target))) {
       const ref = randomBytes(8).toString('hex');
       this.raw(`${batchTags ? `@${batchTags} ` : ''}BATCH +${ref} draft/multiline ${target}`);
       batchTags = '';
@@ -8743,6 +8798,9 @@ export class IrcConnection {
       modeSpec: this.clientModeSpec(),
       // Whether reactions can be sent here; kept current by `react-support`.
       canReact: this.clientCanReact(),
+      // The composer's split estimate measures by this (shared/wireBudget);
+      // kept current by `line-budget` (#1043).
+      userhostBytes: this.userhostBytes(),
       away: a.since
         ? {
             active: a.active,

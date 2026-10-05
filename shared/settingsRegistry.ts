@@ -1026,7 +1026,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   },
 
   // ─── Composing (outgoing message guardrails) ─────────────────────────
-  // irc-framework splits anything past ~350 bytes into multiple PRIVMSGs on
+  // A message longer than one IRC line (~430 bytes on most networks, by our
+  // prefix and the target: shared/wireBudget) goes out as several PRIVMSGs on
   // the wire. The default UX blocks the user from accidentally flooding —
   // they have to either shorten, hit Send a second time to confirm, or flip
   // this on to send splits silently like a traditional client.
