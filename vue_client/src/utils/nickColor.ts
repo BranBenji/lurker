@@ -97,11 +97,16 @@ export function trimTrailingPunctuation(s: string): string {
   return s.slice(0, end);
 }
 
+// Bare email: "name@host.tld" with no scheme. The [^:]+@ guard rules out
+// strings that already have a scheme prefix (mailto:, http://user@host), and
+// a www. host wins even with an @ in its path (www.example.com/@alice).
+function isBareEmail(matched: string): boolean {
+  return !/^www\./i.test(matched) && /^[^:]+@/.test(matched);
+}
+
 function urlHref(matched: string): string {
   if (/^www\./i.test(matched)) return `http://${matched}`;
-  // Bare email: "name@host.tld" with no scheme. The [^:]+@ guard rules out
-  // strings that already have a scheme prefix (mailto:, http://user@host).
-  if (/^[^:]+@/.test(matched)) return `mailto:${matched}`;
+  if (isBareEmail(matched)) return `mailto:${matched}`;
   return matched;
 }
 
@@ -128,9 +133,9 @@ export function isBracketedUrl(text: string, index: number, rawMatch: string): b
   return (
     text[index - 1] === '<' &&
     text[index + rawMatch.length] === '>' &&
-    // The same bare-email test urlHref makes, so a scheme added to the shared pattern can't
-    // silently fall out of the convention.
-    !/^[^:]+@/.test(rawMatch)
+    // urlHref's own classifier, so a scheme added to the shared pattern can't silently fall out
+    // of the convention.
+    !isBareEmail(rawMatch)
   );
 }
 

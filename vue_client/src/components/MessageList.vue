@@ -1140,13 +1140,6 @@ const renderRows = computed((): RenderRow[] => {
     const lastSpoke = lastSpokeOf(nick);
     return lastSpoke != null && lastSpoke <= at && at - lastSpoke <= delayMs;
   };
-  // ⚠⚠ A rename is the one event whose actor has two names, and either can hold the time they
-  // last spoke: a history seed groups speakers by the nick each line was sent under, and the
-  // store copies the old nick's entry to the new one as the event lands. Each name is asked on
-  // its own — taking the later of the two lets a line spoken AFTER the rename mask the one
-  // before it.
-  const actorSpokeRecently = (m: ChatMessage, at: number): boolean =>
-    (!!m.nick && spokeRecently(m.nick, at)) || (!!m.newNick && spokeRecently(m.newNick, at));
   // Our own churn is never hidden. A rename is checked under BOTH nicks: nick rows carry no self
   // flag, and own-nick can land before the row renders, leaving the OLD name failing the test.
   const isOurs = (m: ChatMessage): boolean =>
@@ -1320,7 +1313,11 @@ const renderRows = computed((): RenderRow[] => {
             lastSpoke - mTimeMs <= unmaskMs;
           // Joins only: a mode is never revived by what its target says next.
           // weechat scopes smart_filter_join_unmask the same way.
-          if (!actorSpokeRecently(m, mTimeMs) && !unmasked) hidden = true;
+          // ⚠ Judged by the OLD nick only. renameMember copies a speaker's entry to the new nick
+          // rather than moving it, so the actor's own lines are still under the name the row
+          // prints; asking the new nick too would credit them with whatever an earlier holder of
+          // that nick said.
+          if (!spokeRecently(m.nick, mTimeMs) && !unmasked) hidden = true;
         }
       }
     }

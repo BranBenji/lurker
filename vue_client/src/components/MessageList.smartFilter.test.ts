@@ -110,6 +110,21 @@ describe('MessageList — smart filter and renames', () => {
     expect(shown(w, renamed.id)).toBe(true);
   });
 
+  it('does not credit a rename with what an earlier holder of the new nick said', () => {
+    // bob talks and renames away; silent alice takes the nick. bob's entry is still under `bob`,
+    // and it is not alice's.
+    const buffers = useBuffersStore();
+    const said = row('message', 'bob', 0);
+    const away = row('nick', 'bob', 1, { newNick: 'bob_away' });
+    const taken = row('nick', 'alice', 2, { newNick: 'bob' });
+    buffers.recordSpeaker(1, '#chan', 'bob', at(0));
+    buffers.renameMember(1, '#chan', 'bob', 'bob_away');
+    buffers.renameMember(1, '#chan', 'alice', 'bob');
+    const w = mountWith([said, away, taken]);
+    expect(shown(w, away.id)).toBe(true);
+    expect(shown(w, taken.id)).toBe(false);
+  });
+
   it('still hides the rename of somebody who never spoke', () => {
     const buffers = useBuffersStore();
     const said = row('message', 'alice', 0);

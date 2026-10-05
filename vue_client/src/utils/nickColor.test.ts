@@ -493,6 +493,12 @@ describe('splitTextByTokens — <angle-bracketed> URLs', () => {
     ]);
   });
 
+  it('still treats a bracketed www host with an @ in its path as a URL', () => {
+    expect(parse('<www.example.com/@alice>')).toEqual([
+      { text: 'www.example.com/@alice', url: 'http://www.example.com/@alice' },
+    ]);
+  });
+
   it('still treats a bracketed mailto: as the URL convention', () => {
     expect(parse('<mailto:foo@bar.com>')).toEqual([
       { text: 'mailto:foo@bar.com', url: 'mailto:foo@bar.com' },
