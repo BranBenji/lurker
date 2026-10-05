@@ -226,13 +226,21 @@ describe('the line budget', () => {
       'the lines upstream',
     );
 
-    const sent = plain.client(nick)!.sent.slice(before);
-    expect(sent.map((l) => ircLineParser(l)?.command)).toEqual([
-      'PRIVMSG',
-      'PRIVMSG',
-      'PRIVMSG',
-      'NOTICE',
-    ]);
+    // Only our four lines and no injected command. ⚠ Not "exactly four lines
+    // since the mark": the join's own MODE and WHO can still be on their way
+    // out, and on a slow runner they land after it.
+    const sent = plain
+      .client(nick)!
+      .sent.slice(before)
+      .map((l) => ircLineParser(l));
+    expect(sent.filter((m) => m?.command === 'QUIT')).toEqual([]);
+    expect(
+      sent
+        .filter(
+          (m) => m?.params[0] === '#room' && (m.command === 'PRIVMSG' || m.command === 'NOTICE'),
+        )
+        .map((m) => m!.command),
+    ).toEqual(['PRIVMSG', 'PRIVMSG', 'PRIVMSG', 'NOTICE']);
     expect(conn.state).toBe('connected');
   });
 });
