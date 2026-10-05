@@ -1315,3 +1315,50 @@ describe('applyAroundSlice — the anchor survives the ring', () => {
     expect(buf.hasMoreNewer).toBe(true);
   });
 });
+
+describe('speakers across a rename', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    h.activeKey = null;
+  });
+
+  it('keeps the old nick and copies its time to the new one', () => {
+    const store = useBuffersStore();
+    store.recordSpeaker(1, '#a', 'alice', 1000);
+    store.renameMember(1, '#a', 'alice', 'alice_afk');
+    const sp = store.byKey('1::#a')!.speakers;
+    expect(sp['alice']).toEqual({ nick: 'alice', lastTime: 1000 });
+    expect(sp['alice_afk']).toEqual({ nick: 'alice_afk', lastTime: 1000 });
+  });
+
+  it('takes the new spelling on a case-only rename', () => {
+    const store = useBuffersStore();
+    store.recordSpeaker(1, '#a', 'alice', 1000);
+    store.renameMember(1, '#a', 'alice', 'Alice');
+    expect(store.byKey('1::#a')!.speakers).toEqual({ alice: { nick: 'Alice', lastTime: 1000 } });
+  });
+
+  it('stays capped, evicting neither half of the rename', () => {
+    // Every rename adds a key, so a nick-cycling bot would otherwise grow the map without bound.
+    const store = useBuffersStore();
+    store.recordSpeaker(1, '#a', 'alice', 1);
+    for (let i = 0; i < 127; i++) store.recordSpeaker(1, '#a', `u${i}`, 100 + i);
+    store.renameMember(1, '#a', 'alice', 'alice_afk');
+    const sp = store.byKey('1::#a')!.speakers;
+    expect(Object.keys(sp)).toHaveLength(128);
+    expect(sp['alice']).toBeTruthy();
+    expect(sp['alice_afk']).toBeTruthy();
+    expect(sp['u0']).toBeUndefined();
+  });
+  it('keeps the newest times when a stale speaker arrives at the cap', () => {
+    // Only a rename protects keys. A new nick with an OLDER time than everyone held is the one
+    // that goes, not the oldest of the rest.
+    const store = useBuffersStore();
+    for (let i = 0; i < 128; i++) store.recordSpeaker(1, '#a', `u${i}`, 100 + i);
+    store.recordSpeaker(1, '#a', 'late', 1);
+    const sp = store.byKey('1::#a')!.speakers;
+    expect(Object.keys(sp)).toHaveLength(128);
+    expect(sp['late']).toBeUndefined();
+    expect(sp['u0']).toBeTruthy();
+  });
+});

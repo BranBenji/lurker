@@ -158,7 +158,7 @@ interface UrlSpan {
    * so absorbing everything it dropped made `look at this (https://e.test/a.png)` hideable and
    * rendered it as a line holding a lone `(` above the picture — the same orphan this fix exists
    * to remove, moved to the other end. Sentence punctuation has no partner; a bracket or a quote
-   * does. So the span crosses `.,;:!?` and stops at anything paired, which leaves a wrapped URL
+   * does. So the span crosses `.,;:!?…` and stops at anything paired, which leaves a wrapped URL
    * simply not hideable rather than half-deleted.
    *
    * ⚠⚠ Whatever DELETES the URL has to agree with this or the fix just moves the damage again:
@@ -178,7 +178,7 @@ interface UrlSpan {
  * punctuation has no partner, so taking it with the address is safe and reads correctly: a
  * message ending `…shot.png.` reads as ending with the picture.
  */
-const ABSORBABLE_PUNCTUATION = '.,;:!?';
+const ABSORBABLE_PUNCTUATION = '.,;:!?…';
 
 /**
  * Every resolvable URL in `text`, with where it sits in what the reader actually sees.

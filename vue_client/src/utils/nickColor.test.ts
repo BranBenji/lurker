@@ -478,4 +478,47 @@ describe('splitTextByTokens — <angle-bracketed> URLs', () => {
       { text: 'www.example.com', url: 'http://www.example.com' },
     ]);
   });
+  it('keeps the brackets around a bare email address, which are prose', () => {
+    // `<a@b.com>` is the mail-address convention, not the URL one: the brackets are part of what
+    // was written, as in a git trailer.
+    expect(parse('mail me at <foo@bar.com> ok')).toEqual([
+      { text: 'mail me at <' },
+      { text: 'foo@bar.com', url: 'mailto:foo@bar.com' },
+      { text: '> ok' },
+    ]);
+    expect(parse('Co-Authored-By: X <a@b.com>')).toEqual([
+      { text: 'Co-Authored-By: X <' },
+      { text: 'a@b.com', url: 'mailto:a@b.com' },
+      { text: '>' },
+    ]);
+  });
+
+  it('still treats a bracketed www host with an @ in its path as a URL', () => {
+    expect(parse('<www.example.com/@alice>')).toEqual([
+      { text: 'www.example.com/@alice', url: 'http://www.example.com/@alice' },
+    ]);
+  });
+
+  it('still treats a bracketed mailto: as the URL convention', () => {
+    expect(parse('<mailto:foo@bar.com>')).toEqual([
+      { text: 'mailto:foo@bar.com', url: 'mailto:foo@bar.com' },
+    ]);
+  });
+});
+
+describe('splitTextByTokens — a trailing ellipsis', () => {
+  it('is sentence punctuation, not part of the URL', () => {
+    // macOS substitutes `…` for `...` as you type, so this is how a trailing-off sentence arrives.
+    expect(parse('see https://example.com/a…')).toEqual([
+      { text: 'see ' },
+      { text: 'https://example.com/a', url: 'https://example.com/a' },
+      { text: '…' },
+    ]);
+  });
+
+  it('is kept when it sits inside the path', () => {
+    expect(parse('https://example.com/a…b')).toEqual([
+      { text: 'https://example.com/a…b', url: 'https://example.com/a…b' },
+    ]);
+  });
 });

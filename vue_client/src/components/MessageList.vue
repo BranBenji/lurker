@@ -1140,6 +1140,11 @@ const renderRows = computed((): RenderRow[] => {
     const lastSpoke = lastSpokeOf(nick);
     return lastSpoke != null && lastSpoke <= at && at - lastSpoke <= delayMs;
   };
+  // Our own churn is never hidden. A rename is checked under BOTH nicks: nick rows carry no self
+  // flag, and own-nick can land before the row renders, leaving the OLD name failing the test.
+  const isOurs = (m: ChatMessage): boolean =>
+    ownNickLc != null &&
+    (m.nick?.toLowerCase() === ownNickLc || m.newNick?.toLowerCase() === ownNickLc);
 
   const dividerAfterId = buf?.dividerAfterId || 0;
   // Skip divider insertion entirely when there's nothing to mark (no pointer
@@ -1298,7 +1303,7 @@ const renderRows = computed((): RenderRow[] => {
           // dedicated smart_filter_chghost for the same reason (#591).
           ((m.type === 'part' || m.type === 'quit' || m.type === 'chghost') && fQuit) ||
           (m.type === 'nick' && fNick);
-        if (filterable && m.nick.toLowerCase() !== ownNickLc) {
+        if (filterable && !isOurs(m)) {
           const lastSpoke = lastSpokeOf(m.nick);
           const unmasked =
             m.type === 'join' &&
@@ -1308,6 +1313,10 @@ const renderRows = computed((): RenderRow[] => {
             lastSpoke - mTimeMs <= unmaskMs;
           // Joins only: a mode is never revived by what its target says next.
           // weechat scopes smart_filter_join_unmask the same way.
+          // ⚠ Judged by the OLD nick only. renameMember copies a speaker's entry to the new nick
+          // rather than moving it, so the actor's own lines are still under the name the row
+          // prints; asking the new nick too would credit them with whatever an earlier holder of
+          // that nick said.
           if (!spokeRecently(m.nick, mTimeMs) && !unmasked) hidden = true;
         }
       }

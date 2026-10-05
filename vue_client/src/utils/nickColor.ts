@@ -72,7 +72,9 @@ export function trimTrailingPunctuation(s: string): string {
   let end = s.length;
   while (end > 0) {
     const ch = s[end - 1];
-    if ('.,;:!?\'"'.includes(ch)) {
+    // ⚠ `…` is sentence punctuation too: macOS substitutes it for `...` as you type, so
+    // `see https://example.com/a…` otherwise links to an address ending in an ellipsis.
+    if ('.,;:!?\'"…'.includes(ch)) {
       end--;
       continue;
     }
@@ -95,11 +97,16 @@ export function trimTrailingPunctuation(s: string): string {
   return s.slice(0, end);
 }
 
+// Bare email: "name@host.tld" with no scheme. The [^:]+@ guard rules out
+// strings that already have a scheme prefix (mailto:, http://user@host), and
+// a www. host wins even with an @ in its path (www.example.com/@alice).
+function isBareEmail(matched: string): boolean {
+  return !/^www\./i.test(matched) && /^[^:]+@/.test(matched);
+}
+
 function urlHref(matched: string): string {
   if (/^www\./i.test(matched)) return `http://${matched}`;
-  // Bare email: "name@host.tld" with no scheme. The [^:]+@ guard rules out
-  // strings that already have a scheme prefix (mailto:, http://user@host).
-  if (/^[^:]+@/.test(matched)) return `mailto:${matched}`;
+  if (isBareEmail(matched)) return `mailto:${matched}`;
   return matched;
 }
 
@@ -116,12 +123,20 @@ function urlHref(matched: string): string {
  * the `>` and the brackets stop being recognised on exactly the URLs whose ends are ambiguous —
  * which is the case the convention exists for.
  *
- * ⚠ No scheme test, deliberately: `<www.example.com>` is the same convention, and the callers
- * apply their own scheme rules afterwards.
+ * ⚠⚠ A bare email address never counts.
+ * `<foo@bar.com>` is the mail-address convention (`Co-Authored-By: X <a@b.com>`), where the
+ * brackets are part of what was written, and treating them as plumbing dropped them from the
+ * rendered line. `<www.example.com>` is the URL convention all the same.
  */
 export function isBracketedUrl(text: string, index: number, rawMatch: string): boolean {
   // `text[-1]` is undefined rather than an error, so a match at position 0 falls out here.
-  return text[index - 1] === '<' && text[index + rawMatch.length] === '>';
+  return (
+    text[index - 1] === '<' &&
+    text[index + rawMatch.length] === '>' &&
+    // urlHref's own classifier, so a scheme added to the shared pattern can't silently fall out
+    // of the convention.
+    !isBareEmail(rawMatch)
+  );
 }
 
 interface UrlSegment {

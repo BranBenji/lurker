@@ -29,6 +29,24 @@ const MAX_PER_BUFFER = 500;
 // regardless of what the server reported for the full page.
 const MAX_MERGE_ROWS = 250;
 const MAX_SPEAKERS = 128;
+
+// Drop the oldest speakers past MAX_SPEAKERS, never one of `keep`. Only a rename protects keys —
+// its old/new pair is what the smart filter asks about, and the copy shares the old nick's time,
+// so either could be the oldest. Everything else keeps the newest timestamps, even when the
+// entry just written is the stale one (a backfilled line from a new nick).
+function capSpeakers(speakers: Record<string, SpeakerEntry>, ...keep: string[]): void {
+  const keys = Object.keys(speakers);
+  for (let excess = keys.length - MAX_SPEAKERS; excess > 0; excess--) {
+    let oldestKey: string | null = null;
+    for (const k of keys) {
+      if (keep.includes(k) || !(k in speakers)) continue;
+      if (oldestKey == null || speakers[k].lastTime < speakers[oldestKey].lastTime) oldestKey = k;
+    }
+    if (oldestKey == null) return;
+    delete speakers[oldestKey];
+  }
+}
+
 const TYPING_DURATIONS: Record<string, number> = { active: 6000, paused: 30000 };
 
 const typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -1235,12 +1253,22 @@ export const useBuffersStore = defineStore('buffers', {
       }
       const oldLc = oldNick?.toLowerCase();
       const newLc = newNick?.toLowerCase();
+      // ⚠⚠ Copied, not moved. The smart filter asks whether a rename's actor spoke just BEFORE
+      // it, and one time per nick can't answer that once the new nick speaks: the moved entry is
+      // overwritten and the rename row hides again. Keeping the old entry is also the shape the
+      // server's history seed has (speakers grouped by the nick each line was sent under).
+      // Channel completion filters speakers by membership, so the old nick isn't offered there.
       if (oldLc && newLc && buf.speakers[oldLc]) {
         const lastTime = buf.speakers[oldLc].lastTime;
-        delete buf.speakers[oldLc];
         const existing = buf.speakers[newLc];
-        if (!existing || existing.lastTime < lastTime) {
-          buf.speakers[newLc] = { nick: newNick, lastTime };
+        // A case-only rename folds to the same key, which still has to take the new spelling or
+        // completion goes on offering the old one.
+        if (!existing || existing.lastTime < lastTime || oldLc === newLc) {
+          buf.speakers[newLc] = {
+            nick: newNick,
+            lastTime: Math.max(lastTime, existing?.lastTime ?? 0),
+          };
+          capSpeakers(buf.speakers, oldLc, newLc);
         }
       }
     },
@@ -1251,14 +1279,7 @@ export const useBuffersStore = defineStore('buffers', {
       const existing = buf.speakers[lc];
       if (existing && existing.lastTime >= time) return;
       buf.speakers[lc] = { nick, lastTime: time };
-      const keys = Object.keys(buf.speakers);
-      if (keys.length > MAX_SPEAKERS) {
-        let oldestKey = keys[0];
-        for (const k of keys) {
-          if (buf.speakers[k].lastTime < buf.speakers[oldestKey].lastTime) oldestKey = k;
-        }
-        delete buf.speakers[oldestKey];
-      }
+      capSpeakers(buf.speakers);
     },
     seedSpeakers(networkId: number | string, target: string, list: SpeakerEntry[]) {
       if (!Array.isArray(list)) return;
