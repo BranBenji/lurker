@@ -2953,7 +2953,10 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   private fitsOneLine(command: string, target: string, text: string): boolean {
     const nick = this.currentNick() || this.clientNick || '*';
     const known = this.conn?.knownSelfUserhost();
-    const hostlen = Number(this.conn?.client.network?.supports('HOSTLEN'));
+    // supports() hands back the token's value — a string — or `true` for a bare
+    // token, which is no length at all (Number(true) would budget a 1-byte host).
+    const advertised = this.conn?.client.network?.supports('HOSTLEN');
+    const hostlen = typeof advertised === 'string' ? Number(advertised) : NaN;
     const user = known ? known.user : `~${this.conn?.client.user?.username || 'lurker'}`;
     const hostBytes = known
       ? Buffer.byteLength(known.host)

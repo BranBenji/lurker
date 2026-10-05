@@ -319,6 +319,25 @@ describe('the line budget', () => {
     }
   });
 
+  // A bare `HOSTLEN` token says no length: it's the 63 default, not a 1-byte host
+  // (irc-framework stores a valueless token as `true`). 460 bytes fits behind a
+  // 1-byte host and not behind a 63-byte one.
+  it('reads a bare HOSTLEN token as the default', async () => {
+    const bare = await FakeIrcd.start({ isupport: ['HOSTLEN'] });
+    cleanups.push(() => void bare.close());
+    const live = await seedLive(bare);
+    const c = await attachIn(live, null, `${BASE_CAPS} echo-message`);
+    const text = 'b'.repeat(460);
+
+    c.send(`PRIVMSG bob :${text}`);
+    await until(
+      () => upstreamTexts(bare, live, 'PRIVMSG', 'bob').length >= 2,
+      5000,
+      'the split lines upstream',
+    );
+    expect(upstreamTexts(bare, live, 'PRIVMSG', 'bob').join('')).toBe(text);
+  });
+
   // HOSTLEN is the network's to say. One that no string could be built to must
   // still leave the message sent — split, since nothing fits behind a host
   // that long — and the bouncer up.
