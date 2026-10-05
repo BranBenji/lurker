@@ -80,6 +80,15 @@ describe('buildApnsRequest', () => {
     expect(headers['apns-priority']).toBe('10');
   });
 
+  it('expires an undelivered push after 48 hours, as Web Push and FCM do', () => {
+    // Absent, APNs keeps a push for a phone that's off and delivers it whenever
+    // it comes back — a DM two weeks late.
+    const now = Math.floor(Date.now() / 1000);
+    const expiration = Number(build().headers['apns-expiration']);
+    expect(expiration).toBeGreaterThanOrEqual(now + 48 * 60 * 60);
+    expect(expiration).toBeLessThanOrEqual(now + 48 * 60 * 60 + 5);
+  });
+
   it('builds an aps dict with the composed copy', () => {
     const body = JSON.parse(build().body);
     expect(body.aps).toMatchObject({
@@ -232,8 +241,9 @@ describe('buildFcmMessage', () => {
   // The worst push deliver() can build: every name at its longest (a channel
   // name is IRC-bounded; 64 is a generous CHANNELLEN), the text at its clamp.
   // Four-byte characters are the worst case for raw bytes; quotes and control
-  // characters (formatting codes) are the worst case once JSON escapes them.
-  const worstCases = ['😀'.repeat(4000), '"'.repeat(4000), '\x02'.repeat(4000)].map((raw) =>
+  // characters that survive stripping (a CTCP \x01) are the worst case once JSON
+  // escapes them. (Formatting codes don't: stripping takes them out of the body.)
+  const worstCases = ['😀'.repeat(4000), '"'.repeat(4000), '\x01'.repeat(4000)].map((raw) =>
     payload({
       kind: 'highlight',
       networkId: 123456,

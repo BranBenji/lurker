@@ -41,7 +41,8 @@ function syncAppBadge(data) {
 // These functions are a byte-for-byte twin of server/services/notificationContent.ts.
 // They become dead code once every client has cycled onto a worker that reads the
 // server's fields, at which point both these and the semantic fields on the wire
-// can go. Until then: change one, change the other.
+// can go. The raw `text` already has (#1045 prep), so `data.text` below only
+// matters to a server older than that. Until then: change one, change the other.
 function friendOnlineTitle(data) {
   const name = data.displayName || 'A friend';
   const parts = [];

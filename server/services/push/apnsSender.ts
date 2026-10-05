@@ -17,7 +17,11 @@
 import http2 from 'node:http2';
 import crypto from 'node:crypto';
 import type { PushSubscription } from '../../db/pushSubscriptions.js';
-import type { NotificationContent, PushPayload } from '../notificationContent.js';
+import {
+  PUSH_TTL_SECONDS,
+  type NotificationContent,
+  type PushPayload,
+} from '../notificationContent.js';
 import type { FailureClass, PushSender } from './types.js';
 import { configuredApns, type ApnsCredentials } from './credentials.js';
 import { signJwt, TokenCache } from './jwt.js';
@@ -120,6 +124,9 @@ export function buildApnsRequest(
       // plays for the Notification API. Distinct from thread-id, which only
       // GROUPS them in the notification centre.
       'apns-collapse-id': collapseId(content.tag),
+      // The same 48 hours as Web Push and FCM. Absent, APNs keeps a push for a
+      // phone that's off and delivers it whenever it comes back.
+      'apns-expiration': String(Math.floor(Date.now() / 1000) + PUSH_TTL_SECONDS),
       'content-type': 'application/json',
     },
     body: JSON.stringify({

@@ -110,23 +110,25 @@ describe('deliver', () => {
     expect('text' in body).toBe(false);
   });
 
-  it('sends with a 48-hour lifetime, high urgency, and a topic per buffer', async () => {
+  it('sends messages with a 48-hour lifetime and high urgency, and no topic', async () => {
     sendNotification.mockResolvedValue({ statusCode: 201 });
     await pushService.deliver(alice.id, samplePayload());
-    await pushService.deliver(alice.id, { ...samplePayload(), text: 'later' });
-    await pushService.deliver(alice.id, { ...samplePayload(), target: 'carol', nick: 'carol' });
-    const options = sendNotification.mock.calls.map(
-      (call) => call[2] as { TTL: number; urgency: string; topic: string },
-    );
     // Not web-push's four-week default, and not `normal`, which a push service
-    // may hold for a sleeping phone.
-    expect(options[0]).toMatchObject({ TTL: 48 * 60 * 60, urgency: 'high' });
-    // RFC 8030: at most 32 characters of the URL-safe base64 alphabet.
-    expect(options[0].topic).toMatch(/^[A-Za-z0-9_-]{1,32}$/);
-    // A later push to the same buffer replaces an undelivered one; another
-    // buffer's doesn't. (Two subscriptions each, hence the stride.)
-    expect(options[2].topic).toBe(options[0].topic);
-    expect(options[4].topic).not.toBe(options[0].topic);
+    // may hold for a sleeping phone. No Topic: on Chrome it's an FCM collapse
+    // key, and FCM keeps only four per offline device.
+    expect(sendNotification.mock.calls[0][2]).toEqual({ TTL: 48 * 60 * 60, urgency: 'high' });
+  });
+
+  it('lets a came-online wait', async () => {
+    sendNotification.mockResolvedValue({ statusCode: 201 });
+    await pushService.deliver(alice.id, {
+      kind: 'friend_online',
+      networkId: 3,
+      networkName: 'Libera',
+      target: 'bob',
+      displayName: 'bob',
+    });
+    expect(sendNotification.mock.calls[0][2]).toMatchObject({ urgency: 'normal' });
   });
 
   // 410/transient/strike rejection paths exist in pushService but vitest's
