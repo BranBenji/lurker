@@ -99,6 +99,11 @@ describe('presets', () => {
     expect(str.body.preset.channels).toStrictEqual(['#general', '#ops']);
   });
 
+  it('gives bare recommended channels a #, splitting an entry with a space', async () => {
+    const bare = await add({ channels: ['general', 'random ops'] });
+    expect(bare.body.preset.channels).toStrictEqual(['#general', '#random', '#ops']);
+  });
+
   it('updates and deletes', async () => {
     const created = await add();
     const id = created.body.preset.id;

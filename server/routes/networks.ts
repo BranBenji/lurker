@@ -29,6 +29,7 @@ import {
   mayUseProxy,
 } from '../services/networkPolicy.js';
 import { validateProxy, isProxyProblem } from '../../shared/proxy.js';
+import { parseChannelNames } from '../../shared/channels.js';
 import { fanOutToUser, favoritesChangedFrame } from '../services/wsHub.js';
 import { renumberFavorites } from '../db/favoriteBuffers.js';
 
@@ -38,26 +39,10 @@ router.use(requireAuth);
 // network-config mutation here is blocked while GET listing still renders the
 // sidebar). The write block lives centrally in requireAuth — see #573.
 
-// `default_channel` is a comma-separated channel list, matching IRC's own JOIN
-// syntax ("JOIN #a,#b") — the onboarding flow and `/network add -channel` both
-// send several at once. Whitespace is accepted as a separator too, since that's
-// what a user typing into a free-text field tends to reach for. Names are folded
-// case-insensitively when de-duplicating (servers are inconsistent about the
-// casing they echo back), but the first spelling seen is what gets stored.
-function parseChannelList(raw: unknown): string[] {
-  if (typeof raw !== 'string') return [];
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const name of raw.split(/[,\s]+/)) {
-    const channel = name.trim();
-    if (!channel) continue;
-    const key = channel.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(channel);
-  }
-  return out;
-}
+// `default_channel` is a channel list, matching IRC's own JOIN syntax ("JOIN #a,#b") —
+// the onboarding flow and `/network add -channel` both send several at once.
+// `parseChannelNames` has the rules: commas or whitespace, case-insensitive repeats,
+// and a # for bare names (sweep L17).
 
 // A stored certificate that won't parse is NOT the same as no certificate: the
 // dial path refuses to connect while one is attached, so rendering it as null
@@ -353,7 +338,7 @@ async function createAndConnectInner(req: Request, res: Response): Promise<void>
   const withCert = pair
     ? (setNetworkClientCert(network.id, req.user!.id, pair) ?? network)
     : network;
-  for (const channel of parseChannelList(default_channel)) {
+  for (const channel of parseChannelNames(default_channel)) {
     seedAutojoinChannel(req.user!.id, network.id, channel);
   }
   // Creating a network is an explicit "Save & connect" action, so connect now

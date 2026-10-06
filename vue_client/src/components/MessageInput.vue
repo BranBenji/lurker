@@ -195,7 +195,7 @@ import { useToastsStore } from '../stores/toasts.js';
 import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useHighlightRulesStore, type HighlightRule } from '../stores/highlightRules.js';
-import { isChannelTarget } from '../../../shared/channels.js';
+import { ensureChannelPrefix, isChannelTarget } from '../../../shared/channels.js';
 import { batchModeLines, DEFAULT_MAX_MODES } from '../../../shared/channelModes.js';
 import { escapeRegex } from '../../../shared/textMatch.js';
 import { parseIgnoreArgs } from '../../../shared/parseIgnore.js';
@@ -221,7 +221,6 @@ import { shouldRepinOnSend } from '../utils/sendScroll.js';
 import { applySpoilerMarkup } from '../utils/spoilerMarkup.js';
 import { buildNickCandidates } from '../utils/nickCompletion.js';
 import { buildChannelCandidates } from '../utils/channelCompletion.js';
-import { ensureChannelPrefix } from '../utils/channelTarget.js';
 import { parseAwayFlag } from '../utils/awayFlag.js';
 import {
   findActiveShortcode,

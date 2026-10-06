@@ -38,6 +38,52 @@ export function isChannelTarget(target: string | null | undefined): boolean {
 }
 
 /**
+ * A bare, prefix-less name is what people usually type, so it gets the common `#`; a name already
+ * carrying any of the four prefixes is left alone. Callers own their own input validation
+ * (whitespace, empty, lone prefix) — this only settles the prefix.
+ *
+ * Shared so the web's Join Channel modal and `/join` (#496) and the server's channel lists
+ * (`parseChannelNames`) settle a bare name the same way.
+ */
+export function ensureChannelPrefix(name: string): string {
+  return isChannelTarget(name) ? name : `#${name}`;
+}
+
+/**
+ * A list of channels to autojoin, as a person types one: the network form's Channels field
+ * (`default_channel`) and an admin preset's recommended channels. A string, or an array of them
+ * (the admin pane sends one); commas and whitespace both separate, blanks and a lone prefix are
+ * dropped, and a name repeated in another casing is the same channel, kept in its first spelling.
+ *
+ * A bare name gets a `#` only when NO name in the list carries a prefix (sweep L17): "lurker,
+ * linux" seeds #lurker and #linux, as Join Channel would. Once any name has one, the list is IRC's
+ * own syntax and is taken as typed, because there a bare word can be a channel KEY: `#secret
+ * hunter2` prefixed word by word would autojoin a public #hunter2 named after the key.
+ */
+export function parseChannelNames(raw: unknown): string[] {
+  const entries = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
+  const words = entries
+    .filter((entry): entry is string => typeof entry === 'string')
+    .flatMap((entry) => entry.split(/[,\s]+/))
+    .map((name) => name.trim())
+    .filter(Boolean);
+  // Judged before a lone prefix is dropped: in "# hunter2" the `#` is still a sign of IRC syntax,
+  // and the word beside it may still be a key.
+  const asTyped = words.some((name) => isChannelTarget(name));
+  const names = words.filter((name) => !(name.length === 1 && isChannelTarget(name)));
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const name of names) {
+    const channel = asTyped ? name : ensureChannelPrefix(name);
+    const key = channel.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(channel);
+  }
+  return out;
+}
+
+/**
  * The DCC CHAT buffer sigil. `=alice` is a direct peer-to-peer conversation with alice carried
  * on a TCP socket THIS PROCESS owns — it is not a channel, not a nick, and **never an IRC
  * target**. The convention is irssi's (dcc-chat.c:179, fe-dcc-chat.c:58) and repartee's
