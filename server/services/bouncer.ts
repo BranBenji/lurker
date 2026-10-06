@@ -61,6 +61,7 @@ import * as systemLog from './systemLog.js';
 import { findUserById } from '../db/users.js';
 import type { User } from '../db/users.js';
 import { verifyBouncerLogin } from './bouncerLogin.js';
+import { bouncerAuthThrottle } from '../middleware/rateLimit.js';
 import { isNodeMode } from '../utils/edition.js';
 import { configuredBaseUrl } from '../utils/publicOrigin.js';
 import { resolveUploader } from './uploadProviders/resolve.js';
@@ -259,42 +260,19 @@ const MAX_SASL_RESPONSE = 8 * 1024;
 // conversation it ever had; joined channels are always replayed.
 const PLAYBACK_MAX_DM_BUFFERS = 20;
 
-// Per-IP failed-auth throttle: after MAX failures inside the window, further
-// attempts from that address are refused before touching scrypt.
-const AUTH_FAIL_WINDOW_MS = 15 * 60 * 1000;
-const AUTH_FAIL_MAX = 10;
-// Cap the number of tracked IPs so a spray of one-off failures from many
-// distinct addresses can't grow the map without bound; when the cap is hit we
-// sweep expired entries (each lives at most AUTH_FAIL_WINDOW_MS).
-const AUTH_FAIL_MAX_TRACKED = 10_000;
-const authFailures = new Map<string, { count: number; resetAt: number }>();
-
-function authThrottled(ip: string): boolean {
-  const entry = authFailures.get(ip);
-  if (!entry) return false;
-  if (Date.now() > entry.resetAt) {
-    authFailures.delete(ip);
-    return false;
-  }
-  return entry.count >= AUTH_FAIL_MAX;
-}
-
-function noteAuthFailure(ip: string): void {
-  const now = Date.now();
-  const entry = authFailures.get(ip);
-  if (!entry || now > entry.resetAt) {
-    if (authFailures.size >= AUTH_FAIL_MAX_TRACKED) {
-      for (const [key, e] of authFailures) if (now > e.resetAt) authFailures.delete(key);
-    }
-    authFailures.set(ip, { count: 1, resetAt: now + AUTH_FAIL_WINDOW_MS });
-  } else {
-    entry.count += 1;
-  }
+// Per-IP failed-auth throttle: after enough failures, further attempts from that
+// address are refused before touching scrypt. A verified login clears the
+// address's count; an admin can lift a lockout early (#1039).
+function throttledMessage(ip: string): string | null {
+  const retryAfter = bouncerAuthThrottle.retryAfter(ip);
+  if (retryAfter === null) return null;
+  const minutes = Math.ceil(retryAfter / 60);
+  return `Too many failed logins — try again in ${minutes} minute${minutes === 1 ? '' : 's'}`;
 }
 
 // Tests reset between cases; production never calls this.
 export function resetAuthThrottle(): void {
-  authFailures.clear();
+  bouncerAuthThrottle.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -1225,8 +1203,9 @@ class BouncerSession implements MonitorHolder, ReplyClient {
 
   private finishSaslPlain(b64: string, nick: string): void {
     const fail = () => this.write(`:${SERVER_NAME} 904 ${nick} :SASL authentication failed`);
-    if (authThrottled(this.remoteIp)) {
-      this.write(`:${SERVER_NAME} 904 ${nick} :Too many failed logins — try again later`);
+    const throttled = throttledMessage(this.remoteIp);
+    if (throttled) {
+      this.write(`:${SERVER_NAME} 904 ${nick} :${throttled}`);
       return;
     }
     // PLAIN response is `authzid \0 authcid \0 passwd`; the login (and optional
@@ -1237,14 +1216,15 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     if (parts.length !== 3 || !login.username || !passwd) {
       // Malformed responses count toward the throttle too, so a client can't
       // probe unbounded without tripping the per-IP limit.
-      noteAuthFailure(this.remoteIp);
+      bouncerAuthThrottle.recordFailure(this.remoteIp);
       return fail();
     }
     const verified = verifyBouncerLogin(login.username, passwd);
     if (!verified) {
-      noteAuthFailure(this.remoteIp);
+      bouncerAuthThrottle.recordFailure(this.remoteIp);
       return fail();
     }
+    bouncerAuthThrottle.reset(this.remoteIp);
     const { user } = verified;
     // Reject a paused account here rather than after signaling 903, so the
     // client isn't told auth succeeded and then killed at CAP END.
@@ -1289,8 +1269,9 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       this.completeAttach(this.userId, networkSel);
       return;
     }
-    if (authThrottled(this.remoteIp)) {
-      this.closeWithError('Too many failed logins — try again later');
+    const throttled = throttledMessage(this.remoteIp);
+    if (throttled) {
+      this.closeWithError(throttled);
       return;
     }
     if (!this.passRaw) {
@@ -1304,10 +1285,11 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     }
     const verified = verifyBouncerLogin(creds.username, creds.secret);
     if (!verified) {
-      noteAuthFailure(this.remoteIp);
+      bouncerAuthThrottle.recordFailure(this.remoteIp);
       this.failRegistration('Invalid username or password/token');
       return;
     }
+    bouncerAuthThrottle.reset(this.remoteIp);
     this.userId = verified.user.id;
     this.apiTokenId = verified.apiTokenId;
     this.completeAttach(verified.user.id, creds.network);

@@ -14,7 +14,12 @@ const h = vi.hoisted(() => ({
 }));
 vi.mock('../api.js', () => ({ api: h.api }));
 
-import { useAdminStore, type AdminUser, type AdminInvite } from './admin.js';
+import {
+  useAdminStore,
+  type AdminUser,
+  type AdminInvite,
+  type AdminLoginLockout,
+} from './admin.js';
 
 function deferred<T>() {
   let resolve!: (v: T) => void;
@@ -80,6 +85,27 @@ describe('admin store — refetch race guard (#613)', () => {
     await fetching;
 
     expect(store.invites.map((i) => i.token)).toEqual(['new', 'old']);
+  });
+
+  it('an in-flight lockouts GET cannot bring back cleared lockouts', async () => {
+    const store = useAdminStore();
+    const stale = {
+      lockouts: [
+        { source: 'bouncer', address: '192.0.2.1', retryAfter: 900, liftsAt: '' },
+      ] as AdminLoginLockout[],
+      policy: null,
+    };
+    const getDefer = deferred<typeof stale>();
+    h.api.mockImplementation((_url: string, opts?: { method?: string }) =>
+      opts?.method === 'DELETE' ? Promise.resolve({ ok: true }) : getDefer.promise,
+    );
+
+    const fetching = store.fetchLoginLockouts(); // left over from an earlier mount
+    await store.clearLoginLockouts();
+    getDefer.resolve(stale);
+    await fetching;
+
+    expect(store.loginLockouts).toEqual([]);
   });
 
   it('a fresh GET with no mutation racing applies normally', async () => {

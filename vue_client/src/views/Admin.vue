@@ -41,6 +41,7 @@ import InvitesPane from '../components/admin-panes/InvitesPane.vue';
 import UploadersPane from '../components/admin-panes/UploadersPane.vue';
 import NetworksPane from '../components/admin-panes/NetworksPane.vue';
 import StoragePane from '../components/admin-panes/StoragePane.vue';
+import LockoutsPane from '../components/admin-panes/LockoutsPane.vue';
 
 useSocket();
 
@@ -54,6 +55,7 @@ const PANES: Record<string, Component> = {
   uploaders: UploadersPane,
   networks: NetworksPane,
   storage: StoragePane,
+  lockouts: LockoutsPane,
 };
 
 const activeTabId = computed((): string => {

@@ -29,6 +29,13 @@ import ircManager from '../services/ircManager.js';
 import { presenceDiagnostics } from '../services/wsHub.js';
 import { isIdentdEnabled, isOidentdFileEnabled } from '../services/identd.js';
 import { isNodeMode } from '../utils/edition.js';
+import {
+  clearLoginLockouts,
+  listLoginLockouts,
+  LOGIN_BACKOFF_MS,
+  LOGIN_FAILURE_MAX,
+  LOGIN_FAILURE_WINDOW_MS,
+} from '../middleware/rateLimit.js';
 import { deriveIdent, isValidIdentOverride, MAX_IDENT_LENGTH } from '../../shared/ident.js';
 import adminUploadersRouter from './adminUploaders.js';
 import adminNetworksRouter from './adminNetworks.js';
@@ -362,6 +369,26 @@ router.delete('/users/:id/recovery', (req: Request, res: Response) => {
     res.status(404).json({ error: 'no outstanding recovery link' });
     return;
   }
+  res.json({ ok: true });
+});
+
+// Addresses currently refused for too many failed logins, web and bouncer
+// (#1039). Lockouts expire on their own; clearing lifts them all now, for the
+// member who fat-fingered a client setup and would otherwise wait it out.
+router.get('/login-lockouts', (_req: Request, res: Response) => {
+  res.json({
+    lockouts: listLoginLockouts(),
+    // The tuning, so the pane describes the real policy rather than a copy of it.
+    policy: {
+      maxFailures: LOGIN_FAILURE_MAX,
+      windowMinutes: LOGIN_FAILURE_WINDOW_MS / 60_000,
+      backoffMinutes: LOGIN_BACKOFF_MS / 60_000,
+    },
+  });
+});
+
+router.delete('/login-lockouts', (_req: Request, res: Response) => {
+  clearLoginLockouts();
   res.json({ ok: true });
 });
 

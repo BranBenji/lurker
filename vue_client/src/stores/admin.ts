@@ -33,6 +33,22 @@ export interface AdminRecoveryLink {
   expiresAt: string;
 }
 
+/** An address refused for too many failed logins (#1039). */
+export interface AdminLoginLockout {
+  source: 'web' | 'bouncer';
+  address: string;
+  /** Seconds until the lockout lifts on its own, as of the fetch. */
+  retryAfter: number;
+  /** When it lifts on its own (ISO). */
+  liftsAt: string;
+}
+
+export interface AdminLoginLockoutPolicy {
+  maxFailures: number;
+  windowMinutes: number;
+  backoffMinutes: number;
+}
+
 export interface AdminInvite {
   token: string;
   url: string;
@@ -66,6 +82,8 @@ export const useAdminStore = defineStore('admin', {
     // oidentd file). False makes the per-user idents inert — the pane says so.
     identdEnabled: false,
     invites: [] as AdminInvite[],
+    loginLockouts: [] as AdminLoginLockout[],
+    loginLockoutPolicy: null as AdminLoginLockoutPolicy | null,
     uploaders: [] as AdminUploader[],
     uploaderDrivers: [] as UploaderDriver[],
     allowUserDefined: true,
@@ -88,6 +106,7 @@ export const useAdminStore = defineStore('admin', {
     // otherwise the stale GET would resurrect a just-deleted row.
     usersFetchSeq: 0,
     invitesFetchSeq: 0,
+    lockoutsFetchSeq: 0,
     loading: false,
     error: '',
   }),
@@ -169,6 +188,20 @@ export const useAdminStore = defineStore('admin', {
       this.usersFetchSeq++;
       const u = this.users.find((x) => x.id === id);
       if (u) u.recoveryExpiresAt = null;
+    },
+    async fetchLoginLockouts() {
+      const seq = ++this.lockoutsFetchSeq;
+      const { lockouts, policy } = await api('/api/admin/login-lockouts');
+      // Superseded by a newer fetch or a clear — a stale list would bring back
+      // lockouts that were just lifted.
+      if (seq !== this.lockoutsFetchSeq) return;
+      this.loginLockouts = lockouts || [];
+      this.loginLockoutPolicy = policy || null;
+    },
+    async clearLoginLockouts() {
+      await api('/api/admin/login-lockouts', { method: 'DELETE' });
+      this.lockoutsFetchSeq++;
+      this.loginLockouts = [];
     },
     async fetchInvites() {
       const seq = ++this.invitesFetchSeq;
