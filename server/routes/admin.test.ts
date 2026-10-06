@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import type { LurkerTestAgent } from '../test-utils/testApp.js';
 import type { Express } from 'express';
 import {
@@ -243,6 +243,43 @@ describe('GET /api/admin/presence', () => {
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.presence)).toBe(true);
     expect(res.body.presence).toHaveLength(0);
+  });
+});
+
+describe('/api/admin/login-lockouts', () => {
+  afterEach(async () => {
+    const { resetAuthRateLimits } = await import('../middleware/rateLimit.js');
+    resetAuthRateLimits();
+  });
+
+  async function lockOut(source: 'web' | 'bouncer', address: string): Promise<void> {
+    const { LOGIN_FAILURE_MAX, loginFailureThrottle, bouncerAuthThrottle } =
+      await import('../middleware/rateLimit.js');
+    const throttle = source === 'web' ? loginFailureThrottle : bouncerAuthThrottle;
+    for (let i = 0; i < LOGIN_FAILURE_MAX; i++) throttle.recordFailure(address);
+  }
+
+  it('403 for a non-admin', async () => {
+    expect((await userAgent.get('/api/admin/login-lockouts')).status).toBe(403);
+    expect((await userAgent.delete('/api/admin/login-lockouts')).status).toBe(403);
+  });
+
+  it('lists web and bouncer lockouts, and clearing lifts both', async () => {
+    await lockOut('web', '192.0.2.1');
+    await lockOut('bouncer', '192.0.2.2');
+    const res = await adminAgent.get('/api/admin/login-lockouts');
+    expect(res.status).toBe(200);
+    expect(res.body.lockouts).toEqual([
+      { source: 'web', address: '192.0.2.1', retryAfter: 900 },
+      { source: 'bouncer', address: '192.0.2.2', retryAfter: 900 },
+    ]);
+
+    expect((await adminAgent.delete('/api/admin/login-lockouts')).status).toBe(200);
+    const { loginFailureThrottle, bouncerAuthThrottle } =
+      await import('../middleware/rateLimit.js');
+    expect(loginFailureThrottle.retryAfter('192.0.2.1')).toBeNull();
+    expect(bouncerAuthThrottle.retryAfter('192.0.2.2')).toBeNull();
+    expect((await adminAgent.get('/api/admin/login-lockouts')).body.lockouts).toEqual([]);
   });
 });
 

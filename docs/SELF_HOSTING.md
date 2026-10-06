@@ -575,7 +575,7 @@ Plain-text IRC would send that credential across the wire in the clear, so **the
 
 - **TLS via a reverse proxy.** If you're hiding Lurker behind a reverse proxy where you're handling TLS termination yourself, you'll want to set `LURKER_BOUNCER_BIND=<ip address>` and turn off Lurker's TLS with `LURKER_BOUNCER_TLS=off`.
 
-Repeated failed logins from an address are throttled automatically.
+Ten failed logins from one address within 15 minutes lock it out for 15 minutes; a successful login resets the count. To lift a lockout early, go to **Admin → Users → Login lockouts**. Restarting the server also clears it.
 
 Playback replays the last 50 lines per joined channel (plus your 20 most recently active DMs) on attach; tune with `LURKER_BOUNCER_PLAYBACK` (0 disables, max 1000). Clients that negotiate IRCv3 `server-time` get real timestamps on replayed lines. Clients that negotiate `draft/chathistory` get no playback, since they fetch their own.
 

@@ -33,6 +33,14 @@ export interface AdminRecoveryLink {
   expiresAt: string;
 }
 
+/** An address refused for too many failed logins (#1039). */
+export interface AdminLoginLockout {
+  source: 'web' | 'bouncer';
+  address: string;
+  /** Seconds until the lockout lifts on its own. */
+  retryAfter: number;
+}
+
 export interface AdminInvite {
   token: string;
   url: string;
@@ -66,6 +74,7 @@ export const useAdminStore = defineStore('admin', {
     // oidentd file). False makes the per-user idents inert — the pane says so.
     identdEnabled: false,
     invites: [] as AdminInvite[],
+    loginLockouts: [] as AdminLoginLockout[],
     uploaders: [] as AdminUploader[],
     uploaderDrivers: [] as UploaderDriver[],
     allowUserDefined: true,
@@ -169,6 +178,14 @@ export const useAdminStore = defineStore('admin', {
       this.usersFetchSeq++;
       const u = this.users.find((x) => x.id === id);
       if (u) u.recoveryExpiresAt = null;
+    },
+    async fetchLoginLockouts() {
+      const { lockouts } = await api('/api/admin/login-lockouts');
+      this.loginLockouts = lockouts || [];
+    },
+    async clearLoginLockouts() {
+      await api('/api/admin/login-lockouts', { method: 'DELETE' });
+      this.loginLockouts = [];
     },
     async fetchInvites() {
       const seq = ++this.invitesFetchSeq;

@@ -67,6 +67,27 @@ describe('FailureThrottle', () => {
   });
 });
 
+describe('FailureThrottle.blocked', () => {
+  const cfg = { windowMs: 1000, maxFailures: 2, backoffMs: 5000 };
+
+  it('lists only keys in backoff, and drops one whose backoff elapsed', () => {
+    let now = 0;
+    const t = new FailureThrottle(cfg, () => now);
+    t.recordFailure('a');
+    t.recordFailure('a'); // trips at t=0
+    t.recordFailure('b'); // one failure: not blocked
+    now = 2000;
+    t.recordFailure('c');
+    t.recordFailure('c'); // trips at t=2000
+    expect(t.blocked()).toEqual([
+      { key: 'a', retryAfter: 3 },
+      { key: 'c', retryAfter: 5 },
+    ]);
+    now = 5000; // a's backoff is over
+    expect(t.blocked()).toEqual([{ key: 'c', retryAfter: 2 }]);
+  });
+});
+
 describe('RequestThrottle', () => {
   it('caps requests per window and reports Retry-After', () => {
     let now = 0;

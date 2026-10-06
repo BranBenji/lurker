@@ -11,10 +11,9 @@
 //     window, further attempts are refused with 429 + Retry-After for a backoff
 //     window, BEFORE any scrypt work runs. A successful auth clears the slate, so a
 //     legitimate user who fat-fingers a password a few times is never locked out for
-//     long, and a correct login is never throttled. This is the brute-force guard;
-//     it generalizes the IRC bouncer's per-IP `authFailures` throttle
-//     (services/bouncer.ts) — the one auth path that was already protected — to the
-//     HTTP login path serving the same credentials.
+//     long, and a correct login is never throttled. This is the brute-force guard,
+//     shared with the IRC bouncer (services/bouncer.ts), which serves the same
+//     credentials over its own budget.
 //   - RequestThrottle — a coarse per-IP request cap across the whole auth surface
 //     (options, invite probing, setup, auth-methods, ...), so the cheaper probe
 //     endpoints can't be hammered for enumeration or flood.
@@ -151,6 +150,18 @@ export class FailureThrottle {
     this.entries.delete(key);
   }
 
+  /** Keys currently in backoff, with the seconds left on each. */
+  blocked(): Array<{ key: string; retryAfter: number }> {
+    const out: Array<{ key: string; retryAfter: number }> = [];
+    // retryAfter drops a key whose backoff has elapsed; deleting the current
+    // entry mid-iteration is safe on a Map.
+    for (const key of this.entries.keys()) {
+      const retryAfter = this.retryAfter(key);
+      if (retryAfter !== null) out.push({ key, retryAfter });
+    }
+    return out;
+  }
+
   private cap(): void {
     if (this.entries.size <= this.maxKeys) return;
     // First sweep entries that are neither blocked nor holding live failures.
@@ -167,7 +178,7 @@ export class FailureThrottle {
     }
   }
 
-  /** Test hook. Production never calls this. */
+  /** Forget every key (tests, and the admin's "clear lockouts"). */
   clear(): void {
     this.entries.clear();
   }
@@ -309,8 +320,45 @@ export const authRequestThrottle = new RequestThrottle({
   maxRequests: 60,
 });
 
+// The IRC bouncer's own budget (services/bouncer.ts). Same tuning, separate key
+// space: a client stuck in a reconnect loop with a stale password would otherwise
+// lock its owner out of the web sign-in too, which is where they'd go to fix it.
+export const bouncerAuthThrottle = new FailureThrottle({
+  windowMs: 15 * 60_000,
+  maxFailures: LOGIN_FAILURE_MAX,
+  backoffMs: 15 * 60_000,
+});
+
+export type LoginLockoutSource = 'web' | 'bouncer';
+
+export interface LoginLockout {
+  source: LoginLockoutSource;
+  address: string;
+  retryAfter: number;
+}
+
+// The admin panel's view of who is locked out (#1039). Without it the only way
+// to lift a lockout early was to restart the server.
+export function listLoginLockouts(): LoginLockout[] {
+  return [
+    ...loginFailureThrottle
+      .blocked()
+      .map((b) => ({ source: 'web' as const, address: b.key, retryAfter: b.retryAfter })),
+    ...bouncerAuthThrottle
+      .blocked()
+      .map((b) => ({ source: 'bouncer' as const, address: b.key, retryAfter: b.retryAfter })),
+  ];
+}
+
+/** Lift every login lockout, web and bouncer. Leaves the coarse request cap alone. */
+export function clearLoginLockouts(): void {
+  loginFailureThrottle.clear();
+  bouncerAuthThrottle.clear();
+}
+
 /** Reset all auth-surface limiters. Test hook (integration tests reuse one process). */
 export function resetAuthRateLimits(): void {
   loginFailureThrottle.clear();
+  bouncerAuthThrottle.clear();
   authRequestThrottle.clear();
 }

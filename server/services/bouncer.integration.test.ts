@@ -66,6 +66,86 @@ describe('PASS login (ZNC-compat floor)', () => {
   });
 });
 
+// #1039. The per-IP failed-login throttle. Primed through the limiter itself so
+// the test doesn't pay one scrypt per failure up to the production threshold;
+// each test still lands one real failure, which proves the bouncer counts
+// against the same key it checks.
+describe('failed-login throttle', () => {
+  const IP = '127.0.0.1';
+  let rateLimit: typeof import('../middleware/rateLimit.js');
+
+  beforeAll(async () => {
+    rateLimit = await import('../middleware/rateLimit.js');
+  });
+
+  function prime(failures: number): void {
+    for (let i = 0; i < failures; i++) rateLimit.bouncerAuthThrottle.recordFailure(IP);
+  }
+
+  async function passLogin(username: string, secret: string) {
+    const c = await harness.connect();
+    c.send(`PASS ${username}:${secret}`);
+    c.send('NICK client');
+    c.send('USER client 0 * :client');
+    return c;
+  }
+
+  it('refuses even the right password once tripped, and says how long', async () => {
+    const acct = harnessMod.seedAccount();
+    prime(rateLimit.LOGIN_FAILURE_MAX - 1);
+    const bad = await passLogin(acct.user.username, 'wrongpassword');
+    await bad.waitForCommand('464');
+
+    const good = await passLogin(acct.user.username, acct.password);
+    const error = await good.waitFor((l) => l.startsWith('ERROR'));
+    expect(error).toContain('Too many failed logins — try again in 15 minutes');
+    expect(harnessMod.attachedFor(acct)).toBe(0);
+  });
+
+  it('a verified PASS login clears the count', async () => {
+    const acct = harnessMod.seedAccount();
+    prime(rateLimit.LOGIN_FAILURE_MAX - 1);
+    const good = await passLogin(acct.user.username, acct.password);
+    await good.waitForCommand('001');
+    good.close();
+
+    // Without the reset this failure would be the tenth.
+    const bad = await passLogin(acct.user.username, 'wrongpassword');
+    await bad.waitForCommand('464');
+    expect(rateLimit.bouncerAuthThrottle.retryAfter(IP)).toBeNull();
+  });
+
+  it('a verified SASL login clears the count, and a tripped one gets a 904', async () => {
+    const acct = harnessMod.seedAccount();
+    async function sasl(passwd: string) {
+      const c = await harness.connect();
+      c.send('CAP LS 302');
+      await c.waitFor((l) => l.includes('CAP') && l.includes('LS'));
+      c.send('NICK client');
+      c.send('USER client 0 * :client');
+      c.send('CAP REQ :sasl');
+      await c.waitFor((l) => l.includes('ACK'));
+      c.send('AUTHENTICATE PLAIN');
+      await c.waitFor((l) => l === 'AUTHENTICATE +');
+      c.send(`AUTHENTICATE ${saslPlain(acct.user.username, passwd)}`);
+      return c;
+    }
+
+    prime(rateLimit.LOGIN_FAILURE_MAX - 1);
+    const good = await sasl(acct.password);
+    await good.waitForCommand('903');
+    good.close();
+    const bad = await sasl('wrongpassword');
+    expect(await bad.waitForCommand('904')).toContain('SASL authentication failed');
+    expect(rateLimit.bouncerAuthThrottle.retryAfter(IP)).toBeNull();
+
+    prime(rateLimit.LOGIN_FAILURE_MAX);
+    const refused = await sasl(acct.password);
+    expect(await refused.waitForCommand('904')).toContain('try again in 15 minutes');
+    expect(harnessMod.attachedFor(acct)).toBe(0);
+  });
+});
+
 // #892. The attach burst replays the network's own 001–005, saved at
 // registration exactly as they came off the wire. Per-delivery tags on them are
 // stale by the time a client attaches, so, like ZNC, the replay keeps at most
