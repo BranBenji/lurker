@@ -2236,7 +2236,12 @@ export class IrcConnection {
           target: this.serverTarget(),
           text: errorText,
         });
-        this.logNet(errorText, 'error');
+        // 'warn', not 'error': an 'error' line marks the system buffer unread
+        // (countNotableNewer), and this fires on every dropped or refused socket,
+        // which reconnects on its own. The error row above already marks the
+        // server buffer unread, so the system buffer only keeps the record
+        // (#1036). A reconnect that gives up still logs 'error' below.
+        this.logNet(errorText, 'warn');
       }
     });
     // The 'reconnecting' state + notice are now emitted by our own controller
