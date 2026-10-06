@@ -38,7 +38,7 @@ export function useSelfLabel(): SelfLabelState {
     if (!nick) return '';
     const lc = nick.toLowerCase();
     const me = buf.members.find((m) => m.nick.toLowerCase() === lc);
-    return prefixOf(me?.modes ?? [], networks.states[buf.networkId]?.modeSpec?.prefix);
+    return prefixOf(me?.modes ?? [], networks.prefixFor(buf.networkId));
   });
 
   // Identity without the trailing user-mode parens. Feeds the mobile input

@@ -903,12 +903,8 @@ const selfModes = computed<string[]>(() => {
   return me && Array.isArray(me.modes) ? me.modes : [];
 });
 
-// The network's PREFIX the glyph is read against; null until its ISUPPORT
-// arrives, which falls back to the conventional table.
-const memberPrefix = computed(() => {
-  const nid = buffer.value?.networkId;
-  return nid == null ? null : (networks.states[nid]?.modeSpec?.prefix ?? null);
-});
+// The network's PREFIX the glyph is read against.
+const memberPrefix = computed(() => networks.prefixFor(buffer.value?.networkId));
 
 // The author's channel modes for the prefix glyph — channel buffers only (DMs
 // and the system buffer carry no modes). Returns undefined (no glyph) when the

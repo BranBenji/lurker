@@ -192,7 +192,7 @@ import {
   type ModeRow,
 } from '../utils/channelModeForm.js';
 import { patchModeList, type ListEntry, type ModeRowLike } from '../utils/modeListPatch.js';
-import { DEFAULT_PREFIX, hasRankAtLeast } from '../../../shared/channelModes.js';
+import { hasRankAtLeast } from '../../../shared/channelModes.js';
 import type { OutgoingModeChange } from '../../../shared/channelModes.js';
 
 const props = defineProps<{ networkId: number; target: string }>();
@@ -231,7 +231,7 @@ const selfModes = computed<string[]>(() => {
   const me = nick ? buffer.value?.members.find((m) => m.nick.toLowerCase() === nick) : undefined;
   return me?.modes ?? [];
 });
-const prefix = computed(() => spec.value?.prefix ?? DEFAULT_PREFIX);
+const prefix = computed(() => networks.prefixFor(props.networkId));
 // Editing needs us in the channel: a parted one's modes are last-known, and a
 // TOPIC or MODE from outside it only draws a 442.
 // No buffer at all (closed from another device) is out of the channel too.

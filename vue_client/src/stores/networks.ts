@@ -7,7 +7,7 @@ import { useAuthStore } from './auth.js';
 import { isVirtualKey } from '../lib/virtualBuffers.js';
 import { dccChatPeer, isDccChatTarget } from '../../../shared/channels.js';
 import type { MultilineLimits } from '../utils/messageSplit.js';
-import type { ModeSpec } from '../../../shared/channelModes.js';
+import { DEFAULT_PREFIX, type ModeSpec, type PrefixMode } from '../../../shared/channelModes.js';
 
 export interface Network {
   id: number;
@@ -132,6 +132,12 @@ export const useNetworksStore = defineStore('networks', {
   }),
   getters: {
     networkById: (state) => (id: number) => state.networks.find((n) => n.id === id) || null,
+    // The network's PREFIX, highest rank first: `modeSpec.prefix`, or the
+    // conventional q/a/o/h/v table until its ISUPPORT has arrived.
+    prefixFor:
+      (state) =>
+      (networkId: number | null | undefined): readonly PrefixMode[] =>
+        (networkId != null ? state.states[networkId]?.modeSpec?.prefix : null) ?? DEFAULT_PREFIX,
     // Whether `nick` is the user's current nick on THAT network — for a line
     // shown away from its buffer (a search hit, a quote), where NickRef's guess
     // from the open buffer's network would be the wrong network. Folded the way

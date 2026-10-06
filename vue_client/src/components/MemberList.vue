@@ -67,11 +67,7 @@ const selfNick = computed(() => {
   if (!b || b.networkId == null) return null;
   return networks.states[b.networkId]?.nick || null;
 });
-// The network's PREFIX, highest rank first; null until its ISUPPORT arrives.
-const memberPrefix = computed(() => {
-  const nid = buffer.value?.networkId;
-  return nid == null ? null : (networks.states[nid]?.modeSpec?.prefix ?? null);
-});
+const memberPrefix = computed(() => networks.prefixFor(buffer.value?.networkId));
 // The current user's own modes in this channel, used to gate the operator
 // actions in the member context menu.
 const selfModes = computed<string[]>(() => {
@@ -180,12 +176,15 @@ const sorted = computed(() => {
         return !ignores.isMemberHidden(networkId, nick, userhost, channel);
       })
     : list;
-  return filtered.toSorted((a, b) => {
-    const pa = prefixRank(modesOf(a), memberPrefix.value);
-    const pb = prefixRank(modesOf(b), memberPrefix.value);
-    if (pa !== pb) return pa - pb;
-    return nickOf(a).localeCompare(nickOf(b), undefined, { sensitivity: 'base' });
-  });
+  // Rank each member once, not once per comparison.
+  const prefix = memberPrefix.value;
+  return filtered
+    .map((m) => ({ m, rank: prefixRank(modesOf(m), prefix) }))
+    .toSorted((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return nickOf(a.m).localeCompare(nickOf(b.m), undefined, { sensitivity: 'base' });
+    })
+    .map(({ m }) => m);
 });
 </script>
 

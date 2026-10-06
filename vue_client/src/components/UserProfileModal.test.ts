@@ -106,3 +106,39 @@ describe('UserProfileModal — no such user', () => {
     expect(open('fartboy').find('button[title="Send DM"]').exists()).toBe(false);
   });
 });
+
+// #1032: the channel list peels the network's rank symbols, not a fixed set.
+describe('UserProfileModal — channel list', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  const channels = (raw: string) => {
+    useWhoisStore().applyResult(NET, { nick: 'someone', ident: 'u', channels: raw });
+    return open('someone')
+      .findAll('.channels .channel')
+      .map((b) => [b.find('.ch-prefix').text(), b.text().replace(b.find('.ch-prefix').text(), '')]);
+  };
+
+  it("splits on the network's own symbols", () => {
+    useNetworksStore().states[NET] = {
+      state: 'connected',
+      modeSpec: {
+        prefix: [
+          { mode: 'Y', symbol: '!' },
+          { mode: 'o', symbol: '@' },
+        ],
+      },
+    } as never;
+    expect(channels('!#lounge @#ops')).toEqual([
+      ['!', '#lounge'],
+      ['@', '#ops'],
+    ]);
+  });
+
+  it('leaves a channel type that is also a rank symbol on the name', () => {
+    expect(channels('&local @&ops +#voiced')).toEqual([
+      ['', '&local'],
+      ['@', '&ops'],
+      ['+', '#voiced'],
+    ]);
+  });
+});

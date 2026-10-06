@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect } from 'vitest';
-import { prefixOf, prefixClass, prefixRank } from './memberPrefix.js';
+import { prefixOf, prefixClass, prefixRank, splitChannelToken } from './memberPrefix.js';
 import { parseModeSpec, type PrefixMode } from '../../../shared/channelModes.js';
 
 // PREFIX as the server hands it over in modeSpec, from the raw 005 token.
@@ -91,10 +91,37 @@ describe('prefixClass', () => {
     expect(prefixClass(['o'], prefixFrom('(ov)*+'))).toBe('mode-op');
   });
 
+  it("places a letter it doesn't know by its symbol", () => {
+    const upper = prefixFrom('(OV)@+');
+    expect(prefixClass(['O'], upper)).toBe('mode-op');
+    expect(prefixClass(['V'], upper)).toBe('mode-voice');
+  });
+
   it('colours an unknown letter like the nearest known rank above it', () => {
     // Nothing outranks Y: the owner tier.
     expect(prefixClass(['Y'], WITH_Y)).toBe('mode-owner');
     expect(prefixClass(['X'], prefixFrom('(qaoXhv)~&@*%+'))).toBe('mode-op');
     expect(prefixClass(['Z'], prefixFrom('(ovZ)@+-'))).toBe('mode-voice');
+  });
+});
+
+describe('splitChannelToken', () => {
+  it('peels rank symbols off a channel', () => {
+    expect(splitChannelToken('@#chan', null)).toEqual({ prefix: '@', name: '#chan' });
+    expect(splitChannelToken('@+#chan', null)).toEqual({ prefix: '@+', name: '#chan' });
+    expect(splitChannelToken('#chan', null)).toEqual({ prefix: '', name: '#chan' });
+  });
+
+  it("uses the network's symbols", () => {
+    expect(splitChannelToken('!#chan', WITH_Y)).toEqual({ prefix: '!', name: '#chan' });
+    // Without the network's PREFIX `!` is just a channel type.
+    expect(splitChannelToken('!#chan', null)).toEqual({ prefix: '', name: '!#chan' });
+  });
+
+  it('never peels the channel type itself', () => {
+    expect(splitChannelToken('&ops', null)).toEqual({ prefix: '', name: '&ops' });
+    expect(splitChannelToken('@&ops', null)).toEqual({ prefix: '@', name: '&ops' });
+    expect(splitChannelToken('+chan', null)).toEqual({ prefix: '', name: '+chan' });
+    expect(splitChannelToken('!chan', WITH_Y)).toEqual({ prefix: '', name: '!chan' });
   });
 });

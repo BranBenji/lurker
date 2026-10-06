@@ -12,7 +12,7 @@ import { historyCountBy } from '../lib/historyPaging.js';
 import { addressNick } from './useComposerOverlay.js';
 import { privateTarget } from './useMessageActions.js';
 import { isChannelTarget } from '../../../shared/channels.js';
-import { DEFAULT_PREFIX, hasRankAtLeast } from '../../../shared/channelModes.js';
+import { hasRankAtLeast } from '../../../shared/channelModes.js';
 import { useNetworksStore } from '../stores/networks.js';
 
 export interface MemberLike {
@@ -196,7 +196,7 @@ export function useMemberActions(): MemberActionsAPI {
     const selfModes = Array.isArray(ctx.selfModes) ? ctx.selfModes : [];
     // Ranked by the network's own PREFIX, so an owner, an admin, or a rank
     // with a letter we've never heard of all pass on standing, not spelling.
-    const prefix = useNetworksStore().states[ctx.networkId]?.modeSpec?.prefix ?? DEFAULT_PREFIX;
+    const prefix = useNetworksStore().prefixFor(ctx.networkId);
     // Halfop and up moderate (kick/ban/voice); on a network without halfops
     // that rounds up to op.
     if (!isSelf && channel && hasRankAtLeast(selfModes, prefix, 'h')) {

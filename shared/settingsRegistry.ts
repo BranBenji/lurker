@@ -504,7 +504,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#ed6c89',
-    description: 'Color for the ~ prefix (channel owner mode +q).',
+    description:
+      'Color for the channel owner prefix (mode +q, usually ~). A rank a network ' +
+      'adds above the usual five uses it too.',
   },
   {
     key: 'look.color.member.admin',
@@ -514,7 +516,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#fc9867',
-    description: 'Color for the & prefix (channel admin mode +a).',
+    description: 'Color for the channel admin prefix (mode +a, usually &).',
   },
   {
     key: 'look.color.member.op',
@@ -524,7 +526,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#a99dec',
-    description: 'Color for the @ prefix (channel operator mode +o).',
+    description: 'Color for the channel operator prefix (mode +o, usually @).',
   },
   {
     key: 'look.color.member.halfop',
@@ -534,7 +536,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#78dce8',
-    description: 'Color for the % prefix (half-op mode +h).',
+    description: 'Color for the half-op prefix (mode +h, usually %).',
   },
   {
     key: 'look.color.member.voice',
@@ -544,7 +546,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     themed: true,
     type: 'color',
     default: '#b3db82',
-    description: 'Color for the + prefix (voiced mode +v).',
+    description: 'Color for the voiced prefix (mode +v, usually +).',
   },
 
   // ─── Buffer list (channel/DM rows in the sidebar) ─────────────────────
