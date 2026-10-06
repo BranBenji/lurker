@@ -266,7 +266,9 @@ export const apnsSender: PushSender = {
     if (isProviderTokenRejection(status, reason)) return 'transient';
     if (reason && CONFIG_REJECTIONS.has(reason)) return 'transient';
 
-    // Apple throttling us, Apple being down, or no response at all.
+    // Apple throttling us, Apple being down, or no response at all. IdleTimeout
+    // is Apple closing our idle connection — nothing to do with the device.
+    if (reason === 'IdleTimeout') return 'transient';
     if (status == null || status === 429 || status >= 500) return 'transient';
     return 'strike';
   },

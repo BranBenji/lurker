@@ -73,6 +73,8 @@ describe('apns classify', () => {
 
   it('strikes a rejection that is specific to this request', () => {
     expect(c(400, 'PayloadTooLarge')).toBe('strike');
+    // IdleTimeout is Apple closing our connection, not a verdict on the device.
+    expect(c(400, 'IdleTimeout')).toBe('transient');
     // (BadTopic used to be here. The topic is LURKER_APNS_BUNDLE_ID — the same
     // on every request — so it's our configuration; see the next block.)
   });
