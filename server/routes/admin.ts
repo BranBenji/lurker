@@ -40,6 +40,7 @@ import { deriveIdent, isValidIdentOverride, MAX_IDENT_LENGTH } from '../../share
 import adminUploadersRouter from './adminUploaders.js';
 import adminNetworksRouter from './adminNetworks.js';
 import adminStorageRouter from './adminStorage.js';
+import adminPushRouter from './adminPush.js';
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -53,6 +54,9 @@ router.use('/networks', adminNetworksRouter);
 
 // Storage stats + retention ceilings (lurker-dev/RETENTION_PLAN.md §3.4).
 router.use('/storage', adminStorageRouter);
+
+// The push relay opt-in (lurker-dev/RELAY_PLAN.md §5a).
+router.use('/push', adminPushRouter);
 
 // invites.ts is still untyped — row shape inferred as any from the JS module
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -61,3 +61,18 @@ export function allowUserDefinedNetworks(): boolean {
 export function setAllowUserDefinedNetworks(allow: boolean): void {
   setInstanceSetting(ALLOW_USER_DEFINED_NETWORKS_KEY, allow ? '1' : '0');
 }
+
+export const PUSH_RELAY_ENABLED_KEY = 'push.relay_enabled';
+
+/**
+ * Has the admin opted in to push.lurker.chat for the official apps?
+ * (lurker-dev/RELAY_PLAN.md §5a.) Off when unset, on both editions: until an
+ * admin turns it on, the apps must never contact the relay at all.
+ */
+export function pushRelayEnabled(): boolean {
+  return getInstanceSetting(PUSH_RELAY_ENABLED_KEY) === '1';
+}
+
+export function setPushRelayEnabled(enabled: boolean): void {
+  setInstanceSetting(PUSH_RELAY_ENABLED_KEY, enabled ? '1' : '0');
+}

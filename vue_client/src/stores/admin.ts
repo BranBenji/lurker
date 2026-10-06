@@ -75,6 +75,15 @@ export interface AdminNetworkPreset {
 
 export type AdminNetworkPresetInput = Omit<AdminNetworkPreset, 'id' | 'position'>;
 
+/** Admin → Notifications: the push relay opt-in (lurker-dev/RELAY_PLAN.md §5a). */
+export interface AdminPushConfig {
+  /** The VAPID public key — what the admin registers with the relay. */
+  publicKey: string;
+  /** Transports this server can deliver on ('webpush', 'apns', 'fcm'). */
+  transports: string[];
+  relay: { url: string; enabled: boolean; devices: number };
+}
+
 export const useAdminStore = defineStore('admin', {
   state: () => ({
     users: [] as AdminUser[],
@@ -96,6 +105,7 @@ export const useAdminStore = defineStore('admin', {
     networkPresets: [] as AdminNetworkPreset[],
     allowUserDefinedNetworks: true,
     networksLoaded: false,
+    push: null as AdminPushConfig | null,
     usersLoaded: false,
     invitesLoaded: false,
     uploadersLoaded: false,
@@ -107,6 +117,7 @@ export const useAdminStore = defineStore('admin', {
     usersFetchSeq: 0,
     invitesFetchSeq: 0,
     lockoutsFetchSeq: 0,
+    pushFetchSeq: 0,
     loading: false,
     error: '',
   }),
@@ -316,6 +327,26 @@ export const useAdminStore = defineStore('admin', {
       // Refetch rather than assign: the server 409s this when no presets exist,
       // and the throw must leave the checkbox showing the truth, not the attempt.
       await this.fetchNetworkPresets();
+    },
+    async fetchPush() {
+      const seq = ++this.pushFetchSeq;
+      const data = await api('/api/admin/push');
+      // A save landed meanwhile — this GET predates it.
+      if (seq !== this.pushFetchSeq) return;
+      this.push = data;
+    },
+    async setPushRelayEnabled(enabled: boolean) {
+      try {
+        const data = await api('/api/admin/push/relay', { method: 'PUT', body: { enabled } });
+        this.pushFetchSeq++;
+        this.push = data;
+        return data.removed as number;
+      } catch (e) {
+        // Refetch before rethrowing, like the networks policy: the checkbox must
+        // show what the server holds, not what was attempted.
+        await this.fetchPush().catch(() => {});
+        throw e;
+      }
     },
   },
 });

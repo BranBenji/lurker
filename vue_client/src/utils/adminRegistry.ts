@@ -30,6 +30,7 @@ export const ADMIN_TABS: readonly AdminTab[] = Object.freeze([
   { id: 'invites', label: 'Invites' },
   { id: 'uploaders', label: 'Uploaders' },
   { id: 'networks', label: 'Networks' },
+  { id: 'notifications', label: 'Notifications' },
   { id: 'storage', label: 'Storage' },
   { id: 'lockouts', label: 'Lockouts' },
   // { id: 'capabilities', label: 'Capabilities' },

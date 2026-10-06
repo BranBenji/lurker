@@ -6,6 +6,7 @@ import type { Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { getPublicKey } from '../services/pushService.js';
 import { senderFor } from '../services/push/index.js';
+import { advertisedRelay, relayAllows } from '../services/push/relay.js';
 import {
   upsertSubscription,
   deleteByEndpoint,
@@ -43,8 +44,13 @@ router.get('/config', (_req: Request, res: Response) => {
   // no Apple key and reports ['webpush'] — so the iOS app can say so plainly
   // instead of asking for notification permission and then silently never
   // delivering. publicKey stays for Web Push and is meaningless to native.
+  //
+  // `relay` is present only while the admin has opted in to push.lurker.chat
+  // (lurker-dev/RELAY_PLAN.md §5a). An app with no native transport here uses
+  // the relay only if this names it — without it, the app contacts nothing.
   const transports = PUSH_TRANSPORTS.filter((t) => senderFor(t).isConfigured());
-  res.json({ publicKey: getPublicKey(), transports });
+  const relay = advertisedRelay();
+  res.json({ publicKey: getPublicKey(), transports, ...(relay ? { relay } : {}) });
 });
 
 // Native device registration (#490 phase 4). Separate from /subscriptions rather
@@ -132,6 +138,13 @@ router.post('/subscriptions', (req: Request, res: Response) => {
   const { endpoint, keys, userAgent } = req.body || {};
   if (!endpoint || !keys?.p256dh || !keys?.auth) {
     res.status(400).json({ error: 'endpoint and keys.p256dh + keys.auth are required' });
+    return;
+  }
+  // The admin's opt-in is enforced here, not just advertised: an app that read
+  // /config before the relay was turned off mustn't be able to put the server
+  // back to sending there.
+  if (typeof endpoint === 'string' && !relayAllows(endpoint)) {
+    res.status(403).json({ error: "this server's admin hasn't turned on the push relay" });
     return;
   }
   const result = upsertSubscription(
