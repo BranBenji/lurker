@@ -2706,6 +2706,21 @@ describe('auto-reconnect controller', () => {
       });
     });
 
+    // Giving up leaves the network down until someone acts, so unlike a drop
+    // it marks the system buffer unread (#1036).
+    it('marks the system buffer unread when it gives up', () => {
+      vi.useFakeTimers();
+      const { conn } = makeGatedConn('rc-gate-notable', () => ({
+        ok: false,
+        reason: 'this account is paused',
+      }));
+      const before = getRecent(1).at(-1)?.id ?? 0;
+      conn.client.emit('socket close', { code: 'ECONNRESET', message: 'read ECONNRESET' });
+      conn.client.emit('close', true);
+      vi.runAllTimers();
+      expect(countNotableNewer(1, before)).toBe(1);
+    });
+
     it('refuses to reconnect a paused account', () => {
       vi.useFakeTimers();
       const { conn, events } = makeGatedConn('rc-gate-paused', () => ({
@@ -2845,6 +2860,17 @@ describe('auto-reconnect controller', () => {
       conn.client.emit('socket close', {});
       expect(lastState(events)).toMatchObject({ state: 'disconnected' });
       expect(lastState(events)).not.toHaveProperty('error');
+    });
+
+    it('marks the system buffer unread when a ban stops reconnecting', () => {
+      vi.useFakeTimers();
+      const { conn } = makeConn('rc-error-ban-notable');
+      const before = getRecent(1).at(-1)?.id ?? 0;
+      conn.client.emit('irc error', { error: 'irc', reason: 'Closing Link: nick[u@h] (G-Lined)' });
+      conn.client.emit('socket close', { code: 'ECONNRESET', message: 'read ECONNRESET' });
+      conn.client.emit('close', true);
+      vi.runAllTimers();
+      expect(countNotableNewer(1, before)).toBe(1);
     });
 
     it('names a ban once reconnecting stops for it', () => {

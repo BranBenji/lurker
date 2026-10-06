@@ -2236,11 +2236,11 @@ export class IrcConnection {
           target: this.serverTarget(),
           text: errorText,
         });
-        // 'warn', not 'error': an 'error' line marks the system buffer unread
-        // (countNotableNewer), and this fires on every dropped or refused socket,
-        // which reconnects on its own. The error row above already marks the
-        // server buffer unread, so the system buffer only keeps the record
-        // (#1036). A reconnect that gives up still logs 'error' below.
+        // 'warn', like the Disconnected line: this fires on every dropped or
+        // refused socket, and the error row above already marks the server
+        // buffer unread. The system buffer only keeps the record (#1036). When
+        // reconnecting gives up, scheduleReconnectIfWarranted and
+        // stopReconnecting log at 'error' instead.
         this.logNet(errorText, 'warn');
       }
     });
@@ -8668,7 +8668,9 @@ export class IrcConnection {
     this.clearReconnectTimer();
     const text = `Not reconnecting automatically: ${reason}.`;
     this.publish({ type: 'error', target: this.serverTarget(), text });
-    this.logNet(`Auto-reconnect blocked: ${reason}`, 'warn');
+    // 'error': the network stays down until someone acts, so it marks the
+    // system buffer unread, like "Auto-reconnect stopped".
+    this.logNet(`Auto-reconnect blocked: ${reason}`, 'error');
     this.setState('disconnected', { error: text });
   }
 
