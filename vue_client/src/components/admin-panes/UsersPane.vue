@@ -180,28 +180,6 @@
       </li>
     </ul>
     <p v-else-if="adminStore.usersLoaded" class="muted small">No users.</p>
-
-    <!-- #1039. Ten failed logins from one address lock it out of sign-in for
-         15 minutes — web and bouncer each keep their own count. -->
-    <h3 class="subhead">login lockouts</h3>
-    <p v-if="lockoutError" class="error inline">{{ lockoutError }}</p>
-    <ul v-if="adminStore.loginLockouts.length" class="device-list">
-      <li
-        v-for="l in adminStore.loginLockouts"
-        :key="`${l.source}:${l.address}`"
-        class="device lockout-row"
-      >
-        <span class="ua">
-          {{ l.address }}
-          <span class="source-tag">{{ l.source }}</span>
-        </span>
-        <span class="last-seen">{{ formatRetryAfter(l.retryAfter) }}</span>
-      </li>
-    </ul>
-    <p v-else class="muted small">No addresses are locked out.</p>
-    <div v-if="adminStore.loginLockouts.length" class="lockout-actions">
-      <button class="link" :disabled="lockoutBusy" @click="onClearLockouts">clear all</button>
-    </div>
   </section>
 </template>
 
@@ -280,30 +258,7 @@ onMounted(() => {
   adminStore.fetchUsers().catch((e: any) => {
     adminError.value = e.message;
   });
-  adminStore.fetchLoginLockouts().catch((e: any) => {
-    lockoutError.value = e.message || 'failed to load login lockouts';
-  });
 });
-
-const lockoutError = ref('');
-const lockoutBusy = ref(false);
-
-function formatRetryAfter(seconds: number): string {
-  const minutes = Math.ceil(seconds / 60);
-  return `lifts in ${minutes} min`;
-}
-
-async function onClearLockouts() {
-  lockoutError.value = '';
-  lockoutBusy.value = true;
-  try {
-    await adminStore.clearLoginLockouts();
-  } catch (e: any) {
-    lockoutError.value = e.message || 'failed to clear login lockouts';
-  } finally {
-    lockoutBusy.value = false;
-  }
-}
 
 async function onIssueRecovery(user: AdminUser) {
   // Reissuing is destructive to a link that may already be in the member's
@@ -454,16 +409,6 @@ async function onResumeUser(user: AdminUser) {
 }
 .user-row .recovery-fresh code {
   overflow-wrap: anywhere;
-}
-.lockout-row .source-tag {
-  color: var(--fg-muted);
-  border: 1px solid var(--border);
-  padding: 0 var(--space-2);
-  text-transform: uppercase;
-}
-.lockout-actions {
-  display: flex;
-  justify-content: flex-end;
 }
 .user-row .paused-tag {
   color: var(--warn);
