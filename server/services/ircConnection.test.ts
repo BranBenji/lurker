@@ -35,6 +35,7 @@ import type { MonitorHolder } from './monitorList.js';
 import { createIdentdServer, unregisterIdent } from './identd.js';
 import connectScheduler from './connectScheduler.js';
 import { getRecent } from './systemLog.js';
+import { countNotableNewer } from '../db/systemMessages.js';
 import { unixSecondsToIso } from '../utils/unixTime.js';
 import { createUser } from '../db/users.js';
 import { createNetwork, getNetwork } from '../db/networks.js';
@@ -2705,6 +2706,21 @@ describe('auto-reconnect controller', () => {
       });
     });
 
+    // Giving up leaves the network down until someone acts, so unlike a drop
+    // it marks the system buffer unread (#1036).
+    it('marks the system buffer unread when it gives up', () => {
+      vi.useFakeTimers();
+      const { conn } = makeGatedConn('rc-gate-notable', () => ({
+        ok: false,
+        reason: 'this account is paused',
+      }));
+      const before = getRecent(1).at(-1)?.id ?? 0;
+      conn.client.emit('socket close', { code: 'ECONNRESET', message: 'read ECONNRESET' });
+      conn.client.emit('close', true);
+      vi.runAllTimers();
+      expect(countNotableNewer(1, before)).toBe(1);
+    });
+
     it('refuses to reconnect a paused account', () => {
       vi.useFakeTimers();
       const { conn, events } = makeGatedConn('rc-gate-paused', () => ({
@@ -2823,11 +2839,38 @@ describe('auto-reconnect controller', () => {
       );
     });
 
+    // The server buffer gets the error row; the system buffer keeps the line at
+    // 'warn' so a drop that reconnects on its own doesn't mark it unread (#1036).
+    it('logs a socket error to the system buffer without marking it unread', () => {
+      const { conn } = makeConn('rc-error-quiet');
+      const before = getRecent(1).at(-1)?.id ?? 0;
+      conn.client.emit('socket close', {
+        code: 'ECONNRESET',
+        message: 'read ECONNRESET',
+      });
+      const line = getRecent(1).find(
+        (l) => l.id > before && l.text.startsWith('Connection failed (irc.example.test:6697)'),
+      );
+      expect(line?.level).toBe('warn');
+      expect(countNotableNewer(1, before)).toBe(0);
+    });
+
     it('has none for a close without one', () => {
       const { conn, events } = makeConn('rc-error-clean');
       conn.client.emit('socket close', {});
       expect(lastState(events)).toMatchObject({ state: 'disconnected' });
       expect(lastState(events)).not.toHaveProperty('error');
+    });
+
+    it('marks the system buffer unread when a ban stops reconnecting', () => {
+      vi.useFakeTimers();
+      const { conn } = makeConn('rc-error-ban-notable');
+      const before = getRecent(1).at(-1)?.id ?? 0;
+      conn.client.emit('irc error', { error: 'irc', reason: 'Closing Link: nick[u@h] (G-Lined)' });
+      conn.client.emit('socket close', { code: 'ECONNRESET', message: 'read ECONNRESET' });
+      conn.client.emit('close', true);
+      vi.runAllTimers();
+      expect(countNotableNewer(1, before)).toBe(1);
     });
 
     it('names a ban once reconnecting stops for it', () => {
@@ -5947,6 +5990,20 @@ describe('proxy refusals and wiring', () => {
       const { dialed, published } = attemptProxy(PROXIED as Partial<Network>);
       expect(dialed).not.toHaveBeenCalled();
       expect(refusalText(published)).toMatch(/does not allow connecting through a proxy/);
+    } finally {
+      setAllowUserDefinedNetworks(true);
+    }
+  });
+
+  // Nothing retries a refused connect, so unlike a dropped socket it marks the
+  // system buffer unread (#1036).
+  it('marks the system buffer unread when it refuses to dial', async () => {
+    const { setAllowUserDefinedNetworks } = await import('../db/instanceSettings.js');
+    setAllowUserDefinedNetworks(false);
+    try {
+      const before = getRecent(1).at(-1)?.id ?? 0;
+      attemptProxy(PROXIED as Partial<Network>);
+      expect(countNotableNewer(1, before)).toBe(1);
     } finally {
       setAllowUserDefinedNetworks(true);
     }

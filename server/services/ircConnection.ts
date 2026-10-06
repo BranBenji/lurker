@@ -2236,7 +2236,12 @@ export class IrcConnection {
           target: this.serverTarget(),
           text: errorText,
         });
-        this.logNet(errorText, 'error');
+        // 'warn', like the Disconnected line: this fires on every dropped or
+        // refused socket, and the error row above already marks the server
+        // buffer unread. The system buffer only keeps the record (#1036). When
+        // reconnecting gives up, scheduleReconnectIfWarranted and
+        // stopReconnecting log at 'error' instead, as does a blocked connect.
+        this.logNet(errorText, 'warn');
       }
     });
     // The 'reconnecting' state + notice are now emitted by our own controller
@@ -5210,7 +5215,8 @@ export class IrcConnection {
       // points at the wrong thing entirely.
       const text = `Not connecting: ${blocked}.`;
       this.publish({ type: 'error', target: this.serverTarget(), text });
-      this.logNet(`Connect blocked: ${blocked}`, 'warn');
+      // 'error': nothing retries, so it marks the system buffer unread (#1036).
+      this.logNet(`Connect blocked: ${blocked}`, 'error');
       this.setState('disconnected', { error: text });
       // Nothing here will retry — no socket opened, so no 'close' to schedule
       // one from — and every one of these reasons is fixed by editing the
@@ -8663,7 +8669,9 @@ export class IrcConnection {
     this.clearReconnectTimer();
     const text = `Not reconnecting automatically: ${reason}.`;
     this.publish({ type: 'error', target: this.serverTarget(), text });
-    this.logNet(`Auto-reconnect blocked: ${reason}`, 'warn');
+    // 'error': the network stays down until someone acts, so it marks the
+    // system buffer unread, like "Auto-reconnect stopped".
+    this.logNet(`Auto-reconnect blocked: ${reason}`, 'error');
     this.setState('disconnected', { error: text });
   }
 
