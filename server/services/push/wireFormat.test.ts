@@ -20,8 +20,11 @@ import type { PushSubscription } from '../../db/pushSubscriptions.js';
 import {
   clampPushText,
   composeNotification,
+  MAX_PUSH_BODY_BYTES,
   MAX_PUSH_NETWORK_NAME_BYTES,
+  prepareNotification,
   pushBody,
+  RELAY_APNS_WRAPPER,
   type PushPayload,
 } from '../notificationContent.js';
 
@@ -265,16 +268,57 @@ describe('buildFcmMessage', () => {
     }
   });
 
-  it('leaves a relayed push room inside an APNs payload (#1045)', () => {
-    // A self-hosted server's push reaches the iOS app through a relay that puts
-    // the encrypted Web Push body, base64, into an APNs payload — also capped at
-    // 4 KB, with the relay's own `aps` wrapper around it. aes128gcm adds an
-    // 86-byte header, a padding delimiter and a 16-byte tag (RFC 8188/8291).
-    for (const p of worstCases) {
-      const plain = Buffer.byteLength(JSON.stringify(pushBody(p, composeNotification(p))));
-      const base64 = Math.ceil((86 + plain + 1 + 16) / 3) * 4;
-      expect(base64).toBeLessThan(3000);
+  // Names IRC leaves unbounded, at sizes some networks allow (ergo takes UTF-8
+  // nicks and channels): a kick puts the kicker, the channel and the network in
+  // the title, and the channel rides again in `target` and `tag`.
+  const hostile: PushPayload[] = ['😀'.repeat(4000), '"'.repeat(4000)].flatMap((text) =>
+    (['kicked', 'highlight', 'dm', 'friend_online'] as const).map((kind) => ({
+      kind,
+      networkId: 2147483647,
+      networkName: '🌐'.repeat(500),
+      target: `#${'📣'.repeat(120)}`,
+      bufferId: 2147483647,
+      nick: '👤'.repeat(64),
+      displayName: '👤'.repeat(64),
+      text,
+      time: '2026-10-05T12:00:00.000Z',
+      messageId: 2147483647,
+      badge: 99999,
+    })),
+  );
+
+  it('fits every push inside a relayed APNs payload, cutting text before routing', () => {
+    // A self-hosted server's push reaches the apps through a relay that puts the
+    // encrypted Web Push body, base64url, into a 4 KB APNs payload beside its own
+    // `aps` placeholder (lurker-dev/RELAY_PLAN.md §6.2). Over it, the relay
+    // answers 413 and the server strikes the device.
+    for (const raw of [...worstCases, ...hostile]) {
+      const { payload: p, content } = prepareNotification(raw);
+      const plain = Buffer.byteLength(JSON.stringify(pushBody(p, content)));
+      expect(plain).toBeLessThanOrEqual(MAX_PUSH_BODY_BYTES);
+      const relayed =
+        Buffer.byteLength(RELAY_APNS_WRAPPER) + Math.ceil(((86 + plain + 1 + 16) * 4) / 3);
+      expect(relayed).toBeLessThanOrEqual(4096);
+      // Routing survives whatever was cut: a shortened target opens the wrong buffer.
+      expect(p.target).toBe(raw.target);
+      expect(p.networkId).toBe(raw.networkId);
+      expect(p.bufferId).toBe(raw.bufferId);
+      expect(content.tag).toBe(composeNotification(p).tag);
     }
+  });
+
+  it('leaves an ordinary push untouched', () => {
+    const raw = payload({
+      kind: 'dm',
+      networkId: 1,
+      networkName: 'Libera',
+      target: 'bob',
+      nick: 'bob',
+      text: 'hey',
+    });
+    const { payload: p, content } = prepareNotification(raw);
+    expect(p).toEqual(raw);
+    expect(content).toEqual(composeNotification(raw));
   });
 
   it('stringifies every data value', () => {

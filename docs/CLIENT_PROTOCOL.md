@@ -1574,8 +1574,8 @@ the self-hosted push relay (see below).
 > `POST /api/push/subscriptions` refuses an endpoint on the relay's origin with
 > `403`, and turning it off deletes the existing ones. A relay endpoint names a
 > device the way a native token does, so registering one that another account
-> holds moves it to the new account instead of answering `409`. It does not serve
-> third-party clients.
+> holds moves it to the new account instead of answering `409`. The relay does
+> not serve third-party clients.
 >
 > What third-party clients _can_ do today: **Web Push** works on any instance
 > for browser-based clients; a TUI doesn't need push at all (it only matters

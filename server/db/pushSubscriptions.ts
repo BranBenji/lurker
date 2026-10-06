@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import db from './index.js';
-import { isRelayEndpoint } from '../services/push/relayOrigin.js';
+import { namesRelayDevice } from '../services/push/relayOrigin.js';
 
 /**
  * How a subscription is delivered to (#490).
@@ -179,13 +179,13 @@ export type SubscriptionInput =
 //   second account on the phone unable to register, and an offline sign-out
 //   would keep the old account's pushes flowing to the device.
 //
-// Which means the rebind is only safe when BOTH sides are native (or both are
-// relay Web Push), and the test has to be on the STORED row — never on what the
-// caller declares itself to be,
-// or claiming `transport: 'apns'` while presenting someone else's push URL walks
-// straight past the refusal and takes their subscription (review of #490). A
-// native token and a push-service URL can't legitimately be equal anyway, so the
-// mixed cases are refused rather than reasoned about.
+// Which means the rebind is only safe when BOTH sides are native (or both are a
+// relay device endpoint), and the test has to be on the STORED row — never on
+// what the caller declares itself to be, or claiming `transport: 'apns'` while
+// presenting someone else's push URL walks straight past the refusal and takes
+// their subscription (review of #490). A native token and a push-service URL
+// can't legitimately be equal anyway, so the mixed cases are refused rather than
+// reasoned about.
 //
 // Returns { ok, sub } on success or { ok: false, error } on a refused collision.
 //
@@ -208,7 +208,7 @@ export function upsertSubscription(
     const bothNative = existing.transport !== 'webpush' && transport !== 'webpush';
     // The stored row's endpoint IS this endpoint, so testing it tests the row.
     const bothRelay =
-      existing.transport === 'webpush' && transport === 'webpush' && isRelayEndpoint(endpoint);
+      existing.transport === 'webpush' && transport === 'webpush' && namesRelayDevice(endpoint);
     if (!bothNative && !bothRelay) return { ok: false, error: 'endpoint_owned_by_other_user' };
   }
   if (existing) {

@@ -15,31 +15,22 @@
 import { describe, it, expect } from 'vitest';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import ece from 'http_ece';
 import {
-  clampPushText,
-  composeNotification,
-  MAX_PUSH_NETWORK_NAME_BYTES,
-  pushBody,
+  prepareNotification,
+  RELAY_APNS_WRAPPER,
   type PushPayload,
 } from '../notificationContent.js';
+import { webpushBody } from './webpushSender.js';
 
 const FILE = fileURLToPath(new URL('./relayVectors.json', import.meta.url));
 
-// The APNs alert the relay wraps every push in (RELAY_PLAN.md §6.2). FCM's data
+// The relay wraps every push in an APNs alert (RELAY_PLAN.md §6.2). FCM's data
 // message is just {"p": …}, so this is the larger of the two.
 const APNS_LIMIT = 4096;
-function apnsRelayPayload(p: string): string {
-  return JSON.stringify({
-    aps: {
-      alert: { title: 'Lurker', body: 'New message' },
-      'mutable-content': 1,
-      sound: 'default',
-    },
-    p,
-  });
-}
+const apnsRelayPayload = (p: string) => RELAY_APNS_WRAPPER.replace('"p":""', `"p":"${p}"`);
 
 // Deterministic keys: a P-256 scalar from a label. (Every 32-byte value below the
 // group order is a valid key, and a SHA-256 output is, overwhelmingly.)
@@ -51,13 +42,11 @@ function ecdh(label: string): crypto.ECDH {
 const bytes = (label: string, n: number) =>
   crypto.createHash('sha256').update(label).digest().subarray(0, n).toString('base64url');
 
-// What deliver() does to a payload before any transport sees it.
-function asDelivered(payload: PushPayload): string {
-  const p = {
-    ...payload,
-    networkName: clampPushText(payload.networkName, MAX_PUSH_NETWORK_NAME_BYTES),
-  };
-  return JSON.stringify(pushBody(p, composeNotification(p)));
+// Exactly the body deliver() hands web-push: the same preparation and the same
+// serialization, not a copy of them.
+function asDelivered(raw: PushPayload): string {
+  const { payload, content } = prepareNotification(raw);
+  return webpushBody(payload, content);
 }
 
 const CASES: { name: string; payload: PushPayload }[] = [
@@ -93,17 +82,18 @@ const CASES: { name: string; payload: PushPayload }[] = [
     },
   },
   {
-    // As big as the server will make a push: every clamped field at its clamp,
-    // in four-byte characters.
+    // As big as the server will make a push: a kick (kicker, channel and network
+    // all in the title) with every name long and in four-byte characters, so
+    // prepareNotification has to cut it down to fit.
     name: 'worst-case',
     payload: {
-      kind: 'highlight',
+      kind: 'kicked',
       networkId: 2147483647,
-      networkName: '🌐'.repeat(200),
-      target: `#${'c'.repeat(200)}`,
+      networkName: '🌐'.repeat(500),
+      target: `#${'📣'.repeat(120)}`,
       bufferId: 2147483647,
-      nick: 'n'.repeat(64),
-      text: '🎉'.repeat(2000),
+      nick: '👤'.repeat(64),
+      text: '"'.repeat(4000),
       time: '2026-10-06T18:32:00.000Z',
       messageId: 2147483647,
       displayName: '👤'.repeat(64),
@@ -223,9 +213,13 @@ describe('relay test vectors', () => {
     for (const v of want.vectors) {
       expect(Buffer.byteLength(apnsRelayPayload(v.body))).toBeLessThanOrEqual(APNS_LIMIT);
     }
-    const worst = want.vectors.find((v) => v.name === 'worst-case')!;
-    // Report the headroom in the test name's spirit: if this ever creeps up, the
-    // clamps in notificationContent.ts are what to look at.
-    expect(Buffer.byteLength(apnsRelayPayload(worst.body))).toBeLessThan(3500);
+  });
+
+  it('are encrypted with the http_ece web-push itself sends with', () => {
+    // Pinned as a devDependency for this suite; a bump that drifted from
+    // web-push's copy would make the vectors check a different library.
+    const req = createRequire(import.meta.url);
+    const fromWebPush = createRequire(req.resolve('web-push')).resolve('http_ece');
+    expect(req.resolve('http_ece')).toBe(fromWebPush);
   });
 });

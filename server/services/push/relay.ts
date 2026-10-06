@@ -18,8 +18,7 @@ import { countWebPushWhere, deleteWebPushWhere } from '../../db/pushSubscription
 // Matching lives in relayOrigin.ts, which imports nothing, so the database layer
 // can ask "is this a relay endpoint?" without a cycle back through here.
 import { RELAY_ORIGIN, isRelayEndpoint } from './relayOrigin.js';
-
-export { RELAY_ORIGIN, isRelayEndpoint };
+export { RELAY_ORIGIN, isRelayEndpoint } from './relayOrigin.js';
 
 /**
  * May this server file, or send to, a subscription at `endpoint`? Everything but

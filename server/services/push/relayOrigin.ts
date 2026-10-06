@@ -43,3 +43,18 @@ export function isRelayEndpoint(endpoint: string): boolean {
     return false;
   }
 }
+
+/**
+ * A relay endpoint that names a phone: `/relay-to/{apns|fcm}/…` carries its
+ * APNs/FCM token (lurker-dev/RELAY_PLAN.md §6.2), so it's the same URL whichever
+ * account the phone is signed in as. Anything else on the relay host doesn't
+ * name an install, and keeps the browser rule.
+ */
+export function namesRelayDevice(endpoint: string): boolean {
+  if (!isRelayEndpoint(endpoint)) return false;
+  try {
+    return /^\/relay-to\/(apns|fcm)\//.test(new URL(endpoint).pathname);
+  } catch {
+    return false;
+  }
+}
