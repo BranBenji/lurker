@@ -263,6 +263,33 @@ describe('GET /api/auth/passkeys', () => {
   });
 });
 
+describe('PATCH /api/auth/passkeys/:id', () => {
+  // Every route that names a passkey reads the label the same way (#1038).
+  it('caps a long label without splitting an emoji', async () => {
+    const { findUserByUsername } = await import('../db/users.js');
+    const { insertCredential, deleteById } = await import('../db/webauthnCredentials.js');
+    const userId = findUserByUsername('firstadmin')!.id;
+    const cred = insertCredential({
+      userId,
+      credentialId: 'cap-test',
+      publicKey: Buffer.from('key'),
+      counter: 0,
+    })!;
+    try {
+      const agent = await createAuthedAgent(app, userId);
+      const res = await agent
+        .patch(`/api/auth/passkeys/${cred.id}`)
+        .send({ label: 'x'.repeat(63) + '😀' });
+      expect(res.status).toBe(200);
+      const list = await agent.get('/api/auth/passkeys');
+      expect(list.body.passkeys.map((p: { label: string }) => p.label)).toEqual(['x'.repeat(63)]);
+    } finally {
+      // Later tests count on there being no passkeys.
+      deleteById(cred.id, userId);
+    }
+  });
+});
+
 describe('POST /api/auth/passkeys/options', () => {
   it('offers Ed25519, ES256 and RS256, never experimental ML-DSA', async () => {
     const { findUserByUsername } = await import('../db/users.js');

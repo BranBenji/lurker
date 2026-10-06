@@ -441,6 +441,25 @@ describe('POST /api/uploads — progress narration', () => {
     }
   });
 
+  // The token is echoed in every progress frame, and those go to all the user's
+  // devices as JSON, so its cap must not split an emoji (#1038).
+  it('caps a long token without splitting an emoji', async () => {
+    fanOutSpy.mockClear();
+    stub.emitBytes = { total: 1000 };
+    try {
+      const res = await agent
+        .post('/api/uploads')
+        .field('progressToken', 'x'.repeat(63) + '😀')
+        .attach('image', smallPng, { filename: 'p.png', contentType: 'image/png' });
+      expect(res.status).toBe(200);
+      const seen = frames();
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every((f) => f.token === 'x'.repeat(63))).toBe(true);
+    } finally {
+      stub.emitBytes = null;
+    }
+  });
+
   // Progress is a courtesy, never a precondition. An older client that sends no token
   // must upload exactly as before — and cost the server nothing.
   it('stays silent when the client sends no token', async () => {
@@ -508,6 +527,15 @@ describe('GET /api/uploads — search params', () => {
     const res = await agent.get('/api/uploads?kind=malware');
     expect(res.status).toBe(200);
     expect(res.body.items.length).toBeGreaterThan(0);
+  });
+
+  // The 200 cap lands inside the emoji. Half of one reaches SQLite as U+FFFD,
+  // and a query ending in that matches nothing (#1038).
+  it('caps a long search term without splitting an emoji', async () => {
+    const stem = 'q'.repeat(199);
+    await upload(`${stem}😀.png`, 'image/png', smallPng);
+    const res = await agent.get(`/api/uploads?q=${encodeURIComponent(`${stem}😀`)}`);
+    expect(res.body.items.map((i: { filename: string }) => i.filename)).toEqual([`${stem}😀.png`]);
   });
 
   it('returns an empty list, not an error, when nothing matches', async () => {

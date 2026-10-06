@@ -559,8 +559,9 @@ export function withNetworkList(head: string, names: string[], budget: number): 
     shown += 1;
   }
   if (names.length > shown) out += `, +${names.length - shown} more`;
+  // A whole code point at a time, so the trim can't leave half an emoji (#1038).
   while (Buffer.byteLength(out) > budget && out.length > head.length + 1) {
-    out = out.slice(0, -1);
+    out = out.slice(0, out.codePointAt(out.length - 2)! > 0xffff ? -2 : -1);
   }
   return out;
 }

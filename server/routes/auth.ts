@@ -63,6 +63,7 @@ import {
   loginFailureThrottle,
   authRequestThrottle,
 } from '../middleware/rateLimit.js';
+import { capText } from '../utils/capText.js';
 
 const CHALLENGE_COOKIE = 'lurker_webauthn_challenge';
 
@@ -85,6 +86,11 @@ function setChallengeCookie(res: Response, token: string): void {
 
 function clearChallengeCookie(res: Response): void {
   res.clearCookie(CHALLENGE_COOKIE, { ...challengeCookieOptions(), maxAge: undefined });
+}
+
+// The name a user gives a passkey, as every route that sets one reads it.
+function passkeyLabel(req: Request): string | null {
+  return capText((req.body?.label || '').toString().trim(), 64) || null;
 }
 
 // webauthnCredentials.ts is still untyped — credential shape inferred as any
@@ -210,7 +216,7 @@ router.post('/setup/verify', async (req: Request, res: Response) => {
   }
 
   const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
-  const label = (req.body?.label || '').toString().trim().slice(0, 64) || null;
+  const label = passkeyLabel(req);
   insertCredential({
     userId: user.id,
     credentialId: credential.id,
@@ -372,7 +378,7 @@ router.post('/invite/:token/verify', async (req: Request<{ token: string }>, res
   }
 
   const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
-  const label = (req.body?.label || '').toString().trim().slice(0, 64) || null;
+  const label = passkeyLabel(req);
   insertCredential({
     userId: user.id,
     credentialId: credential.id,
@@ -634,7 +640,7 @@ router.post('/recovery/:token/verify', async (req: Request<{ token: string }>, r
   const entryUserId = entry.userId as number;
   let userId: number | null = null;
   const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
-  const label = (req.body?.label || '').toString().trim().slice(0, 64) || null;
+  const label = passkeyLabel(req);
   try {
     userId = spendRecoveryAndEnroll(req.params.token, entryUserId, {
       credentialId: credential.id,
@@ -937,7 +943,7 @@ router.post('/passkeys/verify', requireAuth, async (req: Request, res: Response)
     return;
   }
   const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
-  const label = (req.body?.label || '').toString().trim().slice(0, 64) || null;
+  const label = passkeyLabel(req);
   const stored = insertCredential({
     userId: req.user!.id,
     credentialId: credential.id,
@@ -957,7 +963,7 @@ router.patch('/passkeys/:id', requireAuth, (req: Request, res: Response) => {
     res.status(400).json({ error: 'invalid id' });
     return;
   }
-  const label = (req.body?.label || '').toString().trim().slice(0, 64) || null;
+  const label = passkeyLabel(req);
   const ok = updateLabel(id, req.user!.id, label);
   if (!ok) {
     res.status(404).json({ error: 'not found' });

@@ -37,6 +37,7 @@ import { allowUserDefinedUploaders, setAllowUserDefinedUploaders } from '../db/i
 import { BUILT_IN_INSTANCE_DRIVERS } from '../db/uploaderConfigSeed.js';
 import { getDriver, driverIds } from '../services/uploadProviders/index.js';
 import { isNodeMode } from '../utils/edition.js';
+import { capText } from '../utils/capText.js';
 
 const router = Router();
 
@@ -98,7 +99,7 @@ function readLabel(body: unknown): string | undefined {
   const raw = (body as { label?: unknown } | null)?.label;
   if (typeof raw !== 'string') return undefined;
   const trimmed = raw.trim();
-  return trimmed ? trimmed.slice(0, MAX_LABEL_LEN) : undefined;
+  return trimmed ? capText(trimmed, MAX_LABEL_LEN) : undefined;
 }
 
 function bool(body: unknown, key: string): boolean | undefined {

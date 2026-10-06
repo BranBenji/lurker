@@ -13,6 +13,7 @@ import { USER_AGENT } from '../../utils/userAgent.js';
 import { postMultipart, isOk, jsonBody } from './multipart.js';
 import type { UploadSource } from './source.js';
 import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from './types.js';
+import { capText } from '../../utils/capText.js';
 
 export const driver = 'chibisafe';
 export const label = 'Chibisafe';
@@ -68,7 +69,7 @@ export async function upload(
   );
 
   if (!isOk(resp)) {
-    const text = resp.text.slice(0, 200);
+    const text = capText(resp.text, 200);
     throw Object.assign(new Error(`chibisafe upload failed: ${resp.status} ${text}`), {
       code: resp.status === 401 || resp.status === 403 ? 'PROVIDER_AUTH' : 'PROVIDER_ERROR',
     });
@@ -101,7 +102,7 @@ async function deleteFile(
     signal: AbortSignal.timeout(60_000),
   });
   if (!resp.ok && resp.status !== 404) {
-    const text = (await resp.text()).slice(0, 200);
+    const text = capText(await resp.text(), 200);
     throw Object.assign(new Error(`chibisafe delete failed: ${resp.status} ${text}`), {
       code: resp.status === 401 || resp.status === 403 ? 'PROVIDER_AUTH' : 'PROVIDER_ERROR',
     });

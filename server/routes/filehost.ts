@@ -42,6 +42,7 @@ import {
   uploadTempName,
 } from '../services/uploadService.js';
 import { publicBaseUrl } from '../utils/publicOrigin.js';
+import { capText } from '../utils/capText.js';
 
 const router = Router();
 
@@ -147,7 +148,7 @@ export function dispositionFilename(header: string | undefined): string {
     if (quoted) name = quoted[1].replace(/\\(.)/g, '$1');
     else if (bare) name = bare[1].trim();
   }
-  return name.split(/[/\\]/).pop()!.trim().slice(0, 255);
+  return capText(name.split(/[/\\]/).pop()!.trim(), 255);
 }
 
 class TooLargeError extends Error {}

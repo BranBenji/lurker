@@ -20,6 +20,7 @@ import { USER_AGENT } from '../../utils/userAgent.js';
 import { postMultipart, isOk, jsonBody, type StreamPart } from './multipart.js';
 import type { UploadSource } from './source.js';
 import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from './types.js';
+import { capText } from '../../utils/capText.js';
 
 export const driver = 'dropper';
 export const label = 'Dropper';
@@ -82,7 +83,7 @@ export async function upload(
   });
 
   if (!isOk(resp)) {
-    const text = resp.text.slice(0, 200);
+    const text = capText(resp.text, 200);
     throw Object.assign(new Error(`hoarder upload failed: ${resp.status} ${text}`), {
       code: resp.status === 401 ? 'PROVIDER_AUTH' : 'PROVIDER_ERROR',
     });

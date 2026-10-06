@@ -16,6 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { capText } from '../utils/capText.js';
 
 const MAX_FILENAME_LEN = 255;
 const FALLBACK_NAME = 'dcc-download';
@@ -48,8 +49,8 @@ export function sanitizeDccFilename(raw: string): string {
   name = name.trim();
   if (name === '' || name === '.' || name === '..') return FALLBACK_NAME;
   if (name.length > MAX_FILENAME_LEN) {
-    const ext = path.extname(name).slice(0, 16);
-    name = name.slice(0, MAX_FILENAME_LEN - ext.length).trimEnd() + ext;
+    const ext = capText(path.extname(name), 16);
+    name = capText(name, MAX_FILENAME_LEN - ext.length).trimEnd() + ext;
   }
   return name;
 }

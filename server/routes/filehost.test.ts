@@ -465,6 +465,8 @@ describe('dispositionFilename', () => {
     ['attachment; filename="../../etc/passwd"', 'passwd'],
     ['attachment; filename="C:\\\\Users\\\\me\\\\shot.png"', 'shot.png'],
     ["attachment; filename*=UTF-8''bad%E0%A4.png", 'bad%E0%A4.png'],
+    // The 255 cap lands inside the emoji (#1038).
+    [`attachment; filename*=UTF-8''${'a'.repeat(254)}%F0%9F%98%80.png`, 'a'.repeat(254)],
     ['attachment', ''],
   ])('%s → %s', (header, expected) => {
     expect(filehost.dispositionFilename(header)).toBe(expected);

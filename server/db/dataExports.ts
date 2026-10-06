@@ -7,6 +7,7 @@
 
 import { randomBytes } from 'crypto';
 import db from './index.js';
+import { capText } from '../utils/capText.js';
 
 export type ExportStatus = 'pending' | 'running' | 'done' | 'error';
 
@@ -118,7 +119,7 @@ export function markError(id: number, message: string): void {
     `UPDATE data_exports
      SET status = 'error', error = ?, completed_at = datetime('now')
      WHERE id = ?`,
-  ).run(message.slice(0, 1000), id);
+  ).run(capText(message, 1000), id);
 }
 
 export function markDownloaded(id: number): void {

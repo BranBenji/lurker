@@ -22,9 +22,12 @@
 // multi-byte sequence split across two TCP segments, and substitutes U+FFFD for
 // invalid input rather than dropping the line). One astral character therefore
 // counts as two. The cap is a memory bound, not a protocol limit, so that's fine
-// — it just must not be called "bytes".
+// — it just must not be called "bytes". A forced split never lands inside one
+// (#1038): the cut steps back to the last whole character, which opens the next
+// line.
 
 import net from 'net';
+import { capText } from '../utils/capText.js';
 
 // Chosen to match irssi's MAX_CHARS_IN_LINE (line-split.c:32).
 const MAX_LINE_CHARS = 64 * 1024;
@@ -88,8 +91,9 @@ export class DccChat {
         // No terminator yet. Hold the partial line unless it has outgrown the
         // cap, in which case force a split here (see the header note).
         if (this.buf.length <= MAX_LINE_CHARS) break;
-        this.opts.onLine?.(this.buf.slice(0, MAX_LINE_CHARS));
-        this.buf = this.buf.slice(MAX_LINE_CHARS);
+        const head = capText(this.buf, MAX_LINE_CHARS);
+        this.opts.onLine?.(head);
+        this.buf = this.buf.slice(head.length);
         continue;
       }
       // Accept bare LF as well as CRLF: irssi, HexChat and repartee all SEND
@@ -105,7 +109,7 @@ export class DccChat {
    *  already closed. */
   send(text: string): boolean {
     if (this.closed || !this.socket) return false;
-    const clean = text.replace(/[\r\n]/g, ' ').slice(0, MAX_LINE_CHARS);
+    const clean = capText(text.replace(/[\r\n]/g, ' '), MAX_LINE_CHARS);
     try {
       this.socket.write(clean + '\r\n');
       return true;

@@ -8,6 +8,7 @@ import { USER_AGENT } from '../../utils/userAgent.js';
 import { postMultipart } from './multipart.js';
 import type { UploadSource } from './source.js';
 import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from './types.js';
+import { capText } from '../../utils/capText.js';
 
 const ENDPOINT = 'https://x0.at/';
 
@@ -32,12 +33,12 @@ export async function upload(
   );
   const text = resp.text.trim();
   if (resp.status < 200 || resp.status >= 300) {
-    throw Object.assign(new Error(`x0.at upload failed: ${resp.status} ${text.slice(0, 200)}`), {
+    throw Object.assign(new Error(`x0.at upload failed: ${resp.status} ${capText(text, 200)}`), {
       code: 'PROVIDER_ERROR',
     });
   }
   if (!/^https?:\/\//.test(text)) {
-    throw Object.assign(new Error(`x0.at unexpected response: ${text.slice(0, 200)}`), {
+    throw Object.assign(new Error(`x0.at unexpected response: ${capText(text, 200)}`), {
       code: 'PROVIDER_ERROR',
     });
   }

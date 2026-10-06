@@ -87,6 +87,12 @@ describe('generateClientCert', () => {
     expect(describeClientCert((await generateClientCert('a#b')).cert).subject).toBe('CN=a#b');
   });
 
+  // #1038: the 64-unit cap would otherwise keep half of an emoji.
+  it('caps a long nick without splitting an emoji', async () => {
+    const info = describeClientCert((await generateClientCert('a'.repeat(63) + '😀')).cert);
+    expect(info.subject).toBe(`CN=${'a'.repeat(63)}`);
+  });
+
   it('mints a distinct key each time', async () => {
     const [a, b] = await Promise.all([generateClientCert('a'), generateClientCert('b')]);
     expect(describeClientCert(a.cert).sha256).not.toBe(describeClientCert(b.cert).sha256);
