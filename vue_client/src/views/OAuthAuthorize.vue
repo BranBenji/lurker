@@ -39,6 +39,12 @@
              it's shown as the app's claim rather than as who made it. -->
         <p v-if="info.app.website" class="hint">Says it's from {{ info.app.website }}</p>
         <p class="warning">It will have full access to your account.</p>
+        <!-- The page approves for whoever this browser is signed in as, which a
+             shared phone or a second account can make someone else (#1054). -->
+        <p class="hint">
+          Signed in as <strong class="account">{{ account }}</strong> ·
+          <button class="link" :disabled="working" @click="switchAccount">Not you?</button>
+        </p>
         <p class="hint">
           <template v-if="info.destination.kind === 'code'">
             You'll get a code to paste into the app
@@ -88,6 +94,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { api, type ApiError } from '../api.js';
+import { useAuthStore } from '../stores/auth.js';
+import { useConfigStore } from '../stores/config.js';
 import WordBackdrop from '../components/WordBackdrop.vue';
 
 type Destination =
@@ -129,6 +137,17 @@ const code = ref('');
 const copied = ref(false);
 const copyError = ref('');
 const working = ref(false);
+const account = ref('');
+
+const auth = useAuthStore();
+const config = useConfigStore();
+
+// A hosted cell only knows a synthetic acct-N username; the email the member
+// signs in with lives on the control plane.
+async function accountName(): Promise<string> {
+  const email = (await config.fetch()) === 'node' ? await auth.fetchHostedAccountEmail() : null;
+  return email || auth.user?.username || '';
+}
 
 function showError(e: unknown) {
   const data = (e as ApiError | null)?.data as { error_description?: unknown } | null | undefined;
@@ -141,7 +160,14 @@ onMounted(async () => {
   if (framed) return;
   try {
     // The query string goes to the server untouched, exactly as the app sent it.
-    info.value = await api<AuthorizeInfo>(`/api/oauth/authorize${window.location.search}`);
+    // The account name is ready before the buttons are, so they never show
+    // without it.
+    const [details, name] = await Promise.all([
+      api<AuthorizeInfo>(`/api/oauth/authorize${window.location.search}`),
+      accountName(),
+    ]);
+    info.value = details;
+    account.value = name;
     state.value = 'approve';
   } catch (e) {
     showError(e);
@@ -185,6 +211,16 @@ async function decide(decision: 'approve' | 'deny') {
   } else {
     showError(null);
   }
+}
+
+// Sign this browser out (both cookies on hosted, or the proxy signs it straight
+// back in), then load this same request again: signed out, it asks for a sign-in
+// and comes back here. Reloading leaves the app's query string as it was.
+async function switchAccount() {
+  if (working.value) return;
+  working.value = true;
+  await auth.logout();
+  window.location.reload();
 }
 
 async function onCopy() {
@@ -253,6 +289,24 @@ h1 {
   margin: 0;
   color: var(--fg-muted);
   overflow-wrap: anywhere;
+}
+.account {
+  color: var(--fg);
+}
+.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+}
+.link:hover:not(:disabled) {
+  color: var(--fg);
+}
+.link:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .actions {
   display: flex;

@@ -7,17 +7,22 @@
 // with a response, which no server test can see: framed, it shows and asks for
 // nothing; a rejected request stays on the page; only a click navigates; and the
 // member is told when the page is done with, but never while a redirect is
-// still leaving it.
+// still leaving it. It also names the account approving, and offers a way to
+// approve as someone else (#1054).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils';
+import { setActivePinia, createPinia } from 'pinia';
 
 const h = vi.hoisted(() => ({
   api: vi.fn<(url: string, opts?: { method?: string; body?: unknown }) => Promise<any>>(),
+  resetSession: vi.fn<() => void>(),
 }));
-vi.mock('../api.js', () => ({ api: h.api }));
+vi.mock('../api.js', () => ({ api: h.api, clearAuthRecoveryGuard: () => {} }));
+vi.mock('../composables/useSessionReset.js', () => ({ resetSession: h.resetSession }));
 
 import OAuthAuthorize from './OAuthAuthorize.vue';
+import { useAuthStore } from '../stores/auth.js';
 
 const OOB = 'urn:ietf:wg:oauth:2.0:oob';
 const PARAMS = {
@@ -30,14 +35,25 @@ const PARAMS = {
 };
 const QUERY = `?${new URLSearchParams(PARAMS)}`;
 
-// GET answers with the approval details and the request it checked; POST answers
-// with `decision`.
-function serve(destination: object, decision: object) {
-  h.api.mockImplementation(async (_url, opts) =>
-    opts?.method === 'POST'
+// The authorize GET answers with the approval details and the request it checked;
+// its POST answers with `decision`. `edition` and `email` answer the config and
+// control-plane lookups behind the account name.
+function serve(
+  destination: object,
+  decision: object,
+  { edition = 'standalone', email = null as string | null } = {},
+) {
+  h.api.mockImplementation(async (url, opts) => {
+    if (url === '/api/config') return { edition };
+    if (url === '/_cp/auth/me') {
+      if (!email) throw new Error('not found');
+      return { account: { email } };
+    }
+    if (url === '/api/auth/logout' || url === '/_cp/auth/logout') return { ok: true };
+    return opts?.method === 'POST'
       ? decision
-      : { app: { name: 'Ivory', website: 'ivory.example' }, destination, request: PARAMS },
-  );
+      : { app: { name: 'Ivory', website: 'ivory.example' }, destination, request: PARAMS };
+  });
 }
 
 function button(wrapper: VueWrapper, label: string) {
@@ -47,7 +63,10 @@ function button(wrapper: VueWrapper, label: string) {
 }
 
 beforeEach(() => {
+  setActivePinia(createPinia());
+  useAuthStore().adoptSession({ id: 1, username: 'alice', role: 'user' });
   h.api.mockReset();
+  h.resetSession.mockReset();
   window.history.replaceState(null, '', `/oauth/authorize${QUERY}`);
 });
 afterEach(() => vi.restoreAllMocks());
@@ -107,6 +126,70 @@ describe('OAuthAuthorize', () => {
       body: { ...PARAMS, decision: 'approve' },
     });
   });
+
+  it('names the account approving', async () => {
+    serve({ kind: 'code' }, { code: 'the-code' });
+
+    const wrapper = mount(OAuthAuthorize);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Signed in as alice');
+    // Only a hosted cell has a control plane to ask.
+    expect(h.api).not.toHaveBeenCalledWith('/_cp/auth/me');
+  });
+
+  // A hosted cell knows only acct-N; the member knows the email they signed in with.
+  it('names a hosted account by its email', async () => {
+    serve({ kind: 'code' }, { code: 'the-code' }, { edition: 'node', email: 'alice@example.com' });
+    useAuthStore().adoptSession({ id: 1, username: 'acct-7', role: 'user' });
+
+    const wrapper = mount(OAuthAuthorize);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Signed in as alice@example.com');
+    expect(wrapper.text()).not.toContain('acct-7');
+  });
+
+  it("falls back to the cell's username when the control plane has no email", async () => {
+    serve({ kind: 'code' }, { code: 'the-code' }, { edition: 'node' });
+    useAuthStore().adoptSession({ id: 1, username: 'acct-7', role: 'user' });
+
+    const wrapper = mount(OAuthAuthorize);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Signed in as acct-7');
+  });
+
+  // On hosted, leaving cp_session behind would let the proxy mint a fresh cell
+  // cookie and sign the browser straight back in as the same account.
+  it.each([
+    ['standalone', ['/api/auth/logout']],
+    ['node', ['/api/auth/logout', '/_cp/auth/logout']],
+  ])(
+    '"Not you?" signs this browser out (%s) and reloads the same request',
+    async (edition, logouts) => {
+      const reload = vi.spyOn(window.location, 'reload').mockImplementation(() => {});
+      const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => {});
+      serve({ kind: 'code' }, { code: 'the-code' }, { edition, email: 'alice@example.com' });
+
+      const wrapper = mount(OAuthAuthorize);
+      await flushPromises();
+      await button(wrapper, 'Not you?').trigger('click');
+      await flushPromises();
+
+      for (const url of logouts) {
+        expect(h.api).toHaveBeenCalledWith(url, { method: 'POST' });
+      }
+      expect(useAuthStore().user).toBeNull();
+      expect(reload).toHaveBeenCalledTimes(1);
+      expect(window.location.pathname + window.location.search).toBe(`/oauth/authorize${QUERY}`);
+      // Nothing was decided on the signed-out account's behalf.
+      expect(h.api).not.toHaveBeenCalledWith('/api/oauth/authorize', expect.anything());
+      expect(assign).not.toHaveBeenCalled();
+      // Approve can't be clicked while the sign-out runs.
+      expect(button(wrapper, 'Approve').attributes('disabled')).toBeDefined();
+    },
+  );
 
   it('navigates to the redirect only after a click', async () => {
     const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => {});
