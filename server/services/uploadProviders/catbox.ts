@@ -20,6 +20,7 @@ import type { StreamPart } from './multipart.js';
 import { USER_AGENT } from '../../utils/userAgent.js';
 import type { UploadSource } from './source.js';
 import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from './types.js';
+import { capText } from '../../utils/capText.js';
 
 const ENDPOINT = 'https://catbox.moe/user/api.php';
 const TIMEOUT_MS = 60_000;
@@ -90,12 +91,12 @@ export async function upload(
 
   const text = (resp.text || '').trim();
   if (resp.status < 200 || resp.status >= 300) {
-    throw Object.assign(new Error(`catbox upload failed: ${resp.status} ${text.slice(0, 200)}`), {
+    throw Object.assign(new Error(`catbox upload failed: ${resp.status} ${capText(text, 200)}`), {
       code: 'PROVIDER_ERROR',
     });
   }
   if (!/^https?:\/\//.test(text)) {
-    throw Object.assign(new Error(`catbox refused upload: ${text.slice(0, 200)}`), {
+    throw Object.assign(new Error(`catbox refused upload: ${capText(text, 200)}`), {
       code: 'PROVIDER_ERROR',
     });
   }
@@ -171,7 +172,7 @@ async function deleteFile(ref: string, config: { userhash?: string } = {}): Prom
   } catch {
     // Probe failed → we can't prove the file is gone; fall through to the error.
   }
-  throw Object.assign(new Error(`catbox delete failed: ${text.slice(0, 200) || resp.status}`), {
+  throw Object.assign(new Error(`catbox delete failed: ${capText(text, 200) || resp.status}`), {
     code: 'PROVIDER_ERROR',
   });
 }

@@ -27,6 +27,7 @@ import { storedContentType } from '../contentClass.js';
 import { putSource, isOk } from './multipart.js';
 import { hashOf, type UploadSource } from './source.js';
 import type { ConfigField, DriverCapabilities, UploadMeta, UploadResult } from './types.js';
+import { capText } from '../../utils/capText.js';
 
 export const driver = 's3';
 export const label = 'S3 / R2';
@@ -301,7 +302,7 @@ export async function upload(
   const resp = await putSource(signed.url, source, { headers: signed.headers, onProgress });
 
   if (!isOk(resp)) {
-    const text = resp.text.slice(0, 200);
+    const text = capText(resp.text, 200);
     throw Object.assign(new Error(`s3 upload failed: ${resp.status} ${text}`), {
       code: resp.status === 401 || resp.status === 403 ? 'PROVIDER_AUTH' : 'PROVIDER_ERROR',
     });
@@ -339,7 +340,7 @@ async function deleteObject(ref: string, config: Record<string, string> = {}): P
     signal: AbortSignal.timeout(60_000),
   });
   if (!resp.ok) {
-    const text = (await resp.text()).slice(0, 200);
+    const text = capText(await resp.text(), 200);
     throw Object.assign(new Error(`s3 delete failed: ${resp.status} ${text}`), {
       code: resp.status === 401 || resp.status === 403 ? 'PROVIDER_AUTH' : 'PROVIDER_ERROR',
     });

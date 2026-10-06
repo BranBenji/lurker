@@ -109,6 +109,15 @@ describe('exportJobs lifecycle', () => {
     expect(dataExports.getExportJob(j.id)!.processed_rows).toBe(3000);
   });
 
+  // The error reaches clients as the job's `error`, so the cap must not leave
+  // half of an emoji (from a path, say) behind (#1038).
+  it('caps a long error without splitting an emoji', () => {
+    const u = createUser('jobs-error-cap');
+    const j = dataExports.createExportJob(u.id, false);
+    dataExports.markError(j.id, 'x'.repeat(999) + '😀');
+    expect(dataExports.getExportJob(j.id)!.error).toBe('x'.repeat(999));
+  });
+
   it('refuses a second concurrent export for the same user', () => {
     const u = createUser('jobs-bob');
     const existing = dataExports.createExportJob(u.id, false);

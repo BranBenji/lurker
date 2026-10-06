@@ -481,6 +481,12 @@ describe('withNetworkList', () => {
     expect(out.startsWith(head)).toBe(true);
   });
 
+  it('trims a name that cannot fit without splitting an emoji (#1038)', () => {
+    // Dropping only the emoji's low half would leave room for a 3-byte U+FFFD.
+    const out = withNetworkList(head, ['x'.repeat(186) + '😀'], 200);
+    expect(out).toBe(head + 'x'.repeat(186));
+  });
+
   it('keeps a whole NOTICE under the 512-byte wire cap', () => {
     const names = Array.from({ length: 40 }, (_, i) => `some-fairly-long-network-name-${i}`);
     const budget = Math.max(64, 480 - Buffer.byteLength(':lurker.bouncer NOTICE someuser :'));

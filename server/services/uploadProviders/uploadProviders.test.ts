@@ -857,3 +857,81 @@ describe('s3 provider', () => {
     });
   });
 });
+
+// #1038: a provider's error body reaches the user in the upload or delete error, so
+// the 200-unit cap on it must not leave half of an emoji behind.
+describe('provider error bodies are capped without splitting an emoji', () => {
+  const body = 'x'.repeat(199) + '😀';
+  const meta = { filename: 'x.png', mime: 'image/png' };
+  const S3 = {
+    endpoint: 'http://minio.test:9000',
+    bucket: 'lurker',
+    access_key_id: 'AKIDEXAMPLE',
+    secret_access_key: 'sekrit',
+    public_base_url: 'https://cdn.test',
+  };
+  const post = (status: number) =>
+    vi.spyOn(multipart, 'postMultipart').mockResolvedValue({ status, headers: {}, text: body });
+  const fetchFails = () => {
+    globalThis.fetch = vi.fn<typeof fetch>(async () => new Response(body, { status: 500 }));
+  };
+
+  it.each<[string, () => Promise<unknown>]>([
+    ['x0 upload', () => (post(500), x0.upload(src([1]), meta))],
+    ['x0 non-URL reply', () => (post(200), x0.upload(src([1]), meta))],
+    ['catbox upload', () => (post(500), catbox.upload(src([1]), meta, {}))],
+    ['catbox non-URL reply', () => (post(200), catbox.upload(src([1]), meta, {}))],
+    [
+      'catbox delete',
+      () => {
+        vi.spyOn(multipart, 'postBuffer').mockResolvedValue({
+          status: 200,
+          headers: {},
+          text: body,
+        });
+        // The file is still served, so the delete really failed.
+        globalThis.fetch = vi.fn<typeof fetch>(async () => new Response(null, { status: 200 }));
+        return catbox.delete('xyz.png', { userhash: 'h' });
+      },
+    ],
+    [
+      'dropper upload',
+      () => (post(500), dropper.upload(src([1]), meta, { url: 'https://u', api_key: 'k' })),
+    ],
+    [
+      'zipline upload',
+      () => (post(500), zipline.upload(src([1]), meta, { url: 'https://u', token: 't' })),
+    ],
+    [
+      'zipline delete',
+      () => (fetchFails(), zipline.delete('clxyz123', { url: 'https://zl.test', token: 't' })),
+    ],
+    [
+      'chibisafe upload',
+      () => (post(500), chibisafe.upload(src([1]), meta, { url: 'https://u', api_key: 'k' })),
+    ],
+    [
+      'chibisafe delete',
+      () => (fetchFails(), chibisafe.delete('u-u-i-d', { url: 'https://cb.test', api_key: 'k' })),
+    ],
+    [
+      's3 upload',
+      () => {
+        vi.spyOn(multipart, 'putSource').mockResolvedValue({
+          status: 500,
+          headers: {},
+          text: body,
+        });
+        return s3.upload(src([1]), meta, S3);
+      },
+    ],
+    ['s3 delete', () => (fetchFails(), s3.delete('abc123.png', S3))],
+  ])('%s', async (_name, run) => {
+    const err = (await run().then(
+      () => null,
+      (e: Error) => e,
+    )) as Error;
+    expect(err.message).toContain('x'.repeat(199));
+    expect(err.message).not.toMatch(/\p{Cs}/u);
+  });
+});

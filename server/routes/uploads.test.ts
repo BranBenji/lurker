@@ -441,6 +441,25 @@ describe('POST /api/uploads — progress narration', () => {
     }
   });
 
+  // The token is echoed in every progress frame, and those go to all the user's
+  // devices as JSON, so its cap must not split an emoji (#1038).
+  it('caps a long token without splitting an emoji', async () => {
+    fanOutSpy.mockClear();
+    stub.emitBytes = { total: 1000 };
+    try {
+      const res = await agent
+        .post('/api/uploads')
+        .field('progressToken', 'x'.repeat(63) + '😀')
+        .attach('image', smallPng, { filename: 'p.png', contentType: 'image/png' });
+      expect(res.status).toBe(200);
+      const seen = frames();
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every((f) => f.token === 'x'.repeat(63))).toBe(true);
+    } finally {
+      stub.emitBytes = null;
+    }
+  });
+
   // Progress is a courtesy, never a precondition. An older client that sends no token
   // must upload exactly as before — and cost the server nothing.
   it('stays silent when the client sends no token', async () => {

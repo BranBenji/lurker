@@ -164,7 +164,7 @@ router.post('/', uploadToDisk, async (req: Request, res: Response, next: NextFun
       claimedMime: req.file.mimetype,
       originalName: req.file.originalname,
       requestedUploaderId: requestedId,
-      progressToken: typeof tokenRaw === 'string' && tokenRaw ? tokenRaw.slice(0, 64) : null,
+      progressToken: typeof tokenRaw === 'string' && tokenRaw ? capText(tokenRaw, 64) : null,
       baseUrl: () => requestBaseUrl(req),
     });
     res.json(uploaded);
