@@ -36,19 +36,19 @@ const PARAMS = {
 const QUERY = `?${new URLSearchParams(PARAMS)}`;
 
 // The authorize GET answers with the approval details and the request it checked;
-// its POST answers with `decision`. `edition` and `email` answer the config and
-// control-plane lookups behind the account name; `username` is what the cell
-// knows the account as.
+// its POST answers with `decision`. `edition`, `email` and `cpId` answer the
+// config and control-plane lookups behind the account name; `username` is what
+// the cell knows the account as (acct-<cpId> on hosted).
 function serve(
   destination: object,
   decision: object,
-  { edition = 'standalone', email = null as string | null, username = 'alice' } = {},
+  { edition = 'standalone', email = null as string | null, cpId = 7, username = 'alice' } = {},
 ) {
   h.api.mockImplementation(async (url, opts) => {
     if (url === '/api/config') return { edition };
     if (url === '/_cp/auth/me') {
       if (!email) throw new Error('not found');
-      return { account: { email } };
+      return { account: { id: cpId, email } };
     }
     if (url === '/api/auth/logout' || url === '/_cp/auth/logout') return { ok: true };
     return opts?.method === 'POST'
@@ -107,7 +107,7 @@ describe('OAuthAuthorize', () => {
 
     expect(h.api).toHaveBeenLastCalledWith('/api/oauth/authorize', {
       method: 'POST',
-      body: { ...PARAMS, account_id: 1, decision: 'approve' },
+      body: { ...PARAMS, account_id: 1, account_username: 'alice', decision: 'approve' },
     });
     expect(wrapper.find('code.code').text()).toBe('the-code');
     expect(wrapper.text()).toContain('You can close this page after pasting it.');
@@ -129,7 +129,7 @@ describe('OAuthAuthorize', () => {
 
     expect(h.api).toHaveBeenLastCalledWith('/api/oauth/authorize', {
       method: 'POST',
-      body: { ...PARAMS, account_id: 1, decision: 'approve' },
+      body: { ...PARAMS, account_id: 1, account_username: 'alice', decision: 'approve' },
     });
   });
 
@@ -168,6 +168,22 @@ describe('OAuthAuthorize', () => {
     expect(wrapper.text()).toContain('Signed in as acct-7');
   });
 
+  // cp_session and the cell's cookie are separate, so the control plane can
+  // describe a different member than the one the cell would approve for.
+  it("won't name a control-plane account the cell isn't approving for", async () => {
+    serve(
+      { kind: 'code' },
+      { code: 'the-code' },
+      { edition: 'node', email: 'bob@example.com', cpId: 8, username: 'acct-7' },
+    );
+
+    const wrapper = mount(OAuthAuthorize);
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Signed in as acct-7');
+    expect(wrapper.text()).not.toContain('bob@example.com');
+  });
+
   // On hosted, leaving cp_session behind would let the proxy mint a fresh cell
   // cookie and sign the browser straight back in as the same account.
   it.each([
@@ -178,7 +194,7 @@ describe('OAuthAuthorize', () => {
     async (edition, logouts) => {
       const reload = vi.spyOn(window.location, 'reload').mockImplementation(() => {});
       const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => {});
-      serve({ kind: 'code' }, { code: 'the-code' }, { edition, email: 'alice@example.com' });
+      serve({ kind: 'code' }, { code: 'the-code' }, { edition });
 
       const wrapper = mount(OAuthAuthorize);
       await flushPromises();
@@ -222,6 +238,33 @@ describe('OAuthAuthorize', () => {
 
     expect(h.api).toHaveBeenCalledWith('/_cp/auth/logout', { method: 'POST' });
     expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  // A reload with any session cookie left comes straight back as the same
+  // account, so "Not you?" stays put and says so until the sign-out lands.
+  // An unknown edition doesn't try to sign out at all.
+  it.each([
+    ['the edition stays unknown', '/api/config', false],
+    ['the cell sign-out fails', '/api/auth/logout', true],
+    ['the control-plane sign-out fails', '/_cp/auth/logout', true],
+  ])('"Not you?" stays on the page when %s', async (_label, failing, triedSignOut) => {
+    const reload = vi.spyOn(window.location, 'reload').mockImplementation(() => {});
+    serve({ kind: 'code' }, { code: 'the-code' }, { edition: 'node' });
+    const served = h.api.getMockImplementation()!;
+    h.api.mockImplementation(async (url, opts) => {
+      if (url === failing) throw new Error('unreachable');
+      return served(url, opts);
+    });
+
+    const wrapper = mount(OAuthAuthorize);
+    await flushPromises();
+    await button(wrapper, 'Not you?').trigger('click');
+    await flushPromises();
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("Couldn't sign out. Try again.");
+    expect(button(wrapper, 'Not you?').attributes('disabled')).toBeUndefined();
+    expect(h.api.mock.calls.some(([url]) => url === '/api/auth/logout')).toBe(triedSignOut);
   });
 
   // The browser signed in as someone else after the page loaded.

@@ -105,9 +105,16 @@ export const useAuthStore = defineStore('auth', {
     // show something meaningful. Returns null off the hosted service (the
     // endpoint 404s) or if the session can't be read, so callers fall back.
     async fetchHostedAccountEmail(): Promise<string | null> {
+      return (await this.fetchHostedAccount())?.email ?? null;
+    },
+    // The control-plane account behind the email: its id is the N in the cell's
+    // `acct-N`, which lets a caller check both describe the same member.
+    async fetchHostedAccount(): Promise<{ id: number; email: string } | null> {
       try {
         const { account } = await api('/_cp/auth/me');
-        return account?.email ?? null;
+        return typeof account?.id === 'number' && typeof account?.email === 'string'
+          ? { id: account.id, email: account.email }
+          : null;
       } catch (_err) {
         return null;
       }
@@ -335,14 +342,18 @@ export const useAuthStore = defineStore('auth', {
     async removePassword() {
       await api('/api/auth/password', { method: 'DELETE' });
     },
-    async logout() {
+    // Resolves true when every sign-out call landed, so a caller that reloads
+    // into a sign-in can tell the browser is really signed out.
+    async logout(): Promise<boolean> {
       // Sign-out must clear EVERY session cookie this browser carries, then
       // always end up logged out locally — a failed network call can't be
       // allowed to leave the user stuck signed in. Each call is best-effort.
+      let signedOut = true;
       try {
         await api('/api/auth/logout', { method: 'POST' });
       } catch (_err) {
         // ignore — local state is still cleared below
+        signedOut = false;
       }
       // On a hosted cell the customer also holds a control-plane session
       // (cp_session) the reverse proxy minted; the cell's logout above only
@@ -358,13 +369,15 @@ export const useAuthStore = defineStore('auth', {
         try {
           await api('/_cp/auth/logout', { method: 'POST' });
         } catch (_err) {
-          // ignore — session already gone; local state is still cleared below
+          // ignore — local state is still cleared below
+          signedOut = false;
         }
       }
       // Clear user before resetSession so any late WS onclose handler sees a
       // null user and skips its 2s reconnect arm.
       this.user = null;
       resetSession();
+      return signedOut;
     },
   },
 });

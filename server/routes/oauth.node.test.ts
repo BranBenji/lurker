@@ -87,9 +87,12 @@ async function approve(
     code_challenge_method: 'S256',
   });
   expect(page.status).toBe(200);
-  const approved = await member
-    .post('/api/oauth/authorize')
-    .send({ ...page.body.request, account_id: page.body.account.id, decision: 'approve' });
+  const approved = await member.post('/api/oauth/authorize').send({
+    ...page.body.request,
+    account_id: page.body.account.id,
+    account_username: page.body.account.username,
+    decision: 'approve',
+  });
   expect(approved.status).toBe(200);
   return { code: approved.body.code, verifier };
 }
