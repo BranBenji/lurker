@@ -91,15 +91,10 @@ describe('prefixClass', () => {
     expect(prefixClass(['o'], prefixFrom('(ov)*+'))).toBe('mode-op');
   });
 
-  it("places a letter it doesn't know by its symbol", () => {
-    const upper = prefixFrom('(OV)@+');
-    expect(prefixClass(['O'], upper)).toBe('mode-op');
-    expect(prefixClass(['V'], upper)).toBe('mode-voice');
-  });
-
   it('colours an unknown letter like the nearest known rank above it', () => {
-    // Nothing outranks Y: the owner tier.
+    // Nothing outranks Y: the owner tier, whatever its symbol.
     expect(prefixClass(['Y'], WITH_Y)).toBe('mode-owner');
+    expect(prefixClass(['Y'], prefixFrom('(Yqaohv)@!~*%+'))).toBe('mode-owner');
     expect(prefixClass(['X'], prefixFrom('(qaoXhv)~&@*%+'))).toBe('mode-op');
     expect(prefixClass(['Z'], prefixFrom('(ovZ)@+-'))).toBe('mode-voice');
   });
@@ -109,6 +104,8 @@ describe('splitChannelToken', () => {
   it('peels rank symbols off a channel', () => {
     expect(splitChannelToken('@#chan', null)).toEqual({ prefix: '@', name: '#chan' });
     expect(splitChannelToken('@+#chan', null)).toEqual({ prefix: '@+', name: '#chan' });
+    expect(splitChannelToken('@%#ops', null)).toEqual({ prefix: '@%', name: '#ops' });
+    expect(splitChannelToken('~@&ops', null)).toEqual({ prefix: '~@', name: '&ops' });
     expect(splitChannelToken('#chan', null)).toEqual({ prefix: '', name: '#chan' });
   });
 

@@ -32,10 +32,10 @@ export function prefixRank(modes: readonly string[] | null | undefined, prefix: 
   return i === -1 ? list.length : i;
 }
 
-// The five colour tiers (the --member-* tokens). A rank's tier comes from its
-// letter's conventional role, then from its symbol's. Not from its position:
-// on Libera's (ov)@+ the top rank is op, and colouring by position would paint
-// it as owner.
+// The five colour tiers (the --member-* tokens), keyed by the letter's
+// conventional role. Not by symbol: another symbol for op is still op. And not
+// by position alone: on Libera's (ov)@+ the top rank is op, and colouring by
+// position would paint it as owner.
 const TIER_BY_LETTER: Record<string, string> = {
   q: 'owner',
   a: 'admin',
@@ -43,36 +43,32 @@ const TIER_BY_LETTER: Record<string, string> = {
   h: 'halfop',
   v: 'voice',
 };
-const TIER_BY_SYMBOL: Record<string, string> = {
-  '~': 'owner',
-  '&': 'admin',
-  '@': 'op',
-  '%': 'halfop',
-  '+': 'voice',
-};
 
 // CSS class for the glyph colour (e.g. `mode-op`), or '' when there's no
-// prefix. A rank neither its letter nor its symbol places takes the tier of
-// the nearest rank above it that has one, or owner when none does: on
-// (Yqaohv)!~&@%+ a `Y` is coloured as an owner.
+// prefix. A letter outside q/a/o/h/v takes the tier of the nearest known
+// letter that outranks it, or owner when none does: on (Yqaohv)!~&@%+ a `Y`
+// is coloured as an owner, whatever its symbol.
 export function prefixClass(modes: readonly string[] | null | undefined, prefix: Prefix): string {
   const list = orDefault(prefix);
   const i = rankIndex(modes, list);
   if (i === -1) return '';
   for (let j = i; j >= 0; j--) {
-    const tier = TIER_BY_LETTER[list[j].mode] ?? TIER_BY_SYMBOL[list[j].symbol];
+    const tier = TIER_BY_LETTER[list[j].mode];
     if (tier) return `mode-${tier}`;
   }
   return 'mode-owner';
 }
 
-// Split a WHOIS channel token (`@#chan`, `@+#chan`) into its rank symbols and
-// the channel name. A symbol is peeled only while what's left still names a
-// channel, because `&`, `+` and `!` are channel types too: `&ops` is a channel,
-// not an admin on "ops", and `!#chan` is `#chan` under a `!` rank.
+// Split a WHOIS channel token (`@#chan`, `@%#chan`) into its rank symbols and
+// the channel name. `&`, `+` and `!` are channel types as well as symbols, so
+// take the longest run of symbols that still leaves a channel name: `&ops` is
+// a channel, not an admin on "ops", and `!#chan` is `#chan` under a `!` rank.
 export function splitChannelToken(token: string, prefix: Prefix): { prefix: string; name: string } {
   const symbols = new Set(orDefault(prefix).map((p) => p.symbol));
-  let i = 0;
-  while (i < token.length && symbols.has(token[i]) && isChannelTarget(token.slice(i + 1))) i++;
-  return { prefix: token.slice(0, i), name: token.slice(i) };
+  let run = 0;
+  while (run < token.length && symbols.has(token[run])) run++;
+  for (let i = run; i > 0; i--) {
+    if (isChannelTarget(token.slice(i))) return { prefix: token.slice(0, i), name: token.slice(i) };
+  }
+  return { prefix: '', name: token };
 }
