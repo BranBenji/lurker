@@ -46,7 +46,7 @@ import AppModal from './AppModal.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
-import { ensureChannelPrefix } from '../utils/channelTarget.js';
+import { ensureChannelPrefix } from '../../../shared/channels.js';
 import { blockImeEnter, useImeSafeInput } from '../composables/useImeSafeInput.js';
 
 const props = defineProps<{ networkId: number }>();

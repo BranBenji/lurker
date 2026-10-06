@@ -29,6 +29,7 @@ import {
   mayUseProxy,
 } from '../services/networkPolicy.js';
 import { validateProxy, isProxyProblem } from '../../shared/proxy.js';
+import { ensureChannelPrefix } from '../../shared/channels.js';
 import { fanOutToUser, favoritesChangedFrame } from '../services/wsHub.js';
 import { renumberFavorites } from '../db/favoriteBuffers.js';
 
@@ -43,14 +44,17 @@ router.use(requireAuth);
 // send several at once. Whitespace is accepted as a separator too, since that's
 // what a user typing into a free-text field tends to reach for. Names are folded
 // case-insensitively when de-duplicating (servers are inconsistent about the
-// casing they echo back), but the first spelling seen is what gets stored.
+// casing they echo back), but the first spelling seen is what gets stored. A bare
+// name gets a `#`, as Join Channel gives it, so "lurker, linux" seeds #lurker and
+// #linux rather than autojoin rows no server would accept.
 function parseChannelList(raw: unknown): string[] {
   if (typeof raw !== 'string') return [];
   const seen = new Set<string>();
   const out: string[] = [];
   for (const name of raw.split(/[,\s]+/)) {
-    const channel = name.trim();
-    if (!channel) continue;
+    const trimmed = name.trim();
+    if (!trimmed) continue;
+    const channel = ensureChannelPrefix(trimmed);
     const key = channel.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);

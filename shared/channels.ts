@@ -38,6 +38,19 @@ export function isChannelTarget(target: string | null | undefined): boolean {
 }
 
 /**
+ * A bare, prefix-less name is what people usually type, so it gets the common `#`; a name already
+ * carrying any of the four prefixes is left alone. Callers own their own input validation
+ * (whitespace, empty, lone prefix) — this only settles the prefix.
+ *
+ * Shared so every place a channel name enters agrees: the web's Join Channel modal, channel-list
+ * browser and `/join` (#496), and the server's channel lists — the network form's Channels field
+ * and an admin preset's recommended channels, which the native apps' forms send as typed.
+ */
+export function ensureChannelPrefix(name: string): string {
+  return isChannelTarget(name) ? name : `#${name}`;
+}
+
+/**
  * The DCC CHAT buffer sigil. `=alice` is a direct peer-to-peer conversation with alice carried
  * on a TCP socket THIS PROCESS owns — it is not a channel, not a nick, and **never an IRC
  * target**. The convention is irssi's (dcc-chat.c:179, fe-dcc-chat.c:58) and repartee's

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect } from 'vitest';
-import { isChannelTarget, stripChannelPrefix } from './channels.js';
+import { ensureChannelPrefix, isChannelTarget, stripChannelPrefix } from './channels.js';
 
 describe('isChannelTarget (#724)', () => {
   it('accepts all four RFC 2811 prefixes, not just #', () => {
@@ -50,5 +50,25 @@ describe('stripChannelPrefix', () => {
   it('sorts &local next to #local rather than under punctuation', () => {
     // The sidebar/quick-switcher sort key. `&local` used to keep its sigil and file under `&`.
     expect(stripChannelPrefix('&local')).toBe(stripChannelPrefix('#local'));
+  });
+});
+
+describe('ensureChannelPrefix', () => {
+  it('prepends # to a bare name', () => {
+    expect(ensureChannelPrefix('lurker')).toBe('#lurker');
+  });
+
+  it('leaves any RFC 2811 channel prefix untouched', () => {
+    expect(ensureChannelPrefix('#chan')).toBe('#chan');
+    expect(ensureChannelPrefix('&local')).toBe('&local');
+    expect(ensureChannelPrefix('+modeless')).toBe('+modeless');
+    expect(ensureChannelPrefix('!12345chan')).toBe('!12345chan');
+  });
+
+  it('does not validate — a lone prefix or empty string passes through / gets prefixed', () => {
+    // Prefix-only concern: input validation (empty, whitespace, lone prefix)
+    // stays with the caller, so these are intentionally not rejected here.
+    expect(ensureChannelPrefix('#')).toBe('#');
+    expect(ensureChannelPrefix('')).toBe('#');
   });
 });

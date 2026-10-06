@@ -248,6 +248,18 @@ describe('POST /api/networks', () => {
     expect(names).toStrictEqual(['#Dev', '#lurker']);
   });
 
+  // The native apps' network forms send the Channels field as typed; Join Channel
+  // adds the # there, so people expect it here too (client sweep L17).
+  it('gives a bare name in default_channel a #, and leaves the other prefixes alone', async () => {
+    const created = await makeNet(aliceAgent, {
+      name: 'bare-default',
+      default_channel: 'lurker, linux &local +modeless !12345chan #lurker',
+    });
+    const names = created.body.network.channels.map((c: { name: string }) => c.name).toSorted();
+    // `#lurker` repeats the bare `lurker` once it has its prefix.
+    expect(names).toStrictEqual(['!12345chan', '#linux', '#lurker', '&local', '+modeless']);
+  });
+
   it('creates no channels when default_channel is absent or blank', async () => {
     const blank = await makeNet(aliceAgent, { name: 'blank-default', default_channel: '   ' });
     expect(blank.body.network.channels).toStrictEqual([]);
