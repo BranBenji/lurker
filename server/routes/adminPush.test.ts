@@ -38,6 +38,8 @@ const COMPED: Answer = {
   body: { registered: true, active: true, comped: true, paidThrough: null },
 };
 let relayAnswer: Answer = COMPED;
+// While set, the relay doesn't answer until it settles (a slow or hung relay).
+let relayGate: Promise<void> | null = null;
 let relayFetch: ReturnType<typeof vi.fn<(url: string) => Promise<Response>>>;
 
 beforeAll(async () => {
@@ -61,8 +63,10 @@ beforeEach(() => {
   db.prepare('DELETE FROM push_subscriptions').run();
   db.prepare(`DELETE FROM instance_settings WHERE key = 'push.relay_enabled'`).run();
   relayAnswer = COMPED;
+  relayGate = null;
   resetRelayStatusCache();
   relayFetch = vi.fn<(url: string) => Promise<Response>>(async () => {
+    if (relayGate) await relayGate;
     if (relayAnswer === 'network-error') throw new TypeError('fetch failed');
     return new Response(JSON.stringify(relayAnswer.body), { status: relayAnswer.status });
   });
@@ -310,16 +314,20 @@ describe('the relay status check (RELAY_PLAN.md §6.5)', () => {
   });
 
   it.each([
-    ['an unknown key', answer({ registered: false, active: false }), "doesn't recognize"],
-    ['a lapsed key', answer({ active: false }), "isn't active"],
-    ['a refused signature', { status: 401, body: {} }, "couldn't verify"],
-    ['a relay that is down', { status: 503, body: {} }, "Couldn't reach"],
-    ['no network', 'network-error' as const, "Couldn't reach"],
-  ])('refuses to turn on with %s, and stays off', async (_label, a, says) => {
+    ['an unknown key', answer({ registered: false, active: false }), 'inactive'],
+    ['a lapsed key', answer({ active: false }), 'inactive'],
+    ['a refused signature', { status: 401, body: {} }, 'unauthorized'],
+    ['a refused check', { status: 404, body: {} }, 'refused'],
+    ['a relay that is down', { status: 503, body: {} }, 'unreachable'],
+    ['no network', 'network-error' as const, 'unreachable'],
+  ])('refuses to turn on with %s, and stays off', async (_label, a, state) => {
     relayAnswer = a;
     const res = await setRelay(true);
     expect(res.status).toBe(409);
-    expect(res.body.error).toContain(says);
+    // The pane words it from the status; the server sends no copy of its own.
+    expect(res.body.code).toBe('relay_inactive');
+    expect(res.body.error).toBeUndefined();
+    expect(res.body.relay.status.state).toBe(state);
     expect(res.body.relay.enabled).toBe(false);
     const config = await userAgent.get('/api/push/config');
     expect(config.body).not.toHaveProperty('relay');
@@ -342,15 +350,45 @@ describe('the relay status check (RELAY_PLAN.md §6.5)', () => {
 
   it('never asks when turning off, and a failed check never switches it off', async () => {
     await setRelay(true);
-    relayFetch.mockClear();
     relayAnswer = 'network-error';
     resetRelayStatusCache();
-    const pane = await adminAgent.get('/api/admin/push');
-    expect(pane.body.relay.enabled).toBe(true);
-    expect(pane.body.relay.status.state).toBe('unreachable');
+    await adminAgent.get('/api/admin/push'); // starts the refresh in the background
+    await vi.waitFor(async () => {
+      const pane = await adminAgent.get('/api/admin/push');
+      expect(pane.body.relay.status?.state).toBe('unreachable');
+      expect(pane.body.relay.enabled).toBe(true);
+    });
     relayFetch.mockClear();
     const off = await setRelay(false);
     expect(off.status).toBe(200);
     expect(relayFetch).not.toHaveBeenCalled();
+  });
+
+  it('answers the pane at once while the relay hangs', async () => {
+    await setRelay(true);
+    resetRelayStatusCache();
+    let release!: () => void;
+    relayGate = new Promise((resolve) => (release = resolve));
+    const started = Date.now();
+    const pane = await adminAgent.get('/api/admin/push');
+    expect(pane.status).toBe(200);
+    expect(pane.body.relay.status).toBeNull();
+    expect(Date.now() - started).toBeLessThan(1000);
+    release();
+  });
+
+  it('lets an off that lands during a slow turn-on stand', async () => {
+    let release!: () => void;
+    relayGate = new Promise((resolve) => (release = resolve));
+    const on = setRelay(true).then((r) => r); // .then() sends it
+    await vi.waitFor(() => expect(relayFetch).toHaveBeenCalled());
+    expect((await setRelay(false)).status).toBe(200);
+    release();
+    const res = await on;
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('superseded');
+    expect(res.body.relay.enabled).toBe(false);
+    const pane = await adminAgent.get('/api/admin/push');
+    expect(pane.body.relay.enabled).toBe(false);
   });
 });

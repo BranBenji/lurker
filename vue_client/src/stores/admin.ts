@@ -3,6 +3,7 @@
 
 import { defineStore } from 'pinia';
 import { api, type ApiError } from '../api.js';
+import type { RelayStatus } from '../../../shared/relayStatus.js';
 import type { AdminUploader, UploaderDriver } from '../utils/uploaders.js';
 
 export interface AdminUser {
@@ -89,15 +90,11 @@ export interface AdminPushConfig {
     devices: number;
     /** push.lurker.chat's answer for this server's key (RELAY_PLAN.md §6.5); null
      *  until the admin opts in or checks — the server doesn't ask before then. */
-    status: AdminRelayStatus | null;
+    status: RelayStatus | null;
   };
 }
 
-export type AdminRelayStatus =
-  | { state: 'active'; comped: boolean; paidThrough: string | null }
-  | { state: 'inactive'; registered: boolean }
-  | { state: 'unauthorized' }
-  | { state: 'unreachable'; reason: string };
+export type { RelayStatus as AdminRelayStatus } from '../../../shared/relayStatus.js';
 
 export const useAdminStore = defineStore('admin', {
   state: () => ({
@@ -373,8 +370,10 @@ export const useAdminStore = defineStore('admin', {
       }
     },
     async checkPushRelay() {
+      const seq = ++this.pushFetchSeq;
       const data = await api('/api/admin/push/relay/check', { method: 'POST' });
-      this.pushFetchSeq++;
+      // A toggle or another load landed meanwhile — this answer predates it.
+      if (seq !== this.pushFetchSeq) return;
       this.push = data;
     },
   },

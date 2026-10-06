@@ -19,7 +19,7 @@ import { senderFor } from '../services/push/index.js';
 import { PUSH_TRANSPORTS } from '../db/pushSubscriptions.js';
 import { pushRelayEnabled } from '../db/instanceSettings.js';
 import { RELAY_ORIGIN, relayDeviceCount, setRelayEnabled } from '../services/push/relay.js';
-import { relayStatus, type RelayStatus } from '../services/push/relayStatus.js';
+import { peekRelayStatus, relayStatus, type RelayStatus } from '../services/push/relayStatus.js';
 
 const router = Router();
 
@@ -37,30 +37,17 @@ function payload(status: RelayStatus | null) {
   };
 }
 
-// What turning the relay on is refused with, by what the relay said.
-function refusal(status: RelayStatus): string | null {
-  switch (status.state) {
-    case 'active':
-      return null;
-    case 'inactive':
-      return status.registered
-        ? "This server's key isn't active on push.lurker.chat."
-        : "push.lurker.chat doesn't recognize this server's key.";
-    case 'unauthorized':
-      return "push.lurker.chat couldn't verify this server's key.";
-    case 'unreachable':
-      return "Couldn't reach push.lurker.chat.";
-  }
-}
+// Every PUT /relay takes a number. Turning on waits for the relay's answer, and an
+// off (or another on) that finished meanwhile must not be overwritten by it.
+let toggleGeneration = 0;
 
-// Express 5 passes a rejected handler promise to the error handler.
-router.get('/', async (_req: Request, res: Response) => {
-  // Cached: a pane load shouldn't ask the relay every time.
-  const status = pushRelayEnabled() ? await relayStatus() : null;
-  res.json(payload(status));
+router.get('/', (_req: Request, res: Response) => {
+  // Never waits on the relay: the last answer, refreshed in the background.
+  res.json(payload(pushRelayEnabled() ? peekRelayStatus() : null));
 });
 
-// The admin asking, before turning the relay on (or any time after).
+// The admin asking, before turning the relay on (or any time after). (Express 5
+// passes a rejected handler promise to the error handler.)
 router.post('/relay/check', async (_req: Request, res: Response) => {
   res.json(payload(await relayStatus({ fresh: true })));
 });
@@ -71,15 +58,21 @@ router.put('/relay', async (req: Request, res: Response) => {
     res.status(400).json({ error: 'enabled must be a boolean' });
     return;
   }
+  const generation = ++toggleGeneration;
   // Turning on asks the relay first: with the key not active there, every push
   // would be refused and count against the devices. Turning off never asks, and
-  // a failed check never switches an enabled relay off.
+  // a failed check never switches an enabled relay off. The words for a refusal
+  // are the pane's: it renders `relay.status`, the one place they live.
   let status: RelayStatus | null = null;
   if (enabled) {
     status = await relayStatus({ fresh: true });
-    const why = refusal(status);
-    if (why) {
-      res.status(409).json({ error: why, ...payload(status) });
+    if (generation !== toggleGeneration) {
+      // Another change landed while we waited; it stands.
+      res.status(409).json({ code: 'superseded', ...payload(status) });
+      return;
+    }
+    if (status.state !== 'active') {
+      res.status(409).json({ code: 'relay_inactive', ...payload(status) });
       return;
     }
   }

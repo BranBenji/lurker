@@ -222,4 +222,20 @@ describe('admin store — push relay toggle', () => {
     await expect(store.setPushRelayEnabled(true)).rejects.toThrow('not recognized');
     expect(store.push?.relay.status).toEqual({ state: 'inactive', registered: false });
   });
+
+  it("drops a slow check's answer when a toggle landed meanwhile", async () => {
+    const store = useAdminStore();
+    store.push = push(false);
+    let answerCheck!: (v: unknown) => void;
+    h.api.mockImplementation((url: string, opts?: { method?: string }) => {
+      if (url.endsWith('/relay/check')) return new Promise((r) => (answerCheck = r));
+      if (opts?.method === 'PUT') return Promise.resolve({ ...push(true), removed: 0 });
+      return Promise.resolve(push(false));
+    });
+    const checking = store.checkPushRelay();
+    await store.setPushRelayEnabled(true);
+    answerCheck(push(false)); // read before the toggle
+    await checking;
+    expect(store.push?.relay.enabled).toBe(true);
+  });
 });

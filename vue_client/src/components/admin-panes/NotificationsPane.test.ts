@@ -124,8 +124,9 @@ describe('NotificationsPane', () => {
   it.each([
     [{ state: 'active', comped: true, paidThrough: null }, 'Comped'],
     [
-      { state: 'active', comped: false, paidThrough: '2027-10-06T12:00:00Z' },
-      'Active — paid through',
+      // The plan's example: the UTC calendar date, whatever the browser's zone.
+      { state: 'active', comped: false, paidThrough: '2027-10-06T00:00:00Z' },
+      'Active — paid through 2027-10-06',
     ],
     [
       { state: 'inactive', registered: false },
@@ -133,6 +134,7 @@ describe('NotificationsPane', () => {
     ],
     [{ state: 'inactive', registered: true }, "This server's key isn't active on push.lurker.chat"],
     [{ state: 'unauthorized' }, "push.lurker.chat couldn't verify this server's key"],
+    [{ state: 'refused', httpStatus: 404 }, 'push.lurker.chat refused the status check (HTTP 404)'],
     [{ state: 'unreachable', reason: 'x' }, "Couldn't reach push.lurker.chat"],
   ] as const)('shows what the relay said: %j', async (status, text) => {
     const w = await mountPane(config({ status }));
@@ -153,15 +155,32 @@ describe('NotificationsPane', () => {
     expect(w.find('.relay-status').text()).toContain('Comped');
   });
 
-  it('shows why turning on was refused, and leaves the box unchecked', async () => {
+  it('shows why turning on was refused once, in the status line, and leaves the box unchecked', async () => {
     stubConfirm(true);
     const w = await mountPane(config());
-    setRelay.mockRejectedValueOnce(
-      new Error("push.lurker.chat doesn't recognize this server's key."),
-    );
+    const store = useAdminStore();
+    // The store keeps the refusal's answer (see admin.test.ts) and rethrows the 409.
+    setRelay.mockImplementationOnce(async () => {
+      store.push = config({ status: { state: 'inactive', registered: false } });
+      throw Object.assign(new Error('Conflict'), { status: 409 });
+    });
     await w.find('input[type="checkbox"]').setValue(true);
     await flushPromises();
     expect(checkbox(w).checked).toBe(false);
-    expect(w.text()).toContain("doesn't recognize this server's key");
+    expect(w.find('.relay-status').text()).toContain("doesn't recognize this server's key");
+    expect(w.text()).not.toContain('Conflict');
+    expect(w.text().split("doesn't recognize").length - 1).toBe(1);
+  });
+
+  it("can't check while a toggle is saving", async () => {
+    stubConfirm(true);
+    const w = await mountPane(config());
+    let finish!: () => void;
+    setRelay.mockImplementationOnce(() => new Promise<number>((r) => (finish = () => r(0))));
+    await w.find('input[type="checkbox"]').setValue(true);
+    expect(w.find('.relay-status button').attributes('disabled')).toBeDefined();
+    finish();
+    await flushPromises();
+    expect(w.find('.relay-status button').attributes('disabled')).toBeUndefined();
   });
 });

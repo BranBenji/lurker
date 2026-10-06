@@ -73,6 +73,17 @@ describe('relayStatus', () => {
     expect(await mod.relayStatus()).toEqual({ state: 'unauthorized' });
   });
 
+  it.each([400, 403, 404])(
+    'reads a %i as the relay refusing the check, not as down',
+    async (code) => {
+      stubRelay(() => json(code, {}));
+      expect(await mod.relayStatus({ fresh: true })).toEqual({
+        state: 'refused',
+        httpStatus: code,
+      });
+    },
+  );
+
   it('reads a 5xx, garbage, and a network error as unreachable', async () => {
     stubRelay(() => json(503, {}));
     expect((await mod.relayStatus({ fresh: true })).state).toBe('unreachable');
@@ -144,5 +155,39 @@ describe('relayStatus', () => {
     const claims = JSON.parse(Buffer.from(p, 'base64url').toString());
     expect(claims.aud).toBe(RELAY_ORIGIN);
     expect(claims.exp).toBeGreaterThan(Date.now() / 1000);
+  });
+
+  it('shares one request among everyone asking at once', async () => {
+    let answer!: (r: Response) => void;
+    const fetch = stubRelay(() => new Promise<Response>((resolve) => (answer = resolve)));
+    const a = mod.relayStatus({ fresh: true });
+    const b = mod.relayStatus({ fresh: true });
+    expect(mod.peekRelayStatus()).toBeNull();
+    answer(
+      new Response(
+        JSON.stringify({ registered: true, active: true, comped: true, paidThrough: null }),
+      ),
+    );
+    expect(await a).toEqual(await b);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('peekRelayStatus', () => {
+  it('never waits on the relay, and the next peek shows what it found', async () => {
+    let answer!: (r: Response) => void;
+    const fetch = stubRelay(() => new Promise<Response>((resolve) => (answer = resolve)));
+    expect(mod.peekRelayStatus()).toBeNull(); // a hung relay: returns at once
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(mod.peekRelayStatus()).toBeNull(); // still waiting: no second request
+    expect(fetch).toHaveBeenCalledTimes(1);
+    answer(
+      new Response(
+        JSON.stringify({ registered: true, active: true, comped: true, paidThrough: null }),
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(mod.peekRelayStatus()).toEqual({ state: 'active', comped: true, paidThrough: null }),
+    );
   });
 });

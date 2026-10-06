@@ -42,7 +42,7 @@
         </div>
         <p class="relay-status small">
           <span v-if="status" :class="status.ok ? 'muted' : 'error'">{{ status.text }}</span>
-          <button class="link" type="button" :disabled="checking" @click="check">
+          <button class="link" type="button" :disabled="checking || busy" @click="check">
             {{ checking ? 'checking…' : 'check' }}
           </button>
         </p>
@@ -52,7 +52,12 @@
            admin who added APNs/FCM keys later would have no way to turn it off. -->
       <template v-if="!native || push.relay.enabled">
         <label class="check">
-          <input type="checkbox" :checked="push.relay.enabled" :disabled="busy" @change="toggle" />
+          <input
+            type="checkbox"
+            :checked="push.relay.enabled"
+            :disabled="busy || checking"
+            @change="toggle"
+          />
           <span>Use {{ relayHost }} for the iOS and Android apps</span>
         </label>
         <p v-if="push.relay.enabled" class="muted small">
@@ -67,6 +72,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { useAdminStore } from '../../stores/admin.js';
+import type { RelayStatus } from '../../../../shared/relayStatus.js';
 import { useCopyFeedback } from '../../composables/useCopyFeedback.js';
 
 const store = useAdminStore();
@@ -88,27 +94,37 @@ const deviceCount = computed(() => {
 
 const checking = ref(false);
 
-// What push.lurker.chat says about this server's key, in a line.
-const status = computed((): { text: string; ok: boolean } | null => {
-  const s = push.value?.relay.status;
-  if (!s) return null;
+// What push.lurker.chat says about this server's key, in a line — the one place
+// these words live (a refused turn-on shows this, not a second message). The
+// switch is exhaustive: a state added to RelayStatus fails typecheck here.
+function describe(s: RelayStatus, host: string): { text: string; ok: boolean } {
   switch (s.state) {
     case 'active':
       if (s.comped) return { text: 'Comped', ok: true };
-      if (s.paidThrough) {
-        const date = new Date(s.paidThrough).toLocaleDateString(undefined, { dateStyle: 'medium' });
-        return { text: `Active — paid through ${date}`, ok: true };
-      }
+      // The UTC calendar date, as the relay's own page shows it.
+      if (s.paidThrough)
+        return { text: `Active — paid through ${s.paidThrough.slice(0, 10)}`, ok: true };
       return { text: 'Active', ok: true };
     case 'inactive':
       return s.registered
-        ? { text: "This server's key isn't active on " + relayHost.value, ok: false }
-        : { text: relayHost.value + " doesn't recognize this server's key", ok: false };
+        ? { text: `This server's key isn't active on ${host}`, ok: false }
+        : { text: `${host} doesn't recognize this server's key`, ok: false };
     case 'unauthorized':
-      return { text: relayHost.value + " couldn't verify this server's key", ok: false };
+      return { text: `${host} couldn't verify this server's key`, ok: false };
+    case 'refused':
+      return { text: `${host} refused the status check (HTTP ${s.httpStatus})`, ok: false };
     case 'unreachable':
-      return { text: "Couldn't reach " + relayHost.value, ok: false };
+      return { text: `Couldn't reach ${host}`, ok: false };
+    default: {
+      const unhandled: never = s;
+      return unhandled;
+    }
   }
+}
+
+const status = computed(() => {
+  const s = push.value?.relay.status;
+  return s ? describe(s, relayHost.value) : null;
 });
 
 async function check() {
@@ -151,9 +167,11 @@ async function toggle(e: Event) {
   try {
     await store.setPushRelayEnabled(enabled);
   } catch (e: any) {
-    // The store refetched; show what the server holds.
+    // The store refetched (or kept the refusal's answer); show what the server holds.
     input.checked = store.push?.relay.enabled ?? !enabled;
-    error.value = e.message || 'failed to change the relay setting';
+    // A refused turn-on (409) is explained by the status line; saying it twice
+    // would be noise.
+    if (e?.status !== 409) error.value = e.message || 'failed to change the relay setting';
   } finally {
     busy.value = false;
   }
