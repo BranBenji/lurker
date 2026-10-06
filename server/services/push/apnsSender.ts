@@ -29,6 +29,25 @@ import { signJwt, TokenCache } from './jwt.js';
 const PROD_HOST = 'https://api.push.apple.com';
 const SANDBOX_HOST = 'https://api.sandbox.push.apple.com';
 const REQUEST_TIMEOUT_MS = 10_000;
+// How long a new session gets to finish TCP + TLS + the HTTP/2 SETTINGS
+// exchange. A session still connecting after this never will.
+const CONNECT_TIMEOUT_MS = 10_000;
+
+interface Gateway {
+  prodHost: string;
+  sandboxHost: string;
+  connectOptions?: http2.SecureClientSessionOptions;
+  connectTimeoutMs: number;
+  requestTimeoutMs: number;
+}
+
+const APPLE: Gateway = {
+  prodHost: PROD_HOST,
+  sandboxHost: SANDBOX_HOST,
+  connectTimeoutMs: CONNECT_TIMEOUT_MS,
+  requestTimeoutMs: REQUEST_TIMEOUT_MS,
+};
+let gateway: Gateway = APPLE;
 
 /** An APNs rejection, carrying the bits classify() and describe() need. */
 export class ApnsError extends Error {
@@ -68,6 +87,17 @@ const providerToken = new TokenCache(async () => {
 let session: http2.ClientHttp2Session | null = null;
 let sessionHost: string | null = null;
 
+/**
+ * Test-only: point the sender at a local gateway (both hosts, TLS options,
+ * timeouts), or with no argument back at Apple. Forgets the cached session.
+ */
+export function setApnsGatewayForTests(over: Partial<Gateway> = {}): void {
+  gateway = { ...APPLE, ...over };
+  if (session && !session.destroyed) session.destroy();
+  session = null;
+  sessionHost = null;
+}
+
 function getSession(host: string): http2.ClientHttp2Session {
   // The host is part of the cache key, not just an argument to the first call
   // that happens to open the session. Ignoring it would hand back a production
@@ -75,8 +105,14 @@ function getSession(host: string): http2.ClientHttp2Session {
   // reads BadDeviceToken as permanent — silently DELETING every real device
   // (review of #490).
   if (session && sessionHost === host && !session.closed && !session.destroyed) return session;
-  if (session && !session.destroyed) session.destroy();
-  const next = http2.connect(host);
+  // A different host is a config switch: nothing on the old session is wanted.
+  // The same host but closed is DRAINING — Apple sent a graceful GOAWAY (Node
+  // closes the session on one) — and the streams it already accepted still get
+  // their real answers. Destroying it would turn each into a status-less
+  // failure, and a dead device's 410 would never reach classify(). So it's only
+  // dropped: it ends itself when they do. (Any other GOAWAY, Node destroys.)
+  if (session && sessionHost !== host && !session.destroyed) session.destroy();
+  const next = http2.connect(host, gateway.connectOptions);
   // Without a handler, an async session error (Apple closing an idle connection,
   // a network drop) is an unhandled 'error' event and takes the process down.
   next.on('error', () => {
@@ -85,6 +121,16 @@ function getSession(host: string): http2.ClientHttp2Session {
   next.on('close', () => {
     if (session === next) session = null;
   });
+  // TCP up but TLS or SETTINGS never finishing: nothing on this session will
+  // ever complete. Destroying it fails its pending pushes now rather than at
+  // their timeouts, and is all it takes to stop it being reused — the check
+  // above refuses a destroyed session, and 'close' forgets it.
+  const deadline = setTimeout(() => {
+    next.destroy(new Error(`APNs connect timed out after ${gateway.connectTimeoutMs} ms`));
+  }, gateway.connectTimeoutMs);
+  deadline.unref();
+  next.once('connect', () => clearTimeout(deadline));
+  next.once('close', () => clearTimeout(deadline));
   next.unref();
   session = next;
   sessionHost = host;
@@ -209,13 +255,18 @@ export const apnsSender: PushSender = {
     const jwt = await providerToken.get();
     const { headers, body } = buildApnsRequest(sub, payload, content, creds, jwt);
 
-    const client = getSession(creds.sandbox ? SANDBOX_HOST : PROD_HOST);
+    const client = getSession(creds.sandbox ? gateway.sandboxHost : gateway.prodHost);
     await new Promise<void>((resolve, reject) => {
       const req = client.request(headers);
-      req.setTimeout(REQUEST_TIMEOUT_MS, () => {
-        req.close(http2.constants.NGHTTP2_CANCEL);
+      req.setTimeout(gateway.requestTimeoutMs, () => {
         // No status: classify() reads that as transient, which a timeout is.
         reject(new ApnsError(null, null, 'APNs request timed out'));
+        // Destroy, not close: a stream still pending on a session that never
+        // connected has nothing to cancel on the wire, and would sit there.
+        req.destroy();
+        // And if the session itself never connected, it won't: destroying it
+        // keeps it from the next push (and fails anything else pending on it).
+        if (client.connecting) client.destroy();
       });
 
       let status: number | null = null;
