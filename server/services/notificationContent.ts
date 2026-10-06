@@ -212,12 +212,14 @@ export const MAX_PUSH_BODY_BYTES =
  * Cuts what matters least first: the message text (the app opens the whole line
  * on tap), then the title, then the names it repeats. Routing — networkId,
  * target, bufferId, tag — is never cut: a shortened target would open the wrong
- * buffer.
+ * buffer. So `fits` can still be false: a channel name of control characters
+ * (six bytes each, JSON-escaped) rides in `target` and `tag` and alone can
+ * overflow. The caller drops such a push rather than send one that's refused.
  */
 export function fitPushBody(
   payload: PushPayload,
   content: NotificationContent,
-): { payload: PushPayload; content: NotificationContent } {
+): { payload: PushPayload; content: NotificationContent; fits: boolean } {
   let p = payload;
   let c = content;
   const over = () => Buffer.byteLength(JSON.stringify(pushBody(p, c))) - MAX_PUSH_BODY_BYTES;
@@ -229,12 +231,15 @@ export function fitPushBody(
   ];
   for (const [get, set] of fields) {
     while (over() > 0 && get()) {
-      const next = clampPushText(get(), Math.max(0, jsonBytes(get()) - over()));
-      if (next === get()) break; // down to the bare ellipsis
+      const limit = jsonBytes(get()) - over();
+      // Too little room for the ellipsis itself: empty the field, rather than
+      // "shorten" it to an ellipsis that's longer than what it replaced.
+      const next = limit < jsonBytes(ELLIPSIS) ? '' : clampPushText(get(), limit);
+      if (next === get()) break;
       set(next);
     }
   }
-  return { payload: p, content: c };
+  return { payload: p, content: c, fits: over() <= 0 };
 }
 
 /**
@@ -245,6 +250,7 @@ export function fitPushBody(
 export function prepareNotification(message: PushPayload): {
   payload: PushPayload;
   content: NotificationContent;
+  fits: boolean;
 } {
   // The network name is user-entered with no limit — see MAX_PUSH_NETWORK_NAME_BYTES.
   // (The body is clamped where it's composed, on the words that go on the wire.)

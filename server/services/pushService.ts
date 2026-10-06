@@ -110,7 +110,17 @@ export async function deliver(
   // message over its size cap. Composition is transport-neutral and identical
   // for every device; each sender renders it its own way — JSON for a service
   // worker, an `aps` dict for APNs, a string data map for FCM.
-  const { payload, content } = prepareNotification(message);
+  const { payload, content, fits } = prepareNotification(message);
+  if (!fits) {
+    // Even cut down it's over every transport's 4 KB (see fitPushBody): sending
+    // would only earn a refusal, which counts against the device. One lost
+    // notification beats a disabled phone.
+    console.warn(
+      `[push] dropped a ${payload.kind} push for user ${userId}: over 4 KB even with ` +
+        'its text cut (an extreme channel or nick name)',
+    );
+    return { sent: 0, dropped: 0 };
+  }
 
   // Skip transports with no credentials rather than attempting them. A
   // self-hosted server holds no APNs key and that's normal operation; without

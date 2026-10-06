@@ -20,6 +20,7 @@ import type { PushSubscription } from '../../db/pushSubscriptions.js';
 import {
   clampPushText,
   composeNotification,
+  fitPushBody,
   MAX_PUSH_BODY_BYTES,
   MAX_PUSH_NETWORK_NAME_BYTES,
   prepareNotification,
@@ -293,7 +294,8 @@ describe('buildFcmMessage', () => {
     // `aps` placeholder (lurker-dev/RELAY_PLAN.md §6.2). Over it, the relay
     // answers 413 and the server strikes the device.
     for (const raw of [...worstCases, ...hostile]) {
-      const { payload: p, content } = prepareNotification(raw);
+      const { payload: p, content, fits } = prepareNotification(raw);
+      expect(fits).toBe(true);
       const plain = Buffer.byteLength(JSON.stringify(pushBody(p, content)));
       expect(plain).toBeLessThanOrEqual(MAX_PUSH_BODY_BYTES);
       const relayed =
@@ -305,6 +307,47 @@ describe('buildFcmMessage', () => {
       expect(p.bufferId).toBe(raw.bufferId);
       expect(content.tag).toBe(composeNotification(p).tag);
     }
+  });
+
+  it("says so when even the cut-down push can't fit", () => {
+    // Control characters JSON-escape to six bytes each, and the channel rides
+    // in `target` and `tag`, which are never cut (Codex review of the relay).
+    const { fits } = prepareNotification(
+      payload({
+        kind: 'kicked',
+        networkId: 1,
+        networkName: 'Libera',
+        target: `#${'\x10'.repeat(240)}`,
+        nick: 'bob',
+        text: 'reason',
+      }),
+    );
+    expect(fits).toBe(false);
+  });
+
+  it("empties a field rather than 'shortening' it to a longer ellipsis", () => {
+    // Size the title so the body is over by exactly two bytes: too little room
+    // to keep any of "abc" plus a three-byte ellipsis.
+    const base = payload({
+      kind: 'dm',
+      networkId: 1,
+      networkName: 'L',
+      target: 'bob',
+      nick: 'bob',
+    });
+    const size = (title: string, body: string) =>
+      Buffer.byteLength(
+        JSON.stringify(pushBody(base, { ...composeNotification(base), title, body })),
+      );
+    const title = 'x'.repeat(MAX_PUSH_BODY_BYTES - 1 - size('', ''));
+    const { content, fits } = fitPushBody(base, {
+      ...composeNotification(base),
+      title,
+      body: 'abc',
+    });
+    expect(fits).toBe(true);
+    expect(content.body).toBe('');
+    expect(content.title).toBe(title);
   });
 
   it('leaves an ordinary push untouched', () => {

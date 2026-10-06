@@ -214,3 +214,28 @@ describe('warnVapidSubject', () => {
     warn.mockRestore();
   });
 });
+
+describe("deliver and a push that can't fit", () => {
+  it('drops it instead of sending one the push service will refuse', async () => {
+    const dave = createUser('push-unfit-dave');
+    pushDb.upsertSubscription(dave.id, {
+      transport: 'webpush',
+      endpoint: 'https://example.test/dave',
+      p256dh: 'k',
+      auth: 'a',
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    sendNotification.mockResolvedValue({ statusCode: 201 });
+    const result = await pushService.deliver(dave.id, {
+      ...samplePayload(),
+      kind: 'kicked',
+      target: `#${'\x10'.repeat(240)}`,
+    });
+    expect(result).toEqual({ sent: 0, dropped: 0 });
+    expect(sendNotification).not.toHaveBeenCalled();
+    expect(String(warn.mock.calls.at(-1)?.[0])).toContain('dropped a kicked push');
+    // Nothing was charged to the device.
+    expect(pushDb.getByEndpoint('https://example.test/dave')?.fail_count).toBe(0);
+    warn.mockRestore();
+  });
+});
