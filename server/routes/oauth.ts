@@ -170,6 +170,9 @@ oauthRouter.get('/authorize', requireCookieSession, (req: Request, res: Response
   res.json({
     app: { name: resolved.app.clientName, website: hostOf(resolved.app.clientUri) },
     destination: redirectDestination(redirectUri),
+    // Who would be approving. The page names them, and posts the id back so an
+    // approval can't land on an account the page never showed (#1054).
+    account: { id: req.user!.id, username: req.user!.username },
     // The request exactly as read and checked here. The page posts these values
     // back on Approve or Deny instead of re-reading its own URL: a second parser
     // can read a crafted query string differently (this one stops at 1000 keys,
@@ -211,6 +214,21 @@ oauthRouter.post('/authorize', requireCookieSession, (req: Request, res: Respons
   }
   if (decision !== 'approve') {
     oauthError(res, 400, 'invalid_request', 'decision must be approve or deny');
+    return;
+  }
+  // The browser can sign in as someone else between showing the page and the
+  // click, from another tab or by changing hands. The page named one account; a
+  // code for any other would grant access nobody saw. The username is checked
+  // too: ids restart on every server, so on hosted a different member on another
+  // cell can share the id, but not the acct-N username.
+  const body = req.body as Record<string, unknown>;
+  if (body.account_id !== req.user!.id || body.account_username !== req.user!.username) {
+    oauthError(
+      res,
+      409,
+      'invalid_request',
+      'This browser is now signed in to a different account. Reload the page to see who is approving.',
+    );
     return;
   }
   const code = createCode({

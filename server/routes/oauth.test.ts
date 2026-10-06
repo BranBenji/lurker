@@ -97,12 +97,17 @@ function authorizeParams(flow: Flow, extra: Record<string, string> = {}): Record
   };
 }
 
-// Approve as `member` and return the code, from the body for out-of-band or from
-// the redirect otherwise.
+// Approve as `member` the way the page does, posting back the account the GET
+// named, and return the code, from the body for out-of-band or from the redirect
+// otherwise.
 async function approve(member: LurkerTestAgent, flow: Flow): Promise<string> {
-  const res = await member
-    .post('/api/oauth/authorize')
-    .send({ ...authorizeParams(flow), decision: 'approve' });
+  const page = await member.get('/api/oauth/authorize').query(authorizeParams(flow));
+  const res = await member.post('/api/oauth/authorize').send({
+    ...authorizeParams(flow),
+    account_id: page.body.account.id,
+    account_username: page.body.account.username,
+    decision: 'approve',
+  });
   expect(res.status).toBe(200);
   if (res.body.code) return res.body.code;
   return new URL(res.body.redirect).searchParams.get('code') ?? '';
@@ -225,9 +230,11 @@ describe('POST /api/oauth/register', () => {
 
 describe('GET /api/oauth/authorize', () => {
   let member: LurkerTestAgent;
+  let memberId: number;
 
   beforeAll(async () => {
-    member = await createAuthedAgent(app, createUser('oauth-authorize-get').id);
+    memberId = createUser('oauth-authorize-get').id;
+    member = await createAuthedAgent(app, memberId);
   });
 
   it('describes the app, where the approval goes, and the request it checked', async () => {
@@ -242,6 +249,7 @@ describe('GET /api/oauth/authorize', () => {
       app: { name: 'Test Client', website: 'client.example' },
       destination: { kind: 'app', scheme: 'com.example.testclient' },
       request: authorizeParams(flow),
+      account: { id: memberId, username: 'oauth-authorize-get' },
     });
   });
 
@@ -327,16 +335,21 @@ describe('GET /api/oauth/authorize', () => {
 
 describe('POST /api/oauth/authorize', () => {
   let member: LurkerTestAgent;
+  let memberId: number;
 
   beforeAll(async () => {
-    member = await createAuthedAgent(app, createUser('oauth-authorize-post').id);
+    memberId = createUser('oauth-authorize-post').id;
+    member = await createAuthedAgent(app, memberId);
   });
 
   it('returns the code itself for an out-of-band redirect', async () => {
     const flow = await startFlow(OOB);
-    const res = await member
-      .post('/api/oauth/authorize')
-      .send({ ...authorizeParams(flow), decision: 'approve' });
+    const res = await member.post('/api/oauth/authorize').send({
+      ...authorizeParams(flow),
+      account_id: memberId,
+      account_username: 'oauth-authorize-post',
+      decision: 'approve',
+    });
     expect(res.status).toBe(200);
     expect(res.body.code).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(res.body).not.toHaveProperty('redirect');
@@ -344,9 +357,12 @@ describe('POST /api/oauth/authorize', () => {
 
   it('redirects to an app with the code and state', async () => {
     const flow = await startFlow(APP_REDIRECT);
-    const res = await member
-      .post('/api/oauth/authorize')
-      .send({ ...authorizeParams(flow), decision: 'approve' });
+    const res = await member.post('/api/oauth/authorize').send({
+      ...authorizeParams(flow),
+      account_id: memberId,
+      account_username: 'oauth-authorize-post',
+      decision: 'approve',
+    });
     const url = new URL(res.body.redirect);
     expect(`${url.protocol}${url.pathname}`).toBe(APP_REDIRECT);
     expect(url.searchParams.get('code')).toBeTruthy();
@@ -357,6 +373,8 @@ describe('POST /api/oauth/authorize', () => {
     const flow = await startFlow(LOOPBACK);
     const res = await member.post('/api/oauth/authorize').send({
       ...authorizeParams({ ...flow, redirectUri: 'http://127.0.0.1:61234/callback' }),
+      account_id: memberId,
+      account_username: 'oauth-authorize-post',
       decision: 'approve',
     });
     expect(new URL(res.body.redirect).port).toBe('61234');
@@ -388,6 +406,37 @@ describe('POST /api/oauth/authorize', () => {
       .type('form')
       .send({ ...authorizeParams(flow), decision: 'approve' });
     expect(res.status).toBe(415);
+  });
+
+  // The page named one account; the browser signed in as another before the click
+  // (another tab, or the phone changed hands). A code now would grant access to an
+  // account nobody saw on the page (#1054).
+  // On hosted every cell numbers its members from 1, so another cell's member can
+  // share the id; the acct-N username tells them apart.
+  it.each([
+    [
+      'another account',
+      (id: number) => ({ account_id: id + 1, account_username: 'oauth-authorize-post' }),
+    ],
+    [
+      'the id as a string',
+      (id: number) => ({ account_id: String(id), account_username: 'oauth-authorize-post' }),
+    ],
+    [
+      'the same id under another username',
+      (id: number) => ({ account_id: id, account_username: 'acct-9' }),
+    ],
+    ['no username', (id: number) => ({ account_id: id })],
+    ['no account', () => ({})],
+  ])('refuses an approval naming %s', async (_label, account) => {
+    const flow = await startFlow(APP_REDIRECT);
+    const res = await member
+      .post('/api/oauth/authorize')
+      .send({ ...authorizeParams(flow), ...account(memberId), decision: 'approve' });
+    expect(res.status).toBe(409);
+    expect(res.body.error_description).toMatch(/different account/);
+    expect(res.body).not.toHaveProperty('code');
+    expect(res.body).not.toHaveProperty('redirect');
   });
 
   it('refuses a missing decision', async () => {

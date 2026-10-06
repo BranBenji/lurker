@@ -39,6 +39,13 @@
              it's shown as the app's claim rather than as who made it. -->
         <p v-if="info.app.website" class="hint">Says it's from {{ info.app.website }}</p>
         <p class="warning">It will have full access to your account.</p>
+        <!-- The page approves for whoever this browser is signed in as, which a
+             shared phone or a second account can make someone else (#1054). -->
+        <p class="hint">
+          Signed in as <strong class="account">{{ account }}</strong> ·
+          <button class="link" :disabled="working" @click="switchAccount">Not you?</button>
+        </p>
+        <p v-if="switchError" class="error">{{ switchError }}</p>
         <p class="hint">
           <template v-if="info.destination.kind === 'code'">
             You'll get a code to paste into the app
@@ -88,6 +95,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { api, type ApiError } from '../api.js';
+import { useAuthStore } from '../stores/auth.js';
+import { useConfigStore } from '../stores/config.js';
 import WordBackdrop from '../components/WordBackdrop.vue';
 
 type Destination =
@@ -101,6 +110,8 @@ interface AuthorizeInfo {
   destination: Destination;
   // The authorize request exactly as the server read and checked it.
   request: Record<string, string>;
+  // The account this browser's session would approve for.
+  account: { id: number; username: string };
 }
 
 interface DecisionResult {
@@ -129,6 +140,28 @@ const code = ref('');
 const copied = ref(false);
 const copyError = ref('');
 const working = ref(false);
+const account = ref('');
+const switchError = ref('');
+
+const auth = useAuthStore();
+const config = useConfigStore();
+
+// A hosted cell only knows a synthetic acct-N username, N being the control
+// plane's account id; the email the member signs in with lives on the control
+// plane. The email is shown only for the account the cell named, since the two
+// come from different cookies.
+async function hostedAccount(): Promise<{ id: number; email: string } | null> {
+  return (await config.fetch()) === 'node' ? auth.fetchHostedAccount() : null;
+}
+
+function accountLabel(
+  cellAccount: AuthorizeInfo['account'],
+  hosted: { id: number; email: string } | null,
+): string {
+  return hosted && cellAccount.username === `acct-${hosted.id}`
+    ? hosted.email
+    : cellAccount.username;
+}
 
 function showError(e: unknown) {
   const data = (e as ApiError | null)?.data as { error_description?: unknown } | null | undefined;
@@ -141,7 +174,14 @@ onMounted(async () => {
   if (framed) return;
   try {
     // The query string goes to the server untouched, exactly as the app sent it.
-    info.value = await api<AuthorizeInfo>(`/api/oauth/authorize${window.location.search}`);
+    // The account name is ready before the buttons are, so they never show
+    // without it.
+    const [details, hosted] = await Promise.all([
+      api<AuthorizeInfo>(`/api/oauth/authorize${window.location.search}`),
+      hostedAccount(),
+    ]);
+    info.value = details;
+    account.value = accountLabel(details.account, hosted);
     state.value = 'approve';
   } catch (e) {
     showError(e);
@@ -158,9 +198,12 @@ async function decide(decision: 'approve' | 'deny') {
     // page's URL. A second parser can read a crafted query string differently
     // (Express stops at 1000 keys, URLSearchParams doesn't), which would show one
     // app and approve another.
+    // The account lets the server refuse an approval for anyone but the one
+    // named on the page.
+    const account = info.value?.account;
     result = await api<DecisionResult | null>('/api/oauth/authorize', {
       method: 'POST',
-      body: { ...request, decision },
+      body: { ...request, account_id: account?.id, account_username: account?.username, decision },
     });
   } catch (e) {
     working.value = false;
@@ -185,6 +228,25 @@ async function decide(decision: 'approve' | 'deny') {
   } else {
     showError(null);
   }
+}
+
+// Sign this browser out (both cookies on hosted, or the proxy signs it straight
+// back in), then load this same request again: signed out, it asks for a sign-in
+// and comes back here. Reloading leaves the app's query string as it was.
+async function switchAccount() {
+  if (working.value) return;
+  working.value = true;
+  switchError.value = '';
+  // auth.logout() ends the control plane's session only on a hosted cell, so the
+  // edition has to be known; a failed page-load fetch is tried again here. A
+  // cookie left behind would sign the reload straight back in as this account.
+  await config.fetch();
+  if (!config.checked || !(await auth.logout())) {
+    switchError.value = "Couldn't sign out. Try again.";
+    working.value = false;
+    return;
+  }
+  window.location.reload();
 }
 
 async function onCopy() {
@@ -253,6 +315,24 @@ h1 {
   margin: 0;
   color: var(--fg-muted);
   overflow-wrap: anywhere;
+}
+.account {
+  color: var(--fg);
+}
+.link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+}
+.link:hover:not(:disabled) {
+  color: var(--fg);
+}
+.link:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 .actions {
   display: flex;
