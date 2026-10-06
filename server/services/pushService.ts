@@ -74,6 +74,13 @@ export function getPublicKey(): string | null {
   return publicKey;
 }
 
+/** The server's VAPID identity, for signing a request of our own — the relay's
+ *  status check (push/relayStatus.ts). */
+export function vapidCredentials(): { subject: string; publicKey: string; privateKey: string } {
+  ensureVapid();
+  return { subject: VAPID.subject, publicKey: publicKey!, privateKey: privateKey! };
+}
+
 // True if the user has at least one enabled push subscription. Lets callers
 // skip building a push payload (e.g. computing the app-icon badge total) when
 // deliver() would no-op on an empty subscription set anyway.

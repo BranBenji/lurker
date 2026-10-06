@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { defineStore } from 'pinia';
-import { api } from '../api.js';
+import { api, type ApiError } from '../api.js';
 import type { AdminUploader, UploaderDriver } from '../utils/uploaders.js';
 
 export interface AdminUser {
@@ -83,8 +83,21 @@ export interface AdminPushConfig {
   vapidSubject: { subject: string; appleAccepts: boolean; ignored: string | null };
   /** Transports this server can deliver on ('webpush', 'apns', 'fcm'). */
   transports: string[];
-  relay: { url: string; enabled: boolean; devices: number };
+  relay: {
+    url: string;
+    enabled: boolean;
+    devices: number;
+    /** push.lurker.chat's answer for this server's key (RELAY_PLAN.md §6.5); null
+     *  until the admin opts in or checks — the server doesn't ask before then. */
+    status: AdminRelayStatus | null;
+  };
 }
+
+export type AdminRelayStatus =
+  | { state: 'active'; comped: boolean; paidThrough: string | null }
+  | { state: 'inactive'; registered: boolean }
+  | { state: 'unauthorized' }
+  | { state: 'unreachable'; reason: string };
 
 export const useAdminStore = defineStore('admin', {
   state: () => ({
@@ -344,11 +357,25 @@ export const useAdminStore = defineStore('admin', {
         this.push = data;
         return data.removed as number;
       } catch (e) {
-        // Refetch before rethrowing, like the networks policy: the checkbox must
+        // A refused turn-on (409) carries the relay's answer, which a refetch
+        // wouldn't: the relay is still off, so the server doesn't ask. Otherwise
+        // refetch before rethrowing, like the networks policy — the checkbox must
         // show what the server holds, not what was attempted.
-        await this.fetchPush().catch(() => {});
+        const err = e as ApiError;
+        const body = err.data as { relay?: unknown } | undefined;
+        if (err.status === 409 && body?.relay) {
+          this.pushFetchSeq++;
+          this.push = body as AdminPushConfig;
+        } else {
+          await this.fetchPush().catch(() => {});
+        }
         throw e;
       }
+    },
+    async checkPushRelay() {
+      const data = await api('/api/admin/push/relay/check', { method: 'POST' });
+      this.pushFetchSeq++;
+      this.push = data;
     },
   },
 });

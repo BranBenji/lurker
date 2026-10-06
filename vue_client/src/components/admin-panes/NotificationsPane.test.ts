@@ -23,7 +23,7 @@ function config(
     publicKey: 'BPubKeyBase64url',
     vapidSubject: { subject: 'https://lurker.example.com', appleAccepts, ignored: null },
     transports,
-    relay: { url: 'https://push.lurker.chat', enabled: false, devices: 0, ...over },
+    relay: { url: 'https://push.lurker.chat', enabled: false, devices: 0, status: null, ...over },
   } satisfies AdminPushConfig;
 }
 
@@ -119,5 +119,49 @@ describe('NotificationsPane', () => {
     await flushPromises();
     expect(checkbox(w).checked).toBe(false);
     expect(w.text()).toContain('nope');
+  });
+
+  it.each([
+    [{ state: 'active', comped: true, paidThrough: null }, 'Comped'],
+    [
+      { state: 'active', comped: false, paidThrough: '2027-10-06T12:00:00Z' },
+      'Active — paid through',
+    ],
+    [
+      { state: 'inactive', registered: false },
+      "push.lurker.chat doesn't recognize this server's key",
+    ],
+    [{ state: 'inactive', registered: true }, "This server's key isn't active on push.lurker.chat"],
+    [{ state: 'unauthorized' }, "push.lurker.chat couldn't verify this server's key"],
+    [{ state: 'unreachable', reason: 'x' }, "Couldn't reach push.lurker.chat"],
+  ] as const)('shows what the relay said: %j', async (status, text) => {
+    const w = await mountPane(config({ status }));
+    expect(w.find('.relay-status').text()).toContain(text);
+  });
+
+  it('says nothing about the relay until asked, and asks on "check"', async () => {
+    const w = await mountPane(config());
+    expect(w.find('.relay-status').text()).not.toContain('push.lurker.chat');
+    const store = useAdminStore();
+    const checkPushRelay = vi.fn<() => Promise<void>>(async () => {
+      store.push = config({ status: { state: 'active', comped: true, paidThrough: null } });
+    });
+    store.checkPushRelay = checkPushRelay as unknown as typeof store.checkPushRelay;
+    await w.find('.relay-status button').trigger('click');
+    await flushPromises();
+    expect(checkPushRelay).toHaveBeenCalledOnce();
+    expect(w.find('.relay-status').text()).toContain('Comped');
+  });
+
+  it('shows why turning on was refused, and leaves the box unchecked', async () => {
+    stubConfirm(true);
+    const w = await mountPane(config());
+    setRelay.mockRejectedValueOnce(
+      new Error("push.lurker.chat doesn't recognize this server's key."),
+    );
+    await w.find('input[type="checkbox"]').setValue(true);
+    await flushPromises();
+    expect(checkbox(w).checked).toBe(false);
+    expect(w.text()).toContain("doesn't recognize this server's key");
   });
 });

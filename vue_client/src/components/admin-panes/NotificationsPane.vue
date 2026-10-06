@@ -40,6 +40,12 @@
             {{ copied ? 'copied' : 'copy' }}
           </button>
         </div>
+        <p class="relay-status small">
+          <span v-if="status" :class="status.ok ? 'muted' : 'error'">{{ status.text }}</span>
+          <button class="link" type="button" :disabled="checking" @click="check">
+            {{ checking ? 'checking…' : 'check' }}
+          </button>
+        </p>
       </template>
 
       <!-- Still shown on a native server while the relay is on: otherwise an
@@ -79,6 +85,43 @@ const deviceCount = computed(() => {
   const n = push.value?.relay.devices ?? 0;
   return n === 1 ? '1 device' : `${n} devices`;
 });
+
+const checking = ref(false);
+
+// What push.lurker.chat says about this server's key, in a line.
+const status = computed((): { text: string; ok: boolean } | null => {
+  const s = push.value?.relay.status;
+  if (!s) return null;
+  switch (s.state) {
+    case 'active':
+      if (s.comped) return { text: 'Comped', ok: true };
+      if (s.paidThrough) {
+        const date = new Date(s.paidThrough).toLocaleDateString(undefined, { dateStyle: 'medium' });
+        return { text: `Active — paid through ${date}`, ok: true };
+      }
+      return { text: 'Active', ok: true };
+    case 'inactive':
+      return s.registered
+        ? { text: "This server's key isn't active on " + relayHost.value, ok: false }
+        : { text: relayHost.value + " doesn't recognize this server's key", ok: false };
+    case 'unauthorized':
+      return { text: relayHost.value + " couldn't verify this server's key", ok: false };
+    case 'unreachable':
+      return { text: "Couldn't reach " + relayHost.value, ok: false };
+  }
+});
+
+async function check() {
+  error.value = '';
+  checking.value = true;
+  try {
+    await store.checkPushRelay();
+  } catch (e: any) {
+    error.value = e.message || 'failed to check';
+  } finally {
+    checking.value = false;
+  }
+}
 
 async function load() {
   error.value = '';
@@ -136,6 +179,12 @@ onMounted(load);
   padding: var(--space-2) var(--space-4);
   border: 1px solid var(--border);
   min-width: 0;
+}
+.relay-status {
+  display: flex;
+  gap: 1ch;
+  margin-top: calc(-1 * var(--space-4));
+  margin-bottom: var(--space-6);
 }
 .check {
   flex-direction: row;

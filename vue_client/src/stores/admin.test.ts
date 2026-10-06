@@ -176,7 +176,7 @@ describe('admin store — push relay toggle', () => {
     publicKey: 'k',
     vapidSubject: { subject: 'https://lurker.example.com', appleAccepts: true, ignored: null },
     transports: ['webpush'],
-    relay: { url: 'https://push.lurker.chat', enabled, devices: 0 },
+    relay: { url: 'https://push.lurker.chat', enabled, devices: 0, status: null },
   });
 
   it('an in-flight GET cannot undo a saved toggle', async () => {
@@ -203,5 +203,23 @@ describe('admin store — push relay toggle', () => {
 
     await expect(store.setPushRelayEnabled(true)).rejects.toThrow('boom');
     expect(store.push?.relay.enabled).toBe(true);
+  });
+
+  it("keeps a refused turn-on's relay answer instead of refetching it away", async () => {
+    const store = useAdminStore();
+    store.push = push(false);
+    const refused = {
+      ...push(false),
+      relay: { ...push(false).relay, status: { state: 'inactive', registered: false } },
+    };
+    h.api.mockImplementation((_url: string, opts?: { method?: string }) => {
+      if (opts?.method === 'PUT') {
+        const err = Object.assign(new Error('not recognized'), { status: 409, data: refused });
+        return Promise.reject(err);
+      }
+      return Promise.resolve(push(false)); // a refetch would lose the status
+    });
+    await expect(store.setPushRelayEnabled(true)).rejects.toThrow('not recognized');
+    expect(store.push?.relay.status).toEqual({ state: 'inactive', registered: false });
   });
 });

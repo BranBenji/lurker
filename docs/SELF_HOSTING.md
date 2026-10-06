@@ -222,7 +222,13 @@ So only the publisher of a build can push to that build. Supplying your own Appl
 
 You can check what a given server can actually deliver on: `GET /api/push/config` returns a `transports` list. A self-hosted server reports `["webpush"]`, and the apps use that to tell you push isn't available rather than asking for notification permission and then silently never delivering.
 
-**push.lurker.chat (in progress).** A paid relay will let a self-hosted server push to the official apps. Your server encrypts each notification for the phone, and the relay forwards it without being able to read it. It's off until you turn it on under **Admin → Notifications**, which also shows the server key you register with the relay. While it's off, the apps never contact push.lurker.chat.
+**push.lurker.chat.** A paid relay ($20/year per server) lets a self-hosted server push to the official iOS and Android apps. Your server encrypts each notification for the phone, and the relay forwards it without being able to read it. To use it:
+
+1. In **Admin → Notifications**, copy your server's key.
+2. Sign up at [push.lurker.chat](https://push.lurker.chat), paste the key, and subscribe.
+3. Back in **Admin → Notifications**, turn on **Use push.lurker.chat**. Lurker checks with the relay first and tells you if the key isn't active yet.
+
+Until you turn it on, neither your server nor the apps contact push.lurker.chat, except when you press **check** next to the key.
 
 ### File uploads on your own disk
 

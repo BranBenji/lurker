@@ -6,7 +6,7 @@
 // enforcing it. One suite because the promise spans all three — while the relay
 // is off, nothing on this server points at it.
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import type { Express } from 'express';
 import type { LurkerTestAgent } from '../test-utils/testApp.js';
 import { setupTestDb, createTestApp, createAuthedAgent } from '../test-utils/testApp.js';
@@ -27,12 +27,25 @@ let userAgent: LurkerTestAgent;
 let admin: User;
 let plainUser: User;
 let db: typeof import('../db/index.js').default;
+let resetRelayStatusCache: () => void;
+
+// push.lurker.chat's /status answer (§6.5). fetch is stubbed for every test:
+// nothing here may reach the real relay. Turning the relay on asks it, so the
+// default is a comped key; the gating tests below change it.
+type Answer = { status: number; body: unknown } | 'network-error';
+const COMPED: Answer = {
+  status: 200,
+  body: { registered: true, active: true, comped: true, paidThrough: null },
+};
+let relayAnswer: Answer = COMPED;
+let relayFetch: ReturnType<typeof vi.fn<(url: string) => Promise<Response>>>;
 
 beforeAll(async () => {
   const { createUser } = await import('../db/users.js');
   const adminRouter = (await import('./admin.js')).default;
   const pushRouter = (await import('./push.js')).default;
   db = (await import('../db/index.js')).default;
+  ({ resetRelayStatusCache } = await import('../services/push/relayStatus.js'));
 
   admin = createUser('adminpush-root', { role: 'admin' });
   plainUser = createUser('adminpush-user');
@@ -47,7 +60,16 @@ afterAll(() => ctx.cleanup());
 beforeEach(() => {
   db.prepare('DELETE FROM push_subscriptions').run();
   db.prepare(`DELETE FROM instance_settings WHERE key = 'push.relay_enabled'`).run();
+  relayAnswer = COMPED;
+  resetRelayStatusCache();
+  relayFetch = vi.fn<(url: string) => Promise<Response>>(async () => {
+    if (relayAnswer === 'network-error') throw new TypeError('fetch failed');
+    return new Response(JSON.stringify(relayAnswer.body), { status: relayAnswer.status });
+  });
+  vi.stubGlobal('fetch', relayFetch);
 });
+
+afterEach(() => vi.unstubAllGlobals());
 
 const subscribe = (agent: LurkerTestAgent, endpoint: string) =>
   agent.post('/api/push/subscriptions').send({
@@ -68,7 +90,7 @@ describe('GET /api/admin/push', () => {
     expect(res.status).toBe(200);
     expect(typeof res.body.publicKey).toBe('string');
     expect(res.body.publicKey.length).toBeGreaterThan(20);
-    expect(res.body.relay).toEqual({ url: RELAY, enabled: false, devices: 0 });
+    expect(res.body.relay).toEqual({ url: RELAY, enabled: false, devices: 0, status: null });
     // Neither VAPID_SUBJECT nor a public origin (unset above).
     expect(res.body.vapidSubject).toEqual({
       subject: 'mailto:lurker@localhost',
@@ -254,5 +276,81 @@ describe('turning the relay off', () => {
     expect(left.map((r) => r.endpoint)).toEqual([
       'https://updates.push.services.mozilla.com/wpush/v2/x',
     ]);
+  });
+});
+
+describe('the relay status check (RELAY_PLAN.md §6.5)', () => {
+  const answer = (body: object) => ({
+    status: 200,
+    body: { registered: true, active: true, comped: false, paidThrough: null, ...body },
+  });
+
+  it('never asks the relay before the admin opts in, even from the pane', async () => {
+    const res = await adminAgent.get('/api/admin/push');
+    expect(res.body.relay.status).toBeNull();
+    expect(relayFetch).not.toHaveBeenCalled();
+  });
+
+  it('asks when the admin checks, before turning it on', async () => {
+    relayAnswer = answer({ paidThrough: '2027-10-06T00:00:00Z' });
+    const res = await adminAgent.post('/api/admin/push/relay/check');
+    expect(res.status).toBe(200);
+    expect(res.body.relay.status).toEqual({
+      state: 'active',
+      comped: false,
+      paidThrough: '2027-10-06T00:00:00Z',
+    });
+    expect(res.body.relay.enabled).toBe(false);
+  });
+
+  it('shows the status on the pane once the relay is on', async () => {
+    await setRelay(true);
+    const res = await adminAgent.get('/api/admin/push');
+    expect(res.body.relay.status).toEqual({ state: 'active', comped: true, paidThrough: null });
+  });
+
+  it.each([
+    ['an unknown key', answer({ registered: false, active: false }), "doesn't recognize"],
+    ['a lapsed key', answer({ active: false }), "isn't active"],
+    ['a refused signature', { status: 401, body: {} }, "couldn't verify"],
+    ['a relay that is down', { status: 503, body: {} }, "Couldn't reach"],
+    ['no network', 'network-error' as const, "Couldn't reach"],
+  ])('refuses to turn on with %s, and stays off', async (_label, a, says) => {
+    relayAnswer = a;
+    const res = await setRelay(true);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toContain(says);
+    expect(res.body.relay.enabled).toBe(false);
+    const config = await userAgent.get('/api/push/config');
+    expect(config.body).not.toHaveProperty('relay');
+  });
+
+  it('turns on with a paid key', async () => {
+    relayAnswer = answer({ paidThrough: '2027-10-06T00:00:00Z' });
+    const res = await setRelay(true);
+    expect(res.status).toBe(200);
+    expect(res.body.relay.enabled).toBe(true);
+  });
+
+  it('asks fresh when turning on, whatever was cached', async () => {
+    await setRelay(true);
+    await adminAgent.get('/api/admin/push'); // caches "comped"
+    await setRelay(false);
+    relayAnswer = answer({ active: false });
+    expect((await setRelay(true)).status).toBe(409);
+  });
+
+  it('never asks when turning off, and a failed check never switches it off', async () => {
+    await setRelay(true);
+    relayFetch.mockClear();
+    relayAnswer = 'network-error';
+    resetRelayStatusCache();
+    const pane = await adminAgent.get('/api/admin/push');
+    expect(pane.body.relay.enabled).toBe(true);
+    expect(pane.body.relay.status.state).toBe('unreachable');
+    relayFetch.mockClear();
+    const off = await setRelay(false);
+    expect(off.status).toBe(200);
+    expect(relayFetch).not.toHaveBeenCalled();
   });
 });
