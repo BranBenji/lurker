@@ -151,8 +151,8 @@ The member signs in if needed (password or passkey) and sees the approval page:
 the app's name, its website host, that it gets full access, which account is
 approving, and where the approval goes. **Not you?** signs the browser out and
 brings the same request back after the next sign-in. The page appears every time,
-even for an app the member approved before. An invalid request is shown as an error on the page and is never
-redirected.
+even for an app the member approved before. An invalid request is shown as an
+error on the page and is never redirected.
 
 | Member   | Redirect URI                               | Out-of-band                      |
 | -------- | ------------------------------------------ | -------------------------------- |

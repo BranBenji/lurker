@@ -109,6 +109,8 @@ interface AuthorizeInfo {
   destination: Destination;
   // The authorize request exactly as the server read and checked it.
   request: Record<string, string>;
+  // The account this browser's session would approve for.
+  account: { id: number; username: string };
 }
 
 interface DecisionResult {
@@ -144,9 +146,8 @@ const config = useConfigStore();
 
 // A hosted cell only knows a synthetic acct-N username; the email the member
 // signs in with lives on the control plane.
-async function accountName(): Promise<string> {
-  const email = (await config.fetch()) === 'node' ? await auth.fetchHostedAccountEmail() : null;
-  return email || auth.user?.username || '';
+async function hostedEmail(): Promise<string | null> {
+  return (await config.fetch()) === 'node' ? auth.fetchHostedAccountEmail() : null;
 }
 
 function showError(e: unknown) {
@@ -162,12 +163,12 @@ onMounted(async () => {
     // The query string goes to the server untouched, exactly as the app sent it.
     // The account name is ready before the buttons are, so they never show
     // without it.
-    const [details, name] = await Promise.all([
+    const [details, email] = await Promise.all([
       api<AuthorizeInfo>(`/api/oauth/authorize${window.location.search}`),
-      accountName(),
+      hostedEmail(),
     ]);
     info.value = details;
-    account.value = name;
+    account.value = email || details.account.username;
     state.value = 'approve';
   } catch (e) {
     showError(e);
@@ -184,9 +185,11 @@ async function decide(decision: 'approve' | 'deny') {
     // page's URL. A second parser can read a crafted query string differently
     // (Express stops at 1000 keys, URLSearchParams doesn't), which would show one
     // app and approve another.
+    // The account id lets the server refuse an approval for anyone but the
+    // account named on the page.
     result = await api<DecisionResult | null>('/api/oauth/authorize', {
       method: 'POST',
-      body: { ...request, decision },
+      body: { ...request, account_id: info.value?.account.id, decision },
     });
   } catch (e) {
     working.value = false;
@@ -219,6 +222,10 @@ async function decide(decision: 'approve' | 'deny') {
 async function switchAccount() {
   if (working.value) return;
   working.value = true;
+  // auth.logout() ends the control plane's session only on a hosted cell. If
+  // the page-load config fetch failed, the edition still reads as standalone,
+  // so try it again first.
+  await config.fetch();
   await auth.logout();
   window.location.reload();
 }

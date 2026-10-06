@@ -89,7 +89,7 @@ async function approve(
   expect(page.status).toBe(200);
   const approved = await member
     .post('/api/oauth/authorize')
-    .send({ ...page.body.request, decision: 'approve' });
+    .send({ ...page.body.request, account_id: page.body.account.id, decision: 'approve' });
   expect(approved.status).toBe(200);
   return { code: approved.body.code, verifier };
 }

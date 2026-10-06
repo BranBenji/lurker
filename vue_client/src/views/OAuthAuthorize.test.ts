@@ -37,11 +37,12 @@ const QUERY = `?${new URLSearchParams(PARAMS)}`;
 
 // The authorize GET answers with the approval details and the request it checked;
 // its POST answers with `decision`. `edition` and `email` answer the config and
-// control-plane lookups behind the account name.
+// control-plane lookups behind the account name; `username` is what the cell
+// knows the account as.
 function serve(
   destination: object,
   decision: object,
-  { edition = 'standalone', email = null as string | null } = {},
+  { edition = 'standalone', email = null as string | null, username = 'alice' } = {},
 ) {
   h.api.mockImplementation(async (url, opts) => {
     if (url === '/api/config') return { edition };
@@ -52,7 +53,12 @@ function serve(
     if (url === '/api/auth/logout' || url === '/_cp/auth/logout') return { ok: true };
     return opts?.method === 'POST'
       ? decision
-      : { app: { name: 'Ivory', website: 'ivory.example' }, destination, request: PARAMS };
+      : {
+          app: { name: 'Ivory', website: 'ivory.example' },
+          destination,
+          request: PARAMS,
+          account: { id: 1, username },
+        };
   });
 }
 
@@ -101,7 +107,7 @@ describe('OAuthAuthorize', () => {
 
     expect(h.api).toHaveBeenLastCalledWith('/api/oauth/authorize', {
       method: 'POST',
-      body: { ...PARAMS, decision: 'approve' },
+      body: { ...PARAMS, account_id: 1, decision: 'approve' },
     });
     expect(wrapper.find('code.code').text()).toBe('the-code');
     expect(wrapper.text()).toContain('You can close this page after pasting it.');
@@ -123,7 +129,7 @@ describe('OAuthAuthorize', () => {
 
     expect(h.api).toHaveBeenLastCalledWith('/api/oauth/authorize', {
       method: 'POST',
-      body: { ...PARAMS, decision: 'approve' },
+      body: { ...PARAMS, account_id: 1, decision: 'approve' },
     });
   });
 
@@ -140,8 +146,11 @@ describe('OAuthAuthorize', () => {
 
   // A hosted cell knows only acct-N; the member knows the email they signed in with.
   it('names a hosted account by its email', async () => {
-    serve({ kind: 'code' }, { code: 'the-code' }, { edition: 'node', email: 'alice@example.com' });
-    useAuthStore().adoptSession({ id: 1, username: 'acct-7', role: 'user' });
+    serve(
+      { kind: 'code' },
+      { code: 'the-code' },
+      { edition: 'node', email: 'alice@example.com', username: 'acct-7' },
+    );
 
     const wrapper = mount(OAuthAuthorize);
     await flushPromises();
@@ -151,8 +160,7 @@ describe('OAuthAuthorize', () => {
   });
 
   it("falls back to the cell's username when the control plane has no email", async () => {
-    serve({ kind: 'code' }, { code: 'the-code' }, { edition: 'node' });
-    useAuthStore().adoptSession({ id: 1, username: 'acct-7', role: 'user' });
+    serve({ kind: 'code' }, { code: 'the-code' }, { edition: 'node', username: 'acct-7' });
 
     const wrapper = mount(OAuthAuthorize);
     await flushPromises();
@@ -177,8 +185,12 @@ describe('OAuthAuthorize', () => {
       await button(wrapper, 'Not you?').trigger('click');
       await flushPromises();
 
+      // Every sign-out lands before the reload, or the reload comes back signed in.
+      const reloadedAt = reload.mock.invocationCallOrder[0];
       for (const url of logouts) {
-        expect(h.api).toHaveBeenCalledWith(url, { method: 'POST' });
+        const call = h.api.mock.calls.findIndex(([u, o]) => u === url && o?.method === 'POST');
+        expect(call).toBeGreaterThanOrEqual(0);
+        expect(h.api.mock.invocationCallOrder[call]).toBeLessThan(reloadedAt);
       }
       expect(useAuthStore().user).toBeNull();
       expect(reload).toHaveBeenCalledTimes(1);
@@ -190,6 +202,52 @@ describe('OAuthAuthorize', () => {
       expect(button(wrapper, 'Approve').attributes('disabled')).toBeDefined();
     },
   );
+
+  // A failed config fetch leaves the edition reading as standalone, and a hosted
+  // sign-out that skips the control plane comes straight back as the same account.
+  it('"Not you?" checks the edition again when the page-load check failed', async () => {
+    const reload = vi.spyOn(window.location, 'reload').mockImplementation(() => {});
+    serve({ kind: 'code' }, { code: 'the-code' }, { edition: 'node', email: 'alice@example.com' });
+    const served = h.api.getMockImplementation()!;
+    let configFailures = 1;
+    h.api.mockImplementation(async (url, opts) => {
+      if (url === '/api/config' && configFailures-- > 0) throw new Error('blip');
+      return served(url, opts);
+    });
+
+    const wrapper = mount(OAuthAuthorize);
+    await flushPromises();
+    await button(wrapper, 'Not you?').trigger('click');
+    await flushPromises();
+
+    expect(h.api).toHaveBeenCalledWith('/_cp/auth/logout', { method: 'POST' });
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  // The browser signed in as someone else after the page loaded.
+  it('shows a refused approval on the page', async () => {
+    const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => {});
+    serve({ kind: 'code' }, { code: 'the-code' });
+    const served = h.api.getMockImplementation()!;
+    h.api.mockImplementation(async (url, opts) => {
+      if (url === '/api/oauth/authorize' && opts?.method === 'POST') {
+        throw Object.assign(new Error('invalid_request'), {
+          status: 409,
+          data: { error: 'invalid_request', error_description: 'a different account' },
+        });
+      }
+      return served(url, opts);
+    });
+
+    const wrapper = mount(OAuthAuthorize);
+    await flushPromises();
+    await button(wrapper, 'Approve').trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('a different account');
+    expect(wrapper.findAll('button')).toHaveLength(0);
+    expect(assign).not.toHaveBeenCalled();
+  });
 
   it('navigates to the redirect only after a click', async () => {
     const assign = vi.spyOn(window.location, 'assign').mockImplementation(() => {});
