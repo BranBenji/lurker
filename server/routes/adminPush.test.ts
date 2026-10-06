@@ -168,6 +168,63 @@ describe('registering a relay endpoint', () => {
   });
 });
 
+describe('the same phone under another account', () => {
+  it('moves a relay endpoint to the latest registrant, like a native token', async () => {
+    await setRelay(true);
+    const endpoint = `${RELAY}/relay-to/apns/production/phone/key`;
+    expect((await subscribe(adminAgent, endpoint)).status).toBe(201);
+    // Signed out offline, then a different account signs in on the same phone.
+    const res = await userAgent.post('/api/push/subscriptions').send({
+      endpoint,
+      keys: { p256dh: 'new-p256', auth: 'new-auth' },
+    });
+    expect(res.status).toBe(201);
+    const row = db
+      .prepare('SELECT user_id, p256dh, auth FROM push_subscriptions WHERE endpoint = ?')
+      .get(endpoint) as { user_id: number; p256dh: string; auth: string };
+    expect(row).toEqual({ user_id: plainUser.id, p256dh: 'new-p256', auth: 'new-auth' });
+  });
+
+  it("moves the OAuth link too, and the old account's replayed sign-out leaves it alone", async () => {
+    await setRelay(true);
+    const endpoint = `${RELAY}/relay-to/fcm/phone2/key`;
+    expect((await subscribe(adminAgent, endpoint)).status).toBe(201);
+    // The first registration came through an OAuth app (the phone's sign-in).
+    const oauth = await import('../db/oauth.js');
+    const app = oauth.createApp({ clientName: 'Lurker', clientUri: null, redirectUris: [] });
+    const token = oauth.findTokenByRaw(oauth.createToken(app.id, admin.id))!;
+    db.prepare('UPDATE push_subscriptions SET oauth_token_id = ? WHERE endpoint = ?').run(
+      token.id,
+      endpoint,
+    );
+    expect((await subscribe(userAgent, endpoint)).status).toBe(201);
+    const row = () =>
+      db
+        .prepare('SELECT user_id, oauth_token_id FROM push_subscriptions WHERE endpoint = ?')
+        .get(endpoint) as { user_id: number; oauth_token_id: number | null } | undefined;
+    // The new registrant's link (a session here), so revoking the old account's
+    // app can't cascade-delete the new account's phone.
+    expect(row()).toEqual({ user_id: plainUser.id, oauth_token_id: null });
+    // The old account's sign-out, replayed once it's back online.
+    const del = await adminAgent.delete('/api/push/subscriptions').send({ endpoint });
+    expect(del.status).toBe(200);
+    expect(row()?.user_id).toBe(plainUser.id);
+  });
+
+  it('keeps the browser rule for anything on the relay host that names no device', async () => {
+    await setRelay(true);
+    const endpoint = `${RELAY}/something-else/x`;
+    expect((await subscribe(adminAgent, endpoint)).status).toBe(201);
+    expect((await subscribe(userAgent, endpoint)).status).toBe(409);
+  });
+
+  it("still refuses a browser's endpoint another account holds", async () => {
+    const endpoint = 'https://fcm.googleapis.com/fcm/send/shared-browser';
+    expect((await subscribe(adminAgent, endpoint)).status).toBe(201);
+    expect((await subscribe(userAgent, endpoint)).status).toBe(409);
+  });
+});
+
 describe('the device count', () => {
   it('leaves out relay rows disabled after repeated failures', async () => {
     await setRelay(true);

@@ -35,7 +35,7 @@ interface WebPushErrorish {
 // accumulate one string per notification ever sent.
 const bodyCache = new WeakMap<NotificationContent, string>();
 
-function webpushBody(payload: PushPayload, content: NotificationContent): string {
+export function webpushBody(payload: PushPayload, content: NotificationContent): string {
   const cached = bodyCache.get(content);
   if (cached !== undefined) return cached;
   const body = JSON.stringify(pushBody(payload, content));

@@ -183,6 +183,84 @@ export function clampPushText(text: string, maxBytes = MAX_PUSH_TEXT_BYTES): str
   return `${out}${ELLIPSIS}`;
 }
 
+/**
+ * The most `pushBody()` JSON a push may carry, in UTF-8 bytes. The tightest
+ * transport sets it: a push relayed for a self-hosted server
+ * (lurker-dev/RELAY_PLAN.md §6.2) arrives as an APNs payload — capped at 4 KB —
+ * holding the encrypted body base64url-encoded beside the relay's placeholder
+ * alert. aes128gcm adds an 86-byte header, a padding delimiter and a 16-byte tag
+ * (RFC 8188/8291). Fitting this fits every other transport too: Web Push and FCM
+ * also cap at 4 KB, and carry the same fields without the encoding.
+ */
+export const RELAY_APNS_WRAPPER = JSON.stringify({
+  aps: { alert: { title: 'Lurker', body: 'New message' }, 'mutable-content': 1, sound: 'default' },
+  p: '',
+});
+const APNS_PAYLOAD_BYTES = 4096;
+const AES128GCM_OVERHEAD_BYTES = 86 + 1 + 16;
+export const MAX_PUSH_BODY_BYTES =
+  Math.floor(((APNS_PAYLOAD_BYTES - Buffer.byteLength(RELAY_APNS_WRAPPER)) * 3) / 4) -
+  AES128GCM_OVERHEAD_BYTES;
+
+/**
+ * Shorten a push until its body fits MAX_PUSH_BODY_BYTES. The per-field clamps
+ * keep ordinary pushes far under it, but names IRC leaves unbounded — a long
+ * UTF-8 channel or nick — repeat across `target`, `tag`, `nick` and the title,
+ * and a kick puts all of them in the title at once. Over the cap a push service
+ * refuses the push, and the server counts that against the device.
+ *
+ * Cuts what matters least first: the message text (the app opens the whole line
+ * on tap), then the title, then the names it repeats. Routing — networkId,
+ * target, bufferId, tag — is never cut: a shortened target would open the wrong
+ * buffer. So `fits` can still be false: a channel name of control characters
+ * (six bytes each, JSON-escaped) rides in `target` and `tag` and alone can
+ * overflow. The caller drops such a push rather than send one that's refused.
+ */
+export function fitPushBody(
+  payload: PushPayload,
+  content: NotificationContent,
+): { payload: PushPayload; content: NotificationContent; fits: boolean } {
+  let p = payload;
+  let c = content;
+  const over = () => Buffer.byteLength(JSON.stringify(pushBody(p, c))) - MAX_PUSH_BODY_BYTES;
+  const fields: [get: () => string, set: (v: string) => void][] = [
+    [() => c.body, (v) => (c = { ...c, body: v })],
+    [() => c.title, (v) => (c = { ...c, title: v })],
+    [() => p.nick ?? '', (v) => (p = { ...p, nick: v })],
+    [() => p.displayName ?? '', (v) => (p = { ...p, displayName: v })],
+  ];
+  for (const [get, set] of fields) {
+    while (over() > 0 && get()) {
+      const limit = jsonBytes(get()) - over();
+      // Too little room for the ellipsis itself: empty the field, rather than
+      // "shorten" it to an ellipsis that's longer than what it replaced.
+      const next = limit < jsonBytes(ELLIPSIS) ? '' : clampPushText(get(), limit);
+      if (next === get()) break;
+      set(next);
+    }
+  }
+  return { payload: p, content: c, fits: over() <= 0 };
+}
+
+/**
+ * Everything deliver() does to a payload before any transport sees it: the
+ * network-name clamp, composition, and the final fit. Exported so the relay test
+ * vectors are built by the same code the server sends with.
+ */
+export function prepareNotification(message: PushPayload): {
+  payload: PushPayload;
+  content: NotificationContent;
+  fits: boolean;
+} {
+  // The network name is user-entered with no limit — see MAX_PUSH_NETWORK_NAME_BYTES.
+  // (The body is clamped where it's composed, on the words that go on the wire.)
+  const payload: PushPayload = {
+    ...message,
+    networkName: clampPushText(message.networkName, MAX_PUSH_NETWORK_NAME_BYTES),
+  };
+  return fitPushBody(payload, composeNotification(payload));
+}
+
 function bufferTag(payload: PushPayload): string {
   return `${payload.networkId || 0}::${(payload.target || '').toLowerCase()}`;
 }

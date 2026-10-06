@@ -3,12 +3,7 @@
 
 import webpush from 'web-push';
 import type { PushSubscription } from '../db/pushSubscriptions.js';
-import {
-  clampPushText,
-  composeNotification,
-  MAX_PUSH_NETWORK_NAME_BYTES,
-  type PushPayload,
-} from './notificationContent.js';
+import { prepareNotification, type PushPayload } from './notificationContent.js';
 import { senderFor, warnUnconfiguredOnce } from './push/index.js';
 import { relayAllows } from './push/relay.js';
 import { resolveVapidSubject, type VapidSubject } from './push/vapidSubject.js';
@@ -111,18 +106,21 @@ export async function deliver(
   const subs = listEnabledForUser(userId);
   if (!subs.length) return { sent: 0, dropped: 0 };
 
-  // The network name is clamped once, here, so no transport can be handed a
-  // message over its size cap — see MAX_PUSH_NETWORK_NAME_BYTES. (The body is
-  // clamped where it's composed, on the words that go on the wire.)
-  const payload: PushPayload = {
-    ...message,
-    networkName: clampPushText(message.networkName, MAX_PUSH_NETWORK_NAME_BYTES),
-  };
-
-  // Composition is transport-neutral and identical for every device, so it
-  // happens once rather than per sub. Each sender renders it its own way — JSON
-  // for a service worker, an `aps` dict for APNs, a string data map for FCM.
-  const content = composeNotification(payload);
+  // Clamped, composed and fitted once, here, so no transport can be handed a
+  // message over its size cap. Composition is transport-neutral and identical
+  // for every device; each sender renders it its own way — JSON for a service
+  // worker, an `aps` dict for APNs, a string data map for FCM.
+  const { payload, content, fits } = prepareNotification(message);
+  if (!fits) {
+    // Even cut down it's over every transport's 4 KB (see fitPushBody): sending
+    // would only earn a refusal, which counts against the device. One lost
+    // notification beats a disabled phone.
+    console.warn(
+      `[push] dropped a ${payload.kind} push for user ${userId}: over 4 KB even with ` +
+        'its text cut (an extreme channel or nick name)',
+    );
+    return { sent: 0, dropped: 0 };
+  }
 
   // Skip transports with no credentials rather than attempting them. A
   // self-hosted server holds no APNs key and that's normal operation; without
