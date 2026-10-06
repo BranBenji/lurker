@@ -175,6 +175,19 @@ function isProviderTokenRejection(status: number | null, reason: string | null):
   );
 }
 
+// Rejections of OUR configuration rather than of the device: a wrong
+// LURKER_APNS_BUNDLE_ID reads TopicDisallowed or BadTopic for every device, and
+// a strike per push would disable the whole fleet in five.
+const CONFIG_REJECTIONS = new Set([
+  'BadTopic',
+  'MissingTopic',
+  'TopicDisallowed',
+  'BadCertificate',
+  'BadCertificateEnvironment',
+  'UnrelatedKeyIdInToken',
+  'BadEnvironmentKeyInToken',
+]);
+
 export const apnsSender: PushSender = {
   transport: 'apns',
 
@@ -251,6 +264,7 @@ export const apnsSender: PushSender = {
     // Transient keeps them alive; the operator fixes the key and delivery
     // resumes on its own.
     if (isProviderTokenRejection(status, reason)) return 'transient';
+    if (reason && CONFIG_REJECTIONS.has(reason)) return 'transient';
 
     // Apple throttling us, Apple being down, or no response at all.
     if (status == null || status === 429 || status >= 500) return 'transient';

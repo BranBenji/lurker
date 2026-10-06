@@ -41,19 +41,18 @@ const payload: PushPayload = {
 };
 
 // The OAuth exchange answers first, then the send answers with `rejection`.
-function stubFetch(rejection: unknown): void {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (url: string) =>
-      url.includes('oauth2')
-        ? new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }))
-        : new Response(JSON.stringify(rejection), { status: 400 }),
-    ),
+function stubFetch(rejection: unknown, status = 400) {
+  const fetch = vi.fn<(url: string) => Promise<Response>>(async (url: string) =>
+    url.includes('oauth2')
+      ? new Response(JSON.stringify({ access_token: 'tok', expires_in: 3600 }))
+      : new Response(JSON.stringify(rejection), { status }),
   );
+  vi.stubGlobal('fetch', fetch);
+  return fetch;
 }
 
-async function verdictFor(rejection: unknown): Promise<string> {
-  stubFetch(rejection);
+async function verdictFor(rejection: unknown, status = 400): Promise<string> {
+  stubFetch(rejection, status);
   const err = await fcmSender.send(sub, payload, composeNotification(payload)).then(
     () => null,
     (e: unknown) => e,
@@ -143,5 +142,49 @@ describe('fcm send reads INVALID_ARGUMENT', () => {
       );
     }
     expect(verdicts).toEqual(['strike', 'strike']);
+  });
+});
+
+// FCM's own code rides in `details` as an FcmError; `error.status` is only the
+// gRPC status (firebase.google.com/docs/cloud-messaging/error-codes).
+const fcmError = (code: number, status: string, errorCode?: string) => ({
+  error: {
+    code,
+    message: 'x',
+    status,
+    ...(errorCode
+      ? { details: [{ '@type': 'type.googleapis.com/google.firebase.fcm.v1.FcmError', errorCode }] }
+      : {}),
+  },
+});
+
+describe("fcm send reads FCM's error code, not just the status", () => {
+  it('deletes an unregistered device', async () => {
+    expect(await verdictFor(fcmError(404, 'NOT_FOUND', 'UNREGISTERED'), 404)).toBe('permanent');
+  });
+
+  it('deletes a token from another Firebase project, though it arrives as a 403', async () => {
+    expect(await verdictFor(fcmError(403, 'PERMISSION_DENIED', 'SENDER_ID_MISMATCH'), 403)).toBe(
+      'permanent',
+    );
+  });
+
+  it('keeps the access token when a 403 is about the device, not us', async () => {
+    const fetch = stubFetch(fcmError(403, 'PERMISSION_DENIED', 'SENDER_ID_MISMATCH'), 403);
+    const oauthCalls = () =>
+      fetch.mock.calls.filter(([url]) => String(url).includes('oauth2')).length;
+    const failOnce = async () => {
+      const err = await fcmSender.send(sub, payload, composeNotification(payload)).catch((e) => e);
+      fcmSender.onFailure?.(err, fcmSender.classify(err));
+    };
+    await failOnce(); // warms the token cache, whatever state it was in
+    const before = oauthCalls();
+    await failOnce();
+    await failOnce();
+    expect(oauthCalls()).toBe(before);
+  });
+
+  it("doesn't delete devices over a 404 that isn't UNREGISTERED (our project id)", async () => {
+    expect(await verdictFor(fcmError(404, 'NOT_FOUND'), 404)).toBe('transient');
   });
 });

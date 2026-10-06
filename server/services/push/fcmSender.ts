@@ -53,8 +53,18 @@ interface FcmErrorBody {
   error?: {
     status?: string;
     message?: string;
-    details?: { fieldViolations?: { field?: string }[] }[];
+    details?: { '@type'?: string; errorCode?: string; fieldViolations?: { field?: string }[] }[];
   };
+}
+
+// FCM's own code (UNREGISTERED, SENDER_ID_MISMATCH, …) rides in `details`, in an
+// FcmError entry (firebase.google.com/docs/cloud-messaging/error-codes).
+// `error.status` is only the generic gRPC status: a dead token reads NOT_FOUND
+// there and a foreign-project token PERMISSION_DENIED, which on its own looks
+// like our credentials failing.
+function fcmErrorCode(body: FcmErrorBody): string | null {
+  const entry = (body.error?.details ?? []).find((d) => d['@type']?.endsWith('.FcmError'));
+  return entry?.errorCode ?? null;
 }
 
 // INVALID_ARGUMENT covers a bad token AND a bad message — over 4 KB, a reserved
@@ -114,7 +124,14 @@ const accessToken = new TokenCache(async () => {
 // Google rejecting OUR service account rather than the device. Shared by
 // classify() and onFailure() so the verdict and the reaction agree.
 function isCredentialRejection(status: number | null, reason: string | null): boolean {
-  return status === 401 || status === 403 || reason === 'OAUTH_FAILED';
+  if (reason === 'SENDER_ID_MISMATCH') return false; // a 403 about the device, not us
+
+  return (
+    status === 401 ||
+    status === 403 ||
+    reason === 'OAUTH_FAILED' ||
+    reason === 'THIRD_PARTY_AUTH_ERROR'
+  );
 }
 
 /**
@@ -201,7 +218,7 @@ export const fcmSender: PushSender = {
     let tokenRejected = false;
     try {
       const body = JSON.parse(text) as FcmErrorBody;
-      reason = body.error?.status ?? null;
+      reason = fcmErrorCode(body) ?? body.error?.status ?? null;
       tokenRejected = namesTheToken(body);
     } catch {
       /* a non-JSON body just means no reason to read */
@@ -220,7 +237,7 @@ export const fcmSender: PushSender = {
     const status = e?.status ?? null;
 
     // The app was uninstalled or the token was replaced.
-    if (reason === 'UNREGISTERED' || reason === 'NOT_FOUND') return 'permanent';
+    if (reason === 'UNREGISTERED') return 'permanent';
     // A token minted for a DIFFERENT Firebase project (MismatchSenderId).
     // Retrying never fixes it.
     if (reason === 'SENDER_ID_MISMATCH') return 'permanent';
@@ -228,7 +245,9 @@ export const fcmSender: PushSender = {
     // message WE built wrong, so it strikes rather than deletes — see
     // namesTheToken.
     if (reason === 'INVALID_ARGUMENT') return e?.tokenRejected ? 'permanent' : 'strike';
-    if (status === 404) return 'permanent';
+    // A 404 that isn't UNREGISTERED is the URL — our project id — not the device.
+    // Reading it as permanent would delete every Android device on one typo.
+    if (status === 404) return 'transient';
 
     // OUR service account is broken, not this device — same reasoning as APNs'
     // 403: it fails identically for every device, so a strike would disable the

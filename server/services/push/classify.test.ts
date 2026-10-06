@@ -73,8 +73,18 @@ describe('apns classify', () => {
 
   it('strikes a rejection that is specific to this request', () => {
     expect(c(400, 'PayloadTooLarge')).toBe('strike');
-    expect(c(400, 'BadTopic')).toBe('strike');
+    // (BadTopic used to be here. The topic is LURKER_APNS_BUNDLE_ID — the same
+    // on every request — so it's our configuration; see the next block.)
   });
+});
+
+describe('apns classify — our configuration, not the device', () => {
+  it.each(['TopicDisallowed', 'BadTopic', 'MissingTopic', 'BadEnvironmentKeyInToken'])(
+    "doesn't strike devices over %s (a wrong bundle id or key environment)",
+    (reason) => {
+      expect(apnsSender.classify(new ApnsError(400, reason, 't'))).toBe('transient');
+    },
+  );
 });
 
 describe('fcm classify', () => {
@@ -83,8 +93,13 @@ describe('fcm classify', () => {
 
   it('drops a device Google says is gone', () => {
     expect(c(404, 'UNREGISTERED')).toBe('permanent');
-    expect(c(404, 'NOT_FOUND')).toBe('permanent');
-    expect(c(404, null)).toBe('permanent');
+  });
+
+  it("doesn't delete over a 404 that isn't UNREGISTERED — that's our URL", () => {
+    // FCM documents 404 only as UNREGISTERED, carried in details. A bare
+    // NOT_FOUND is a wrong project id, and would otherwise delete every device.
+    expect(c(404, 'NOT_FOUND')).toBe('transient');
+    expect(c(404, null)).toBe('transient');
   });
 
   it('drops a token that can never work for this project', () => {
