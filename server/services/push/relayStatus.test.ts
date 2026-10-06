@@ -173,6 +173,33 @@ describe('relayStatus', () => {
   });
 });
 
+describe('a plain read while a check is in flight', () => {
+  it('joins the check rather than answering from the older cache', async () => {
+    stubRelay(() => json(200, { registered: true, active: true, comped: true, paidThrough: null }));
+    await mod.relayStatus({ fresh: true }); // cached: comped
+    let answer!: (r: Response) => void;
+    stubRelay(() => new Promise<Response>((resolve) => (answer = resolve)));
+    const check = mod.relayStatus({ fresh: true });
+    const plain = mod.relayStatus(); // the cache is fresh, but a newer answer is coming
+    answer(
+      new Response(
+        JSON.stringify({
+          registered: true,
+          active: true,
+          comped: false,
+          paidThrough: '2027-10-06T00:00:00Z',
+        }),
+      ),
+    );
+    expect(await plain).toEqual(await check);
+    expect(await plain).toEqual({
+      state: 'active',
+      comped: false,
+      paidThrough: '2027-10-06T00:00:00Z',
+    });
+  });
+});
+
 describe('peekRelayStatus', () => {
   it('never waits on the relay, and the next peek shows what it found', async () => {
     let answer!: (r: Response) => void;

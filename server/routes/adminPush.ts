@@ -46,6 +46,14 @@ router.get('/', (_req: Request, res: Response) => {
   res.json(payload(pushRelayEnabled() ? peekRelayStatus() : null));
 });
 
+// The status alone, for the pane after it loads: the GET above never waits, so
+// this is how a background refresh (or a cold cache after a restart) reaches it.
+// Waits for the shared request, bounded by its timeout. Only while opted in:
+// otherwise this server doesn't contact the relay, and the answer is null.
+router.get('/relay/status', async (_req: Request, res: Response) => {
+  res.json({ status: pushRelayEnabled() ? await relayStatus() : null });
+});
+
 // The admin asking, before turning the relay on (or any time after). (Express 5
 // passes a rejected handler promise to the error handler.)
 router.post('/relay/check', async (_req: Request, res: Response) => {

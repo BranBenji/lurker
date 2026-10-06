@@ -35,11 +35,16 @@ function stubConfirm(answer: boolean) {
   return fn;
 }
 
+let refreshStatus: ReturnType<typeof vi.fn<() => Promise<void>>>;
+
 async function mountPane(initial: AdminPushConfig): Promise<VueWrapper> {
   const store = useAdminStore();
   store.fetchPush = vi.fn<() => Promise<void>>(async () => {
     store.push = initial;
+    store.relayStatus = initial.relay.status; // the store seeds it from the GET
   });
+  refreshStatus = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+  store.refreshRelayStatus = refreshStatus as unknown as typeof store.refreshRelayStatus;
   setRelay = vi.fn<(enabled: boolean) => Promise<number>>().mockResolvedValue(0);
   store.setPushRelayEnabled = setRelay as unknown as typeof store.setPushRelayEnabled;
   const wrapper = mount(NotificationsPane);
@@ -146,7 +151,7 @@ describe('NotificationsPane', () => {
     expect(w.find('.relay-status').text()).not.toContain('push.lurker.chat');
     const store = useAdminStore();
     const checkPushRelay = vi.fn<() => Promise<void>>(async () => {
-      store.push = config({ status: { state: 'active', comped: true, paidThrough: null } });
+      store.relayStatus = { state: 'active', comped: true, paidThrough: null };
     });
     store.checkPushRelay = checkPushRelay as unknown as typeof store.checkPushRelay;
     await w.find('.relay-status button').trigger('click');
@@ -161,7 +166,7 @@ describe('NotificationsPane', () => {
     const store = useAdminStore();
     // The store keeps the refusal's answer (see admin.test.ts) and rethrows the 409.
     setRelay.mockImplementationOnce(async () => {
-      store.push = config({ status: { state: 'inactive', registered: false } });
+      store.relayStatus = { state: 'inactive', registered: false };
       throw Object.assign(new Error('Conflict'), { status: 409 });
     });
     await w.find('input[type="checkbox"]').setValue(true);
@@ -182,5 +187,19 @@ describe('NotificationsPane', () => {
     finish();
     await flushPromises();
     expect(w.find('.relay-status button').attributes('disabled')).toBeUndefined();
+  });
+
+  it('asks for the status after loading, and shows what arrives — only while opted in', async () => {
+    const off = await mountPane(config());
+    expect(refreshStatus).not.toHaveBeenCalled();
+    off.unmount();
+
+    const w = await mountPane(config({ enabled: true, devices: 1 }));
+    expect(refreshStatus).toHaveBeenCalledOnce();
+    expect(w.find('.relay-status').text()).not.toContain('Comped');
+    // The background refresh lands after mount.
+    useAdminStore().relayStatus = { state: 'active', comped: true, paidThrough: null };
+    await flushPromises();
+    expect(w.find('.relay-status').text()).toContain('Comped');
   });
 });

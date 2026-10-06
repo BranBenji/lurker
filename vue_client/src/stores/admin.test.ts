@@ -223,19 +223,95 @@ describe('admin store — push relay toggle', () => {
     expect(store.push?.relay.status).toEqual({ state: 'inactive', registered: false });
   });
 
-  it("drops a slow check's answer when a toggle landed meanwhile", async () => {
+  const status = (paidThrough: string) =>
+    ({ state: 'active', comped: false, paidThrough }) as const;
+  const withStatus = (enabled: boolean, s: unknown) => ({
+    ...push(enabled),
+    relay: { ...push(enabled).relay, status: s },
+  });
+
+  it('a status answer never touches the toggle', async () => {
     const store = useAdminStore();
-    store.push = push(false);
+    store.push = push(true);
+    h.api.mockImplementation(() =>
+      Promise.resolve(withStatus(false, status('2027-10-06T00:00:00Z'))),
+    );
+    await store.checkPushRelay();
+    expect(store.relayStatus).toEqual(status('2027-10-06T00:00:00Z'));
+    expect(store.push?.relay.enabled).toBe(true);
+  });
+
+  it('shows a background refresh that lands after the pane loaded', async () => {
+    const store = useAdminStore();
+    h.api.mockImplementation(
+      (url: string) =>
+        url.endsWith('/relay/status')
+          ? Promise.resolve({ status: status('2027-10-06T00:00:00Z') })
+          : Promise.resolve(push(true)), // a restart: the GET has no status yet
+    );
+    await store.fetchPush();
+    expect(store.relayStatus).toBeNull();
+    await store.refreshRelayStatus();
+    expect(store.relayStatus).toEqual(status('2027-10-06T00:00:00Z'));
+  });
+
+  it("check → reload the pane → check completes: the check's answer stands", async () => {
+    const store = useAdminStore();
     let answerCheck!: (v: unknown) => void;
-    h.api.mockImplementation((url: string, opts?: { method?: string }) => {
+    h.api.mockImplementation((url: string) => {
       if (url.endsWith('/relay/check')) return new Promise((r) => (answerCheck = r));
-      if (opts?.method === 'PUT') return Promise.resolve({ ...push(true), removed: 0 });
-      return Promise.resolve(push(false));
+      return Promise.resolve(withStatus(false, { state: 'unreachable', reason: 'old' }));
     });
     const checking = store.checkPushRelay();
-    await store.setPushRelayEnabled(true);
-    answerCheck(push(false)); // read before the toggle
+    await store.fetchPush(); // leave and come back: a plain GET
+    answerCheck(withStatus(false, status('2027-10-06T00:00:00Z')));
     await checking;
+    expect(store.relayStatus).toEqual(status('2027-10-06T00:00:00Z'));
+  });
+
+  it('an older status answer landing late never replaces a newer one', async () => {
+    const store = useAdminStore();
+    const answers: ((v: unknown) => void)[] = [];
+    h.api.mockImplementation(() => new Promise((r) => answers.push(r)));
+    const first = store.checkPushRelay();
+    const second = store.refreshRelayStatus();
+    answers[1]({ status: status('2028-01-01T00:00:00Z') }); // the newer request
+    answers[0](withStatus(false, status('2027-10-06T00:00:00Z'))); // the older, late
+    await Promise.all([first, second]);
+    expect(store.relayStatus).toEqual(status('2028-01-01T00:00:00Z'));
+  });
+
+  it("a plain GET's status seeds the line but never overrides a landed answer", async () => {
+    const store = useAdminStore();
+    h.api.mockImplementation((url: string) =>
+      url.endsWith('/relay/check')
+        ? Promise.resolve(withStatus(false, status('2027-10-06T00:00:00Z')))
+        : Promise.resolve(withStatus(false, { state: 'unreachable', reason: 'cached' })),
+    );
+    await store.checkPushRelay();
+    await store.fetchPush();
+    expect(store.relayStatus).toEqual(status('2027-10-06T00:00:00Z'));
+  });
+
+  it('ON(a) → ON(b) → 200(b) → 409 superseded(a): stays on', async () => {
+    const store = useAdminStore();
+    store.push = push(false);
+    const answers: { resolve: (v: unknown) => void; reject: (e: unknown) => void }[] = [];
+    h.api.mockImplementation(
+      () => new Promise((resolve, reject) => answers.push({ resolve, reject })),
+    );
+    const a = store.setPushRelayEnabled(true);
+    const b = store.setPushRelayEnabled(true);
+    answers[1].resolve({ ...withStatus(true, status('2027-10-06T00:00:00Z')), removed: 0 });
+    await b;
+    expect(store.push?.relay.enabled).toBe(true);
+    answers[0].reject(
+      Object.assign(new Error('Conflict'), {
+        status: 409,
+        data: { code: 'superseded', ...withStatus(false, status('2027-10-06T00:00:00Z')) },
+      }),
+    );
+    await expect(a).rejects.toThrow('Conflict');
     expect(store.push?.relay.enabled).toBe(true);
   });
 });

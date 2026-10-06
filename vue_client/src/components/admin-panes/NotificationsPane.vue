@@ -123,7 +123,7 @@ function describe(s: RelayStatus, host: string): { text: string; ok: boolean } {
 }
 
 const status = computed(() => {
-  const s = push.value?.relay.status;
+  const s = store.relayStatus;
   return s ? describe(s, relayHost.value) : null;
 });
 
@@ -145,7 +145,12 @@ async function load() {
     await store.fetchPush();
   } catch (e: any) {
     error.value = e.message || 'failed to load notification settings';
+    return;
   }
+  // The load never waits on the relay, so its status may be missing or a minute
+  // old; ask for it now. Only while opted in — otherwise nothing contacts the
+  // relay until the admin presses "check".
+  if (store.push?.relay.enabled) store.refreshRelayStatus().catch(() => {});
 }
 
 // The checkbox flips itself before we know whether the change will stick, and

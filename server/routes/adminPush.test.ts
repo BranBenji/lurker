@@ -391,4 +391,20 @@ describe('the relay status check (RELAY_PLAN.md §6.5)', () => {
     const pane = await adminAgent.get('/api/admin/push');
     expect(pane.body.relay.enabled).toBe(false);
   });
+
+  it("GET /relay/status waits for the relay's answer, only while opted in", async () => {
+    let res = await adminAgent.get('/api/admin/push/relay/status');
+    expect(res.body).toEqual({ status: null });
+    expect(relayFetch).not.toHaveBeenCalled();
+
+    await setRelay(true);
+    resetRelayStatusCache(); // a restart: nothing cached
+    relayAnswer = answer({ paidThrough: '2027-10-06T00:00:00Z' });
+    res = await adminAgent.get('/api/admin/push/relay/status');
+    expect(res.body.status).toEqual({
+      state: 'active',
+      comped: false,
+      paidThrough: '2027-10-06T00:00:00Z',
+    });
+  });
 });

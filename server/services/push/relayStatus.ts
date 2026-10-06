@@ -93,6 +93,11 @@ export async function relayStatus(
   opts: { fresh?: boolean; timeoutMs?: number; now?: number } = {},
 ): Promise<RelayStatus> {
   const now = opts.now ?? Date.now();
+  // A request already in flight is newer than anything cached: join it, so a
+  // background read can't answer older than a concurrent "check".
+  if (!opts.fresh && inflight) return inflight;
+
+
   if (!opts.fresh && cached && now - cached.at < CACHE_MS) return cached.status;
   return fetchShared(opts.timeoutMs ?? TIMEOUT_MS, now);
 }
