@@ -8,18 +8,19 @@
 // keys. Nothing about SENDING changes: a relay subscription is an ordinary Web
 // Push row and goes out through webpushSender like a browser's. What this module
 // adds is consent. Until the admin turns the relay on, /api/push/config doesn't
-// mention it — so the apps never contact it — and the server refuses relay
-// endpoints, so it never sends there either.
+// mention it — so the apps never contact it — and the server neither files nor
+// sends to a relay endpoint.
 
+import db from '../../db/index.js';
 import { pushRelayEnabled, setPushRelayEnabled } from '../../db/instanceSettings.js';
 import { countWebPushWhere, deleteWebPushWhere } from '../../db/pushSubscriptions.js';
 
 const DEFAULT_RELAY_URL = 'https://push.lurker.chat';
 
 // The override exists for developing the relay against a local server. Only the
-// origin is kept: the apps build their endpoint paths themselves, and the
-// registration check matches on origin.
-function parseRelayOrigin(raw: string): string {
+// origin is kept: the apps build their endpoint paths themselves, and endpoints
+// are matched on scheme, host and port.
+function parseRelayUrl(raw: string): URL {
   let url: URL;
   try {
     url = new URL(raw);
@@ -29,19 +30,34 @@ function parseRelayOrigin(raw: string): string {
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
     throw new Error(`LURKER_PUSH_RELAY_URL must be http(s): ${raw}`);
   }
-  return url.origin;
+  return url;
 }
 
-export const RELAY_ORIGIN = parseRelayOrigin(
-  process.env.LURKER_PUSH_RELAY_URL || DEFAULT_RELAY_URL,
-);
+// Not URL.origin: that keeps a trailing dot, and `push.lurker.chat.` is the same
+// host to DNS and TLS. Comparing origins would let such an endpoint past the
+// opt-in and on to the relay.
+function hostKey(url: URL): string {
+  return `${url.protocol}//${url.hostname.replace(/\.+$/, '')}:${url.port}`;
+}
+
+const relayUrl = parseRelayUrl(process.env.LURKER_PUSH_RELAY_URL || DEFAULT_RELAY_URL);
+export const RELAY_ORIGIN = relayUrl.origin;
+const RELAY_HOST_KEY = hostKey(relayUrl);
 
 export function isRelayEndpoint(endpoint: string): boolean {
   try {
-    return new URL(endpoint).origin === RELAY_ORIGIN;
+    return hostKey(new URL(endpoint)) === RELAY_HOST_KEY;
   } catch {
     return false;
   }
+}
+
+/**
+ * May this server file, or send to, a subscription at `endpoint`? Everything but
+ * the relay always may; the relay only while the admin has it on.
+ */
+export function relayAllows(endpoint: string): boolean {
+  return !isRelayEndpoint(endpoint) || pushRelayEnabled();
 }
 
 /** The relay's URL while the admin has it on, else null. */
@@ -49,6 +65,7 @@ export function advertisedRelay(): string | null {
   return pushRelayEnabled() ? RELAY_ORIGIN : null;
 }
 
+/** Devices currently getting pushes through the relay (disabled rows don't). */
 export function relayDeviceCount(): number {
   return countWebPushWhere(isRelayEndpoint);
 }
@@ -59,6 +76,10 @@ export function relayDeviceCount(): number {
  * new apps from finding it. Returns how many were deleted.
  */
 export function setRelayEnabled(enabled: boolean): number {
-  setPushRelayEnabled(enabled);
-  return enabled ? 0 : deleteWebPushWhere(isRelayEndpoint);
+  // One transaction: a failed delete must not leave the switch off with relay
+  // rows still filed.
+  return db.transaction(() => {
+    setPushRelayEnabled(enabled);
+    return enabled ? 0 : deleteWebPushWhere(isRelayEndpoint);
+  })();
 }

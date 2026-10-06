@@ -331,9 +331,16 @@ export const useAdminStore = defineStore('admin', {
       this.push = await api('/api/admin/push');
     },
     async setPushRelayEnabled(enabled: boolean) {
-      const data = await api('/api/admin/push/relay', { method: 'PUT', body: { enabled } });
-      this.push = data;
-      return data.removed as number;
+      try {
+        const data = await api('/api/admin/push/relay', { method: 'PUT', body: { enabled } });
+        this.push = data;
+        return data.removed as number;
+      } catch (e) {
+        // Refetch before rethrowing, like the networks policy: the checkbox must
+        // show what the server holds, not what was attempted.
+        await this.fetchPush().catch(() => {});
+        throw e;
+      }
     },
   },
 });

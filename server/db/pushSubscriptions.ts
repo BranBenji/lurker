@@ -258,15 +258,22 @@ export function deleteByEndpoint(userId: number, endpoint: string): void {
  * check the registration route applies — a prefix match in SQL would miss an
  * endpoint that differs only in case or a default port.
  */
-function webpushRowsWhere(match: (endpoint: string) => boolean): { id: number }[] {
+function webpushRowsWhere(
+  match: (endpoint: string) => boolean,
+  enabledOnly = false,
+): { id: number }[] {
   const rows = db
-    .prepare(`SELECT id, endpoint FROM push_subscriptions WHERE transport = 'webpush'`)
+    .prepare(
+      `SELECT id, endpoint FROM push_subscriptions WHERE transport = 'webpush'` +
+        (enabledOnly ? ' AND enabled = 1' : ''),
+    )
     .all() as { id: number; endpoint: string }[];
   return rows.filter((r) => match(r.endpoint));
 }
 
+/** Matching rows that are still enabled — the ones actually getting pushes. */
 export function countWebPushWhere(match: (endpoint: string) => boolean): number {
-  return webpushRowsWhere(match).length;
+  return webpushRowsWhere(match, true).length;
 }
 
 /** Delete every matching Web Push row, across all users; returns how many went. */

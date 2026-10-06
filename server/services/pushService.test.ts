@@ -139,3 +139,42 @@ describe('deliver', () => {
   // db/pushSubscriptions.test.ts (#441), and the route layer's push.test.js
   // covers the happy path end-to-end via the API.
 });
+
+// lurker-dev/RELAY_PLAN.md §5a: the opt-in holds where pushes leave, not only
+// at registration — a relay row that outlived an opt-out is never sent to.
+describe('deliver and the push relay opt-in', () => {
+  const RELAY_ENDPOINT = 'https://push.lurker.chat/relay-to/apns/production/abc';
+  let carol: User;
+  let settings: typeof import('../db/instanceSettings.js');
+
+  beforeAll(async () => {
+    settings = await import('../db/instanceSettings.js');
+    carol = createUser('push-relay-carol');
+  });
+
+  beforeEach(() => {
+    pushDb.upsertSubscription(carol.id, {
+      transport: 'webpush',
+      endpoint: RELAY_ENDPOINT,
+      p256dh: 'k',
+      auth: 'a',
+    });
+  });
+
+  it('drops a relay row instead of sending while the relay is off', async () => {
+    settings.setPushRelayEnabled(false);
+    sendNotification.mockResolvedValue({ statusCode: 201 });
+    const result = await pushService.deliver(carol.id, samplePayload());
+    expect(sendNotification).not.toHaveBeenCalled();
+    expect(result).toEqual({ sent: 0, dropped: 0 });
+    expect(pushDb.getByEndpoint(RELAY_ENDPOINT)).toBeNull();
+  });
+
+  it('sends to it once the relay is on', async () => {
+    settings.setPushRelayEnabled(true);
+    sendNotification.mockResolvedValue({ statusCode: 201 });
+    const result = await pushService.deliver(carol.id, samplePayload());
+    expect(sendNotification).toHaveBeenCalledTimes(1);
+    expect(result.sent).toBe(1);
+  });
+});

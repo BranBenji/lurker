@@ -10,6 +10,7 @@ import {
   type PushPayload,
 } from './notificationContent.js';
 import { senderFor, warnUnconfiguredOnce } from './push/index.js';
+import { relayAllows } from './push/relay.js';
 import {
   listEnabledForUser,
   hasEnabledForUser,
@@ -103,7 +104,15 @@ export async function deliver(
   // self-hosted server holds no APNs key and that's normal operation; without
   // this, every push to a native device would throw and count as a failure,
   // eventually disabling the device for a reason that isn't the device's fault.
+  //
+  // A relay endpoint while the admin has the relay off is dropped, not sent to.
+  // Registration refuses those and turning the relay off deletes them, but this
+  // is where the opt-in has to hold: nothing reaches the relay without it.
   const deliverable = subs.filter((sub) => {
+    if (sub.transport === 'webpush' && !relayAllows(sub.endpoint)) {
+      deleteById(sub.id, sub.user_id);
+      return false;
+    }
     const sender = senderFor(sub.transport);
     if (sender.isConfigured()) return true;
     warnUnconfiguredOnce(sender);

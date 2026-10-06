@@ -6,7 +6,7 @@ import type { Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { getPublicKey } from '../services/pushService.js';
 import { senderFor } from '../services/push/index.js';
-import { advertisedRelay, isRelayEndpoint } from '../services/push/relay.js';
+import { advertisedRelay, relayAllows } from '../services/push/relay.js';
 import {
   upsertSubscription,
   deleteByEndpoint,
@@ -143,7 +143,7 @@ router.post('/subscriptions', (req: Request, res: Response) => {
   // The admin's opt-in is enforced here, not just advertised: an app that read
   // /config before the relay was turned off mustn't be able to put the server
   // back to sending there.
-  if (typeof endpoint === 'string' && isRelayEndpoint(endpoint) && !advertisedRelay()) {
+  if (typeof endpoint === 'string' && !relayAllows(endpoint)) {
     res.status(403).json({ error: "this server's admin hasn't turned on the push relay" });
     return;
   }

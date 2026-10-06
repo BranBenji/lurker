@@ -57,6 +57,11 @@ describe('NotificationsPane', () => {
     expect(w.text()).toContain('directly');
   });
 
+  it('keeps the toggle on a native server while the relay is on, so it can be turned off', async () => {
+    const w = await mountPane(config({ enabled: true, devices: 1 }, ['webpush', 'apns', 'fcm']));
+    expect(checkbox(w).checked).toBe(true);
+  });
+
   it('shows the server key on a self-hosted server', async () => {
     const w = await mountPane(config());
     expect(w.find('code.key').text()).toBe('BPubKeyBase64url');

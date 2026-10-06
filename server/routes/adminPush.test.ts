@@ -126,6 +126,16 @@ describe('registering a relay endpoint', () => {
     expect(res.status).toBe(403);
   });
 
+  it('is matched with a trailing-dot host too', async () => {
+    // Same host to DNS and TLS, but a different URL.origin.
+    for (const endpoint of [
+      'https://push.lurker.chat./relay-to/apns/production/x',
+      'https://push.lurker.chat%2E/relay-to/apns/production/x',
+    ]) {
+      expect((await subscribe(userAgent, endpoint)).status).toBe(403);
+    }
+  });
+
   it('is accepted once the relay is on, and counted for the admin', async () => {
     await setRelay(true);
     const res = await subscribe(userAgent, `${RELAY}/relay-to/apns/production/abc`);
@@ -142,6 +152,17 @@ describe('registering a relay endpoint', () => {
   it('only matches the relay host itself', async () => {
     const res = await subscribe(userAgent, 'https://push.lurker.chat.example.com/x');
     expect(res.status).toBe(201);
+  });
+});
+
+describe('the device count', () => {
+  it('leaves out relay rows disabled after repeated failures', async () => {
+    await setRelay(true);
+    await subscribe(userAgent, `${RELAY}/relay-to/apns/production/live`);
+    await subscribe(userAgent, `${RELAY}/relay-to/apns/production/dead`);
+    db.prepare(`UPDATE push_subscriptions SET enabled = 0 WHERE endpoint LIKE '%/dead'`).run();
+    const res = await adminAgent.get('/api/admin/push');
+    expect(res.body.relay.devices).toBe(1);
   });
 });
 

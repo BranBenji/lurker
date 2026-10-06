@@ -31,8 +31,12 @@
             {{ copied ? 'copied' : 'copy' }}
           </button>
         </div>
+      </template>
 
-        <label class="policy check">
+      <!-- Still shown on a native server while the relay is on: otherwise an
+           admin who added APNs/FCM keys later would have no way to turn it off. -->
+      <template v-if="!native || push.relay.enabled">
+        <label class="check">
           <input type="checkbox" :checked="push.relay.enabled" :disabled="busy" @change="toggle" />
           <span>Use {{ relayHost }} for the iOS and Android apps</span>
         </label>
@@ -95,7 +99,8 @@ async function toggle(e: Event) {
   try {
     await store.setPushRelayEnabled(enabled);
   } catch (e: any) {
-    input.checked = !enabled;
+    // The store refetched; show what the server holds.
+    input.checked = store.push?.relay.enabled ?? !enabled;
     error.value = e.message || 'failed to change the relay setting';
   } finally {
     busy.value = false;
@@ -115,7 +120,7 @@ onMounted(load);
 }
 .key {
   flex: 1 1 auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--mono);
   word-break: break-all;
   user-select: all;
   background: var(--bg);
@@ -130,11 +135,5 @@ onMounted(load);
 }
 .check input {
   width: auto;
-}
-.error {
-  color: var(--bad);
-}
-.muted {
-  color: var(--fg-muted);
 }
 </style>
