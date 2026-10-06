@@ -5994,6 +5994,20 @@ describe('proxy refusals and wiring', () => {
       setAllowUserDefinedNetworks(true);
     }
   });
+
+  // Nothing retries a refused connect, so unlike a dropped socket it marks the
+  // system buffer unread (#1036).
+  it('marks the system buffer unread when it refuses to dial', async () => {
+    const { setAllowUserDefinedNetworks } = await import('../db/instanceSettings.js');
+    setAllowUserDefinedNetworks(false);
+    try {
+      const before = getRecent(1).at(-1)?.id ?? 0;
+      attemptProxy(PROXIED as Partial<Network>);
+      expect(countNotableNewer(1, before)).toBe(1);
+    } finally {
+      setAllowUserDefinedNetworks(true);
+    }
+  });
 });
 
 describe('formatSocketCloseErrorMessage with a proxy failure', () => {
