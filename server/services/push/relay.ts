@@ -15,45 +15,11 @@ import db from '../../db/index.js';
 import { pushRelayEnabled, setPushRelayEnabled } from '../../db/instanceSettings.js';
 import { countWebPushWhere, deleteWebPushWhere } from '../../db/pushSubscriptions.js';
 
-const DEFAULT_RELAY_URL = 'https://push.lurker.chat';
+// Matching lives in relayOrigin.ts, which imports nothing, so the database layer
+// can ask "is this a relay endpoint?" without a cycle back through here.
+import { RELAY_ORIGIN, isRelayEndpoint } from './relayOrigin.js';
 
-// The override exists for developing the relay against a local server. Only the
-// origin is kept: the apps build their endpoint paths themselves. https only,
-// because web-push sends every endpoint over https whatever its scheme says.
-function parseRelayUrl(raw: string): URL {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new Error(`LURKER_PUSH_RELAY_URL is not a URL: ${raw}`);
-  }
-  if (url.protocol !== 'https:') {
-    throw new Error(`LURKER_PUSH_RELAY_URL must be https: ${raw}`);
-  }
-  return url;
-}
-
-// Endpoints are matched on host alone. web-push sends every endpoint with
-// https.request, so `http://push.lurker.chat/…` or any port on that host still
-// reaches the relay. The trailing dot goes too: URL keeps it, but it's the same
-// host to DNS and TLS.
-function bareHost(url: URL): string {
-  return url.hostname.replace(/\.+$/, '');
-}
-
-const relayUrl = parseRelayUrl(process.env.LURKER_PUSH_RELAY_URL || DEFAULT_RELAY_URL);
-export const RELAY_ORIGIN = relayUrl.origin;
-// The official relay stays covered under an override, so rows filed before it
-// was set don't slip out from under the opt-in.
-const RELAY_HOSTS = new Set([bareHost(new URL(DEFAULT_RELAY_URL)), bareHost(relayUrl)]);
-
-export function isRelayEndpoint(endpoint: string): boolean {
-  try {
-    return RELAY_HOSTS.has(bareHost(new URL(endpoint)));
-  } catch {
-    return false;
-  }
-}
+export { RELAY_ORIGIN, isRelayEndpoint };
 
 /**
  * May this server file, or send to, a subscription at `endpoint`? Everything but

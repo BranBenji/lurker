@@ -168,6 +168,30 @@ describe('registering a relay endpoint', () => {
   });
 });
 
+describe('the same phone under another account', () => {
+  it('moves a relay endpoint to the latest registrant, like a native token', async () => {
+    await setRelay(true);
+    const endpoint = `${RELAY}/relay-to/apns/production/phone/key`;
+    expect((await subscribe(adminAgent, endpoint)).status).toBe(201);
+    // Signed out offline, then a different account signs in on the same phone.
+    const res = await userAgent.post('/api/push/subscriptions').send({
+      endpoint,
+      keys: { p256dh: 'new-p256', auth: 'new-auth' },
+    });
+    expect(res.status).toBe(201);
+    const row = db
+      .prepare('SELECT user_id, p256dh, auth FROM push_subscriptions WHERE endpoint = ?')
+      .get(endpoint) as { user_id: number; p256dh: string; auth: string };
+    expect(row).toEqual({ user_id: plainUser.id, p256dh: 'new-p256', auth: 'new-auth' });
+  });
+
+  it("still refuses a browser's endpoint another account holds", async () => {
+    const endpoint = 'https://fcm.googleapis.com/fcm/send/shared-browser';
+    expect((await subscribe(adminAgent, endpoint)).status).toBe(201);
+    expect((await subscribe(userAgent, endpoint)).status).toBe(409);
+  });
+});
+
 describe('the device count', () => {
   it('leaves out relay rows disabled after repeated failures', async () => {
     await setRelay(true);

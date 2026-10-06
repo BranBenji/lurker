@@ -1572,7 +1572,9 @@ the self-hosted push relay (see below).
 > `GET /api/push/config` include `relay` (the relay's origin). An official app
 > contacts the relay only when that field is present. While the relay is off,
 > `POST /api/push/subscriptions` refuses an endpoint on the relay's origin with
-> `403`, and turning it off deletes the existing ones. It does not serve
+> `403`, and turning it off deletes the existing ones. A relay endpoint names a
+> device the way a native token does, so registering one that another account
+> holds moves it to the new account instead of answering `409`. It does not serve
 > third-party clients.
 >
 > What third-party clients _can_ do today: **Web Push** works on any instance
