@@ -23,7 +23,7 @@ function config(
     publicKey: 'BPubKeyBase64url',
     vapidSubject: { subject: 'https://lurker.example.com', appleAccepts, ignored: null },
     transports,
-    relay: { url: 'https://push.lurker.chat', enabled: false, devices: 0, ...over },
+    relay: { url: 'https://push.lurker.chat', enabled: false, devices: 0, status: null, ...over },
   } satisfies AdminPushConfig;
 }
 
@@ -35,11 +35,16 @@ function stubConfirm(answer: boolean) {
   return fn;
 }
 
+let refreshStatus: ReturnType<typeof vi.fn<() => Promise<void>>>;
+
 async function mountPane(initial: AdminPushConfig): Promise<VueWrapper> {
   const store = useAdminStore();
   store.fetchPush = vi.fn<() => Promise<void>>(async () => {
     store.push = initial;
+    store.relayStatus = initial.relay.status; // the store seeds it from the GET
   });
+  refreshStatus = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
+  store.refreshRelayStatus = refreshStatus as unknown as typeof store.refreshRelayStatus;
   setRelay = vi.fn<(enabled: boolean) => Promise<number>>().mockResolvedValue(0);
   store.setPushRelayEnabled = setRelay as unknown as typeof store.setPushRelayEnabled;
   const wrapper = mount(NotificationsPane);
@@ -119,5 +124,82 @@ describe('NotificationsPane', () => {
     await flushPromises();
     expect(checkbox(w).checked).toBe(false);
     expect(w.text()).toContain('nope');
+  });
+
+  it.each([
+    [{ state: 'active', comped: true, paidThrough: null }, 'Comped'],
+    [
+      // The plan's example: the UTC calendar date, whatever the browser's zone.
+      { state: 'active', comped: false, paidThrough: '2027-10-06T00:00:00Z' },
+      'Active — paid through 2027-10-06',
+    ],
+    [
+      { state: 'inactive', registered: false },
+      "push.lurker.chat doesn't recognize this server's key",
+    ],
+    [{ state: 'inactive', registered: true }, "This server's key isn't active on push.lurker.chat"],
+    [{ state: 'unauthorized' }, "push.lurker.chat couldn't verify this server's key"],
+    [{ state: 'refused', httpStatus: 404 }, 'push.lurker.chat refused the status check (HTTP 404)'],
+    [{ state: 'unreachable', reason: 'x' }, "Couldn't reach push.lurker.chat"],
+  ] as const)('shows what the relay said: %j', async (status, text) => {
+    const w = await mountPane(config({ status }));
+    expect(w.find('.relay-status').text()).toContain(text);
+  });
+
+  it('says nothing about the relay until asked, and asks on "check"', async () => {
+    const w = await mountPane(config());
+    expect(w.find('.relay-status').text()).not.toContain('push.lurker.chat');
+    const store = useAdminStore();
+    const checkPushRelay = vi.fn<() => Promise<void>>(async () => {
+      store.relayStatus = { state: 'active', comped: true, paidThrough: null };
+    });
+    store.checkPushRelay = checkPushRelay as unknown as typeof store.checkPushRelay;
+    await w.find('.relay-status button').trigger('click');
+    await flushPromises();
+    expect(checkPushRelay).toHaveBeenCalledOnce();
+    expect(w.find('.relay-status').text()).toContain('Comped');
+  });
+
+  it('shows why turning on was refused once, in the status line, and leaves the box unchecked', async () => {
+    stubConfirm(true);
+    const w = await mountPane(config());
+    const store = useAdminStore();
+    // The store keeps the refusal's answer (see admin.test.ts) and rethrows the 409.
+    setRelay.mockImplementationOnce(async () => {
+      store.relayStatus = { state: 'inactive', registered: false };
+      throw Object.assign(new Error('Conflict'), { status: 409 });
+    });
+    await w.find('input[type="checkbox"]').setValue(true);
+    await flushPromises();
+    expect(checkbox(w).checked).toBe(false);
+    expect(w.find('.relay-status').text()).toContain("doesn't recognize this server's key");
+    expect(w.text()).not.toContain('Conflict');
+    expect(w.text().split("doesn't recognize").length - 1).toBe(1);
+  });
+
+  it("can't check while a toggle is saving", async () => {
+    stubConfirm(true);
+    const w = await mountPane(config());
+    let finish!: () => void;
+    setRelay.mockImplementationOnce(() => new Promise<number>((r) => (finish = () => r(0))));
+    await w.find('input[type="checkbox"]').setValue(true);
+    expect(w.find('.relay-status button').attributes('disabled')).toBeDefined();
+    finish();
+    await flushPromises();
+    expect(w.find('.relay-status button').attributes('disabled')).toBeUndefined();
+  });
+
+  it('asks for the status after loading, and shows what arrives — only while opted in', async () => {
+    const off = await mountPane(config());
+    expect(refreshStatus).not.toHaveBeenCalled();
+    off.unmount();
+
+    const w = await mountPane(config({ enabled: true, devices: 1 }));
+    expect(refreshStatus).toHaveBeenCalledOnce();
+    expect(w.find('.relay-status').text()).not.toContain('Comped');
+    // The background refresh lands after mount.
+    useAdminStore().relayStatus = { state: 'active', comped: true, paidThrough: null };
+    await flushPromises();
+    expect(w.find('.relay-status').text()).toContain('Comped');
   });
 });

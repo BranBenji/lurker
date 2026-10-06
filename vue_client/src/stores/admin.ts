@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { defineStore } from 'pinia';
-import { api } from '../api.js';
+import { api, type ApiError } from '../api.js';
+import type { RelayStatus } from '../../../shared/relayStatus.js';
 import type { AdminUploader, UploaderDriver } from '../utils/uploaders.js';
 
 export interface AdminUser {
@@ -83,8 +84,17 @@ export interface AdminPushConfig {
   vapidSubject: { subject: string; appleAccepts: boolean; ignored: string | null };
   /** Transports this server can deliver on ('webpush', 'apns', 'fcm'). */
   transports: string[];
-  relay: { url: string; enabled: boolean; devices: number };
+  relay: {
+    url: string;
+    enabled: boolean;
+    devices: number;
+    /** push.lurker.chat's answer for this server's key (RELAY_PLAN.md §6.5); null
+     *  until the admin opts in or checks — the server doesn't ask before then. */
+    status: RelayStatus | null;
+  };
 }
+
+export type { RelayStatus as AdminRelayStatus } from '../../../shared/relayStatus.js';
 
 export const useAdminStore = defineStore('admin', {
   state: () => ({
@@ -108,6 +118,17 @@ export const useAdminStore = defineStore('admin', {
     allowUserDefinedNetworks: true,
     networksLoaded: false,
     push: null as AdminPushConfig | null,
+    // push.lurker.chat's answer for this server's key, apart from the rest of the
+    // push config (RELAY_PLAN.md §6.5). Status answers arrive from several places
+    // at their own pace — the pane's background read, "check", a turn-on — and
+    // only ever touch this. Each request takes a number when it starts; an answer
+    // is applied unless one from a later request already landed.
+    relayStatus: null as RelayStatus | null,
+    relayStatusIssued: 0,
+    relayStatusLanded: 0,
+    // Every toggle takes a number; only the latest toggle's answer is applied, so
+    // an older response arriving late can't flip the checkbox back.
+    pushMutationSeq: 0,
     usersLoaded: false,
     invitesLoaded: false,
     uploadersLoaded: false,
@@ -332,21 +353,57 @@ export const useAdminStore = defineStore('admin', {
     },
     async fetchPush() {
       const seq = ++this.pushFetchSeq;
-      const data = await api('/api/admin/push');
+      const data: AdminPushConfig = await api('/api/admin/push');
       // A save landed meanwhile — this GET predates it.
       if (seq !== this.pushFetchSeq) return;
       this.push = data;
+      // The GET's status is only the server's last answer: it seeds the line until
+      // a real status answer lands, and never overrides one.
+      if (this.relayStatusLanded === 0 && data.relay.status) this.relayStatus = data.relay.status;
+    },
+    landRelayStatus(seq: number, status: RelayStatus | null) {
+      if (seq <= this.relayStatusLanded) return; // a later request's answer is here
+
+      this.relayStatusLanded = seq;
+      this.relayStatus = status;
+    },
+    /** The relay's status for the pane after it loads (only while opted in). */
+    async refreshRelayStatus() {
+      const seq = ++this.relayStatusIssued;
+      const { status } = await api('/api/admin/push/relay/status');
+      this.landRelayStatus(seq, status);
+    },
+    async checkPushRelay() {
+      const seq = ++this.relayStatusIssued;
+      const data: AdminPushConfig = await api('/api/admin/push/relay/check', { method: 'POST' });
+      this.landRelayStatus(seq, data.relay.status);
     },
     async setPushRelayEnabled(enabled: boolean) {
+      const mutation = ++this.pushMutationSeq;
+      const statusSeq = ++this.relayStatusIssued;
+      const latest = () => mutation === this.pushMutationSeq;
+      const apply = (data: AdminPushConfig) => {
+        this.pushFetchSeq++; // any GET in flight predates this
+        this.push = data;
+        // A turn-on's answer carries the fresh check; turning off asks nothing.
+        if (data.relay.status) this.landRelayStatus(statusSeq, data.relay.status);
+      };
       try {
         const data = await api('/api/admin/push/relay', { method: 'PUT', body: { enabled } });
-        this.pushFetchSeq++;
-        this.push = data;
+        if (latest()) apply(data);
         return data.removed as number;
       } catch (e) {
-        // Refetch before rethrowing, like the networks policy: the checkbox must
-        // show what the server holds, not what was attempted.
-        await this.fetchPush().catch(() => {});
+        // A refused turn-on (409) carries the relay's answer, which a refetch
+        // wouldn't: the relay is still off, so the server doesn't ask. Otherwise
+        // refetch before rethrowing, like the networks policy — the checkbox must
+        // show what the server holds, not what was attempted. Either way, only for
+        // the latest toggle: an older one's answer is history.
+        const err = e as ApiError;
+        const body = err.data as AdminPushConfig | undefined;
+        if (latest()) {
+          if (err.status === 409 && body?.relay) apply(body);
+          else await this.fetchPush().catch(() => {});
+        }
         throw e;
       }
     },

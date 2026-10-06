@@ -40,13 +40,24 @@
             {{ copied ? 'copied' : 'copy' }}
           </button>
         </div>
+        <p class="relay-status small">
+          <span v-if="status" :class="status.ok ? 'muted' : 'error'">{{ status.text }}</span>
+          <button class="link" type="button" :disabled="checking || busy" @click="check">
+            {{ checking ? 'checking…' : 'check' }}
+          </button>
+        </p>
       </template>
 
       <!-- Still shown on a native server while the relay is on: otherwise an
            admin who added APNs/FCM keys later would have no way to turn it off. -->
       <template v-if="!native || push.relay.enabled">
         <label class="check">
-          <input type="checkbox" :checked="push.relay.enabled" :disabled="busy" @change="toggle" />
+          <input
+            type="checkbox"
+            :checked="push.relay.enabled"
+            :disabled="busy || checking"
+            @change="toggle"
+          />
           <span>Use {{ relayHost }} for the iOS and Android apps</span>
         </label>
         <p v-if="push.relay.enabled" class="muted small">
@@ -61,6 +72,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { useAdminStore } from '../../stores/admin.js';
+import type { RelayStatus } from '../../../../shared/relayStatus.js';
 import { useCopyFeedback } from '../../composables/useCopyFeedback.js';
 
 const store = useAdminStore();
@@ -80,13 +92,65 @@ const deviceCount = computed(() => {
   return n === 1 ? '1 device' : `${n} devices`;
 });
 
+const checking = ref(false);
+
+// What push.lurker.chat says about this server's key, in a line — the one place
+// these words live (a refused turn-on shows this, not a second message). The
+// switch is exhaustive: a state added to RelayStatus fails typecheck here.
+function describe(s: RelayStatus, host: string): { text: string; ok: boolean } {
+  switch (s.state) {
+    case 'active':
+      if (s.comped) return { text: 'Comped', ok: true };
+      // The UTC calendar date, as the relay's own page shows it.
+      if (s.paidThrough)
+        return { text: `Active — paid through ${s.paidThrough.slice(0, 10)}`, ok: true };
+      return { text: 'Active', ok: true };
+    case 'inactive':
+      return s.registered
+        ? { text: `This server's key isn't active on ${host}`, ok: false }
+        : { text: `${host} doesn't recognize this server's key`, ok: false };
+    case 'unauthorized':
+      return { text: `${host} couldn't verify this server's key`, ok: false };
+    case 'refused':
+      return { text: `${host} refused the status check (HTTP ${s.httpStatus})`, ok: false };
+    case 'unreachable':
+      return { text: `Couldn't reach ${host}`, ok: false };
+    default: {
+      const unhandled: never = s;
+      return unhandled;
+    }
+  }
+}
+
+const status = computed(() => {
+  const s = store.relayStatus;
+  return s ? describe(s, relayHost.value) : null;
+});
+
+async function check() {
+  error.value = '';
+  checking.value = true;
+  try {
+    await store.checkPushRelay();
+  } catch (e: any) {
+    error.value = e.message || 'failed to check';
+  } finally {
+    checking.value = false;
+  }
+}
+
 async function load() {
   error.value = '';
   try {
     await store.fetchPush();
   } catch (e: any) {
     error.value = e.message || 'failed to load notification settings';
+    return;
   }
+  // The load never waits on the relay, so its status may be missing or a minute
+  // old; ask for it now. Only while opted in — otherwise nothing contacts the
+  // relay until the admin presses "check".
+  if (store.push?.relay.enabled) store.refreshRelayStatus().catch(() => {});
 }
 
 // The checkbox flips itself before we know whether the change will stick, and
@@ -108,9 +172,11 @@ async function toggle(e: Event) {
   try {
     await store.setPushRelayEnabled(enabled);
   } catch (e: any) {
-    // The store refetched; show what the server holds.
+    // The store refetched (or kept the refusal's answer); show what the server holds.
     input.checked = store.push?.relay.enabled ?? !enabled;
-    error.value = e.message || 'failed to change the relay setting';
+    // A refused turn-on (409) is explained by the status line; saying it twice
+    // would be noise.
+    if (e?.status !== 409) error.value = e.message || 'failed to change the relay setting';
   } finally {
     busy.value = false;
   }
@@ -136,6 +202,12 @@ onMounted(load);
   padding: var(--space-2) var(--space-4);
   border: 1px solid var(--border);
   min-width: 0;
+}
+.relay-status {
+  display: flex;
+  gap: 1ch;
+  margin-top: calc(-1 * var(--space-4));
+  margin-bottom: var(--space-6);
 }
 .check {
   flex-direction: row;
