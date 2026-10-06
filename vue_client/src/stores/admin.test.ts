@@ -174,6 +174,7 @@ describe('admin store — setUserIdent', () => {
 describe('admin store — push relay toggle', () => {
   const push = (enabled: boolean): AdminPushConfig => ({
     publicKey: 'k',
+    vapidSubject: { subject: 'https://lurker.example.com', appleAccepts: true },
     transports: ['webpush'],
     relay: { url: 'https://push.lurker.chat', enabled, devices: 0 },
   });

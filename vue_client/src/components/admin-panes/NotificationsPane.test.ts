@@ -14,9 +14,14 @@ import { createPinia, setActivePinia } from 'pinia';
 import { useAdminStore, type AdminPushConfig } from '../../stores/admin.js';
 import NotificationsPane from './NotificationsPane.vue';
 
-function config(over: Partial<AdminPushConfig['relay']> = {}, transports = ['webpush']) {
+function config(
+  over: Partial<AdminPushConfig['relay']> = {},
+  transports = ['webpush'],
+  appleAccepts = true,
+) {
   return {
     publicKey: 'BPubKeyBase64url',
+    vapidSubject: { subject: 'https://lurker.example.com', appleAccepts },
     transports,
     relay: { url: 'https://push.lurker.chat', enabled: false, devices: 0, ...over },
   } satisfies AdminPushConfig;
@@ -60,6 +65,14 @@ describe('NotificationsPane', () => {
   it('keeps the toggle on a native server while the relay is on, so it can be turned off', async () => {
     const w = await mountPane(config({ enabled: true, devices: 1 }, ['webpush', 'apns', 'fcm']));
     expect(checkbox(w).checked).toBe(true);
+  });
+
+  it("warns when Safari and iOS will refuse this server's pushes", async () => {
+    const quiet = await mountPane(config());
+    expect(quiet.text()).not.toContain('Safari and iOS');
+    const w = await mountPane(config({}, ['webpush'], false));
+    expect(w.text()).toContain('Safari and iOS will refuse');
+    expect(w.text()).toContain('VAPID_SUBJECT');
   });
 
   it('shows the server key on a self-hosted server', async () => {

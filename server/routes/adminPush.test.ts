@@ -64,6 +64,11 @@ describe('GET /api/admin/push', () => {
     expect(typeof res.body.publicKey).toBe('string');
     expect(res.body.publicKey.length).toBeGreaterThan(20);
     expect(res.body.relay).toEqual({ url: RELAY, enabled: false, devices: 0 });
+    // The test env sets neither VAPID_SUBJECT nor a public origin.
+    expect(res.body.vapidSubject).toEqual({
+      subject: 'mailto:lurker@localhost',
+      appleAccepts: false,
+    });
   });
 
   it('is the same key /api/push/config hands out', async () => {

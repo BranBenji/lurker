@@ -13,6 +13,11 @@
     <p v-if="error" class="error inline">{{ error }}</p>
 
     <template v-if="push">
+      <p v-if="!push.vapidSubject.appleAccepts" class="error inline">
+        Safari and iOS will refuse notifications from this server. Set
+        <code>VAPID_SUBJECT</code> to <code>mailto:</code> an address on a real domain, or to your
+        server's <code>https://</code> URL, then restart.
+      </p>
       <p v-if="native" class="section-desc">
         This server sends notifications to browsers and to the Lurker iOS and Android apps directly.
       </p>

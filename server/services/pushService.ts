@@ -11,6 +11,7 @@ import {
 } from './notificationContent.js';
 import { senderFor, warnUnconfiguredOnce } from './push/index.js';
 import { relayAllows } from './push/relay.js';
+import { resolveVapidSubject } from './push/vapidSubject.js';
 import {
   listEnabledForUser,
   hasEnabledForUser,
@@ -22,7 +23,18 @@ import {
   setMeta,
 } from '../db/pushSubscriptions.js';
 
-const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:lurker@localhost';
+const VAPID = resolveVapidSubject();
+if (!VAPID.appleAccepts) {
+  console.warn(
+    `[push] VAPID subject "${VAPID.subject}" has no public domain, so Safari and iOS will ` +
+      'refuse Web Push. Set VAPID_SUBJECT to mailto:you@yourdomain or https://yourdomain.',
+  );
+}
+
+/** For the admin pane: whether Apple's push service will take our contact. */
+export function vapidSubjectStatus() {
+  return VAPID;
+}
 
 // A subscription that draws this many concrete 4xx rejections in a row — i.e.
 // not an outright 404/410 (handled immediately) and not a transient 429/5xx or
@@ -46,7 +58,7 @@ function ensureVapid(): void {
     setMeta('vapid_private', privateKey);
     console.log('[push] generated new VAPID keypair');
   }
-  webpush.setVapidDetails(VAPID_SUBJECT, publicKey, privateKey);
+  webpush.setVapidDetails(VAPID.subject, publicKey, privateKey);
   vapidConfigured = true;
 }
 
