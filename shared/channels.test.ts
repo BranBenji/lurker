@@ -2,7 +2,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect } from 'vitest';
-import { ensureChannelPrefix, isChannelTarget, stripChannelPrefix } from './channels.js';
+import {
+  ensureChannelPrefix,
+  isChannelTarget,
+  parseChannelNames,
+  stripChannelPrefix,
+} from './channels.js';
 
 describe('isChannelTarget (#724)', () => {
   it('accepts all four RFC 2811 prefixes, not just #', () => {
@@ -70,5 +75,35 @@ describe('ensureChannelPrefix', () => {
     // stays with the caller, so these are intentionally not rejected here.
     expect(ensureChannelPrefix('#')).toBe('#');
     expect(ensureChannelPrefix('')).toBe('#');
+  });
+});
+
+describe('parseChannelNames (sweep L17)', () => {
+  it('gives every name a # when none has a prefix', () => {
+    expect(parseChannelNames('lurker, linux')).toStrictEqual(['#lurker', '#linux']);
+    expect(parseChannelNames('lurker linux')).toStrictEqual(['#lurker', '#linux']);
+    expect(parseChannelNames(['lurker', 'linux go'])).toStrictEqual(['#lurker', '#linux', '#go']);
+  });
+
+  it('takes the list as typed once any name has a prefix, so a key is never made a channel', () => {
+    expect(parseChannelNames('#secret hunter2')).toStrictEqual(['#secret', 'hunter2']);
+    expect(parseChannelNames('#a,#b ka,kb')).toStrictEqual(['#a', '#b', 'ka', 'kb']);
+    expect(parseChannelNames('&local +modeless !12345chan')).toStrictEqual([
+      '&local',
+      '+modeless',
+      '!12345chan',
+    ]);
+  });
+
+  it('drops blanks and a lone prefix, and keeps the first spelling of a repeat', () => {
+    expect(parseChannelNames(' lurker ,, Lurker  LURKER ')).toStrictEqual(['#lurker']);
+    expect(parseChannelNames('#, #dev')).toStrictEqual(['#dev']);
+    expect(parseChannelNames('lurker #lurker')).toStrictEqual(['lurker', '#lurker']);
+  });
+
+  it('reads nothing from anything but a string or an array of strings', () => {
+    expect(parseChannelNames(undefined)).toStrictEqual([]);
+    expect(parseChannelNames(42)).toStrictEqual([]);
+    expect(parseChannelNames([42, 'lurker'])).toStrictEqual(['#lurker']);
   });
 });

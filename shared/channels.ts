@@ -42,12 +42,42 @@ export function isChannelTarget(target: string | null | undefined): boolean {
  * carrying any of the four prefixes is left alone. Callers own their own input validation
  * (whitespace, empty, lone prefix) — this only settles the prefix.
  *
- * Shared so every place a channel name enters agrees: the web's Join Channel modal, channel-list
- * browser and `/join` (#496), and the server's channel lists — the network form's Channels field
- * and an admin preset's recommended channels, which the native apps' forms send as typed.
+ * Shared so the web's Join Channel modal and `/join` (#496) and the server's channel lists
+ * (`parseChannelNames`) settle a bare name the same way.
  */
 export function ensureChannelPrefix(name: string): string {
   return isChannelTarget(name) ? name : `#${name}`;
+}
+
+/**
+ * A list of channels to autojoin, as a person types one: the network form's Channels field
+ * (`default_channel`) and an admin preset's recommended channels. A string, or an array of them
+ * (the admin pane sends one); commas and whitespace both separate, blanks and a lone prefix are
+ * dropped, and a name repeated in another casing is the same channel, kept in its first spelling.
+ *
+ * A bare name gets a `#` only when NO name in the list carries a prefix (sweep L17): "lurker,
+ * linux" seeds #lurker and #linux, as Join Channel would. Once any name has one, the list is IRC's
+ * own syntax and is taken as typed, because there a bare word can be a channel KEY: `#secret
+ * hunter2` prefixed word by word would autojoin a public #hunter2 named after the key.
+ */
+export function parseChannelNames(raw: unknown): string[] {
+  const entries = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
+  const names = entries
+    .filter((entry): entry is string => typeof entry === 'string')
+    .flatMap((entry) => entry.split(/[,\s]+/))
+    .map((name) => name.trim())
+    .filter((name) => name && !(name.length === 1 && isChannelTarget(name)));
+  const asTyped = names.some((name) => isChannelTarget(name));
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const name of names) {
+    const channel = asTyped ? name : ensureChannelPrefix(name);
+    const key = channel.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(channel);
+  }
+  return out;
 }
 
 /**

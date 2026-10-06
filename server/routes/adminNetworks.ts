@@ -33,7 +33,7 @@ import {
   type InstanceNetworkInput,
 } from '../db/instanceNetworks.js';
 import { allowUserDefinedNetworks, setAllowUserDefinedNetworks } from '../db/instanceSettings.js';
-import { ensureChannelPrefix } from '../../shared/channels.js';
+import { parseChannelNames } from '../../shared/channels.js';
 
 const router = Router();
 
@@ -45,23 +45,11 @@ function bool(body: unknown, key: string): boolean | undefined {
 // Channel names arrive as an array from the pane, but be tolerant of a
 // comma-separated string too — it's what the REST API's other channel field
 // (default_channel) takes, and an admin poking at this with curl will reach for
-// the same shape. A bare name gets a `#`, as it does on the network form.
+// the same shape. The same rules as that field (`parseChannelNames`). Absent or
+// another type is "not given", so a PATCH leaves the stored list alone.
 function parseChannels(raw: unknown): string[] | undefined {
-  const list = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(/[,\s]+/) : undefined;
-  if (!list) return undefined;
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const entry of list) {
-    if (typeof entry !== 'string') continue;
-    const trimmed = entry.trim();
-    if (!trimmed) continue;
-    const channel = ensureChannelPrefix(trimmed);
-    const key = channel.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(channel);
-  }
-  return out;
+  if (!Array.isArray(raw) && typeof raw !== 'string') return undefined;
+  return parseChannelNames(raw);
 }
 
 // How many presets users could actually connect to. The lockdown is only

@@ -99,9 +99,9 @@ describe('presets', () => {
     expect(str.body.preset.channels).toStrictEqual(['#general', '#ops']);
   });
 
-  it('gives a bare recommended channel a #', async () => {
-    const bare = await add({ channels: ['general', '&local', '#general'] });
-    expect(bare.body.preset.channels).toStrictEqual(['#general', '&local']);
+  it('gives bare recommended channels a #, splitting an entry with a space', async () => {
+    const bare = await add({ channels: ['general', 'random ops'] });
+    expect(bare.body.preset.channels).toStrictEqual(['#general', '#random', '#ops']);
   });
 
   it('updates and deletes', async () => {

@@ -250,14 +250,24 @@ describe('POST /api/networks', () => {
 
   // The native apps' network forms send the Channels field as typed; Join Channel
   // adds the # there, so people expect it here too (client sweep L17).
-  it('gives a bare name in default_channel a #, and leaves the other prefixes alone', async () => {
+  it('gives bare names in default_channel a #', async () => {
     const created = await makeNet(aliceAgent, {
       name: 'bare-default',
-      default_channel: 'lurker, linux &local +modeless !12345chan #lurker',
+      default_channel: 'lurker, linux',
     });
     const names = created.body.network.channels.map((c: { name: string }) => c.name).toSorted();
-    // `#lurker` repeats the bare `lurker` once it has its prefix.
-    expect(names).toStrictEqual(['!12345chan', '#linux', '#lurker', '&local', '+modeless']);
+    expect(names).toStrictEqual(['#linux', '#lurker']);
+  });
+
+  // IRC's own syntax puts a channel's key after it, so a bare word beside a channel may be
+  // a secret: prefixed, it would autojoin a public channel named after the key.
+  it('takes default_channel as typed once any name has a prefix', async () => {
+    const created = await makeNet(aliceAgent, {
+      name: 'keyed-default',
+      default_channel: '#secret hunter2',
+    });
+    const names = created.body.network.channels.map((c: { name: string }) => c.name).toSorted();
+    expect(names).toStrictEqual(['#secret', 'hunter2']);
   });
 
   it('creates no channels when default_channel is absent or blank', async () => {
