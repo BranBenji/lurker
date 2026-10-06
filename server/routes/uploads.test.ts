@@ -510,6 +510,15 @@ describe('GET /api/uploads — search params', () => {
     expect(res.body.items.length).toBeGreaterThan(0);
   });
 
+  // The 200 cap lands inside the emoji. Half of one reaches SQLite as U+FFFD,
+  // and a query ending in that matches nothing (#1038).
+  it('caps a long search term without splitting an emoji', async () => {
+    const stem = 'q'.repeat(199);
+    await upload(`${stem}😀.png`, 'image/png', smallPng);
+    const res = await agent.get(`/api/uploads?q=${encodeURIComponent(`${stem}😀`)}`);
+    expect(res.body.items.map((i: { filename: string }) => i.filename)).toEqual([`${stem}😀.png`]);
+  });
+
   it('returns an empty list, not an error, when nothing matches', async () => {
     const res = await agent.get('/api/uploads?q=zzzz-no-such-file');
     expect(res.status).toBe(200);

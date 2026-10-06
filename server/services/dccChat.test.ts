@@ -118,6 +118,43 @@ describe('DccChat', () => {
     chat.close();
   });
 
+  // #1038: the cap counts UTF-16 units, so an emoji straddling it would leave a
+  // lone high surrogate on one line and a lone low one on the next.
+  it('never splits an emoji across a forced split', async () => {
+    const { a, b } = await socketPair();
+    const lines: string[] = [];
+    const chat = new DccChat({ socket: a, onLine: (t) => lines.push(t) });
+    chat.start();
+
+    // No newline yet, or the whole run is one ordinary line.
+    b.write('x'.repeat(64 * 1024 - 1) + '😀y');
+    await untilLines(lines, 1);
+    b.write('\n');
+    await untilLines(lines, 2);
+    expect(lines[0]).toBe('x'.repeat(64 * 1024 - 1));
+    expect(lines[1]).toBe('😀y');
+
+    chat.close();
+  });
+
+  it('caps an outgoing line without leaving half an emoji on the wire', async () => {
+    const { a, b } = await socketPair();
+    const chat = new DccChat({ socket: a });
+    chat.start();
+    let got = '';
+    const done = new Promise<void>((r) =>
+      b.on('data', (d) => {
+        got += d.toString();
+        if (got.endsWith('\r\n')) r();
+      }),
+    );
+    // Node would write the lone half as U+FFFD.
+    chat.send('x'.repeat(64 * 1024 - 1) + '😀tail');
+    await done;
+    expect(got).toBe('x'.repeat(64 * 1024 - 1) + '\r\n');
+    chat.close();
+  });
+
   it('accepts bare LF as a line terminator, not just CRLF', async () => {
     const { a, b } = await socketPair();
     const lines: string[] = [];

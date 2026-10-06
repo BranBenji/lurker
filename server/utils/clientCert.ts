@@ -17,6 +17,7 @@
 
 import crypto from 'crypto';
 import { splitCombinedPem } from '../../shared/clientCertPem.js';
+import { capText } from './capText.js';
 
 /** A cert and the private key that completes its handshake. Never separated. */
 export interface ClientCertPair {
@@ -63,9 +64,8 @@ function safeCommonName(raw: string): string {
     // so a nick like `#chat` throws ("not HEX encoded") instead of naming
     // anything — the same unexplained 500, by a different route.
     .replace(/^#+/, '')
-    .trim()
-    .slice(0, 64);
-  return cleaned || 'lurker';
+    .trim();
+  return capText(cleaned, 64) || 'lurker';
 }
 
 /** Mint a self-signed client cert. `commonName` is cosmetic — services key on

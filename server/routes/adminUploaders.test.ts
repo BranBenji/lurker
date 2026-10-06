@@ -155,6 +155,16 @@ describe('creating and configuring an instance uploader', () => {
     // …but an admin still sees it.
     expect(listAllowedUploaders(admin.id, true).map((r) => r.id)).toContain(created.id);
   });
+
+  it('caps a long label without splitting an emoji (#1038)', async () => {
+    const res = await adminAgent.post('/api/admin/uploaders').send({
+      driver: 'zipline',
+      label: 'x'.repeat(63) + '😀',
+      values: { url: 'https://z.example', token: 't' },
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.label).toBe('x'.repeat(63));
+  });
 });
 
 describe('the instance default (#299)', () => {

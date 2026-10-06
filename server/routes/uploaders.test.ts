@@ -183,6 +183,15 @@ describe('POST /api/uploaders', () => {
 });
 
 describe('PATCH /api/uploaders/:id', () => {
+  it('caps a long label without splitting an emoji (#1038)', async () => {
+    const created = await createCatbox();
+    const res = await agent
+      .patch(`/api/uploaders/${created.id}`)
+      .send({ label: 'x'.repeat(63) + '😀' });
+    expect(res.status).toBe(200);
+    expect(res.body.label).toBe('x'.repeat(63));
+  });
+
   it('keeps the stored secret when the field is omitted', async () => {
     const created = await createCatbox('keep-me');
 

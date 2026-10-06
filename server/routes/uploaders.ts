@@ -32,6 +32,7 @@ import { allowUserDefinedUploaders } from '../db/instanceSettings.js';
 import { listAllowedUploaders } from '../services/uploadProviders/resolve.js';
 import { getDriver, driverIds, type UploadDriver } from '../services/uploadProviders/index.js';
 import { isNodeMode } from '../utils/edition.js';
+import { capText } from '../utils/capText.js';
 
 const router = express.Router();
 router.use(requireAuth);
@@ -137,7 +138,7 @@ function readLabel(body: unknown): string | undefined {
   const raw = (body as { label?: unknown } | null)?.label;
   if (typeof raw !== 'string') return undefined;
   const trimmed = raw.trim();
-  return trimmed ? trimmed.slice(0, MAX_LABEL_LEN) : undefined;
+  return trimmed ? capText(trimmed, MAX_LABEL_LEN) : undefined;
 }
 
 // ─── routes ──────────────────────────────────────────────────────────────────

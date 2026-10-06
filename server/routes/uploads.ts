@@ -25,6 +25,7 @@ import {
   setUploadFavorite,
 } from '../db/uploadHistory.js';
 import { configuredBaseUrl, publicBaseUrl } from '../utils/publicOrigin.js';
+import { capText } from '../utils/capText.js';
 import {
   processUpload,
   providerErrorStatus,
@@ -207,7 +208,7 @@ router.get('/', (req: Request, res: Response) => {
   // is the exception to the filters-are-client-side default, and the reason is
   // delivery, not preference.
   const rawQ = typeof req.query.q === 'string' ? req.query.q.trim() : '';
-  const q = rawQ ? rawQ.slice(0, 200) : null;
+  const q = rawQ ? capText(rawQ, 200) : null;
   // An unknown kind is ignored rather than 400'd: it can only come from a client we
   // shipped, and silently showing everything beats erroring out of a browse.
   const kind = isUploadKind(req.query.kind) ? req.query.kind : null;
