@@ -46,9 +46,9 @@ import { useNickColors } from '../composables/useNickColors.js';
 import { useMemberActions } from '../composables/useMemberActions.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import {
-  PREFIX_ORDER,
   prefixOf as modePrefixOf,
   prefixClass as modePrefixClass,
+  prefixRank,
 } from '../utils/memberPrefix.js';
 import IgnoreModal from './IgnoreModal.vue';
 
@@ -66,6 +66,11 @@ const selfNick = computed(() => {
   const b = buffer.value;
   if (!b || b.networkId == null) return null;
   return networks.states[b.networkId]?.nick || null;
+});
+// The network's PREFIX, highest rank first; null until its ISUPPORT arrives.
+const memberPrefix = computed(() => {
+  const nid = buffer.value?.networkId;
+  return nid == null ? null : (networks.states[nid]?.modeSpec?.prefix ?? null);
 });
 // The current user's own modes in this channel, used to gate the operator
 // actions in the member context menu.
@@ -142,10 +147,10 @@ function onActionsClick(e: MouseEvent, m: BufferMember): void {
   memberActions.openMenuFromButton(m, menuContext(), e.currentTarget as Element);
 }
 function prefixOf(m: BufferMember): string {
-  return modePrefixOf(modesOf(m));
+  return modePrefixOf(modesOf(m), memberPrefix.value);
 }
 function prefixClass(m: BufferMember): string {
-  return modePrefixClass(modesOf(m));
+  return modePrefixClass(modesOf(m), memberPrefix.value);
 }
 function isAway(m: BufferMember): boolean {
   return !!m?.away;
@@ -176,8 +181,8 @@ const sorted = computed(() => {
       })
     : list;
   return filtered.toSorted((a, b) => {
-    const pa = PREFIX_ORDER.indexOf(prefixOf(a));
-    const pb = PREFIX_ORDER.indexOf(prefixOf(b));
+    const pa = prefixRank(modesOf(a), memberPrefix.value);
+    const pb = prefixRank(modesOf(b), memberPrefix.value);
     if (pa !== pb) return pa - pb;
     return nickOf(a).localeCompare(nickOf(b), undefined, { sensitivity: 'base' });
   });
@@ -254,19 +259,19 @@ li:hover .row-actions,
   text-align: center;
   color: var(--fg-muted);
 }
-li.mode-\~ .prefix {
+li.mode-owner .prefix {
   color: var(--member-owner);
 }
-li.mode-\& .prefix {
+li.mode-admin .prefix {
   color: var(--member-admin);
 }
-li.mode-\@ .prefix {
+li.mode-op .prefix {
   color: var(--member-op);
 }
-li.mode-\% .prefix {
+li.mode-halfop .prefix {
   color: var(--member-halfop);
 }
-li.mode-\+ .prefix {
+li.mode-voice .prefix {
   color: var(--member-voice);
 }
 .nick {

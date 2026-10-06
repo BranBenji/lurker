@@ -33,10 +33,10 @@ hostmasks — and it updates live instead of drifting until something forces a
 refresh.
 
 - **`multi-prefix`** — a member's _full_ set of ranks arrives, not just the highest
-  one. Lurker shows the highest glyph (`~ & @ % +`) but tests the whole set when
-  deciding which moderation actions to offer you, so someone who is both `+o` and
-  `+v` is understood correctly.
-  <br>`vue_client/src/utils/memberPrefix.ts:19`, `vue_client/src/composables/useMemberActions.ts:167`
+  one. Lurker shows the highest glyph, read from the network's own `PREFIX`, but
+  tests the whole set when deciding which moderation actions to offer you, so
+  someone who is both `+o` and `+v` is understood correctly.
+  <br>`vue_client/src/utils/memberPrefix.ts:20`, `vue_client/src/composables/useMemberActions.ts:199`
 - **`userhost-in-names`** — full `nick!ident@host` masks arrive with the member
   list, so hostmasks are known the moment you join rather than after a round-trip.
   <br>`irc-framework/src/commands/handlers/channel.js:71`
