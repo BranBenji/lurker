@@ -33,6 +33,7 @@ import { startRetentionSweeper } from './services/retentionSweeper.js';
 import { listGrandfatheredUsernames } from './db/users.js';
 import { backfillEncryptColumns } from './db/secretBackfill.js';
 import { assertPushCredentials } from './services/push/credentials.js';
+import { warnVapidSubject } from './services/pushService.js';
 import { resolveSessionSecret } from './utils/sessionSecret.js';
 import { getEdition, isNodeMode } from './utils/edition.js';
 import { warnRetiredPreviewEnv } from './utils/previews.js';
@@ -212,6 +213,9 @@ if (!engineConfigured()) startIdentServices();
 // Deliberately loud — at delivery time the same error is swallowed as a failed
 // push and nobody ever sees it (#490).
 assertPushCredentials();
+// A Web Push contact Safari will refuse is a warning, not a failed boot:
+// Chrome and Firefox still deliver with it.
+warnVapidSubject();
 
 // Wrap any plaintext secret columns at rest now that the DB schema is ready and
 // before IRC connects — network secrets, +k channel keys, and the RPE2E keyring

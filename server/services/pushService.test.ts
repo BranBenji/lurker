@@ -178,3 +178,39 @@ describe('deliver and the push relay opt-in', () => {
     expect(result.sent).toBe(1);
   });
 });
+
+describe('warnVapidSubject', () => {
+  it('says nothing when Apple accepts the subject', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    pushService.warnVapidSubject({
+      subject: 'https://chat.lurker.chat',
+      appleAccepts: true,
+      ignored: null,
+    });
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('names Safari and the fix when Apple will refuse it', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    pushService.warnVapidSubject({
+      subject: 'mailto:lurker@localhost',
+      appleAccepts: false,
+      ignored: null,
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toMatch(/Safari.*VAPID_SUBJECT/s);
+    warn.mockRestore();
+  });
+
+  it('says when VAPID_SUBJECT was set but not used', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    pushService.warnVapidSubject({
+      subject: 'https://chat.lurker.chat',
+      appleAccepts: true,
+      ignored: 'mailto:',
+    });
+    expect(String(warn.mock.calls[0][0])).toContain('ignoring VAPID_SUBJECT "mailto:"');
+    warn.mockRestore();
+  });
+});

@@ -28,6 +28,10 @@ describe('resolveVapidSubject', () => {
     ['a mailto with no user part', 'mailto:@lurker.chat'],
     ['one web-push would throw on', 'ops@lurker.chat'],
     ['a quoted value', '"mailto:ops@lurker.chat"'],
+    ['a space after mailto:', 'mailto: ops@lurker.chat'],
+    ['an angle-bracket address', 'mailto:<ops@lurker.chat>'],
+    ['two @ signs', 'mailto:ops@evil@lurker.chat'],
+    ['a percent-encoded private domain', 'mailto:ops@chat.lurker%E3%80%82local'],
   ])("prefers the server's origin over a VAPID_SUBJECT that's %s", (_label, configured) => {
     expect(resolveVapidSubject({ VAPID_SUBJECT: configured, WEBAUTHN_ORIGIN: ORIGIN })).toEqual({
       subject: ORIGIN,
@@ -67,7 +71,7 @@ describe('resolveVapidSubject', () => {
     ['an .onion name', { WEBAUTHN_ORIGIN: 'https://abcdef.onion' }],
     ['a .test name', { WEBAUTHN_ORIGIN: 'https://lurker.test' }],
     ['a home.arpa name', { WEBAUTHN_ORIGIN: 'https://lurker.home.arpa' }],
-    ['a documentation domain', { WEBAUTHN_ORIGIN: 'https://lurker.example.com' }],
+    ['an encoded .local name', { WEBAUTHN_ORIGIN: 'https://chat.lurker%E3%80%82local' }],
     ['a single label', { WEBAUTHN_ORIGIN: 'https://lurker' }],
     ['an IPv4 address', { WEBAUTHN_ORIGIN: 'https://10.0.0.2' }],
     ['an IPv6 address', { WEBAUTHN_ORIGIN: 'https://[fd00::1]' }],
@@ -80,9 +84,19 @@ describe('resolveVapidSubject', () => {
     });
   });
 
-  it('flags the placeholder address the example env ships with', () => {
-    expect(resolveVapidSubject({ VAPID_SUBJECT: 'mailto:you@example.com' }).appleAccepts).toBe(
-      false,
-    );
+  it('accepts a real domain even if it looks like a placeholder', () => {
+    // example.com resolves publicly and Apple takes it. A placeholder contact
+    // is a poor contact, not a refused one.
+    expect(resolveVapidSubject({ VAPID_SUBJECT: 'mailto:you@example.com' })).toEqual({
+      subject: 'mailto:you@example.com',
+      appleAccepts: true,
+      ignored: null,
+    });
+  });
+
+  it('accepts a mailto with a query, and a punycode domain', () => {
+    for (const s of ['mailto:ops@lurker.chat?subject=push', 'mailto:ops@xn--bcher-kva.ch']) {
+      expect(resolveVapidSubject({ VAPID_SUBJECT: s }).appleAccepts).toBe(true);
+    }
   });
 });

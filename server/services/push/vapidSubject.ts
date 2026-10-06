@@ -29,19 +29,23 @@ export interface VapidSubject {
 // home.arpa, .onion, and the private suffixes routers and distros hand out.
 const PRIVATE_SUFFIX =
   /\.(local|localhost|localdomain|test|invalid|example|onion|internal|intranet|corp|lan|home\.arpa)$/;
-// RFC 2606's documentation domains: public in DNS, but a placeholder nobody reads.
-const PLACEHOLDER = /(^|\.)example\.(com|net|org)$/;
 
 // A domain Apple could plausibly reach: dotted, not an IP, not a private name.
 function isPublicDomain(host: string): boolean {
   const h = host.toLowerCase().replace(/\.+$/, '');
   if (!h.includes('.') || net.isIP(h.replace(/^\[|\]$/g, ''))) return false;
-  return !PRIVATE_SUFFIX.test(h) && !PLACEHOLDER.test(h);
+  return !PRIVATE_SUFFIX.test(h);
 }
 
+// One plain mailbox: no spaces, brackets, or second @, and an ASCII domain
+// (an IDN has to be given as punycode). Read from the raw string, not
+// URL.pathname — that keeps a space after `mailto:` and percent-encoding, both
+// of which Apple refuses, and an encoded domain would dodge the suffix check.
+const MAILTO = /^mailto:[^\s@<>()",;:\\[\]%]+@([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.?)(?:\?.*)?$/;
+
 // The contact's domain, or null when it isn't a usable subject at all — not a
-// URL, not https:/mailto: (web-push throws on those), or a mailto: with no
-// address. Anything this returns a domain for, web-push accepts.
+// URL, not https:/mailto: (web-push throws on those), or not one plain mailbox.
+// Anything this returns a domain for, web-push accepts.
 function contactDomain(subject: string): string | null {
   let url: URL;
   try {
@@ -50,10 +54,7 @@ function contactDomain(subject: string): string | null {
     return null;
   }
   if (url.protocol === 'https:') return url.hostname || null;
-  if (url.protocol === 'mailto:') {
-    const at = url.pathname.lastIndexOf('@');
-    return at > 0 && at < url.pathname.length - 1 ? url.pathname.slice(at + 1) : null;
-  }
+  if (url.protocol === 'mailto:') return MAILTO.exec(subject)?.[1] ?? null;
   return null;
 }
 

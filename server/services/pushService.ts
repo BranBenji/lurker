@@ -11,7 +11,7 @@ import {
 } from './notificationContent.js';
 import { senderFor, warnUnconfiguredOnce } from './push/index.js';
 import { relayAllows } from './push/relay.js';
-import { resolveVapidSubject } from './push/vapidSubject.js';
+import { resolveVapidSubject, type VapidSubject } from './push/vapidSubject.js';
 import {
   listEnabledForUser,
   hasEnabledForUser,
@@ -30,18 +30,18 @@ export function vapidSubjectStatus() {
   return VAPID;
 }
 
-// Said once, the first time push is used — like warnUnconfiguredOnce — rather
-// than at import, where every boot and every test would print it.
-function warnVapidSubject(): void {
-  if (VAPID.ignored !== null) {
+// Called at boot (server.ts, beside assertPushCredentials) rather than at
+// import, so an unattended restart says it but every test file doesn't.
+export function warnVapidSubject(v: VapidSubject = VAPID): void {
+  if (v.ignored !== null) {
     console.warn(
-      `[push] ignoring VAPID_SUBJECT "${VAPID.ignored}": it needs to be mailto: an address ` +
-        `on a public domain, or an https:// URL. Using "${VAPID.subject}".`,
+      `[push] ignoring VAPID_SUBJECT "${v.ignored}": it needs to be mailto: an address ` +
+        `on a public domain, or an https:// URL. Using "${v.subject}".`,
     );
   }
-  if (!VAPID.appleAccepts) {
+  if (!v.appleAccepts) {
     console.warn(
-      `[push] VAPID subject "${VAPID.subject}" has no public domain, so Safari and ` +
+      `[push] VAPID subject "${v.subject}" has no public domain, so Safari and ` +
         'home-screen web apps on iPhone will refuse Web Push. Set VAPID_SUBJECT to ' +
         'mailto:you@yourdomain or https://yourdomain.',
     );
@@ -70,7 +70,6 @@ function ensureVapid(): void {
     setMeta('vapid_private', privateKey);
     console.log('[push] generated new VAPID keypair');
   }
-  warnVapidSubject();
   webpush.setVapidDetails(VAPID.subject, publicKey, privateKey);
   vapidConfigured = true;
 }
