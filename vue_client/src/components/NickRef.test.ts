@@ -48,3 +48,34 @@ describe('NickRef — your own nick', () => {
     expect(colour({ nick: 'me', self: false })).not.toBe(SELF);
   });
 });
+
+// #1032: the glyph and its colour come from the network's PREFIX.
+describe('NickRef — mode glyph', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    openBufferAs('me');
+  });
+
+  const glyph = (props: Record<string, unknown>) =>
+    mount(NickRef, { props: { nick: 'alice', showPrefix: true, ...props } as never }).find(
+      '.mode-glyph',
+    );
+
+  it("shows the network's symbol, coloured by rank", () => {
+    const prefix = [
+      { mode: 'Y', symbol: '!' },
+      { mode: 'o', symbol: '@' },
+    ];
+    expect(glyph({ modes: ['Y'], prefix }).text()).toBe('!');
+    expect(glyph({ modes: ['Y'], prefix }).classes()).toContain('mode-owner');
+    expect(glyph({ modes: ['o'], prefix: [{ mode: 'o', symbol: '*' }] }).text()).toBe('*');
+    expect(glyph({ modes: ['o'], prefix: [{ mode: 'o', symbol: '*' }] }).classes()).toContain(
+      'mode-op',
+    );
+  });
+
+  it('falls back to the conventional table without a PREFIX', () => {
+    expect(glyph({ modes: ['v'] }).text()).toBe('+');
+    expect(glyph({ modes: ['v'] }).classes()).toContain('mode-voice');
+  });
+});

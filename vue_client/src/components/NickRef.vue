@@ -15,7 +15,8 @@ import { computed } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNickColors } from '../composables/useNickColors.js';
-import { prefixOf } from '../utils/memberPrefix.js';
+import type { PrefixMode } from '../../../shared/channelModes.js';
+import { prefixClass, prefixOf } from '../utils/memberPrefix.js';
 
 const props = withDefaults(
   defineProps<{
@@ -24,6 +25,9 @@ const props = withDefaults(
     // render; callers that aren't a channel speaker just omit them.
     modes?: string[];
     showPrefix?: boolean;
+    // The network's PREFIX (`modeSpec.prefix`) the modes are read against;
+    // null or absent falls back to the conventional ~&@%+ table.
+    prefix?: readonly PrefixMode[] | null;
     // Pointer affordance for clickable nicks (#238). The click handler is
     // attached by the consumer and reaches the root span via Vue's attribute
     // fallthrough — this prop only drives the cursor styling. Nicks open their
@@ -44,8 +48,8 @@ const networks = useNetworksStore();
 const buffers = useBuffersStore();
 const nicks = useNickColors();
 
-const glyph = computed(() => (props.showPrefix ? prefixOf(props.modes) : ''));
-const glyphClass = computed(() => `mode-${glyph.value}`);
+const glyph = computed(() => (props.showPrefix ? prefixOf(props.modes, props.prefix) : ''));
+const glyphClass = computed(() => prefixClass(props.modes, props.prefix));
 
 const selfLower = computed(() => {
   const key = networks.activeKey;
@@ -77,19 +81,19 @@ const style = computed(() => {
 }
 /* The mode glyph reuses the nicklist's per-mode colors so it reads as a status
    marker rather than part of the (separately-colored) nick. */
-.mode-glyph.mode-\~ {
+.mode-glyph.mode-owner {
   color: var(--member-owner);
 }
-.mode-glyph.mode-\& {
+.mode-glyph.mode-admin {
   color: var(--member-admin);
 }
-.mode-glyph.mode-\@ {
+.mode-glyph.mode-op {
   color: var(--member-op);
 }
-.mode-glyph.mode-\% {
+.mode-glyph.mode-halfop {
   color: var(--member-halfop);
 }
-.mode-glyph.mode-\+ {
+.mode-glyph.mode-voice {
   color: var(--member-voice);
 }
 </style>

@@ -46,9 +46,9 @@ import { useNickColors } from '../composables/useNickColors.js';
 import { useMemberActions } from '../composables/useMemberActions.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import {
-  PREFIX_ORDER,
   prefixOf as modePrefixOf,
   prefixClass as modePrefixClass,
+  prefixRank,
 } from '../utils/memberPrefix.js';
 import IgnoreModal from './IgnoreModal.vue';
 
@@ -67,6 +67,7 @@ const selfNick = computed(() => {
   if (!b || b.networkId == null) return null;
   return networks.states[b.networkId]?.nick || null;
 });
+const memberPrefix = computed(() => networks.prefixFor(buffer.value?.networkId));
 // The current user's own modes in this channel, used to gate the operator
 // actions in the member context menu.
 const selfModes = computed<string[]>(() => {
@@ -142,10 +143,10 @@ function onActionsClick(e: MouseEvent, m: BufferMember): void {
   memberActions.openMenuFromButton(m, menuContext(), e.currentTarget as Element);
 }
 function prefixOf(m: BufferMember): string {
-  return modePrefixOf(modesOf(m));
+  return modePrefixOf(modesOf(m), memberPrefix.value);
 }
 function prefixClass(m: BufferMember): string {
-  return modePrefixClass(modesOf(m));
+  return modePrefixClass(modesOf(m), memberPrefix.value);
 }
 function isAway(m: BufferMember): boolean {
   return !!m?.away;
@@ -175,12 +176,15 @@ const sorted = computed(() => {
         return !ignores.isMemberHidden(networkId, nick, userhost, channel);
       })
     : list;
-  return filtered.toSorted((a, b) => {
-    const pa = PREFIX_ORDER.indexOf(prefixOf(a));
-    const pb = PREFIX_ORDER.indexOf(prefixOf(b));
-    if (pa !== pb) return pa - pb;
-    return nickOf(a).localeCompare(nickOf(b), undefined, { sensitivity: 'base' });
-  });
+  // Rank each member once, not once per comparison.
+  const prefix = memberPrefix.value;
+  return filtered
+    .map((m) => ({ m, rank: prefixRank(modesOf(m), prefix) }))
+    .toSorted((a, b) => {
+      if (a.rank !== b.rank) return a.rank - b.rank;
+      return nickOf(a.m).localeCompare(nickOf(b.m), undefined, { sensitivity: 'base' });
+    })
+    .map(({ m }) => m);
 });
 </script>
 
@@ -254,19 +258,19 @@ li:hover .row-actions,
   text-align: center;
   color: var(--fg-muted);
 }
-li.mode-\~ .prefix {
+li.mode-owner .prefix {
   color: var(--member-owner);
 }
-li.mode-\& .prefix {
+li.mode-admin .prefix {
   color: var(--member-admin);
 }
-li.mode-\@ .prefix {
+li.mode-op .prefix {
   color: var(--member-op);
 }
-li.mode-\% .prefix {
+li.mode-halfop .prefix {
   color: var(--member-halfop);
 }
-li.mode-\+ .prefix {
+li.mode-voice .prefix {
   color: var(--member-voice);
 }
 .nick {

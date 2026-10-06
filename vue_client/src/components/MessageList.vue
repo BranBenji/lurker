@@ -116,6 +116,7 @@
                 :nick="row.m?.nick ?? ''"
                 :modes="authorModes(row.m)"
                 :show-prefix="showModePrefix"
+                :prefix="memberPrefix"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
             /></span>
@@ -169,6 +170,7 @@
                 :nick="row.m?.nick ?? ''"
                 :modes="authorModes(row.m)"
                 :show-prefix="showModePrefix"
+                :prefix="memberPrefix"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /></template
             ><template v-else>{{ row.continuationAuthor ? '' : prefixText(row.m) }}</template></span
@@ -900,6 +902,9 @@ const selfModes = computed<string[]>(() => {
   const me = buffer.value?.members?.find((m) => m.nick.toLowerCase() === sl);
   return me && Array.isArray(me.modes) ? me.modes : [];
 });
+
+// The network's PREFIX the glyph is read against.
+const memberPrefix = computed(() => networks.prefixFor(buffer.value?.networkId));
 
 // The author's channel modes for the prefix glyph — channel buffers only (DMs
 // and the system buffer carry no modes). Returns undefined (no glyph) when the

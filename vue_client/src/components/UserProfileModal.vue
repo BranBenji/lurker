@@ -169,6 +169,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { socketSend } from '../composables/useSocket.js';
 import { formatDateTime } from '../utils/timestamp.js';
+import { splitChannelToken } from '../utils/memberPrefix.js';
 import { isPeerAway, isPeerOffline, isPeerOnline } from '../utils/peerPresence.js';
 
 const props = defineProps<{
@@ -304,18 +305,16 @@ const signonLabel = computed(() => {
 
 // irc-framework hands `channels` back as a single string of prefix+name
 // tokens separated by spaces, e.g. "@#foo +#bar #baz". Split on whitespace
-// and peel any leading mode-prefix glyphs off so the name itself is clean
-// for join/switch.
+// and peel the network's rank symbols off so the name itself is clean for
+// join/switch (#1032).
 const channelsList = computed(() => {
   const raw = (whois.value?.channels as string) || '';
   if (!raw) return [] as { prefix: string; name: string }[];
+  const prefix = networks.prefixFor(props.networkId);
   return raw
     .split(/\s+/)
     .filter(Boolean)
-    .map((token) => {
-      const m = token.match(/^([~&@%+]*)(.*)$/);
-      return { prefix: m?.[1] || '', name: m?.[2] || token };
-    });
+    .map((token) => splitChannelToken(token, prefix));
 });
 
 const isLookingUp = computed(() => whoisStore.isRefreshing(props.networkId, props.nick));
