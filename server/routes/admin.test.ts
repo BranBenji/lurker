@@ -270,9 +270,10 @@ describe('/api/admin/login-lockouts', () => {
     const res = await adminAgent.get('/api/admin/login-lockouts');
     expect(res.status).toBe(200);
     expect(res.body.lockouts).toEqual([
-      { source: 'web', address: '192.0.2.1', retryAfter: 900 },
-      { source: 'bouncer', address: '192.0.2.2', retryAfter: 900 },
+      { source: 'web', address: '192.0.2.1', retryAfter: 900, liftsAt: expect.any(String) },
+      { source: 'bouncer', address: '192.0.2.2', retryAfter: 900, liftsAt: expect.any(String) },
     ]);
+    expect(res.body.policy).toEqual({ maxFailures: 10, windowMinutes: 15, backoffMinutes: 15 });
 
     expect((await adminAgent.delete('/api/admin/login-lockouts')).status).toBe(200);
     const { loginFailureThrottle, bouncerAuthThrottle } =
@@ -280,6 +281,18 @@ describe('/api/admin/login-lockouts', () => {
     expect(loginFailureThrottle.retryAfter('192.0.2.1')).toBeNull();
     expect(bouncerAuthThrottle.retryAfter('192.0.2.2')).toBeNull();
     expect((await adminAgent.get('/api/admin/login-lockouts')).body.lockouts).toEqual([]);
+  });
+
+  it('clearing leaves an address that is short of the limit with its count', async () => {
+    const { LOGIN_FAILURE_MAX, bouncerAuthThrottle } = await import('../middleware/rateLimit.js');
+    await lockOut('bouncer', '192.0.2.3');
+    for (let i = 0; i < LOGIN_FAILURE_MAX - 1; i++) bouncerAuthThrottle.recordFailure('192.0.2.4');
+
+    expect((await adminAgent.delete('/api/admin/login-lockouts')).status).toBe(200);
+    expect(bouncerAuthThrottle.retryAfter('192.0.2.3')).toBeNull();
+    // One more failure is still the tenth.
+    bouncerAuthThrottle.recordFailure('192.0.2.4');
+    expect(bouncerAuthThrottle.retryAfter('192.0.2.4')).not.toBeNull();
   });
 });
 

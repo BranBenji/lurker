@@ -12,7 +12,11 @@
   <section id="admin-lockouts" class="settings-pane">
     <h2>lockouts</h2>
     <p class="section-desc">
-      Ten failed logins from one address within 15 minutes lock it out of signing in for 15 minutes.
+      <template v-if="policy">
+        {{ policy.maxFailures }} failed logins from one address within
+        {{ policy.windowMinutes }} minutes lock it out of signing in for
+        {{ policy.backoffMinutes }} minutes.
+      </template>
       The web sign-in and the bouncer count separately.
     </p>
     <p v-if="error" class="error inline">{{ error }}</p>
@@ -27,7 +31,7 @@
           {{ l.address }}
           <span class="source-tag">{{ l.source }}</span>
         </span>
-        <span class="last-seen">lifts in {{ Math.ceil(l.retryAfter / 60) }} min</span>
+        <span class="last-seen">lifts at {{ formatDateTime(l.liftsAt) }}</span>
       </li>
     </ul>
     <p v-else-if="loaded" class="muted small">No addresses are locked out.</p>
@@ -42,10 +46,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useAdminStore } from '../../stores/admin.js';
+import { formatDateTime } from '../../utils/timestamp.js';
 
 const adminStore = useAdminStore();
+const policy = computed(() => adminStore.loginLockoutPolicy);
 const error = ref('');
 const busy = ref(false);
 const loaded = ref(false);

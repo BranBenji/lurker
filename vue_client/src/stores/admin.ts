@@ -37,8 +37,16 @@ export interface AdminRecoveryLink {
 export interface AdminLoginLockout {
   source: 'web' | 'bouncer';
   address: string;
-  /** Seconds until the lockout lifts on its own. */
+  /** Seconds until the lockout lifts on its own, as of the fetch. */
   retryAfter: number;
+  /** When it lifts on its own (ISO). */
+  liftsAt: string;
+}
+
+export interface AdminLoginLockoutPolicy {
+  maxFailures: number;
+  windowMinutes: number;
+  backoffMinutes: number;
 }
 
 export interface AdminInvite {
@@ -75,6 +83,7 @@ export const useAdminStore = defineStore('admin', {
     identdEnabled: false,
     invites: [] as AdminInvite[],
     loginLockouts: [] as AdminLoginLockout[],
+    loginLockoutPolicy: null as AdminLoginLockoutPolicy | null,
     uploaders: [] as AdminUploader[],
     uploaderDrivers: [] as UploaderDriver[],
     allowUserDefined: true,
@@ -180,8 +189,9 @@ export const useAdminStore = defineStore('admin', {
       if (u) u.recoveryExpiresAt = null;
     },
     async fetchLoginLockouts() {
-      const { lockouts } = await api('/api/admin/login-lockouts');
+      const { lockouts, policy } = await api('/api/admin/login-lockouts');
       this.loginLockouts = lockouts || [];
+      this.loginLockoutPolicy = policy || null;
     },
     async clearLoginLockouts() {
       await api('/api/admin/login-lockouts', { method: 'DELETE' });
