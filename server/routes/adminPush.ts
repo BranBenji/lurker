@@ -11,7 +11,7 @@
 
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { getPublicKey } from '../services/pushService.js';
+import { getPublicKey, vapidSubjectStatus } from '../services/pushService.js';
 import { senderFor } from '../services/push/index.js';
 import { PUSH_TRANSPORTS } from '../db/pushSubscriptions.js';
 import { pushRelayEnabled } from '../db/instanceSettings.js';
@@ -22,6 +22,7 @@ const router = Router();
 function payload() {
   return {
     publicKey: getPublicKey(),
+    vapidSubject: vapidSubjectStatus(),
     transports: PUSH_TRANSPORTS.filter((t) => senderFor(t).isConfigured()),
     relay: {
       url: RELAY_ORIGIN,

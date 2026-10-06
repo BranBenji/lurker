@@ -194,12 +194,14 @@ Restart Lurker, log in with your password, then visit **Settings → Passkeys** 
 
 Lurker supports background push notifications for highlights and DMs, delivered to your installed PWA even when the tab is closed. (The [one-shot DigitalOcean deploy](digitalocean.md) sets `VAPID_SUBJECT` for you.) To enable it elsewhere:
 
-1. Set a valid `VAPID_SUBJECT` (the contact address embedded in outgoing push JWTs — APNs requires a real domain):
+1. Make sure push has a contact address on a real domain. Safari and iOS refuse pushes without one; Chrome and Firefox don't mind. If `WEBAUTHN_ORIGIN` is your public `https://` URL, Lurker uses that and there's nothing to do. Otherwise set `VAPID_SUBJECT`:
 
    ```yaml
    environment:
      - VAPID_SUBJECT=mailto:you@example.com
    ```
+
+   **Admin → Notifications** warns you if Safari and iOS will refuse this server's pushes.
 
 2. Restart Lurker. The first time the push service is used, it generates a VAPID keypair and stores it in `data/lurker.db` (under `app_meta`). The same keypair is reused on subsequent boots so existing subscriptions keep working.
 

@@ -14,9 +14,14 @@ import { createPinia, setActivePinia } from 'pinia';
 import { useAdminStore, type AdminPushConfig } from '../../stores/admin.js';
 import NotificationsPane from './NotificationsPane.vue';
 
-function config(over: Partial<AdminPushConfig['relay']> = {}, transports = ['webpush']) {
+function config(
+  over: Partial<AdminPushConfig['relay']> = {},
+  transports = ['webpush'],
+  appleAccepts = true,
+) {
   return {
     publicKey: 'BPubKeyBase64url',
+    vapidSubject: { subject: 'https://lurker.example.com', appleAccepts, ignored: null },
     transports,
     relay: { url: 'https://push.lurker.chat', enabled: false, devices: 0, ...over },
   } satisfies AdminPushConfig;
@@ -60,6 +65,27 @@ describe('NotificationsPane', () => {
   it('keeps the toggle on a native server while the relay is on, so it can be turned off', async () => {
     const w = await mountPane(config({ enabled: true, devices: 1 }, ['webpush', 'apns', 'fcm']));
     expect(checkbox(w).checked).toBe(true);
+  });
+
+  it("warns when Safari will refuse this server's pushes, without blaming the apps", async () => {
+    const quiet = await mountPane(config());
+    expect(quiet.text()).not.toContain('will refuse');
+    const w = await mountPane(config({}, ['webpush'], false));
+    expect(w.text()).toContain('Safari and home-screen web apps on iPhone will refuse');
+    expect(w.text()).toContain("Lurker apps aren't affected");
+    expect(w.text()).toContain('VAPID_SUBJECT');
+  });
+
+  it('says when VAPID_SUBJECT was set but not used', async () => {
+    const c: AdminPushConfig = config();
+    c.vapidSubject = {
+      subject: 'https://chat.lurker.chat',
+      appleAccepts: true,
+      ignored: 'mailto:',
+    };
+    const w = await mountPane(c);
+    expect(w.text()).toContain("VAPID_SUBJECT isn't usable");
+    expect(w.text()).toContain('https://chat.lurker.chat');
   });
 
   it('shows the server key on a self-hosted server', async () => {

@@ -14,6 +14,11 @@ import type { User } from '../db/users.js';
 
 const ctx = setupTestDb('routes-admin-push');
 
+// pushService resolves the VAPID subject from the environment at import; pin it
+// so a developer's exported .env can't change what these tests see.
+delete process.env.VAPID_SUBJECT;
+delete process.env.WEBAUTHN_ORIGIN;
+
 const RELAY = 'https://push.lurker.chat';
 
 let app: Express;
@@ -64,6 +69,12 @@ describe('GET /api/admin/push', () => {
     expect(typeof res.body.publicKey).toBe('string');
     expect(res.body.publicKey.length).toBeGreaterThan(20);
     expect(res.body.relay).toEqual({ url: RELAY, enabled: false, devices: 0 });
+    // Neither VAPID_SUBJECT nor a public origin (unset above).
+    expect(res.body.vapidSubject).toEqual({
+      subject: 'mailto:lurker@localhost',
+      appleAccepts: false,
+      ignored: null,
+    });
   });
 
   it('is the same key /api/push/config hands out', async () => {
