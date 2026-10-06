@@ -117,6 +117,7 @@ export const useAdminStore = defineStore('admin', {
     usersFetchSeq: 0,
     invitesFetchSeq: 0,
     lockoutsFetchSeq: 0,
+    pushFetchSeq: 0,
     loading: false,
     error: '',
   }),
@@ -328,11 +329,16 @@ export const useAdminStore = defineStore('admin', {
       await this.fetchNetworkPresets();
     },
     async fetchPush() {
-      this.push = await api('/api/admin/push');
+      const seq = ++this.pushFetchSeq;
+      const data = await api('/api/admin/push');
+      // A save landed meanwhile — this GET predates it.
+      if (seq !== this.pushFetchSeq) return;
+      this.push = data;
     },
     async setPushRelayEnabled(enabled: boolean) {
       try {
         const data = await api('/api/admin/push/relay', { method: 'PUT', body: { enabled } });
+        this.pushFetchSeq++;
         this.push = data;
         return data.removed as number;
       } catch (e) {

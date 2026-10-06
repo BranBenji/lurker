@@ -126,11 +126,13 @@ describe('registering a relay endpoint', () => {
     expect(res.status).toBe(403);
   });
 
-  it('is matched with a trailing-dot host too', async () => {
-    // Same host to DNS and TLS, but a different URL.origin.
+  it('is matched on the host, whatever the scheme, port or trailing dot', async () => {
+    // web-push sends every endpoint over https, so each of these reaches the relay.
     for (const endpoint of [
       'https://push.lurker.chat./relay-to/apns/production/x',
       'https://push.lurker.chat%2E/relay-to/apns/production/x',
+      'http://push.lurker.chat/relay-to/apns/production/x',
+      'https://push.lurker.chat:8443/relay-to/apns/production/x',
     ]) {
       expect((await subscribe(userAgent, endpoint)).status).toBe(403);
     }

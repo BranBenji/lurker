@@ -19,6 +19,7 @@ import {
   type AdminUser,
   type AdminInvite,
   type AdminLoginLockout,
+  type AdminPushConfig,
 } from './admin.js';
 
 function deferred<T>() {
@@ -167,5 +168,39 @@ describe('admin store — setUserIdent', () => {
 
     await store.setUserIdent(1, 'bobs');
     expect(store.users.map((u) => u.identConflict)).toEqual([false, false]);
+  });
+});
+
+describe('admin store — push relay toggle', () => {
+  const push = (enabled: boolean): AdminPushConfig => ({
+    publicKey: 'k',
+    transports: ['webpush'],
+    relay: { url: 'https://push.lurker.chat', enabled, devices: 0 },
+  });
+
+  it('an in-flight GET cannot undo a saved toggle', async () => {
+    const store = useAdminStore();
+    const getDefer = deferred<AdminPushConfig>();
+    h.api.mockImplementation((_url: string, opts?: { method?: string }) =>
+      opts?.method === 'PUT' ? Promise.resolve({ ...push(true), removed: 0 }) : getDefer.promise,
+    );
+
+    const fetching = store.fetchPush(); // the pane's mount refetch, still in flight
+    await store.setPushRelayEnabled(true);
+    getDefer.resolve(push(false)); // read before the save
+    await fetching;
+
+    expect(store.push?.relay.enabled).toBe(true);
+  });
+
+  it('a failed save refetches, so the pane shows what the server holds', async () => {
+    const store = useAdminStore();
+    store.push = push(false);
+    h.api.mockImplementation((_url: string, opts?: { method?: string }) =>
+      opts?.method === 'PUT' ? Promise.reject(new Error('boom')) : Promise.resolve(push(true)),
+    );
+
+    await expect(store.setPushRelayEnabled(true)).rejects.toThrow('boom');
+    expect(store.push?.relay.enabled).toBe(true);
   });
 });
