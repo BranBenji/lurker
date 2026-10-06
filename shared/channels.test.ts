@@ -88,6 +88,8 @@ describe('parseChannelNames (sweep L17)', () => {
   it('takes the list as typed once any name has a prefix, so a key is never made a channel', () => {
     expect(parseChannelNames('#secret hunter2')).toStrictEqual(['#secret', 'hunter2']);
     expect(parseChannelNames('#a,#b ka,kb')).toStrictEqual(['#a', '#b', 'ka', 'kb']);
+    // A lone prefix still marks the list as IRC syntax, though it's dropped (Codex on L17).
+    expect(parseChannelNames('# hunter2')).toStrictEqual(['hunter2']);
     expect(parseChannelNames('&local +modeless !12345chan')).toStrictEqual([
       '&local',
       '+modeless',

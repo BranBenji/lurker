@@ -62,12 +62,15 @@ export function ensureChannelPrefix(name: string): string {
  */
 export function parseChannelNames(raw: unknown): string[] {
   const entries = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
-  const names = entries
+  const words = entries
     .filter((entry): entry is string => typeof entry === 'string')
     .flatMap((entry) => entry.split(/[,\s]+/))
     .map((name) => name.trim())
-    .filter((name) => name && !(name.length === 1 && isChannelTarget(name)));
-  const asTyped = names.some((name) => isChannelTarget(name));
+    .filter(Boolean);
+  // Judged before a lone prefix is dropped: in "# hunter2" the `#` is still a sign of IRC syntax,
+  // and the word beside it may still be a key.
+  const asTyped = words.some((name) => isChannelTarget(name));
+  const names = words.filter((name) => !(name.length === 1 && isChannelTarget(name)));
   const seen = new Set<string>();
   const out: string[] = [];
   for (const name of names) {
