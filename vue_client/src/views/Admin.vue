@@ -42,6 +42,7 @@ import UploadersPane from '../components/admin-panes/UploadersPane.vue';
 import NetworksPane from '../components/admin-panes/NetworksPane.vue';
 import StoragePane from '../components/admin-panes/StoragePane.vue';
 import LockoutsPane from '../components/admin-panes/LockoutsPane.vue';
+import NotificationsPane from '../components/admin-panes/NotificationsPane.vue';
 
 useSocket();
 
@@ -54,6 +55,7 @@ const PANES: Record<string, Component> = {
   invites: InvitesPane,
   uploaders: UploadersPane,
   networks: NetworksPane,
+  notifications: NotificationsPane,
   storage: StoragePane,
   lockouts: LockoutsPane,
 };

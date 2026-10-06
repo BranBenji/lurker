@@ -220,6 +220,8 @@ So only the publisher of a build can push to that build. Supplying your own Appl
 
 You can check what a given server can actually deliver on: `GET /api/push/config` returns a `transports` list. A self-hosted server reports `["webpush"]`, and the apps use that to tell you push isn't available rather than asking for notification permission and then silently never delivering.
 
+**push.lurker.chat (in progress).** A paid relay will let a self-hosted server push to the official apps. Your server encrypts each notification for the phone, and the relay forwards it without being able to read it. It's off until you turn it on under **Admin → Notifications**, which also shows the server key you register with the relay. While it's off, the apps never contact push.lurker.chat.
+
 ### File uploads on your own disk
 
 By default, images you paste or drop into the message box are uploaded to a third-party host (x0.at). If you'd rather keep them on your own server, pick **local** in **Settings → Uploads**. Lurker then writes the file to disk and serves it back from your own instance, and the link it pastes into IRC points at you — no third party involved.

@@ -1535,10 +1535,11 @@ account_not_empty`). A mobile/TUI client can skip all of this.
 
 ## 11. Push notifications
 
-`GET /api/push/config` → `{publicKey, transports}` where
+`GET /api/push/config` → `{publicKey, transports, relay?}` where
 `transports ⊆ ['webpush','apns','fcm']`, **filtered to what this server can
 actually deliver**. This is the source of truth — check it before asking the OS
-for notification permission.
+for notification permission. `relay` appears only when the admin has turned on
+the self-hosted push relay (see below).
 
 | Endpoint                                  | Notes                                                                                                                           |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
@@ -1565,11 +1566,14 @@ for notification permission.
 >   credentials and APNs/FCM reject tokens belonging to a different app. Don't
 >   burn hours debugging this; it cannot work.
 >
-> A **notification relay for self-hosters** (a Lurker-operated proxy the
-> official apps could receive self-hosted pushes through — IRCCloud/Bitwarden
-> style, or something UnifiedPush-shaped that could also serve third-party
-> clients) is a design idea only. It is **not built and not a commitment**;
-> do not architect against it.
+> A **notification relay for self-hosters** (push.lurker.chat, a Web Push
+> push service that forwards to the **official** apps over APNs/FCM) is being
+> built. A server's admin opts in under Admin → Notifications; only then does
+> `GET /api/push/config` include `relay` (the relay's origin). An official app
+> contacts the relay only when that field is present. While the relay is off,
+> `POST /api/push/subscriptions` refuses an endpoint on the relay's origin with
+> `403`, and turning it off deletes the existing ones. It does not serve
+> third-party clients.
 >
 > What third-party clients _can_ do today: **Web Push** works on any instance
 > for browser-based clients; a TUI doesn't need push at all (it only matters

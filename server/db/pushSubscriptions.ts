@@ -252,6 +252,33 @@ export function deleteByEndpoint(userId: number, endpoint: string): void {
   );
 }
 
+/**
+ * Every Web Push row whose endpoint matches, across all users. Matching is done
+ * here rather than with a LIKE on the endpoint so it can be the same URL-origin
+ * check the registration route applies — a prefix match in SQL would miss an
+ * endpoint that differs only in case or a default port.
+ */
+function webpushRowsWhere(match: (endpoint: string) => boolean): { id: number }[] {
+  const rows = db
+    .prepare(`SELECT id, endpoint FROM push_subscriptions WHERE transport = 'webpush'`)
+    .all() as { id: number; endpoint: string }[];
+  return rows.filter((r) => match(r.endpoint));
+}
+
+export function countWebPushWhere(match: (endpoint: string) => boolean): number {
+  return webpushRowsWhere(match).length;
+}
+
+/** Delete every matching Web Push row, across all users; returns how many went. */
+export function deleteWebPushWhere(match: (endpoint: string) => boolean): number {
+  const del = db.prepare('DELETE FROM push_subscriptions WHERE id = ?');
+  return db.transaction(() => {
+    let n = 0;
+    for (const { id } of webpushRowsWhere(match)) n += del.run(id).changes;
+    return n;
+  })();
+}
+
 export function deleteById(id: number, userId: number): void {
   db.prepare('DELETE FROM push_subscriptions WHERE id = ? AND user_id = ?').run(id, userId);
 }

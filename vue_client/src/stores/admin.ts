@@ -75,6 +75,15 @@ export interface AdminNetworkPreset {
 
 export type AdminNetworkPresetInput = Omit<AdminNetworkPreset, 'id' | 'position'>;
 
+/** Admin → Notifications: the push relay opt-in (lurker-dev/RELAY_PLAN.md §5a). */
+export interface AdminPushConfig {
+  /** The VAPID public key — what the admin registers with the relay. */
+  publicKey: string;
+  /** Transports this server can deliver on ('webpush', 'apns', 'fcm'). */
+  transports: string[];
+  relay: { url: string; enabled: boolean; devices: number };
+}
+
 export const useAdminStore = defineStore('admin', {
   state: () => ({
     users: [] as AdminUser[],
@@ -96,6 +105,7 @@ export const useAdminStore = defineStore('admin', {
     networkPresets: [] as AdminNetworkPreset[],
     allowUserDefinedNetworks: true,
     networksLoaded: false,
+    push: null as AdminPushConfig | null,
     usersLoaded: false,
     invitesLoaded: false,
     uploadersLoaded: false,
@@ -316,6 +326,14 @@ export const useAdminStore = defineStore('admin', {
       // Refetch rather than assign: the server 409s this when no presets exist,
       // and the throw must leave the checkbox showing the truth, not the attempt.
       await this.fetchNetworkPresets();
+    },
+    async fetchPush() {
+      this.push = await api('/api/admin/push');
+    },
+    async setPushRelayEnabled(enabled: boolean) {
+      const data = await api('/api/admin/push/relay', { method: 'PUT', body: { enabled } });
+      this.push = data;
+      return data.removed as number;
     },
   },
 });
