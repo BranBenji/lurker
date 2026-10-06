@@ -21,7 +21,7 @@ function config(
 ) {
   return {
     publicKey: 'BPubKeyBase64url',
-    vapidSubject: { subject: 'https://lurker.example.com', appleAccepts },
+    vapidSubject: { subject: 'https://lurker.example.com', appleAccepts, ignored: null },
     transports,
     relay: { url: 'https://push.lurker.chat', enabled: false, devices: 0, ...over },
   } satisfies AdminPushConfig;
@@ -67,12 +67,25 @@ describe('NotificationsPane', () => {
     expect(checkbox(w).checked).toBe(true);
   });
 
-  it("warns when Safari and iOS will refuse this server's pushes", async () => {
+  it("warns when Safari will refuse this server's pushes, without blaming the apps", async () => {
     const quiet = await mountPane(config());
-    expect(quiet.text()).not.toContain('Safari and iOS');
+    expect(quiet.text()).not.toContain('will refuse');
     const w = await mountPane(config({}, ['webpush'], false));
-    expect(w.text()).toContain('Safari and iOS will refuse');
+    expect(w.text()).toContain('Safari and home-screen web apps on iPhone will refuse');
+    expect(w.text()).toContain("Lurker apps aren't affected");
     expect(w.text()).toContain('VAPID_SUBJECT');
+  });
+
+  it('says when VAPID_SUBJECT was set but not used', async () => {
+    const c: AdminPushConfig = config();
+    c.vapidSubject = {
+      subject: 'https://chat.lurker.chat',
+      appleAccepts: true,
+      ignored: 'mailto:',
+    };
+    const w = await mountPane(c);
+    expect(w.text()).toContain("VAPID_SUBJECT isn't usable");
+    expect(w.text()).toContain('https://chat.lurker.chat');
   });
 
   it('shows the server key on a self-hosted server', async () => {

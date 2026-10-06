@@ -80,7 +80,7 @@ export interface AdminPushConfig {
   /** The VAPID public key — what the admin registers with the relay. */
   publicKey: string;
   /** The contact sent with every Web Push; Apple refuses one with no public domain. */
-  vapidSubject: { subject: string; appleAccepts: boolean };
+  vapidSubject: { subject: string; appleAccepts: boolean; ignored: string | null };
   /** Transports this server can deliver on ('webpush', 'apns', 'fcm'). */
   transports: string[];
   relay: { url: string; enabled: boolean; devices: number };

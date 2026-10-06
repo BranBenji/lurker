@@ -24,16 +24,28 @@ import {
 } from '../db/pushSubscriptions.js';
 
 const VAPID = resolveVapidSubject();
-if (!VAPID.appleAccepts) {
-  console.warn(
-    `[push] VAPID subject "${VAPID.subject}" has no public domain, so Safari and iOS will ` +
-      'refuse Web Push. Set VAPID_SUBJECT to mailto:you@yourdomain or https://yourdomain.',
-  );
-}
 
 /** For the admin pane: whether Apple's push service will take our contact. */
 export function vapidSubjectStatus() {
   return VAPID;
+}
+
+// Said once, the first time push is used — like warnUnconfiguredOnce — rather
+// than at import, where every boot and every test would print it.
+function warnVapidSubject(): void {
+  if (VAPID.ignored !== null) {
+    console.warn(
+      `[push] ignoring VAPID_SUBJECT "${VAPID.ignored}": it needs to be mailto: an address ` +
+        `on a public domain, or an https:// URL. Using "${VAPID.subject}".`,
+    );
+  }
+  if (!VAPID.appleAccepts) {
+    console.warn(
+      `[push] VAPID subject "${VAPID.subject}" has no public domain, so Safari and ` +
+        'home-screen web apps on iPhone will refuse Web Push. Set VAPID_SUBJECT to ' +
+        'mailto:you@yourdomain or https://yourdomain.',
+    );
+  }
 }
 
 // A subscription that draws this many concrete 4xx rejections in a row — i.e.
@@ -58,6 +70,7 @@ function ensureVapid(): void {
     setMeta('vapid_private', privateKey);
     console.log('[push] generated new VAPID keypair');
   }
+  warnVapidSubject();
   webpush.setVapidDetails(VAPID.subject, publicKey, privateKey);
   vapidConfigured = true;
 }

@@ -20,15 +20,28 @@ export interface VapidSubject {
   subject: string;
   /** False when Apple will refuse it: the admin should set VAPID_SUBJECT. */
   appleAccepts: boolean;
+  /** A VAPID_SUBJECT that was set but not used, because it was unusable or
+   *  Apple would refuse it and the server's own URL wouldn't. */
+  ignored: string | null;
 }
 
-// A domain Apple could plausibly reach: dotted, not an IP, not a local-only name.
+// Names that never resolve publicly: RFC 6761/2606 special-use names, mDNS,
+// home.arpa, .onion, and the private suffixes routers and distros hand out.
+const PRIVATE_SUFFIX =
+  /\.(local|localhost|localdomain|test|invalid|example|onion|internal|intranet|corp|lan|home\.arpa)$/;
+// RFC 2606's documentation domains: public in DNS, but a placeholder nobody reads.
+const PLACEHOLDER = /(^|\.)example\.(com|net|org)$/;
+
+// A domain Apple could plausibly reach: dotted, not an IP, not a private name.
 function isPublicDomain(host: string): boolean {
   const h = host.toLowerCase().replace(/\.+$/, '');
   if (!h.includes('.') || net.isIP(h.replace(/^\[|\]$/g, ''))) return false;
-  return !/\.(local|localhost|internal|lan|home\.arpa)$/.test(h);
+  return !PRIVATE_SUFFIX.test(h) && !PLACEHOLDER.test(h);
 }
 
+// The contact's domain, or null when it isn't a usable subject at all — not a
+// URL, not https:/mailto: (web-push throws on those), or a mailto: with no
+// address. Anything this returns a domain for, web-push accepts.
 function contactDomain(subject: string): string | null {
   let url: URL;
   try {
@@ -36,10 +49,10 @@ function contactDomain(subject: string): string | null {
   } catch {
     return null;
   }
-  if (url.protocol === 'https:') return url.hostname;
+  if (url.protocol === 'https:') return url.hostname || null;
   if (url.protocol === 'mailto:') {
     const at = url.pathname.lastIndexOf('@');
-    return at === -1 ? null : url.pathname.slice(at + 1);
+    return at > 0 && at < url.pathname.length - 1 ? url.pathname.slice(at + 1) : null;
   }
   return null;
 }
@@ -49,25 +62,34 @@ function appleAccepts(subject: string): boolean {
   return domain !== null && isPublicDomain(domain);
 }
 
-export function resolveVapidSubject(env: NodeJS.ProcessEnv = process.env): VapidSubject {
-  const configured = env.VAPID_SUBJECT?.trim();
-  // The operator's choice stands even if Apple won't take it — they get told.
-  if (configured) return { subject: configured, appleAccepts: appleAccepts(configured) };
-
-  // WEBAUTHN_ORIGIN may list several origins (dev host plus public URL); the
-  // first one Apple would accept wins.
-  const origins = (env.WEBAUTHN_ORIGIN || '').split(',').map((s) => s.trim());
-  for (const raw of origins) {
+// WEBAUTHN_ORIGIN may list several origins (dev host plus public URL); the
+// first one Apple would accept wins.
+function publicOrigin(env: NodeJS.ProcessEnv): string | null {
+  for (const raw of (env.WEBAUTHN_ORIGIN || '').split(',')) {
     let origin: string;
     try {
-      origin = new URL(raw).origin;
+      origin = new URL(raw.trim()).origin;
     } catch {
       continue;
     }
     // appleAccepts() takes only https: and mailto:, so an http origin is skipped.
-    if (appleAccepts(origin)) {
-      return { subject: origin, appleAccepts: true };
-    }
+    if (appleAccepts(origin)) return origin;
   }
-  return { subject: FALLBACK, appleAccepts: false };
+  return null;
+}
+
+export function resolveVapidSubject(env: NodeJS.ProcessEnv = process.env): VapidSubject {
+  const configured = env.VAPID_SUBJECT?.trim() || null;
+  if (configured && appleAccepts(configured)) {
+    return { subject: configured, appleAccepts: true, ignored: null };
+  }
+  // A subject Apple refuses — or one web-push would throw on, which would break
+  // push in every browser — loses to the server's own URL when there is one.
+  const origin = publicOrigin(env);
+  if (origin) return { subject: origin, appleAccepts: true, ignored: configured };
+  // No better option: a usable subject stands, so Chrome and Firefox work.
+  if (configured && contactDomain(configured) !== null) {
+    return { subject: configured, appleAccepts: false, ignored: null };
+  }
+  return { subject: FALLBACK, appleAccepts: false, ignored: configured };
 }
