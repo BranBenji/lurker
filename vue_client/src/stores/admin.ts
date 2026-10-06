@@ -106,6 +106,7 @@ export const useAdminStore = defineStore('admin', {
     // otherwise the stale GET would resurrect a just-deleted row.
     usersFetchSeq: 0,
     invitesFetchSeq: 0,
+    lockoutsFetchSeq: 0,
     loading: false,
     error: '',
   }),
@@ -189,12 +190,17 @@ export const useAdminStore = defineStore('admin', {
       if (u) u.recoveryExpiresAt = null;
     },
     async fetchLoginLockouts() {
+      const seq = ++this.lockoutsFetchSeq;
       const { lockouts, policy } = await api('/api/admin/login-lockouts');
+      // Superseded by a newer fetch or a clear — a stale list would bring back
+      // lockouts that were just lifted.
+      if (seq !== this.lockoutsFetchSeq) return;
       this.loginLockouts = lockouts || [];
       this.loginLockoutPolicy = policy || null;
     },
     async clearLoginLockouts() {
       await api('/api/admin/login-lockouts', { method: 'DELETE' });
+      this.lockoutsFetchSeq++;
       this.loginLockouts = [];
     },
     async fetchInvites() {
