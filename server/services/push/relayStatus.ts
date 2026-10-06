@@ -97,7 +97,6 @@ export async function relayStatus(
   // background read can't answer older than a concurrent "check".
   if (!opts.fresh && inflight) return inflight;
 
-
   if (!opts.fresh && cached && now - cached.at < CACHE_MS) return cached.status;
   return fetchShared(opts.timeoutMs ?? TIMEOUT_MS, now);
 }
