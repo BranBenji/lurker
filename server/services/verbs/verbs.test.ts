@@ -418,6 +418,15 @@ describe('get_nick_note / set_nick_note', () => {
     expect(result.note.length).toBe(4096);
   });
 
+  it('set_nick_note caps without splitting an emoji (#1038)', () => {
+    const result = callVerb('set_nick_note', rwCtx(owner.id), {
+      networkId: net.id,
+      nick: 'erin',
+      note: 'x'.repeat(4095) + '😀',
+    }) as { note: string };
+    expect(result.note).toBe('x'.repeat(4095));
+  });
+
   it('set_nick_note rejected when caller has read-only scope', () => {
     expect(() =>
       callVerb('set_nick_note', rCtx(owner.id), {
@@ -573,6 +582,16 @@ describe('set_relay_bot', () => {
     expect(getRelayBot({ userId: owner.id, networkId: net.id, nick: 'bridge' })?.pattern).toBe(
       '<{nick}> {message}',
     );
+  });
+
+  it('caps a long pattern without splitting an emoji (#1038)', () => {
+    const saved = callVerb('set_relay_bot', rwCtx(owner.id), {
+      networkId: net.id,
+      nick: 'longbridge',
+      marked: true,
+      pattern: 'x'.repeat(511) + '😀',
+    });
+    expect(saved).toMatchObject({ pattern: 'x'.repeat(511) });
   });
 
   it('echoes the canonical stored casing when re-marking under a different case', () => {

@@ -22,8 +22,9 @@
 // multi-byte sequence split across two TCP segments, and substitutes U+FFFD for
 // invalid input rather than dropping the line). One astral character therefore
 // counts as two. The cap is a memory bound, not a protocol limit, so that's fine
-// — it just must not be called "bytes". A forced split never lands between the
-// two halves of one (#1038): the cut steps back and the pair opens the next line.
+// — it just must not be called "bytes". A forced split never lands inside one
+// (#1038): the cut steps back to the last whole character, which opens the next
+// line.
 
 import net from 'net';
 import { capText } from '../utils/capText.js';

@@ -4,6 +4,7 @@
 import { registerVerb } from '../verbRegistry.js';
 import ircManager from '../ircManager.js';
 import { fanOutToUser } from '../wsHub.js';
+import { capText } from '../../utils/capText.js';
 
 /** Authenticated caller context passed to every verb handler. */
 interface VerbContext {
@@ -40,7 +41,7 @@ registerVerb({
     }
     const marked = input.marked === true;
     const rawPattern = typeof input.pattern === 'string' ? input.pattern : '';
-    const pattern = rawPattern.length > 512 ? rawPattern.slice(0, 512) : rawPattern;
+    const pattern = capText(rawPattern, 512);
     const saved = ircManager.setRelayBot(ctx.userId, networkId, nick, marked, pattern);
     const result = {
       networkId,

@@ -4,6 +4,7 @@
 import { registerVerb } from '../verbRegistry.js';
 import ircManager from '../ircManager.js';
 import { fanOutToUser } from '../wsHub.js';
+import { capText } from '../../utils/capText.js';
 
 /** Authenticated caller context passed to every verb handler. */
 interface VerbContext {
@@ -37,7 +38,7 @@ registerVerb({
       throw Object.assign(new Error('nick is empty or whitespace'), { code: 'invalid_input' });
     }
     const raw = typeof input.note === 'string' ? input.note : '';
-    const note = raw.length > 4096 ? raw.slice(0, 4096) : raw;
+    const note = capText(raw, 4096);
     const saved = ircManager.setNickNote(ctx.userId, networkId, nick, note);
     const result = {
       networkId,
