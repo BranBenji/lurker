@@ -252,6 +252,153 @@ describe('search filter paths', () => {
   });
 });
 
+// The highlights / activity feed (searchMessages with `matched`, no free
+// text). Pinned on the statement searchMessagesSql actually builds, not a
+// copy: #1070 was "all my highlights" walking every message on every one of
+// 17 networks through idx_messages_net and sorting the lot — a 139s stall
+// that expired every IRC ping timer. The contract: the two partial indexes
+// supply the id list, the outer query is a rowid (or network+id) seek per
+// listed id, and nothing sorts, so the LIMIT bounds the table fetches.
+describe('highlight feed paths', () => {
+  let searchMessagesSql: typeof import('./messages.js').searchMessagesSql;
+  let userId: number;
+  let netId: number;
+  beforeAll(async () => {
+    ({ searchMessagesSql } = await import('./messages.js'));
+    const { createUser } = await import('./users.js');
+    const { createNetwork } = await import('./networks.js');
+    const { insertMessage } = await import('./messages.js');
+    userId = createUser('eqp-hl').id;
+    netId = createNetwork(userId, { name: 'n', host: 'h', port: 6697, tls: true, nick: 'me' })!.id;
+    const net2 = createNetwork(userId, {
+      name: 'n2',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'me',
+    })!;
+    // Real buffers — the same channel on both networks — so in: resolves to
+    // ids instead of short-circuiting.
+    for (const networkId of [netId, net2.id]) {
+      insertMessage({
+        networkId,
+        target: '#eqp',
+        time: new Date().toISOString(),
+        type: 'message',
+        nick: 'bob',
+        text: 'hi',
+        self: false,
+        matchedRuleId: 1,
+      });
+    }
+  });
+
+  function searchPlan(opts: Parameters<typeof searchMessagesSql>[1]): string {
+    const built = searchMessagesSql(userId, opts);
+    if (!built) throw new Error('statement short-circuited');
+    return (
+      db.prepare(`EXPLAIN QUERY PLAN ${built.sql}`).all(...built.params) as Array<{
+        detail: string;
+      }>
+    )
+      .map((r) => r.detail)
+      .join(' | ');
+  }
+
+  const highlightPlan = (opts: Parameters<typeof searchMessagesSql>[1]) =>
+    searchPlan({ matched: true, ...opts });
+
+  // Every shape: both partial indexes feed the list, each SEEKING the caller's
+  // buffers (never a scan of every user's highlights), the page is seeks, no
+  // sort.
+  function expectDriven(detail: string) {
+    expect(detail).toMatch(/LIST SUBQUERY/);
+    expect(detail).toMatch(/SEARCH messages USING INDEX idx_messages_matched_buf \(buffer_id=\?/);
+    expect(detail).toMatch(
+      /SEARCH messages USING COVERING INDEX idx_messages_reply_self_buf \(buffer_id=\?/,
+    );
+    expect(detail).not.toMatch(/SCAN messages\b/);
+    expect(detail).toMatch(
+      /SEARCH m USING (INTEGER PRIMARY KEY \(rowid=\?\)|INDEX idx_messages_net \(network_id=\? AND id=\?)/,
+    );
+    expect(detail).not.toMatch(/TEMP B-TREE/);
+    expect(detail).not.toMatch(/SCAN m\b/);
+  }
+
+  it('all my highlights never touches idx_messages_net', () => {
+    const detail = highlightPlan({});
+    expectDriven(detail);
+    expect(detail).not.toMatch(/idx_messages_net/);
+  });
+
+  it('the cursor and in: become seeks inside both halves', () => {
+    const detail = highlightPlan({ target: '#eqp', networkId: netId, before: 100 });
+    expectDriven(detail);
+    expect(detail).toMatch(/idx_messages_matched_buf \(buffer_id=\? AND id<\?\)/);
+    expect(detail).toMatch(/idx_messages_reply_self_buf \(buffer_id=\? AND id<\?\)/);
+  });
+
+  it('without in:, the halves seek the caller’s own buffers, cursor included', () => {
+    const detail = highlightPlan({ before: 100 });
+    expectDriven(detail);
+    expect(detail).toMatch(/idx_messages_matched_buf \(buffer_id=\? AND id<\?\)/);
+    expect(detail).toMatch(/idx_messages_reply_self_buf \(buffer_id=\? AND id<\?\)/);
+    // The buffer set comes from the caller's own networks, index-only.
+    expect(detail).toMatch(/SEARCH n USING COVERING INDEX idx_networks_user \(user_id=\?\)/);
+  });
+
+  it('on: and from: stay row checks over the listed ids', () => {
+    for (const opts of [
+      { networkId: netId },
+      { nick: 'alice' },
+      { nicks: ['alice', 'bob'], networkId: netId },
+    ]) {
+      const detail = highlightPlan(opts);
+      expectDriven(detail);
+      // Neither a bare network walk nor the nick index takes over the page.
+      expect(detail).not.toMatch(/idx_messages_net \(network_id=\?\)|idx_messages_net_nick/);
+    }
+  });
+
+  // in: alone, the channel held on two networks: each buffer pages itself
+  // through the per-buffer index and the union is seeked by rowid — never the
+  // gather-and-sort of both buffers' whole history a multi-value IN produced.
+  it('in: on several networks pages each buffer, no sort', () => {
+    const detail = searchPlan({ target: '#eqp' });
+    expect(detail.match(/idx_messages_buf_unread \(buffer_id=\?\)/g)).toHaveLength(2);
+    expect(detail).toMatch(/SEARCH m USING INTEGER PRIMARY KEY \(rowid=\?\)/);
+    expect(detail).not.toMatch(/TEMP B-TREE/);
+  });
+
+  // The plan can't show a LIMIT, and a half without one would plan the same
+  // while walking each buffer's whole history: pin it in the statement.
+  it('in: on several networks LIMITs every buffer’s contribution', () => {
+    const built = searchMessagesSql(userId, { target: '#eqp' });
+    expect(built!.sql.match(/ORDER BY h\.id DESC LIMIT \?\)/g)).toHaveLength(2);
+  });
+
+  it('in: on several networks seeks the cursor inside each buffer', () => {
+    const detail = searchPlan({ target: '#eqp', before: 100 });
+    expect(detail.match(/idx_messages_buf_unread \(buffer_id=\? AND id<\?\)/g)).toHaveLength(2);
+    expect(detail).not.toMatch(/TEMP B-TREE/);
+  });
+
+  it('in:+on: still streams the one buffer', () => {
+    const detail = searchPlan({ target: '#eqp', networkId: netId });
+    expect(detail).toMatch(/SEARCH m USING INDEX idx_messages_buf_unread \(buffer_id=\?\)/);
+    expect(detail).not.toMatch(/TEMP B-TREE|LIST SUBQUERY/);
+  });
+
+  it('free text keeps FTS driving, highlights as a row filter', () => {
+    const detail = highlightPlan({ query: 'hello' });
+    expect(detail).toMatch(/SCAN messages_fts/);
+    expect(detail).not.toMatch(/LIST SUBQUERY/);
+    // withReplyCol's outer ORDER BY re-sorts the LIMITed page (SQLite can't
+    // see that the FTS rowid is the page id); the page itself streams unsorted.
+    expect(detail.split('SCAN page')[0]).not.toMatch(/TEMP B-TREE/);
+  });
+});
+
 // The retention sweep's two statements (db/retention.ts). Count-based
 // retention was chosen partly BECAUSE these ride idx_messages_buf_unread with
 // no new index; these pins are what make that a property rather than a hope.

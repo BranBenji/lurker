@@ -319,7 +319,9 @@ function parseReactionsCol(raw: string | null | undefined): MessageReaction[] | 
 
 // A row is a highlight when a rule matched it or it answers one of the owner's
 // own lines. Every highlight read uses this, so the two can never disagree about
-// what counts. (countHighlightsNewer probes the halves separately — see there.)
+// what counts. (countHighlightsNewer and the filter-only searchMessages path
+// probe the halves separately, one partial index each — see there; the OR
+// itself implies neither index.)
 export const HIGHLIGHTED_SQL = (alias: string) =>
   `(${alias}.matched_rule_id IS NOT NULL OR ${alias}.reply_to_self = 1)`;
 
@@ -1761,7 +1763,40 @@ const userNetworkIdsStmt = db.prepare(`SELECT id FROM networks WHERE user_id = ?
 // this is what powers filterable highlights, which reuse the same from:/in:/on:
 // + free-text machinery as search. Unlike plain search, an all-empty filter set
 // is valid when `matched` is set: it means "all my highlights".
-export function searchMessages(
+export interface SearchMessagesOptions {
+  query?: string;
+  networkId?: number;
+  target?: string;
+  nick?: string;
+  nicks?: string[];
+  matched?: boolean;
+  before?: number;
+  limit?: number;
+}
+
+// Members per nested compound in the multi-buffer in: path, under SQLite's
+// 500-term compound limit; chunks then chain in an outer compound of their own.
+const COMPOUND_CHUNK = 200;
+
+// The per-row filters every search applies, on the given alias. ONE list on
+// purpose: the multi-buffer in: path below LIMITs each buffer's contribution
+// before the outer query filters it, so a half that admitted a row the page
+// then dropped would cut that buffer's tail short — silently, on every later
+// page too. Deriving both from here means they can't diverge.
+const SEARCH_ROW_FILTERS = (alias: string) => [
+  `${alias}.type IN ${COUNTABLE_TYPES_SQL}`,
+  `${alias}.from_ignored = 0`,
+  // Skip server-buffer mirror duplicates of closed-buffer NOTICEs (#439) so a
+  // mirrored notice doesn't surface twice — its real copy in the sender's
+  // buffer is the searchable one. Genuine server-buffer notices (mirrored = 0)
+  // stay searchable.
+  `${alias}.mirrored = 0`,
+];
+
+// The statement searchMessages runs, with its bound parameters — null when the
+// filter set can't match anything. Exported so messagesEqp.test.ts pins the
+// plan of the statement actually issued, not a copy of its shape.
+export function searchMessagesSql(
   userId: number,
   {
     query,
@@ -1772,45 +1807,23 @@ export function searchMessages(
     matched,
     before,
     limit = 50,
-  }: {
-    query?: string;
-    networkId?: number;
-    target?: string;
-    nick?: string;
-    nicks?: string[];
-    matched?: boolean;
-    before?: number;
-    limit?: number;
-  } = {},
-): MessageEventWithNetwork[] {
+  }: SearchMessagesOptions = {},
+): { sql: string; params: (string | number)[] } | null {
   const text = typeof query === 'string' ? query.trim() : '';
   const nickList = (nicks ?? []).filter((n) => typeof n === 'string' && n);
   // Nothing to search on — no free text and no structured filter. With
   // `matched` the empty case is meaningful ("all my highlights"), so skip the
   // early-out for it.
-  if (!text && !networkId && !target && !nick && nickList.length === 0 && !matched) return [];
+  if (!text && !networkId && !target && !nick && nickList.length === 0 && !matched) return null;
 
   let from = 'messages m JOIN networks n ON n.id = m.network_id';
-  const where: string[] = [
-    'n.user_id = ?',
-    `m.type IN ${COUNTABLE_TYPES_SQL}`,
-    'm.from_ignored = 0',
-    // Skip server-buffer mirror duplicates of closed-buffer NOTICEs (#439) so a
-    // mirrored notice doesn't surface twice — its real copy in the sender's
-    // buffer is the searchable one. Genuine server-buffer notices (mirrored = 0)
-    // stay searchable.
-    'm.mirrored = 0',
-  ];
+  const where: string[] = ['n.user_id = ?', ...SEARCH_ROW_FILTERS('m')];
   const params: (string | number)[] = [userId];
-
-  if (matched) {
-    where.push(HIGHLIGHTED_SQL('m'));
-  }
 
   const hasText = !!text;
   if (text) {
     const match = toFtsMatch(text);
-    if (!match) return [];
+    if (!match) return null;
     // FTS5's MATCH operator must reference the virtual table by its real name,
     // not an alias — `alias MATCH ?` parses `alias` as a column.
     from += ' JOIN messages_fts ON messages_fts.rowid = m.id';
@@ -1840,10 +1853,72 @@ export function searchMessages(
   // Which predicate DRIVES a filter-only search is decided here, not left to
   // the planner: this schema never runs ANALYZE (plans stay deterministic
   // across installs), and a stats-less planner picks plausible indexes with
-  // scan-shaped worst cases. Fixed priority — text > from: > in: > on: —
-  // most selective in the worst case first. With free text the FTS join
-  // above drives and the structured filters stay plain per-row checks.
-  if (hasText) {
+  // scan-shaped worst cases. Fixed priority — text > highlights > from: > in:
+  // > on: — most selective in the worst case first. With free text the FTS
+  // join above drives and the structured filters stay plain per-row checks.
+  //
+  // Highlights drive every filter-only `matched` read (#1070). Left to the
+  // planner, the OR in HIGHLIGHTED_SQL implies neither partial index, so "all
+  // my highlights" walked every message on every network through
+  // idx_messages_net and sorted the lot to return 50 rows — 139s on a 2.9M-row
+  // cell, long enough for every IRC connection's ping timer to expire. Instead
+  // the two stamps are read the way countHighlightsNewer reads them, one probe
+  // per partial index, and the ids are handed to the outer query as an IN
+  // list: SQLite walks that list in id order, so the ORDER BY needs no sort
+  // and the LIMIT stops the table fetches at a page's worth. Both indexes are
+  // keyed (buffer_id, id DESC), so each half seeks the caller's buffers — the
+  // in: ids when given, else every buffer on their networks (one network's
+  // with on:) — and the list holds the CALLER's highlights, not the
+  // instance's: on a multi-user host another user's 300k highlights would
+  // otherwise be enumerated, and walked past, on every page. The cursor
+  // rides the same seek. The reply half is index-only; the rule half fetches
+  // the row to check its stamp (SQLite never drops an IS NOT NULL as implied),
+  // so the list costs the caller's highlight count, never the table. INDEXED
+  // BY, so a change to either index that no longer serves this fails to
+  // prepare — per request here (the statement is built per call), and in CI
+  // where messagesEqp.test.ts issues the real statement.
+  const highlightDriven = !!matched && !hasText;
+  if (matched && !highlightDriven) {
+    where.push(HIGHLIGHTED_SQL('m'));
+  }
+  if (highlightDriven) {
+    const half: string[] = [];
+    const halfParams: number[] = [];
+    if (bufferIds !== undefined && bufferIds.length > 0) {
+      half.push(`buffer_id IN (${bufferIds.map(() => '?').join(', ')})`);
+      halfParams.push(...bufferIds);
+    } else if (networkId) {
+      half.push(
+        `buffer_id IN (SELECT b.id FROM buffers b JOIN networks n ON n.id = b.network_id
+                            WHERE n.user_id = ? AND n.id = ?)`,
+      );
+      halfParams.push(userId, networkId);
+    } else {
+      half.push(
+        `buffer_id IN (SELECT b.id FROM buffers b JOIN networks n ON n.id = b.network_id
+                            WHERE n.user_id = ?)`,
+      );
+      halfParams.push(userId);
+    }
+    if (before) {
+      half.push('id < ?');
+      halfParams.push(before);
+    }
+    const probe = (index: string, stamp: string) =>
+      `SELECT id FROM messages INDEXED BY ${index} WHERE ${[stamp, ...half].join(' AND ')}`;
+    where.push(
+      `m.id IN (${probe('idx_messages_matched_buf', 'matched_rule_id IS NOT NULL')}
+                UNION ALL ${probe('idx_messages_reply_self_buf', 'reply_to_self = 1')})`,
+    );
+    params.push(...halfParams, ...halfParams);
+    // on: and from: are plain row checks over the page; with a network term
+    // the planner seeks idx_messages_net by (network_id, id) per listed id,
+    // which rejects the other networks' highlights in-index.
+    if (networkId) {
+      where.push('m.network_id = ?');
+      params.push(networkId);
+    }
+  } else if (hasText) {
     if (networkId) {
       where.push('m.network_id = ?');
       params.push(networkId);
@@ -1875,9 +1950,43 @@ export function searchMessages(
     params.push(networkId);
   }
 
+  const bufferDriven = bufferIds !== undefined && !hasText && !nickFiltered && !highlightDriven;
   if (bufferIds !== undefined) {
     if (bufferIds.length === 0) where.push('0');
-    else {
+    else if (bufferDriven && bufferIds.length > 1) {
+      // in: alone, resolved on several networks. A multi-value `buffer_id IN`
+      // can't stream `ORDER BY id DESC` across buffers, so the planner walked
+      // EVERY listed buffer's whole history through idx_messages_buf_unread
+      // and sorted the lot — seconds of blocked event loop for a channel the
+      // user sits in on two networks. Instead each buffer contributes its own
+      // newest page — a walk of idx_messages_buf_unread that stops at the
+      // LIMIT, with type and from_ignored rejected in-index and a row fetch
+      // for `mirrored`, which the index doesn't carry — and the outer query
+      // pages the union by id as the highlight path does. The half's filters
+      // are SEARCH_ROW_FILTERS, the outer query's own list — see there for
+      // why they must be the same list. (Each half is wrapped: a compound
+      // select's members can't carry their own ORDER BY / LIMIT directly.)
+      const half = (cursor: string) =>
+        `SELECT id FROM (
+                  SELECT id FROM messages h
+                  WHERE h.buffer_id = ? AND ${SEARCH_ROW_FILTERS('h').join(' AND ')}${cursor}
+                  ORDER BY h.id DESC LIMIT ?)`;
+      const cursor = before ? ' AND h.id < ?' : '';
+      // SQLite caps one compound at SQLITE_MAX_COMPOUND_SELECT (500) terms,
+      // so the halves are nested in chunks: a chain of chunks, each a chain
+      // of halves. No cap on buffers, and the plan is the same per half.
+      const chunks: string[] = [];
+      for (let i = 0; i < bufferIds.length; i += COMPOUND_CHUNK) {
+        const members = bufferIds.slice(i, i + COMPOUND_CHUNK).map(() => half(cursor));
+        chunks.push(`SELECT id FROM (${members.join(' UNION ALL ')})`);
+      }
+      where.push(`m.id IN (${chunks.join(' UNION ALL ')})`);
+      for (const id of bufferIds) {
+        params.push(id);
+        if (before) params.push(before);
+        params.push(limit);
+      }
+    } else if (!highlightDriven) {
       // The unary `+` (only when nick drives) hides the buffer term from index
       // selection while keeping it as a row filter — without it the planner
       // drives from:+in: through idx_messages_buf_unread, whose worst case (a
@@ -1900,7 +2009,7 @@ export function searchMessages(
     where.push('m.nick = ? COLLATE NOCASE');
     params.push(nick);
   }
-  if (before) {
+  if (before && !highlightDriven) {
     where.push('m.id < ?');
     params.push(before);
   }
@@ -1919,8 +2028,16 @@ export function searchMessages(
                ORDER BY ${hasText ? 'messages_fts.rowid' : 'm.id'} DESC
                LIMIT ?`);
   params.push(limit);
+  return { sql, params };
+}
 
-  return (db.prepare(sql).all(...params) as MessageRowWithNetwork[]).map((row) => ({
+export function searchMessages(
+  userId: number,
+  opts: SearchMessagesOptions = {},
+): MessageEventWithNetwork[] {
+  const built = searchMessagesSql(userId, opts);
+  if (!built) return [];
+  return (db.prepare(built.sql).all(...built.params) as MessageRowWithNetwork[]).map((row) => ({
     ...rowToEvent(row),
     networkName: row.network_name,
   }));
