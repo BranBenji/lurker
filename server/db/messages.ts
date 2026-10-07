@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import db from './index.js';
+import { idInHalves } from './idInHalves.js';
 import {
   resolveBuffer,
   resolveBufferIdByNetwork,
@@ -1774,10 +1775,6 @@ export interface SearchMessagesOptions {
   limit?: number;
 }
 
-// Members per nested compound in the multi-buffer in: path, under SQLite's
-// 500-term compound limit; chunks then chain in an outer compound of their own.
-const COMPOUND_CHUNK = 200;
-
 // The per-row filters every search applies, on the given alias. ONE list on
 // purpose: the multi-buffer in: path below LIMITs each buffer's contribution
 // before the outer query filters it, so a half that admitted a row the page
@@ -1877,7 +1874,10 @@ export function searchMessagesSql(
   // BY, so a change to either index that no longer serves this fails to
   // prepare — per request here (the statement is built per call), and in CI
   // where messagesEqp.test.ts issues the real statement.
+  // Which list drives, in priority order (text drives through FTS, not a list).
   const highlightDriven = !!matched && !hasText;
+  const nickDriven = nickFiltered && !hasText && !highlightDriven;
+  const bufferDriven = bufferIds !== undefined && !hasText && !nickFiltered && !highlightDriven;
   if (matched && !highlightDriven) {
     where.push(HIGHLIGHTED_SQL('m'));
   }
@@ -1919,27 +1919,48 @@ export function searchMessagesSql(
       params.push(networkId);
     }
   } else if (hasText) {
+    // Hidden from index selection with the unary `+`: left visible, on: plus
+    // a cursor tempted the planner off FTS onto idx_messages_net
+    // (network_id=? AND id<?), walking the network's whole history below the
+    // cursor with an FTS probe per row — page 2 of every scoped text search.
     if (networkId) {
-      where.push('m.network_id = ?');
+      where.push('+m.network_id = ?');
       params.push(networkId);
     }
-  } else if (nickFiltered) {
-    // Nick drives, via idx_messages_net_nick. The index needs a network_id
-    // IN prefix, and the access-control join alone can't provide one — so the
-    // caller's network set is pushed in as a subquery over their own rows.
-    // The planner materializes it once (LIST SUBQUERY) and still seeks
-    // (network_id=? AND nick=?). A subquery rather than an expanded id list
-    // (PR #798 review): the set is derived inside SQL, so a request-supplied
-    // networkId is ownership-checked by construction and no untrusted value
-    // can reach the predicate. Still redundant with the join by design — this
-    // exists purely so the planner can seek.
-    if (networkId) {
-      where.push('m.network_id IN (SELECT id FROM networks WHERE user_id = ? AND id = ?)');
-      params.push(userId, networkId);
-    } else {
-      where.push('m.network_id IN (SELECT id FROM networks WHERE user_id = ?)');
-      params.push(userId);
+  } else if (nickDriven) {
+    // Nick drives, via idx_messages_net_nick (network_id, nick, id DESC, …):
+    // one half per (network, nick), each a walk of that prefix that stops at
+    // the LIMIT, index-only since the row filters, buffer_id and the cursor
+    // are all payload columns. The earlier single statement seeked the same
+    // index through a `network_id IN (subquery)`, which can't stream the
+    // ORDER BY: it gathered every line the nick ever spoke across the
+    // caller's networks, fetched each row, and sorted — from:<a bot> on
+    // years of history. The network list is the caller's own, filtered to
+    // on: when given, so a request-supplied networkId that isn't theirs
+    // yields no halves and no rows — ownership by construction, as before
+    // (PR #798 review). A multi-value nick IN inside one half would sort
+    // again, hence a half per nick.
+    const own = (userNetworkIdsStmt.all(userId) as { id: number }[]).map((n) => n.id);
+    const nets = networkId ? own.filter((id) => id === networkId) : own;
+    const senders = nickList.length > 0 ? nickList : [nick as string];
+    const scope = bufferIds !== undefined && bufferIds.length > 0 ? bufferIds : undefined;
+    const halves: string[] = [];
+    for (const net of nets) {
+      for (const sender of senders) {
+        halves.push(`SELECT id FROM (
+                  SELECT id FROM messages h
+                  WHERE h.network_id = ? AND h.nick = ? COLLATE NOCASE
+                    AND ${SEARCH_ROW_FILTERS('h').join(' AND ')}${
+                      scope ? ` AND h.buffer_id IN (${scope.map(() => '?').join(', ')})` : ''
+                    }${before ? ' AND h.id < ?' : ''}
+                  ORDER BY h.id DESC LIMIT ?)`);
+        params.push(net, sender, ...(scope ?? []));
+        if (before) params.push(before);
+        params.push(limit);
+      }
     }
+    if (halves.length === 0) where.push('0');
+    else where.push(idInHalves('m.id', halves));
   } else if (bufferIds === undefined && networkId) {
     // on:-only — idx_messages_net drives. When buffer ids are present instead,
     // NO network predicate is emitted at all: the ids above were already
@@ -1950,7 +1971,6 @@ export function searchMessagesSql(
     params.push(networkId);
   }
 
-  const bufferDriven = bufferIds !== undefined && !hasText && !nickFiltered && !highlightDriven;
   if (bufferIds !== undefined) {
     if (bufferIds.length === 0) where.push('0');
     else if (bufferDriven && bufferIds.length > 1) {
@@ -1972,28 +1992,23 @@ export function searchMessagesSql(
                   WHERE h.buffer_id = ? AND ${SEARCH_ROW_FILTERS('h').join(' AND ')}${cursor}
                   ORDER BY h.id DESC LIMIT ?)`;
       const cursor = before ? ' AND h.id < ?' : '';
-      // SQLite caps one compound at SQLITE_MAX_COMPOUND_SELECT (500) terms,
-      // so the halves are nested in chunks: a chain of chunks, each a chain
-      // of halves. No cap on buffers, and the plan is the same per half.
-      const chunks: string[] = [];
-      for (let i = 0; i < bufferIds.length; i += COMPOUND_CHUNK) {
-        const members = bufferIds.slice(i, i + COMPOUND_CHUNK).map(() => half(cursor));
-        chunks.push(`SELECT id FROM (${members.join(' UNION ALL ')})`);
-      }
-      where.push(`m.id IN (${chunks.join(' UNION ALL ')})`);
+      where.push(
+        idInHalves(
+          'm.id',
+          bufferIds.map(() => half(cursor)),
+        ),
+      );
       for (const id of bufferIds) {
         params.push(id);
         if (before) params.push(before);
         params.push(limit);
       }
     } else if (!highlightDriven) {
-      // The unary `+` (only when nick drives) hides the buffer term from index
-      // selection while keeping it as a row filter — without it the planner
-      // drives from:+in: through idx_messages_buf_unread, whose worst case (a
-      // nick that never spoke in a big buffer) walks the buffer's entire
-      // history with a table fetch per row. Nick-driven, the wrong-buffer
-      // rejects are index-only via the buffer_id payload column.
-      const col = !hasText && nickFiltered ? '+m.buffer_id' : 'm.buffer_id';
+      // Plain row check when a half list (from:) or FTS drives; the unary `+`
+      // hides it from index selection so the planner can't abandon the driver
+      // for idx_messages_buf_unread. Visible only on the single-buffer in:
+      // path, where that index IS the driver.
+      const col = !hasText && !nickFiltered ? 'm.buffer_id' : '+m.buffer_id';
       where.push(`${col} IN (${bufferIds.map(() => '?').join(', ')})`);
       params.push(...bufferIds);
     }
@@ -2002,15 +2017,21 @@ export function searchMessagesSql(
   // case. COLLATE NOCASE binds to the column so the IN comparison is case-fold
   // — and matches the collation on idx_messages_net_nick's nick column, which
   // an index without it would be invisible to.
+  // (Hidden from index selection like the buffer term: redundant with the
+  // from: halves, and a bare nick term could tempt the planner elsewhere.)
   if (nickList.length > 0) {
-    where.push(`m.nick COLLATE NOCASE IN (${nickList.map(() => '?').join(', ')})`);
+    where.push(`+m.nick COLLATE NOCASE IN (${nickList.map(() => '?').join(', ')})`);
     params.push(...nickList);
   } else if (nick) {
-    where.push('m.nick = ? COLLATE NOCASE');
+    where.push('+m.nick = ? COLLATE NOCASE');
     params.push(nick);
   }
-  if (before && !highlightDriven) {
-    where.push('m.id < ?');
+  // The cursor: inside the halves on the list-driven paths (already applied
+  // there), on the FTS rowid with free text — FTS5 takes a rowid range
+  // natively, so the stream starts below the cursor — and a plain index
+  // range on the single-buffer / on:-only streams.
+  if (before && !highlightDriven && !nickDriven && !(bufferDriven && bufferIds!.length > 1)) {
+    where.push(hasText ? 'messages_fts.rowid < ?' : 'm.id < ?');
     params.push(before);
   }
 
@@ -2020,8 +2041,8 @@ export function searchMessagesSql(
   // and sorting every message that ever contained the term (measured 2126ms →
   // 1.6ms for a common word on a 2M-row database).
   // The page is picked first, and the reply quote added over it (withReplyCol):
-  // the nick-driven plans sort, and a column computed before the sorter would
-  // look up a parent for every candidate row.
+  // a column computed inside the page query would run for every candidate row
+  // the driver visits, not the LIMIT's worth.
   const sql = withReplyCol(`SELECT m.*, n.name AS network_name, ${BOOKMARKED_COL('m')}
                FROM ${from}
                WHERE ${where.join(' AND ')}
