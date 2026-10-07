@@ -30,6 +30,7 @@ import { purgeOAuth } from './db/oauth.js';
 import { sweepExpiredPreviews } from './db/linkPreviews.js';
 import { sweepPreviewCache } from './services/previewCache/index.js';
 import { startRetentionSweeper } from './services/retentionSweeper.js';
+import { endBootPhase } from './db/index.js';
 import { listGrandfatheredUsernames } from './db/users.js';
 import { backfillEncryptColumns } from './db/secretBackfill.js';
 import { assertPushCredentials } from './services/push/credentials.js';
@@ -278,6 +279,9 @@ void sweepTempUploads().catch((err: unknown) => {
 });
 
 server.listen(PORT, HOST, () => {
+  // Every synchronous boot writer above has run, so a lock wait from here on
+  // would block live traffic: back to the steady-state budget (#748).
+  endBootPhase();
   console.log(`[lurker] listening on http://${HOST || '0.0.0.0'}:${PORT}`);
   systemLog.log({ scope: 'server', text: `Listening on port ${PORT}` });
 });

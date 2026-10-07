@@ -32,8 +32,17 @@ describe('connection pragmas', () => {
     expect(db.pragma('synchronous', { simple: true })).toBe(1);
   });
 
-  it('sets busy_timeout so a transient lock retries instead of throwing SQLITE_BUSY', () => {
-    expect(db.pragma('busy_timeout', { simple: true })).toBe(5000);
+  // Two budgets (#748): a long one while booting, when the lock a writer meets
+  // can be Litestream's post-migration checkpoint over a huge WAL and nothing is
+  // being served; the steady-state one once the server listens, when a wait
+  // blocks live traffic.
+  it('waits long for a lock while booting, 5 s once boot is over', async () => {
+    const { BOOT_BUSY_TIMEOUT_MS, BUSY_TIMEOUT_MS, endBootPhase } = await import('./index.js');
+    expect(db.pragma('busy_timeout', { simple: true })).toBe(BOOT_BUSY_TIMEOUT_MS);
+    expect(BOOT_BUSY_TIMEOUT_MS).toBeGreaterThanOrEqual(120_000);
+    endBootPhase();
+    expect(db.pragma('busy_timeout', { simple: true })).toBe(BUSY_TIMEOUT_MS);
+    expect(BUSY_TIMEOUT_MS).toBe(5000);
   });
 
   it('enforces foreign keys', () => {

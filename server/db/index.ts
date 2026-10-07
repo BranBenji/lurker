@@ -56,9 +56,26 @@ db.pragma('journal_mode = WAL');
 // every tenant on the same network at once.
 db.pragma('synchronous = NORMAL');
 // Don't let a transient lock (a WAL checkpoint, or any future second connection)
-// surface as an immediate SQLITE_BUSY throw — wait up to 5s for it to clear.
-db.pragma('busy_timeout = 5000');
+// surface as an immediate SQLITE_BUSY throw — wait for it to clear. Two
+// budgets (#748): steady state waits 5 s, because a blocked write blocks the
+// event loop that serves everyone; BOOT waits two minutes, because nothing is
+// being served yet and the lock it meets can be long. A migration or an
+// index build commits hundreds of megabytes of WAL in one go, and on a hosted
+// cell Litestream answers with a RESTART checkpoint that holds the write lock
+// for as long as the checkpoint takes — minutes on a cell's disk. The first
+// boot writer after module load (a token purge, a cache sweep) then hit
+// SQLITE_BUSY at 5 s, uncaught, and the process crash-looped until the
+// checkpoint finished (seen on the 2.0.0 upgrade; 2.4.2 rebuilds three
+// indexes). server.ts calls endBootPhase() once it is listening.
+export const BOOT_BUSY_TIMEOUT_MS = 120_000;
+export const BUSY_TIMEOUT_MS = 5000;
+db.pragma(`busy_timeout = ${BOOT_BUSY_TIMEOUT_MS}`);
 db.pragma('foreign_keys = ON');
+
+/** Boot is over: from here a lock wait blocks live traffic, so it gets 5 s. */
+export function endBootPhase(): void {
+  db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+}
 
 function migrate() {
   db.exec(`

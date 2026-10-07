@@ -259,7 +259,11 @@ export function seedUploaderConfig(db: Database.Database): void {
     // owns it and runs every boot (see its header for why a one-shot is wrong).
     ensureSelfHostInstanceRows(db);
   });
-  run();
+  // `.immediate()`: the transaction reads before it writes, and a deferred BEGIN
+  // takes a read snapshot that Litestream's sync can make un-upgradeable
+  // (SQLITE_BUSY_SNAPSHOT, #603) — the last migration transaction still on the
+  // deferred shape (#748).
+  run.immediate();
 }
 
 /**
