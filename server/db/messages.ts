@@ -1519,11 +1519,35 @@ export function hasMessageWithMsgid(networkId: number, msgid: string): boolean {
 // where a repeat means a re-delivery, not a user saying the same thing twice.
 // By buffer, not by name: the network's casemapping folds `#foo[bar]` and
 // `#foo{bar}` into one buffer, and each row keeps the spelling it arrived under.
+//
+// Bounded to the buffer's tail. No index covers `time`, so the unbounded form
+// read every row of that type in the buffer for each line that ISN'T a repeat
+// — nearly all of them — and a long detach (2.4.0's migration on a large cell)
+// hands over thousands of lines: minutes of synchronous reads, the whole
+// process frozen. A re-delivered line repeats one stored just before the
+// hand-over, so it sits at the buffer's tail.
+export const CATCH_UP_TAIL_ROWS = 1000;
 const hasLikeStmt = db.prepare(
-  `SELECT 1 FROM messages
-   WHERE buffer_id = ? AND type = ? AND nick IS ? AND text IS ?
-     AND time BETWEEN ? AND ? LIMIT 1`,
+  `SELECT 1 FROM (
+     SELECT type, nick, text, time FROM messages
+      WHERE buffer_id = ? ORDER BY id DESC LIMIT ${CATCH_UP_TAIL_ROWS}
+   )
+   WHERE type = ? AND nick IS ? AND text IS ? AND time BETWEEN ? AND ? LIMIT 1`,
 );
+// The newest time among those same tail rows: what the buffer held when the
+// catch-up began. Not just the newest id's time — server-time can order rows
+// out of time order.
+const tailNewestTimeStmt = db.prepare(
+  `SELECT MAX(time) AS newest FROM (
+     SELECT time FROM messages WHERE buffer_id = ? ORDER BY id DESC LIMIT ${CATCH_UP_TAIL_ROWS}
+   )`,
+);
+
+/** Per catch-up: each buffer's newest stored time when the catch-up first
+ *  looked at it (null = the buffer held nothing). The connection owns one and
+ *  clears it when a catch-up starts. */
+export type CatchUpHorizon = Map<number, number | null>;
+
 export function hasRecentMessageLike(
   networkId: number,
   target: string,
@@ -1532,12 +1556,25 @@ export function hasRecentMessageLike(
   text: string | null,
   time: string,
   toleranceMs = 5000,
+  horizon?: CatchUpHorizon,
 ): boolean {
   if (!networkId || !target) return false;
   const t = Date.parse(time);
   if (!Number.isFinite(t)) return false;
   const bufferId = resolveBufferIdByNetwork(networkId, target);
   if (bufferId === undefined) return false;
+  if (horizon) {
+    // A line newer than anything the buffer held when the catch-up began can't
+    // be a re-delivery: skip the probe. The first look per buffer is one read
+    // of the tail; every later line in the backlog is a map hit.
+    if (!horizon.has(bufferId)) {
+      const row = tailNewestTimeStmt.get(bufferId) as { newest: string | null } | undefined;
+      const newest = row?.newest ? Date.parse(row.newest) : NaN;
+      horizon.set(bufferId, Number.isFinite(newest) ? newest : null);
+    }
+    const newest = horizon.get(bufferId);
+    if (newest === null || newest === undefined || t - toleranceMs > newest) return false;
+  }
   const lo = new Date(t - toleranceMs).toISOString();
   const hi = new Date(t + toleranceMs).toISOString();
   return !!hasLikeStmt.get(bufferId, type, nick, text, lo, hi);

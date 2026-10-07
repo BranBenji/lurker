@@ -31,12 +31,7 @@ env:
   # the engine's behaviour did not, so self-hosters keep the engine they are running
   # instead of having `docker compose pull` recreate it — and drop their IRC
   # connections — for nothing. Entries are one-shot: drop them once released.
-  #
-  # v2.4.0: the engine closure's diff since v2.3.2 is clientCert.ts's cert
-  # minting (#1050; the engine only imports isDialableCertPair) and ip-address
-  # 10.4.0 → 10.7.2 (#1022; socks only parses addresses, the advisory's fix is in
-  # classifiers it never calls). Neither changes what the engine does.
-  ENGINE_TAG_PINNED_RELEASES: 'v2.4.0'
+  ENGINE_TAG_PINNED_RELEASES: ''
 
 jobs:
   build-and-push:

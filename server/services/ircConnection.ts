@@ -10,6 +10,7 @@ import {
   hasMessageWithMsgid,
   hasSameMessageWithMsgid,
   hasRecentMessageLike,
+  type CatchUpHorizon,
   findReplyParent,
   replyRootFor,
 } from '../db/messages.js';
@@ -1021,6 +1022,9 @@ export class IrcConnection {
   // the previous process persisted but had not acked comes again — so in this
   // window a msgid we already have is skipped rather than written twice.
   catchingUp: boolean;
+  // Each buffer's newest stored time when this catch-up first looked at it
+  // (hasRecentMessageLike): lines newer than that can't be re-deliveries.
+  private catchUpHorizon: CatchUpHorizon = new Map();
   // The engine finished registering this socket with no app attached (the
   // previous one died between NICK/USER and 001): nothing ever ran the
   // post-registration steps, so the restore runs them.
@@ -5469,6 +5473,7 @@ export class IrcConnection {
         this.resetRestoreState();
         this.restoring = true;
         this.catchingUp = true;
+        this.catchUpHorizon = new Map();
         this.restoreUnattended = !!info.unattended;
         // The engine's channel set is the truth about the socket. Anything we
         // still think we are in but the engine doesn't (kicked or parted while
@@ -5843,7 +5848,19 @@ export class IrcConnection {
       if (this.catchingUp) return hasMessageWithMsgid(this.network.id, event.msgid);
       return hasSameMessageWithMsgid(this.network.id, target, event.msgid, type, nick, text);
     }
-    return this.catchingUp && hasRecentMessageLike(this.network.id, target, type, nick, text, time);
+    return (
+      this.catchingUp &&
+      hasRecentMessageLike(
+        this.network.id,
+        target,
+        type,
+        nick,
+        text,
+        time,
+        undefined,
+        this.catchUpHorizon,
+      )
+    );
   }
 
   // Engine mode shutdown: leave the IRC socket in the engine for the next app

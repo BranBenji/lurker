@@ -83,13 +83,19 @@ describe('repeat probe', () => {
     expect(detail).toMatch(/USING INDEX idx_messages_msgid/);
   });
 
-  it('a line without a msgid is looked for on the per-buffer index (hasRecentMessageLike shape)', () => {
+  it('a line without a msgid reads only the buffer tail (hasRecentMessageLike shape)', () => {
+    // The tail subquery walks the per-buffer index newest-first under a LIMIT;
+    // the outer filter never reaches the rest of the buffer.
     const detail = plan(
-      `SELECT 1 FROM messages
-       WHERE buffer_id = 1 AND type = 'message' AND nick IS 'n' AND text IS 't'
+      `SELECT 1 FROM (
+         SELECT type, nick, text, time FROM messages
+          WHERE buffer_id = 1 ORDER BY id DESC LIMIT 1000
+       )
+       WHERE type = 'message' AND nick IS 'n' AND text IS 't'
          AND time BETWEEN 'a' AND 'b' LIMIT 1`,
     );
     expect(detail).toMatch(/USING INDEX idx_messages_buf_unread/);
+    expect(detail).not.toMatch(/TEMP B-TREE/);
   });
 });
 
