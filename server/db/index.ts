@@ -58,24 +58,19 @@ db.pragma('synchronous = NORMAL');
 // Don't let a transient lock (a WAL checkpoint, or any future second connection)
 // surface as an immediate SQLITE_BUSY throw — wait for it to clear. Two
 // budgets (#748): steady state waits 5 s, because a blocked write blocks the
-// event loop that serves everyone; BOOT waits two minutes, because nothing is
-// being served yet and the lock it meets can be long. A migration or an
-// index build commits hundreds of megabytes of WAL in one go, and on a hosted
-// cell Litestream answers with a RESTART checkpoint that holds the write lock
-// for as long as the checkpoint takes — minutes on a cell's disk. The first
-// boot writer after module load (a token purge, a cache sweep) then hit
-// SQLITE_BUSY at 5 s, uncaught, and the process crash-looped until the
-// checkpoint finished (seen on the 2.0.0 upgrade; 2.4.2 rebuilds three
-// indexes). server.ts calls endBootPhase() once it is listening.
+// event loop that serves everyone; the MIGRATIONS below wait two minutes,
+// because nothing is being served yet and the lock one of them meets can be
+// long. A migration or an index build commits hundreds of megabytes of WAL in
+// one go, and on a hosted cell Litestream answers with a RESTART checkpoint
+// that holds the write lock for as long as the checkpoint takes — minutes on
+// a cell's disk — so the NEXT migration statement would hit SQLITE_BUSY at
+// 5 s. The 2.0.0 upgrade did (seedUploaderConfig, after a five-minute
+// migration); 2.4.2 rebuilds three indexes in a row. The budget drops back at
+// the end of this module, once drainWal has emptied the WAL — see there.
 export const BOOT_BUSY_TIMEOUT_MS = 120_000;
 export const BUSY_TIMEOUT_MS = 5000;
 db.pragma(`busy_timeout = ${BOOT_BUSY_TIMEOUT_MS}`);
 db.pragma('foreign_keys = ON');
-
-/** Boot is over: from here a lock wait blocks live traffic, so it gets 5 s. */
-export function endBootPhase(): void {
-  db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
-}
 
 function migrate() {
   db.exec(`
@@ -1878,7 +1873,8 @@ if (schemaVersion < 6) {
       }
     }
   });
-  seed();
+  // .immediate(): reads before it writes (#603, #748).
+  seed.immediate();
 }
 
 // tableExists gate: fresh installs never create closed_buffers (retired by
@@ -2845,5 +2841,66 @@ ensureColumn(
 db.exec(
   `CREATE INDEX IF NOT EXISTS idx_push_subs_oauth_token ON push_subscriptions(oauth_token_id)`,
 );
+
+// --- end of the migrations: drain the WAL, then the steady-state lock budget --
+//
+// The migrations above may have left hundreds of megabytes in the WAL. Left
+// there, Litestream's next sync starts a RESTART checkpoint over all of it,
+// which holds the write lock for as long as the copy takes — and whichever
+// writer meets it after boot (an IRC insert, a WS command, an hourly purge)
+// throws SQLITE_BUSY at 5 s, uncaught, and the process crash-loops until the
+// checkpoint ends (#748). So the WAL is drained HERE, before anything is
+// served: PASSIVE checkpoints copy frames into the main file without ever
+// taking the write lock, so nothing is blocked by them, and once they are done
+// Litestream's checkpoint has nothing left to do. Litestream's own reader caps
+// how far a PASSIVE pass can reach, so the loop lets it catch up between
+// passes (a synchronous sleep: nothing else runs during boot). A WAL that is
+// a few frames behind is steady state — Litestream's reader always trails a
+// little — so "drained" is "under one auto-checkpoint's worth".
+//
+// Exported for the test; `budgetMs` caps the wait, after which boot goes on
+// with whatever is left (the same exposure as before this existed, logged).
+const WAL_DRAINED_FRAMES = 1000; // PRAGMA wal_autocheckpoint's default
+export function drainWal(budgetMs = BOOT_BUSY_TIMEOUT_MS): {
+  frames: number;
+  behind: number;
+  ms: number;
+} {
+  const started = Date.now();
+  const sleep = new Int32Array(new SharedArrayBuffer(4));
+  let frames = 0;
+  let behind = 0;
+  for (;;) {
+    const r = (
+      db.pragma('wal_checkpoint(PASSIVE)') as { busy: number; log: number; checkpointed: number }[]
+    )[0];
+    frames = Math.max(frames, r.log);
+    behind = r.log - r.checkpointed;
+    if (!r.busy && behind <= WAL_DRAINED_FRAMES) break;
+    if (Date.now() - started >= budgetMs) {
+      console.warn(
+        `[db] WAL still ${behind} frames behind after ${Math.round(budgetMs / 1000)}s — ` +
+          `continuing; a long checkpoint may still block the first writes`,
+      );
+      break;
+    }
+    Atomics.wait(sleep, 0, 0, 250);
+  }
+  const ms = Date.now() - started;
+  if (ms >= 1000) {
+    const pageSize = db.pragma('page_size', { simple: true }) as number;
+    console.log(
+      `[db] drained ${Math.round((frames * pageSize) / 1e6)} MB of WAL in ${(ms / 1000).toFixed(1)}s`,
+    );
+  }
+  return { frames, behind, ms };
+}
+
+/** Migrations are over and the WAL is drained: a lock wait now blocks live traffic, so it gets 5 s. */
+export function endBootPhase(): void {
+  db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+}
+drainWal();
+endBootPhase();
 
 export default db;

@@ -59,6 +59,9 @@ export function backfillEncryptColumns(map: Record<string, string[]> = encrypted
       }
     }
   });
-  tx();
+  // .immediate(): the SELECT above opens a read snapshot that Litestream's sync
+  // can make un-upgradeable before the first UPDATE (SQLITE_BUSY_SNAPSHOT,
+  // #603) — and this runs uncaught on every hosted boot (#748).
+  tx.immediate();
   return { scanned, encrypted };
 }

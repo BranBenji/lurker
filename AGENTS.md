@@ -135,9 +135,11 @@ reproduced the gate locally.
 These are the non-obvious constraints that have bitten changes before:
 
 - **One shared SQLite connection.** `server/db/index.ts` opens a single
-  better-sqlite3 connection (WAL, `synchronous=NORMAL`, `busy_timeout=5s` once
-  the server listens; two minutes during boot, so a post-migration Litestream
-  checkpoint over a big WAL can't SQLITE_BUSY the first boot writer — #748).
+  better-sqlite3 connection (WAL, `synchronous=NORMAL`, `busy_timeout=5s`; the
+  migrations at module load run under two minutes, and the module ends by
+  draining the WAL with passive checkpoints, so a post-migration Litestream
+  checkpoint never holds the write lock against the first writers — #748. A
+  boot-phase transaction that reads before it writes must be `.immediate()`).
   better-sqlite3 is **synchronous** — long queries block the event loop that
   also serves WebSocket fan-out and IRC sockets. **Do not hold a long-lived
   `.iterate()` streaming cursor:** a streamed read open across concurrent writes

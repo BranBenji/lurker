@@ -261,8 +261,8 @@ export function seedUploaderConfig(db: Database.Database): void {
   });
   // `.immediate()`: the transaction reads before it writes, and a deferred BEGIN
   // takes a read snapshot that Litestream's sync can make un-upgradeable
-  // (SQLITE_BUSY_SNAPSHOT, #603) — the last migration transaction still on the
-  // deferred shape (#748).
+  // (SQLITE_BUSY_SNAPSHOT, #603, #748). Every boot-phase transaction that
+  // reads first needs this; nothing enforces it yet.
   run.immediate();
 }
 
@@ -277,9 +277,10 @@ export function seedUploaderConfig(db: Database.Database): void {
  */
 export function reconcileBuiltInUploaders(db: Database.Database): void {
   if (isNodeMode()) return;
+  // .immediate(): reads before it writes (#603, #748).
   db.transaction(() => {
     ensureSelfHostInstanceRows(db);
-  })();
+  }).immediate();
 }
 
 // ─── legacy `uploads.*` keys → uploader_config rows (P3, #514) ────────────────

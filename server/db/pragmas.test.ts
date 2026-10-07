@@ -13,9 +13,11 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-test-'));
 process.env.DATABASE_PATH = path.join(tmpDir, 'test.db');
 
 let db: typeof import('./index.js').default;
+let mod: typeof import('./index.js');
 
 beforeAll(async () => {
-  db = (await import('./index.js')).default;
+  mod = await import('./index.js');
+  db = mod.default;
 });
 
 afterAll(() => {
@@ -32,17 +34,34 @@ describe('connection pragmas', () => {
     expect(db.pragma('synchronous', { simple: true })).toBe(1);
   });
 
-  // Two budgets (#748): a long one while booting, when the lock a writer meets
-  // can be Litestream's post-migration checkpoint over a huge WAL and nothing is
-  // being served; the steady-state one once the server listens, when a wait
-  // blocks live traffic.
-  it('waits long for a lock while booting, 5 s once boot is over', async () => {
-    const { BOOT_BUSY_TIMEOUT_MS, BUSY_TIMEOUT_MS, endBootPhase } = await import('./index.js');
-    expect(db.pragma('busy_timeout', { simple: true })).toBe(BOOT_BUSY_TIMEOUT_MS);
-    expect(BOOT_BUSY_TIMEOUT_MS).toBeGreaterThanOrEqual(120_000);
-    endBootPhase();
-    expect(db.pragma('busy_timeout', { simple: true })).toBe(BUSY_TIMEOUT_MS);
-    expect(BUSY_TIMEOUT_MS).toBe(5000);
+  // Two budgets (#748): the migrations run under a long one, and the module
+  // ends by draining the WAL and dropping to the steady-state 5 s — so by the
+  // time anyone imports the connection, a lock wait is bounded for live
+  // traffic again.
+  it('sets busy_timeout so a transient lock retries instead of throwing SQLITE_BUSY', () => {
+    expect(db.pragma('busy_timeout', { simple: true })).toBe(5000);
+  });
+
+  it('migrations get a two-minute budget, and boot ends with the WAL drained', () => {
+    expect(mod.BOOT_BUSY_TIMEOUT_MS).toBeGreaterThan(mod.BUSY_TIMEOUT_MS);
+    // Leave a WAL behind the way a migration does, then drain it: afterwards a
+    // passive checkpoint finds nothing left.
+    db.exec(`CREATE TABLE IF NOT EXISTS wal_probe (id INTEGER PRIMARY KEY, body TEXT)`);
+    const ins = db.prepare(`INSERT INTO wal_probe (body) VALUES (?)`);
+    db.transaction(() => {
+      for (let i = 0; i < 3000; i += 1) ins.run('x'.repeat(2000));
+    })();
+    const dirty = (
+      db.pragma('wal_checkpoint(PASSIVE)') as { log: number; checkpointed: number }[]
+    )[0];
+    const result = mod.drainWal(10_000);
+    expect(result.behind).toBeLessThanOrEqual(1000);
+    expect(result.frames).toBeGreaterThanOrEqual(dirty.log);
+    const after = (
+      db.pragma('wal_checkpoint(PASSIVE)') as { log: number; checkpointed: number }[]
+    )[0];
+    expect(after.log - after.checkpointed).toBeLessThanOrEqual(1000);
+    db.exec(`DROP TABLE wal_probe`);
   });
 
   it('enforces foreign keys', () => {
