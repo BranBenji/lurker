@@ -2858,49 +2858,82 @@ db.exec(
 // a few frames behind is steady state — Litestream's reader always trails a
 // little — so "drained" is "under one auto-checkpoint's worth".
 //
-// Exported for the test; `budgetMs` caps the wait, after which boot goes on
-// with whatever is left (the same exposure as before this existed, logged).
+// Exported for the test. `budgetMs` caps the wait; `drained` says whether the
+// loop got there. When PASSIVE itself is refused (busy: another process —
+// Litestream — is mid-checkpoint) SQLite reports -1 for the counts, so the
+// last real reading is kept and the warning names the lock instead.
 const WAL_DRAINED_FRAMES = 1000; // PRAGMA wal_autocheckpoint's default
 export function drainWal(budgetMs = BOOT_BUSY_TIMEOUT_MS): {
-  frames: number;
+  drained: boolean;
   behind: number;
+  checkpointedBytes: number;
   ms: number;
 } {
   const started = Date.now();
   const sleep = new Int32Array(new SharedArrayBuffer(4));
-  let frames = 0;
-  let behind = 0;
+  const pageSize = db.pragma('page_size', { simple: true }) as number;
+  let behind = -1;
+  let last = -1;
+  let busy = false;
+  let drained = false;
   for (;;) {
     const r = (
       db.pragma('wal_checkpoint(PASSIVE)') as { busy: number; log: number; checkpointed: number }[]
     )[0];
-    frames = Math.max(frames, r.log);
-    behind = r.log - r.checkpointed;
-    if (!r.busy && behind <= WAL_DRAINED_FRAMES) break;
-    if (Date.now() - started >= budgetMs) {
-      console.warn(
-        `[db] WAL still ${behind} frames behind after ${Math.round(budgetMs / 1000)}s — ` +
-          `continuing; a long checkpoint may still block the first writes`,
-      );
+    busy = r.busy === 1;
+    if (r.log >= 0) {
+      behind = r.log - r.checkpointed;
+      last = r.checkpointed;
+    }
+    if (!busy && behind >= 0 && behind <= WAL_DRAINED_FRAMES) {
+      drained = true;
       break;
     }
+    if (Date.now() - started >= budgetMs) break;
     Atomics.wait(sleep, 0, 0, 250);
   }
   const ms = Date.now() - started;
-  if (ms >= 1000) {
-    const pageSize = db.pragma('page_size', { simple: true }) as number;
+  // What of this WAL is in the main file now — not what this call moved, which
+  // PASSIVE doesn't report, and never the WAL's total, which would overstate
+  // a drain that stopped short.
+  const checkpointedBytes = Math.max(0, last) * pageSize;
+  if (!drained) {
+    console.warn(
+      `[db] WAL not drained after ${(ms / 1000).toFixed(1)}s — ` +
+        (busy
+          ? 'another process holds the checkpoint lock (Litestream mid-checkpoint)'
+          : `${behind} frames still behind`) +
+        `; keeping the ${Math.round(BOOT_BUSY_TIMEOUT_MS / 1000)}s lock budget until it is`,
+    );
+  } else if (ms >= 1000) {
     console.log(
-      `[db] drained ${Math.round((frames * pageSize) / 1e6)} MB of WAL in ${(ms / 1000).toFixed(1)}s`,
+      `[db] WAL drained in ${(ms / 1000).toFixed(1)}s — ${Math.round(checkpointedBytes / 1e6)} MB checkpointed`,
     );
   }
-  return { frames, behind, ms };
+  return { drained, behind, checkpointedBytes, ms };
 }
 
-/** Migrations are over and the WAL is drained: a lock wait now blocks live traffic, so it gets 5 s. */
+/** The WAL is drained: a lock wait now blocks live traffic, so it gets 5 s. */
 export function endBootPhase(): void {
   db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
 }
-drainWal();
-endBootPhase();
+
+// Drained → steady state now. Not drained within the budget → the long budget
+// STAYS (a 5 s throw here is the crash loop this exists to prevent; a long
+// wait blocks the loop but keeps the process), and a background pass — one
+// PASSIVE checkpoint, no sleeping, so it never blocks for long — keeps
+// draining until it is, then drops the budget.
+if (drainWal().drained) {
+  endBootPhase();
+} else {
+  const retry = setInterval(() => {
+    if (drainWal(0).drained) {
+      clearInterval(retry);
+      endBootPhase();
+      console.log('[db] WAL drained; lock budget back to steady state');
+    }
+  }, 15_000);
+  retry.unref();
+}
 
 export default db;

@@ -144,18 +144,18 @@ const app = buildApp(SESSION_SECRET);
 const server = http.createServer(app);
 attachWsHub(server, SESSION_SECRET);
 
-// The hourly hygiene passes run once at boot too. A failure here is a
-// warning, not a fatal: each is rescheduled a line later, and a lock met at
-// boot (a WAL checkpoint after a migration, #748) is the one case that
-// shouldn't take the process down for a purge that can wait an hour.
+// The hourly hygiene passes run once at boot too. A LOCK met here (a WAL
+// checkpoint after a migration, #748) is a warning, not a fatal: each pass is
+// rescheduled a line later and can wait an hour. Any other error is a bug and
+// still fails boot loudly, as before — swallowing it would only move the
+// crash to the first hourly tick, with no boot-time signal.
 function bootPass(label: string, run: () => void): void {
   try {
     run();
   } catch (err) {
-    console.warn(
-      `[lurker] ${label} failed at boot (next hourly pass retries):`,
-      (err as Error).message,
-    );
+    const code = (err as { code?: string }).code ?? '';
+    if (!code.startsWith('SQLITE_BUSY')) throw err;
+    console.warn(`[lurker] ${label} hit a lock at boot (next hourly pass retries): ${code}`);
   }
 }
 bootPass('session purge', purgeExpiredSessions);

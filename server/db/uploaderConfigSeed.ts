@@ -451,7 +451,7 @@ export function reconcileLegacyUploadSettings(db: Database.Database): void {
     db.prepare(`DELETE FROM user_settings WHERE key IN (${LEGACY_KEY_PLACEHOLDERS})`).run(
       ...LEGACY_KEYS,
     );
-  })();
+  }).immediate(); // reads (getUserSettingsRaw) before it writes (#603, #748)
 }
 
 /**

@@ -5,6 +5,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import Database from 'better-sqlite3';
 
 // db/index.js reads DATABASE_PATH at module-load time and opens the connection
 // (applying these pragmas) on first import, so point it at an isolated temp DB
@@ -44,19 +45,28 @@ describe('connection pragmas', () => {
 
   it('migrations get a two-minute budget, and boot ends with the WAL drained', () => {
     expect(mod.BOOT_BUSY_TIMEOUT_MS).toBeGreaterThan(mod.BUSY_TIMEOUT_MS);
-    // Leave a WAL behind the way a migration does, then drain it: afterwards a
-    // passive checkpoint finds nothing left.
+    // A reader on an older snapshot (Litestream's, in production) pins the
+    // checkpoint: frames written after it can't be backfilled. Leave a WAL
+    // behind it the way a migration does; with no budget the drain reports
+    // the backlog and does NOT claim success; once the reader is gone, the
+    // drain empties it and a passive checkpoint finds nothing left.
     db.exec(`CREATE TABLE IF NOT EXISTS wal_probe (id INTEGER PRIMARY KEY, body TEXT)`);
+    const reader = new Database(process.env.DATABASE_PATH!);
+    reader.exec('BEGIN');
+    reader.prepare('SELECT COUNT(*) FROM wal_probe').get();
     const ins = db.prepare(`INSERT INTO wal_probe (body) VALUES (?)`);
     db.transaction(() => {
       for (let i = 0; i < 3000; i += 1) ins.run('x'.repeat(2000));
     })();
-    const dirty = (
-      db.pragma('wal_checkpoint(PASSIVE)') as { log: number; checkpointed: number }[]
-    )[0];
+    const pinned = mod.drainWal(0);
+    expect(pinned.drained).toBe(false);
+    expect(pinned.behind).toBeGreaterThan(1000);
+    reader.exec('COMMIT');
+    reader.close();
     const result = mod.drainWal(10_000);
+    expect(result.drained).toBe(true);
     expect(result.behind).toBeLessThanOrEqual(1000);
-    expect(result.frames).toBeGreaterThanOrEqual(dirty.log);
+    expect(result.checkpointedBytes).toBeGreaterThan(1000 * 4096);
     const after = (
       db.pragma('wal_checkpoint(PASSIVE)') as { log: number; checkpointed: number }[]
     )[0];
