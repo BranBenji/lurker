@@ -10,7 +10,7 @@ import {
   hasMessageWithMsgid,
   hasSameMessageWithMsgid,
   hasRecentMessageLike,
-  type CatchUpHorizon,
+  maxMessageId,
   findReplyParent,
   replyRootFor,
 } from '../db/messages.js';
@@ -1022,9 +1022,10 @@ export class IrcConnection {
   // the previous process persisted but had not acked comes again — so in this
   // window a msgid we already have is skipped rather than written twice.
   catchingUp: boolean;
-  // Each buffer's newest stored time when this catch-up first looked at it
-  // (hasRecentMessageLike): lines newer than that can't be re-deliveries.
-  private catchUpHorizon: CatchUpHorizon = new Map();
+  // The newest message id when this catch-up began: a re-delivered line's
+  // original is at or below it, and the catch-up's own rows are above it
+  // (hasRecentMessageLike). Null outside a catch-up.
+  private catchUpMaxId: number | null = null;
   // The engine finished registering this socket with no app attached (the
   // previous one died between NICK/USER and 001): nothing ever ran the
   // post-registration steps, so the restore runs them.
@@ -5473,7 +5474,7 @@ export class IrcConnection {
         this.resetRestoreState();
         this.restoring = true;
         this.catchingUp = true;
-        this.catchUpHorizon = new Map();
+        this.catchUpMaxId = maxMessageId();
         this.restoreUnattended = !!info.unattended;
         // The engine's channel set is the truth about the socket. Anything we
         // still think we are in but the engine doesn't (kicked or parted while
@@ -5553,6 +5554,7 @@ export class IrcConnection {
       }
       case 'live':
         this.catchingUp = false;
+        this.catchUpMaxId = null;
         // Only now is the picture complete: the replay said which channels the
         // socket is in, and the backlog said why (a KICK from one of them is a
         // backlog line, and it is what lowers that channel's autojoin).
@@ -5577,6 +5579,7 @@ export class IrcConnection {
   private resetRestoreState(): void {
     this.restoring = false;
     this.catchingUp = false;
+    this.catchUpMaxId = null;
     this.restoreUnattended = false;
     this.restoredCallbacks = [];
     this.restoreQueue = [];
@@ -5850,16 +5853,9 @@ export class IrcConnection {
     }
     return (
       this.catchingUp &&
-      hasRecentMessageLike(
-        this.network.id,
-        target,
-        type,
-        nick,
-        text,
-        time,
-        undefined,
-        this.catchUpHorizon,
-      )
+      hasRecentMessageLike(this.network.id, target, type, nick, text, time, {
+        maxId: this.catchUpMaxId ?? undefined,
+      })
     );
   }
 

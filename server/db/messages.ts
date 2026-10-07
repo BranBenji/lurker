@@ -1520,33 +1520,31 @@ export function hasMessageWithMsgid(networkId: number, msgid: string): boolean {
 // By buffer, not by name: the network's casemapping folds `#foo[bar]` and
 // `#foo{bar}` into one buffer, and each row keeps the spelling it arrived under.
 //
-// Bounded to the buffer's tail. No index covers `time`, so the unbounded form
-// read every row of that type in the buffer for each line that ISN'T a repeat
-// — nearly all of them — and a long detach (2.4.0's migration on a large cell)
-// hands over thousands of lines: minutes of synchronous reads, the whole
-// process frozen. A re-delivered line repeats one stored just before the
-// hand-over, so it sits at the buffer's tail.
+// Bounded, two ways. No index covers `time`, so the unbounded form read every
+// row of that type in the buffer for each line that ISN'T a repeat — nearly
+// all of them — and a long detach (2.4.0's migration on a large cell) hands
+// over thousands: minutes of synchronous reads, the whole process frozen.
+// - `maxId`: only rows stored before this catch-up began (the connection reads
+//   maxMessageId() at `attached`). A re-delivery repeats one of those; the
+//   catch-up's own rows are never its original, so two identical new lines in
+//   the backlog both stay.
+// - `tailRows`: only the buffer's newest rows below that, where a re-delivered
+//   line's original sits — it was stored just before the hand-over.
 export const CATCH_UP_TAIL_ROWS = 1000;
-const hasLikeStmt = db.prepare(
-  `SELECT 1 FROM (
+export const HAS_LIKE_SQL = `SELECT 1 FROM (
      SELECT type, nick, text, time FROM messages
-      WHERE buffer_id = ? ORDER BY id DESC LIMIT ${CATCH_UP_TAIL_ROWS}
+      WHERE buffer_id = @bufferId AND id <= @maxId ORDER BY id DESC LIMIT @tailRows
    )
-   WHERE type = ? AND nick IS ? AND text IS ? AND time BETWEEN ? AND ? LIMIT 1`,
-);
-// The newest time among those same tail rows: what the buffer held when the
-// catch-up began. Not just the newest id's time — server-time can order rows
-// out of time order.
-const tailNewestTimeStmt = db.prepare(
-  `SELECT MAX(time) AS newest FROM (
-     SELECT time FROM messages WHERE buffer_id = ? ORDER BY id DESC LIMIT ${CATCH_UP_TAIL_ROWS}
-   )`,
-);
+   WHERE type = @type AND nick IS @nick AND text IS @text AND time BETWEEN @lo AND @hi LIMIT 1`;
+const hasLikeStmt = db.prepare(HAS_LIKE_SQL);
 
-/** Per catch-up: each buffer's newest stored time when the catch-up first
- *  looked at it (null = the buffer held nothing). The connection owns one and
- *  clears it when a catch-up starts. */
-export type CatchUpHorizon = Map<number, number | null>;
+export interface RepeatProbeOptions {
+  toleranceMs?: number;
+  /** Only rows with an id at or below this: the newest stored when the
+   *  catch-up began. Unset = every row. */
+  maxId?: number;
+  tailRows?: number;
+}
 
 export function hasRecentMessageLike(
   networkId: number,
@@ -1555,29 +1553,20 @@ export function hasRecentMessageLike(
   nick: string | null,
   text: string | null,
   time: string,
-  toleranceMs = 5000,
-  horizon?: CatchUpHorizon,
+  {
+    toleranceMs = 5000,
+    maxId = Number.MAX_SAFE_INTEGER,
+    tailRows = CATCH_UP_TAIL_ROWS,
+  }: RepeatProbeOptions = {},
 ): boolean {
   if (!networkId || !target) return false;
   const t = Date.parse(time);
   if (!Number.isFinite(t)) return false;
   const bufferId = resolveBufferIdByNetwork(networkId, target);
   if (bufferId === undefined) return false;
-  if (horizon) {
-    // A line newer than anything the buffer held when the catch-up began can't
-    // be a re-delivery: skip the probe. The first look per buffer is one read
-    // of the tail; every later line in the backlog is a map hit.
-    if (!horizon.has(bufferId)) {
-      const row = tailNewestTimeStmt.get(bufferId) as { newest: string | null } | undefined;
-      const newest = row?.newest ? Date.parse(row.newest) : NaN;
-      horizon.set(bufferId, Number.isFinite(newest) ? newest : null);
-    }
-    const newest = horizon.get(bufferId);
-    if (newest === null || newest === undefined || t - toleranceMs > newest) return false;
-  }
   const lo = new Date(t - toleranceMs).toISOString();
   const hi = new Date(t + toleranceMs).toISOString();
-  return !!hasLikeStmt.get(bufferId, type, nick, text, lo, hi);
+  return !!hasLikeStmt.get({ bufferId, maxId, tailRows, type, nick, text, lo, hi });
 }
 
 // Whether a target has a real (non-notice) conversation — at least one PRIVMSG or

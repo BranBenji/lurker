@@ -131,6 +131,23 @@ describe('a message the network sends twice', () => {
     expect(rows('----------')).toHaveLength(2);
   });
 
+  it("in an engine catch-up, never takes the catch-up's own line for a re-delivery (2.4.1)", () => {
+    // The engine's `attached` phase marks where stored history ended; a line the
+    // backlog itself stored is above it, so a second identical line is a second
+    // line, not a re-delivery of the first.
+    const conn = makeConn();
+    join(conn, '#lobby');
+    const phase = (p: string, info = {}) =>
+      (conn as unknown as { onEnginePhase(p: string, i: object): void }).onEnginePhase(p, info);
+    phase('attached', { channels: ['#lobby'] });
+    phase('restored');
+    receive(conn, { target: '#lobby', message: 'lol' });
+    receive(conn, { target: '#lobby', message: 'lol' });
+    expect(rows('lol')).toHaveLength(2);
+    phase('live');
+    expect((conn as unknown as { catchUpMaxId: number | null }).catchUpMaxId).toBeNull();
+  });
+
   it('in catch-up, matches a line without a msgid whose channel name differs in case', () => {
     const conn = makeConn();
     join(conn, '#Lobby');

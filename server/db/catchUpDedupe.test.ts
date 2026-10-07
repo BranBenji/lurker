@@ -5,8 +5,8 @@
 // Unbounded, it read every row of the line's type in the buffer for each line
 // that wasn't a repeat; after 2.4.0's migration kept a large cell detached, the
 // backlog's thousands of lines froze the process for minutes. It now looks only
-// at the buffer's tail, and skips the probe for lines newer than anything the
-// buffer held when the catch-up began.
+// at rows stored before the catch-up began (`maxId`), and only at the newest of
+// those (`tailRows`).
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
@@ -17,14 +17,12 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-test-catchup-'));
 process.env.DATABASE_PATH = path.join(tmpDir, 'test.db');
 
 let m: typeof import('./messages.js');
-let db: typeof import('./index.js').default;
 let networkId: number;
 
 beforeAll(async () => {
   const { createUser } = await import('./users.js');
   const { createNetwork } = await import('./networks.js');
   m = await import('./messages.js');
-  db = (await import('./index.js')).default;
   const user = createUser('catchup-user');
   networkId = createNetwork(user.id, {
     name: 'n',
@@ -46,98 +44,36 @@ function say(target: string, nick: string, text: string, time: string) {
   m.insertMessage({ networkId, target, time, type: 'message', nick, text, self: false });
 }
 
+const probe = (target: string, nick: string, text: string, time: string, opts = {}) =>
+  m.hasRecentMessageLike(networkId, target, 'message', nick, text, time, opts);
+
 describe('hasRecentMessageLike (catch-up repeat probe)', () => {
-  it('finds a re-delivered line stored at the tail', () => {
+  it('finds a re-delivered line stored before the catch-up', () => {
     say('#tail', 'alice', 'hello', at(0));
-    const horizon: import('./messages.js').CatchUpHorizon = new Map();
-    expect(
-      m.hasRecentMessageLike(
-        networkId,
-        '#tail',
-        'message',
-        'alice',
-        'hello',
-        at(1000),
-        5000,
-        horizon,
-      ),
-    ).toBe(true);
+    const maxId = m.maxMessageId();
+    expect(probe('#tail', 'alice', 'hello', at(1000), { maxId })).toBe(true);
     // A different line in the same window is not a repeat.
-    expect(
-      m.hasRecentMessageLike(
-        networkId,
-        '#tail',
-        'message',
-        'alice',
-        'other',
-        at(1000),
-        5000,
-        horizon,
-      ),
-    ).toBe(false);
+    expect(probe('#tail', 'alice', 'other', at(1000), { maxId })).toBe(false);
   });
 
-  it('skips the probe for a line newer than anything the buffer held at the start', () => {
-    say('#horizon', 'bob', 'old', at(0));
-    const horizon: import('./messages.js').CatchUpHorizon = new Map();
-    // Even the identical text, an hour later, can't be a re-delivery.
-    expect(
-      m.hasRecentMessageLike(
-        networkId,
-        '#horizon',
-        'message',
-        'bob',
-        'old',
-        at(3_600_000),
-        5000,
-        horizon,
-      ),
-    ).toBe(false);
-    // The buffer's newest time is captured once, at the first look...
-    const bufferId = [...horizon.keys()][0];
-    expect(horizon.get(bufferId)).toBe(T0);
-    // ...so a line the catch-up stores afterwards doesn't move it: later backlog
-    // lines are still judged against what was there when the catch-up began.
-    say('#horizon', 'bob', 'new', at(3_600_000));
-    expect(horizon.get(bufferId)).toBe(T0);
-    expect(
-      m.hasRecentMessageLike(
-        networkId,
-        '#horizon',
-        'message',
-        'bob',
-        'new',
-        at(3_600_500),
-        5000,
-        horizon,
-      ),
-    ).toBe(false);
-  });
-
-  it('treats an empty buffer as holding nothing to repeat', () => {
-    // A buffer that exists but has no rows.
-    say('#empty', 'carol', 'x', at(0));
-    db.prepare(`DELETE FROM messages WHERE text = 'x'`).run();
-    const horizon: import('./messages.js').CatchUpHorizon = new Map();
-    expect(
-      m.hasRecentMessageLike(networkId, '#empty', 'message', 'carol', 'x', at(0), 5000, horizon),
-    ).toBe(false);
+  it("never treats the catch-up's own rows as an original", () => {
+    // Two identical lines in one backlog (a "lol", twice, within seconds) are
+    // two lines: the first is stored during the catch-up, above `maxId`, so the
+    // second is not mistaken for its re-delivery.
+    say('#own', 'bob', 'warm-up', at(0));
+    const maxId = m.maxMessageId();
+    say('#own', 'bob', 'lol', at(10_000));
+    expect(probe('#own', 'bob', 'lol', at(11_000), { maxId })).toBe(false);
   });
 
   it('only looks at the tail: an original buried under more rows than that is out of reach', () => {
-    // This pins the bound itself — the unbounded probe would find it, reading
-    // every row of the buffer to do so.
+    // Pins the bound itself — the unbounded probe would find it, reading every
+    // row of the buffer to do so. A small tail keeps the test's cost fixed.
     say('#deep', 'dave', 'buried', at(0));
-    const insert = db.transaction(() => {
-      for (let i = 0; i < m.CATCH_UP_TAIL_ROWS; i++) say('#deep', 'eve', `filler ${i}`, at(1));
-    });
-    insert();
-    expect(m.hasRecentMessageLike(networkId, '#deep', 'message', 'dave', 'buried', at(0))).toBe(
-      false,
-    );
+    for (let i = 0; i < 5; i++) say('#deep', 'eve', `filler ${i}`, at(1));
+    const maxId = m.maxMessageId();
+    expect(probe('#deep', 'dave', 'buried', at(0), { maxId, tailRows: 5 })).toBe(false);
     // ...while one inside the tail is still found.
-    expect(m.hasRecentMessageLike(networkId, '#deep', 'message', 'eve', 'filler 5', at(1))).toBe(
-      true,
-    );
+    expect(probe('#deep', 'eve', 'filler 4', at(1), { maxId, tailRows: 5 })).toBe(true);
   });
 });
