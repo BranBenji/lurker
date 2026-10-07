@@ -786,6 +786,78 @@ describe('searchMessages', () => {
   });
 });
 
+describe('searchMessages in: across networks', () => {
+  // The channel held on two networks, in: with no on:. Each buffer pages
+  // itself (#1070 follow-up), so the merged page must still be the newest
+  // rows across both, in id order, with the cursor honoured in each.
+  it('merges the newest rows of every buffer the name resolves to', () => {
+    const user = createUser('in-multi');
+    const mk = (name: string) =>
+      createNetwork(user.id, { name, host: 'h', port: 6697, tls: true, nick: 'in-multi' })!;
+    const a = mk('a');
+    const b = mk('b');
+    const say = (networkId: number, text: string, type = 'message') =>
+      insertMessage({
+        networkId,
+        target: '#shared',
+        time: new Date().toISOString(),
+        type,
+        nick: 'bob',
+        text,
+        self: false,
+      });
+    say(a.id, 'a1');
+    say(b.id, 'b1');
+    say(a.id, 'a2');
+    say(b.id, 'b2');
+    say(b.id, 'b-joined', 'join');
+    say(a.id, 'a3');
+
+    const page = searchMessages(user.id, { target: '#shared', limit: 3 });
+    expect(page.map((m) => m.text)).toEqual(['a3', 'b2', 'a2']);
+    const rest = searchMessages(user.id, { target: '#shared', limit: 3, before: page[2].id });
+    expect(rest.map((m) => m.text)).toEqual(['b1', 'a1']);
+    // on: narrows it back to one buffer.
+    expect(
+      searchMessages(user.id, { target: '#shared', networkId: b.id }).map((m) => m.text),
+    ).toEqual(['b2', 'b1']);
+  });
+
+  // A half with a looser filter than the page would cut its tail short: with
+  // LIMIT 2 and a buffer whose newest two rows are non-chat, the page must
+  // still reach that buffer's chat lines.
+  it('a buffer whose newest rows are noise still contributes its chat lines', () => {
+    const user = createUser('in-multi-noise');
+    const mk = (name: string) =>
+      createNetwork(user.id, { name, host: 'h', port: 6697, tls: true, nick: 'in-multi-noise' })!;
+    const a = mk('a');
+    const b = mk('b');
+    const say = (networkId: number, text: string, type = 'message') =>
+      insertMessage({
+        networkId,
+        target: '#shared',
+        time: new Date().toISOString(),
+        type,
+        nick: 'bob',
+        text,
+        self: false,
+      });
+    say(b.id, 'b1');
+    say(a.id, 'a1');
+    say(b.id, 'noise 1', 'join');
+    say(b.id, 'noise 2', 'part');
+    say(a.id, 'a2');
+
+    const page = searchMessages(user.id, { target: '#shared', limit: 2 });
+    expect(page.map((m) => m.text)).toEqual(['a2', 'a1']);
+    expect(
+      searchMessages(user.id, { target: '#shared', limit: 2, before: page[1].id }).map(
+        (m) => m.text,
+      ),
+    ).toEqual(['b1']);
+  });
+});
+
 describe('searchMessages matched (highlights)', () => {
   function hl(networkId: number, nick: string, text: string, matched: number | null) {
     return insertMessage({
@@ -837,6 +909,57 @@ describe('searchMessages matched (highlights)', () => {
     expect(
       searchMessages(user.id, { matched: true, query: 'deploy', nick: 'alice' }).map((m) => m.text),
     ).toEqual(['deploy finished']);
+  });
+
+  // The filter-only path reads the two highlight stamps through their own
+  // partial indexes and unions the ids (#1070). Both halves must answer, the
+  // in: scope and the cursor must apply inside each half, and a line that
+  // carries both stamps must come back once.
+  it('unions the rule and reply halves under in: and the cursor', () => {
+    const user = createUser('hl-halves');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'hl-halves',
+    })!;
+    const line = (target: string, text: string, extra: { matched?: number; reply?: true }) =>
+      insertMessage({
+        networkId: net.id,
+        target,
+        time: new Date().toISOString(),
+        type: 'message',
+        nick: 'bob',
+        text,
+        self: false,
+        matchedRuleId: extra.matched ?? null,
+        replyToSelf: extra.reply,
+      });
+    line('#a', 'rule in a', { matched: 7 });
+    line('#a', 'reply in a', { reply: true });
+    line('#a', 'both in a', { matched: 7, reply: true });
+    line('#a', 'plain in a', {});
+    line('#b', 'rule in b', { matched: 7 });
+    line('#b', 'reply in b', { reply: true });
+
+    expect(searchMessages(user.id, { matched: true }).map((m) => m.text)).toEqual([
+      'reply in b',
+      'rule in b',
+      'both in a',
+      'reply in a',
+      'rule in a',
+    ]);
+    const inA = searchMessages(user.id, { matched: true, target: '#a' });
+    expect(inA.map((m) => m.text)).toEqual(['both in a', 'reply in a', 'rule in a']);
+    expect(
+      searchMessages(user.id, { matched: true, target: '#a', before: inA[0].id }).map(
+        (m) => m.text,
+      ),
+    ).toEqual(['reply in a', 'rule in a']);
+    expect(
+      searchMessages(user.id, { matched: true, limit: 2, before: inA[0].id }).map((m) => m.text),
+    ).toEqual(['reply in a', 'rule in a']);
   });
 });
 
