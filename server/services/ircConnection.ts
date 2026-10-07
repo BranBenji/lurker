@@ -10,6 +10,7 @@ import {
   hasMessageWithMsgid,
   hasSameMessageWithMsgid,
   hasRecentMessageLike,
+  maxMessageId,
   findReplyParent,
   replyRootFor,
 } from '../db/messages.js';
@@ -1021,6 +1022,10 @@ export class IrcConnection {
   // the previous process persisted but had not acked comes again — so in this
   // window a msgid we already have is skipped rather than written twice.
   catchingUp: boolean;
+  // The newest message id when this catch-up began: a re-delivered line's
+  // original is at or below it, and the catch-up's own rows are above it
+  // (hasRecentMessageLike). Null outside a catch-up.
+  private catchUpMaxId: number | null = null;
   // The engine finished registering this socket with no app attached (the
   // previous one died between NICK/USER and 001): nothing ever ran the
   // post-registration steps, so the restore runs them.
@@ -5469,6 +5474,7 @@ export class IrcConnection {
         this.resetRestoreState();
         this.restoring = true;
         this.catchingUp = true;
+        this.catchUpMaxId = maxMessageId();
         this.restoreUnattended = !!info.unattended;
         // The engine's channel set is the truth about the socket. Anything we
         // still think we are in but the engine doesn't (kicked or parted while
@@ -5548,6 +5554,7 @@ export class IrcConnection {
       }
       case 'live':
         this.catchingUp = false;
+        this.catchUpMaxId = null;
         // Only now is the picture complete: the replay said which channels the
         // socket is in, and the backlog said why (a KICK from one of them is a
         // backlog line, and it is what lowers that channel's autojoin).
@@ -5572,6 +5579,7 @@ export class IrcConnection {
   private resetRestoreState(): void {
     this.restoring = false;
     this.catchingUp = false;
+    this.catchUpMaxId = null;
     this.restoreUnattended = false;
     this.restoredCallbacks = [];
     this.restoreQueue = [];
@@ -5843,7 +5851,12 @@ export class IrcConnection {
       if (this.catchingUp) return hasMessageWithMsgid(this.network.id, event.msgid);
       return hasSameMessageWithMsgid(this.network.id, target, event.msgid, type, nick, text);
     }
-    return this.catchingUp && hasRecentMessageLike(this.network.id, target, type, nick, text, time);
+    return (
+      this.catchingUp &&
+      hasRecentMessageLike(this.network.id, target, type, nick, text, time, {
+        maxId: this.catchUpMaxId ?? undefined,
+      })
+    );
   }
 
   // Engine mode shutdown: leave the IRC socket in the engine for the next app

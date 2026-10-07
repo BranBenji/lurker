@@ -1519,11 +1519,33 @@ export function hasMessageWithMsgid(networkId: number, msgid: string): boolean {
 // where a repeat means a re-delivery, not a user saying the same thing twice.
 // By buffer, not by name: the network's casemapping folds `#foo[bar]` and
 // `#foo{bar}` into one buffer, and each row keeps the spelling it arrived under.
-const hasLikeStmt = db.prepare(
-  `SELECT 1 FROM messages
-   WHERE buffer_id = ? AND type = ? AND nick IS ? AND text IS ?
-     AND time BETWEEN ? AND ? LIMIT 1`,
-);
+//
+// Bounded, two ways. No index covers `time`, so the unbounded form read every
+// row of that type in the buffer for each line that ISN'T a repeat — nearly
+// all of them — and a long detach (2.4.0's migration on a large cell) hands
+// over thousands: minutes of synchronous reads, the whole process frozen.
+// - `maxId`: only rows stored before this catch-up began (the connection reads
+//   maxMessageId() at `attached`). A re-delivery repeats one of those; the
+//   catch-up's own rows are never its original, so two identical new lines in
+//   the backlog both stay.
+// - `tailRows`: only the buffer's newest rows below that, where a re-delivered
+//   line's original sits — it was stored just before the hand-over.
+export const CATCH_UP_TAIL_ROWS = 1000;
+export const HAS_LIKE_SQL = `SELECT 1 FROM (
+     SELECT type, nick, text, time FROM messages
+      WHERE buffer_id = @bufferId AND id <= @maxId ORDER BY id DESC LIMIT @tailRows
+   )
+   WHERE type = @type AND nick IS @nick AND text IS @text AND time BETWEEN @lo AND @hi LIMIT 1`;
+const hasLikeStmt = db.prepare(HAS_LIKE_SQL);
+
+export interface RepeatProbeOptions {
+  toleranceMs?: number;
+  /** Only rows with an id at or below this: the newest stored when the
+   *  catch-up began. Unset = every row. */
+  maxId?: number;
+  tailRows?: number;
+}
+
 export function hasRecentMessageLike(
   networkId: number,
   target: string,
@@ -1531,7 +1553,11 @@ export function hasRecentMessageLike(
   nick: string | null,
   text: string | null,
   time: string,
-  toleranceMs = 5000,
+  {
+    toleranceMs = 5000,
+    maxId = Number.MAX_SAFE_INTEGER,
+    tailRows = CATCH_UP_TAIL_ROWS,
+  }: RepeatProbeOptions = {},
 ): boolean {
   if (!networkId || !target) return false;
   const t = Date.parse(time);
@@ -1540,7 +1566,7 @@ export function hasRecentMessageLike(
   if (bufferId === undefined) return false;
   const lo = new Date(t - toleranceMs).toISOString();
   const hi = new Date(t + toleranceMs).toISOString();
-  return !!hasLikeStmt.get(bufferId, type, nick, text, lo, hi);
+  return !!hasLikeStmt.get({ bufferId, maxId, tailRows, type, nick, text, lo, hi });
 }
 
 // Whether a target has a real (non-notice) conversation — at least one PRIVMSG or

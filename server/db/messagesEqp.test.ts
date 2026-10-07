@@ -83,13 +83,28 @@ describe('repeat probe', () => {
     expect(detail).toMatch(/USING INDEX idx_messages_msgid/);
   });
 
-  it('a line without a msgid is looked for on the per-buffer index (hasRecentMessageLike shape)', () => {
-    const detail = plan(
-      `SELECT 1 FROM messages
-       WHERE buffer_id = 1 AND type = 'message' AND nick IS 'n' AND text IS 't'
-         AND time BETWEEN 'a' AND 'b' LIMIT 1`,
+  it('a line without a msgid reads only the buffer tail (the real hasRecentMessageLike statement)', async () => {
+    const { HAS_LIKE_SQL } = await import('./messages.js');
+    // The tail subquery walks the per-buffer index newest-first under the id
+    // bound and the LIMIT; nothing sorts, and the rest of the buffer is never read.
+    const detail = (
+      db.prepare(`EXPLAIN QUERY PLAN ${HAS_LIKE_SQL}`).all({
+        bufferId: 1,
+        maxId: 100,
+        tailRows: 1000,
+        type: 'message',
+        nick: 'n',
+        text: 't',
+        lo: 'a',
+        hi: 'b',
+      }) as Array<{ detail: string }>
+    )
+      .map((r) => r.detail)
+      .join(' | ');
+    expect(detail).toMatch(
+      /USING (COVERING )?INDEX idx_messages_buf_unread \(buffer_id=\? AND id<\?\)/,
     );
-    expect(detail).toMatch(/USING INDEX idx_messages_buf_unread/);
+    expect(detail).not.toMatch(/TEMP B-TREE/);
   });
 });
 
