@@ -75,6 +75,7 @@ export function foldMutedIntoIgnoreRules(db: Database.Database): number {
       }
     },
   );
-  migrate(mutedRows);
+  // .immediate(): reads (findRule) before it writes (#603, #748).
+  migrate.immediate(mutedRows);
   return mutedRows.length;
 }

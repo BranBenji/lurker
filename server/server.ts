@@ -144,23 +144,37 @@ const app = buildApp(SESSION_SECRET);
 const server = http.createServer(app);
 attachWsHub(server, SESSION_SECRET);
 
-purgeExpiredSessions();
+// The hourly hygiene passes run once at boot too. A LOCK met here (a WAL
+// checkpoint after a migration, #748) is a warning, not a fatal: each pass is
+// rescheduled a line later and can wait an hour. Any other error is a bug and
+// still fails boot loudly, as before — swallowing it would only move the
+// crash to the first hourly tick, with no boot-time signal.
+function bootPass(label: string, run: () => void): void {
+  try {
+    run();
+  } catch (err) {
+    const code = (err as { code?: string }).code ?? '';
+    if (!code.startsWith('SQLITE_BUSY')) throw err;
+    console.warn(`[lurker] ${label} hit a lock at boot (next hourly pass retries): ${code}`);
+  }
+}
+bootPass('session purge', purgeExpiredSessions);
 setInterval(purgeExpiredSessions, 60 * 60 * 1000).unref();
 // Same cadence for expired recovery links. Nothing reads a stale row — every
 // query filters on expires_at — this just keeps one from holding an account's
 // single slot and looking live in a table dump.
-purgeExpiredRecoveryTokens();
+bootPass('recovery-token purge', () => purgeExpiredRecoveryTokens());
 setInterval(() => purgeExpiredRecoveryTokens(), 60 * 60 * 1000).unref();
 // OAuth (#891): expired authorization codes, and app registrations nobody
 // approved within the hour. The second half is what bounds a table the open
 // registration endpoint lets anyone write to.
-purgeOAuth();
+bootPass('OAuth purge', () => purgeOAuth());
 setInterval(() => purgeOAuth(), 60 * 60 * 1000).unref();
 
 // link_previews is a cache with a TTL, so lapsed rows have to actually go — without this it
 // only ever grows. Deliberately NOT gated on previewsEnabled(): an operator who turns the
 // feature off still has whatever it cached while it was on, and that should still expire.
-sweepExpiredPreviews();
+bootPass('preview sweep', sweepExpiredPreviews);
 setInterval(sweepExpiredPreviews, 60 * 60 * 1000).unref();
 
 // The BYTE cache's index needs the same treatment, and for `s3` it is not merely

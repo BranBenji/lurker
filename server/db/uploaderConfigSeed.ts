@@ -259,7 +259,11 @@ export function seedUploaderConfig(db: Database.Database): void {
     // owns it and runs every boot (see its header for why a one-shot is wrong).
     ensureSelfHostInstanceRows(db);
   });
-  run();
+  // `.immediate()`: the transaction reads before it writes, and a deferred BEGIN
+  // takes a read snapshot that Litestream's sync can make un-upgradeable
+  // (SQLITE_BUSY_SNAPSHOT, #603, #748). Every boot-phase transaction that
+  // reads first needs this; nothing enforces it yet.
+  run.immediate();
 }
 
 /**
@@ -273,9 +277,10 @@ export function seedUploaderConfig(db: Database.Database): void {
  */
 export function reconcileBuiltInUploaders(db: Database.Database): void {
   if (isNodeMode()) return;
+  // .immediate(): reads before it writes (#603, #748).
   db.transaction(() => {
     ensureSelfHostInstanceRows(db);
-  })();
+  }).immediate();
 }
 
 // ─── legacy `uploads.*` keys → uploader_config rows (P3, #514) ────────────────
@@ -446,7 +451,7 @@ export function reconcileLegacyUploadSettings(db: Database.Database): void {
     db.prepare(`DELETE FROM user_settings WHERE key IN (${LEGACY_KEY_PLACEHOLDERS})`).run(
       ...LEGACY_KEYS,
     );
-  })();
+  }).immediate(); // reads (getUserSettingsRaw) before it writes (#603, #748)
 }
 
 /**
