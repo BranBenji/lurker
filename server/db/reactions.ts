@@ -238,57 +238,61 @@ export function listReactionsToUserSql(
   // `in:` resolves through the buffer registry per network, exactly as
   // searchMessages does for the highlights tab — folds are per-network (#707),
   // so one lowercased string can't stand in for an rfc1459 '#chat{dev}'.
-  let bufferIds: number[] | undefined;
+  // Each network's buffer for in:, so a half binds only its own network's
+  // (the whole list in every half grew quadratically — 181 networks hit
+  // SQLite's variable limit at prepare); the page checks the full list.
+  const bufferByNet = new Map<number, number>();
   if (opts.target) {
-    bufferIds = [];
     for (const net of nets) {
       const found = resolveBuffer(userId, net, opts.target);
-      if (found) bufferIds.push(found.id);
+      if (found) bufferByNet.set(net, found.id);
     }
-    if (bufferIds.length === 0) return null;
+    if (bufferByNet.size === 0) return null;
   }
+  const bufferIds = opts.target ? [...bufferByNet.values()] : undefined;
   const nicks = opts.nicks?.length ? opts.nicks.map((n) => n.toLowerCase()) : undefined;
 
   // The row filters, on the reaction alias `r` (and `m` for the line it
-  // stands on) — applied in every half and again on the page.
-  const filters = (): { conds: string[]; params: unknown[] } => {
-    // Standing reactions only: a tombstone was taken back (#1009).
-    const conds = ['r.to_self = 1', 'r.self = 0', 'r.removed_at IS NULL'];
-    const params: unknown[] = [];
-    if (opts.before) {
-      conds.push('r.id < ?');
-      params.push(opts.before);
-    }
-    if (nicks) {
-      conds.push(`r.nick_folded IN (${nicks.map(() => '?').join(', ')})`);
-      params.push(...nicks);
-    }
-    if (bufferIds) {
-      conds.push(`m.buffer_id IN (${bufferIds.map(() => '?').join(', ')})`);
-      params.push(...bufferIds);
-    }
-    // Both sides folded by SQLite's lower(), so they agree even where it and
-    // JS's toLowerCase would not (SQLite folds ASCII only).
-    if (opts.query) {
-      conds.push('(instr(lower(m.text), lower(?)) > 0 OR instr(lower(r.value), lower(?)) > 0)');
-      params.push(opts.query, opts.query);
-    }
-    return { conds, params };
-  };
+  // stands on) — ONE list, applied in every half and again on the page.
+  // Standing reactions only: a tombstone was taken back (#1009).
+  const conds = ['r.to_self = 1', 'r.self = 0', 'r.removed_at IS NULL'];
+  const filterParams: unknown[] = [];
+  if (opts.before) {
+    conds.push('r.id < ?');
+    filterParams.push(opts.before);
+  }
+  if (nicks) {
+    conds.push(`r.nick_folded IN (${nicks.map(() => '?').join(', ')})`);
+    filterParams.push(...nicks);
+  }
+  // Both sides folded by SQLite's lower(), so they agree even where it and
+  // JS's toLowerCase would not (SQLite folds ASCII only).
+  if (opts.query) {
+    conds.push('(instr(lower(m.text), lower(?)) > 0 OR instr(lower(r.value), lower(?)) > 0)');
+    filterParams.push(opts.query, opts.query);
+  }
   const limit = opts.limit ?? 50;
   const needsLine = !!bufferIds || !!opts.query;
-  const params: unknown[] = [];
-  const halves: string[] = [];
-  for (const net of nets) {
-    const f = filters();
-    halves.push(`SELECT id FROM (
+  // A half: this network's standing reactions, newest first, under the
+  // shared filters plus its own in: buffer; a network without the channel
+  // contributes no half.
+  const half = `SELECT id FROM (
         SELECT r.id FROM message_reactions r${needsLine ? ' JOIN messages m ON m.id = r.message_id' : ''}
-        WHERE r.network_id = ? AND ${f.conds.join(' AND ')}
-        ORDER BY r.id DESC LIMIT ?)`);
-    params.push(net, ...f.params, limit);
+        WHERE r.network_id = ? AND ${[...conds, ...(bufferIds ? ['m.buffer_id = ?'] : [])].join(' AND ')}
+        ORDER BY r.id DESC LIMIT ?)`;
+  const halves: string[] = [];
+  const params: unknown[] = [];
+  for (const net of nets) {
+    if (bufferIds && !bufferByNet.has(net)) continue;
+    halves.push(half);
+    params.push(net, ...filterParams);
+    if (bufferIds) params.push(bufferByNet.get(net)!);
+    params.push(limit);
   }
-  const outer = filters();
-  params.push(...outer.params, userId, limit);
+  const outer = bufferIds
+    ? [...conds, `m.buffer_id IN (${bufferIds.map(() => '?').join(', ')})`]
+    : conds;
+  params.push(...filterParams, ...(bufferIds ?? []), userId, limit);
   const sql = `SELECT r.id AS reaction_id, r.nick, r.userhost, r.value, r.time,
               m.id, m.network_id, m.text, m.time AS message_time,
               b.target, n.name AS network_name
@@ -297,7 +301,7 @@ export function listReactionsToUserSql(
        JOIN messages m ON m.id = r.message_id
        JOIN buffers b ON b.id = m.buffer_id
        WHERE ${idInHalves('r.id', halves)}
-         AND ${outer.conds.join(' AND ')}
+         AND ${outer.join(' AND ')}
          AND n.user_id = ?
        ORDER BY r.id DESC
        LIMIT ?`;

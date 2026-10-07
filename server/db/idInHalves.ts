@@ -15,6 +15,12 @@
 // SQLite caps one compound at SQLITE_MAX_COMPOUND_SELECT (500) terms, so the
 // halves are nested in chunks: a chain of chunks, each a chain of halves. No
 // cap on halves, and the plan is the same for each (messagesEqp.test.ts).
+//
+// The statement text varies with the number of halves, so it is prepared per
+// call rather than once at module load; prepare cost grows with the compound.
+// Accepted: a half is a few dozen bytes, a request has at most networks ×
+// senders of them, and the statements this replaced spent their time walking
+// history, not parsing. Memoise by shape if a profile ever says otherwise.
 const COMPOUND_CHUNK = 200;
 
 export function idInHalves(column: string, halves: string[]): string {

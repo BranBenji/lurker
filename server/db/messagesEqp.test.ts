@@ -471,7 +471,19 @@ describe('feed plan grid', () => {
     return out;
   }
 
-  it('search: 64 filter combinations, none sort or scan', () => {
+  // Not only "no sort, no scan": a weak plan can pass that (a nick walk
+  // demoted to its network prefix, a cursor that FTS no longer ranges, a
+  // half with no LIMIT). Each shape also has to show the SEEK its driver
+  // owes it — with the cursor inside the seek's range when there is one —
+  // and, when a list of halves drives, one LIMIT per half in the statement.
+  const seek = (index: string, prefix: string, cursor: string | null) =>
+    new RegExp(`${index} \\(${prefix}${cursor ? ` AND ${cursor}` : ''}\\)`, 'g');
+  const count = (text: string, re: RegExp) => (text.match(re) ?? []).length;
+  // A half's own LIMIT (the page's is never followed by `)` in this form).
+  const halfLimits = (sql: string, alias: string) =>
+    count(sql, new RegExp(`ORDER BY ${alias}\\.id DESC LIMIT \\?\\)`, 'g'));
+
+  it('search: 64 filter combinations, each driven by its own seek', () => {
     let checked = 0;
     for (const opts of grid({
       query: 'hello',
@@ -484,29 +496,99 @@ describe('feed plan grid', () => {
       const built = searchMessagesSql(userId, opts);
       if (!built) continue; // the empty filter set, which never runs
       checked += 1;
-      expect({ opts, bad: offending(pagePlan(built.sql, built.params)) }).toEqual({
+      const lines = pagePlan(built.sql, built.params);
+      const plan = lines.join(' | ');
+      const id = opts.before ? 'id<\\?' : null;
+      // The buffers in: resolves to: both networks', or on:'s one.
+      const buffers = opts.networkId ? 1 : 2;
+      // `second`: a companion the shape also owes, exactly once — the reply
+      // half of a highlight read, FTS matched once (never re-probed per row),
+      // the page's rowid seek when a list drives.
+      const rowidPage = /SEARCH m USING INTEGER PRIMARY KEY \(rowid=\?\)/g;
+      let expected: { driver: RegExp; seeks: number; halves: number | null; second: RegExp };
+      if (opts.query) {
+        // FTS streams, the cursor as a native rowid range (`<`).
+        expected = {
+          driver: new RegExp(
+            `SCAN messages_fts VIRTUAL TABLE INDEX \\d+:M1${opts.before ? '<' : ''}(?: |$)`,
+            'g',
+          ),
+          seeks: 1,
+          halves: null,
+          second: /SCAN messages_fts/g,
+        };
+      } else if (opts.matched) {
+        // Both stamps, each seeked by buffer; no LIMIT inside (a partial
+        // index holds only highlights, so the probe is the bound).
+        expected = {
+          driver: seek('idx_messages_matched_buf', 'buffer_id=\\?', id),
+          seeks: 1,
+          halves: null,
+          second: seek('idx_messages_reply_self_buf', 'buffer_id=\\?', id),
+        };
+      } else if (opts.nick) {
+        const halves = opts.target ? buffers : opts.networkId ? 1 : 2;
+        expected = {
+          driver: seek('idx_messages_net_nick', 'network_id=\\? AND nick=\\?', id),
+          seeks: halves,
+          halves,
+          second: rowidPage,
+        };
+      } else if (opts.target) {
+        expected = {
+          driver: seek('idx_messages_buf_unread', 'buffer_id=\\?', id),
+          seeks: buffers,
+          halves: buffers > 1 ? buffers : null,
+          second: buffers > 1 ? rowidPage : /SEARCH n USING INTEGER PRIMARY KEY/g,
+        };
+      } else {
+        expected = {
+          driver: seek('idx_messages_net', 'network_id=\\?', id),
+          seeks: 1,
+          halves: null,
+          second: /SEARCH n USING INTEGER PRIMARY KEY/g,
+        };
+      }
+      expect({ opts, bad: offending(lines) }).toEqual({ opts, bad: [] });
+      expect({ opts, seeks: count(plan, expected.driver) }).toEqual({
         opts,
-        bad: [],
+        seeks: expected.seeks,
+      });
+      expect({ opts, second: count(plan, expected.second) }).toEqual({ opts, second: 1 });
+      expect({
+        opts,
+        halves: expected.halves === null ? null : halfLimits(built.sql, 'h'),
+      }).toEqual({
+        opts,
+        halves: expected.halves,
       });
     }
     expect(checked).toBe(62);
   });
 
-  it('search: several from: nicks, with and without on:, never sort', () => {
-    for (const opts of [
-      { nicks: ['alice', 'bob'] },
-      { nicks: ['alice', 'bob'], networkId: netId },
-      { nicks: ['alice', 'bob'], target: '#grid', before: 100 },
-    ]) {
+  it('search: several from: nicks, one LIMITed seek per (network, nick)', () => {
+    const shapes: [Parameters<typeof searchMessagesSql>[1], number][] = [
+      [{ nicks: ['alice', 'bob'] }, 4],
+      [{ nicks: ['alice', 'bob'], networkId: netId }, 2],
+      [{ nicks: ['alice', 'bob'], target: '#grid', before: 100 }, 4],
+    ];
+    for (const [opts, halves] of shapes) {
       const built = searchMessagesSql(userId, opts)!;
-      expect({ opts, bad: offending(pagePlan(built.sql, built.params)) }).toEqual({
+      const plan = pagePlan(built.sql, built.params).join(' | ');
+      expect({ opts, bad: offending(plan.split(' | ')) }).toEqual({ opts, bad: [] });
+      const cursor = opts?.before ? 'id<\\?' : null;
+      expect({
         opts,
-        bad: [],
+        seeks: count(plan, seek('idx_messages_net_nick', 'network_id=\\? AND nick=\\?', cursor)),
+      }).toEqual({
+        opts,
+        seeks: halves,
       });
+      expect({ opts, halves: halfLimits(built.sql, 'h') }).toEqual({ opts, halves });
     }
   });
 
-  it('reactions: 32 filter combinations, none sort or scan', () => {
+  it('reactions: 32 filter combinations, one LIMITed seek per network', () => {
     let checked = 0;
     for (const opts of grid({
       before: 100,
@@ -518,10 +600,21 @@ describe('feed plan grid', () => {
       const built = listReactionsToUserSql(userId, opts);
       expect({ opts, built: built !== null }).toEqual({ opts, built: true });
       checked += 1;
-      expect({ opts, bad: offending(pagePlan(built!.sql, built!.params)) }).toEqual({
+      const lines = pagePlan(built!.sql, built!.params);
+      const halves = opts.networkId ? 1 : 2;
+      expect({ opts, bad: offending(lines) }).toEqual({ opts, bad: [] });
+      expect({
         opts,
-        bad: [],
-      });
+        seeks: count(
+          lines.join(' | '),
+          seek(
+            'idx_message_reactions_to_self_standing',
+            'network_id=\\?',
+            opts.before ? 'id<\\?' : null,
+          ),
+        ),
+      }).toEqual({ opts, seeks: halves });
+      expect({ opts, halves: halfLimits(built!.sql, 'r') }).toEqual({ opts, halves });
     }
     expect(checked).toBe(32);
   });
@@ -531,9 +624,17 @@ describe('feed plan grid', () => {
       const built = listBookmarksForUserSql(userId, opts);
       const lines = pagePlan(built.sql, built.params);
       expect({ opts, bad: offending(lines) }).toEqual({ opts, bad: [] });
-      expect(lines.join(' | ')).toMatch(
-        /SEARCH b USING COVERING INDEX idx_user_bookmarks_user_msg \(user_id=\?/,
-      );
+      expect({
+        opts,
+        seeks: count(
+          lines.join(' | '),
+          seek(
+            'COVERING INDEX idx_user_bookmarks_user_msg',
+            'user_id=\\?',
+            'before' in opts ? 'message_id<\\?' : null,
+          ),
+        ),
+      }).toEqual({ opts, seeks: 1 });
     }
   });
 });

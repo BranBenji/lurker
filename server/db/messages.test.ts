@@ -1032,6 +1032,10 @@ describe('searchMessages in: across more networks than one compound allows', () 
     expect(page).toHaveLength(50);
     const next = searchMessages(user.id, { target: '#shared', limit: 50, before: page[49].id });
     expect(next[0].text).toBe('hi 450');
+    // from: + in: on the same 501 networks: one half per network, each
+    // binding its own buffer, so the variable count stays linear.
+    const from = searchMessages(user.id, { nick: 'bob', target: '#shared', limit: 50 });
+    expect(from.map((m) => m.text).slice(0, 2)).toEqual(['hi 500', 'hi 499']);
   });
 });
 

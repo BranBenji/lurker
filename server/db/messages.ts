@@ -1790,6 +1790,19 @@ const SEARCH_ROW_FILTERS = (alias: string) => [
   `${alias}.mirrored = 0`,
 ];
 
+// One bounded half for idInHalves: the newest page of the rows a driver
+// predicate selects, walked newest-first on whichever index serves it, under
+// EXACTLY the row filters the outer page applies (see idInHalves for why).
+// Every list-driven path builds its halves here, so the invariant has one
+// definition. (Wrapped, because a compound select's members can't carry their
+// own ORDER BY / LIMIT.) Binds: the predicate's params, then the cursor when
+// `cursor`, then the LIMIT.
+const pagedHalf = (predicate: string, cursor: boolean) =>
+  `SELECT id FROM (
+          SELECT id FROM messages h
+          WHERE ${predicate} AND ${SEARCH_ROW_FILTERS('h').join(' AND ')}${cursor ? ' AND h.id < ?' : ''}
+          ORDER BY h.id DESC LIMIT ?)`;
+
 // The statement searchMessages runs, with its bound parameters — null when the
 // filter set can't match anything. Exported so messagesEqp.test.ts pins the
 // plan of the statement actually issued, not a copy of its shape.
@@ -1834,16 +1847,21 @@ export function searchMessagesSql(
   // '#chat{dev}', which a legacy fold of the query would silently miss.
   // The scoped case is the one-network instance of the same loop, so both
   // shapes share one mechanism. An empty id list matches nothing.
+  // The caller's own networks, narrowed to on: when given. Every path that
+  // names a network derives it from here, so a request-supplied networkId
+  // that isn't theirs resolves to nothing — ownership by construction (PR
+  // #798 review) — and there's one place to change what "own" means.
+  const own = (userNetworkIdsStmt.all(userId) as { id: number }[]).map((n) => n.id);
+  const nets = networkId ? own.filter((id) => id === networkId) : own;
+  // in:'s buffer on each network that holds it; the halves below seek by it.
+  const bufferByNet = new Map<number, number>();
   let bufferIds: number[] | undefined;
   if (target) {
-    const nets = networkId
-      ? [{ id: networkId }]
-      : (userNetworkIdsStmt.all(userId) as { id: number }[]);
-    bufferIds = [];
     for (const net of nets) {
-      const found = resolveBuffer(userId, net.id, target);
-      if (found) bufferIds.push(found.id);
+      const found = resolveBuffer(userId, net, target);
+      if (found) bufferByNet.set(net, found.id);
     }
+    bufferIds = [...bufferByNet.values()];
   }
   const nickFiltered = nickList.length > 0 || !!nick;
 
@@ -1878,6 +1896,8 @@ export function searchMessagesSql(
   const highlightDriven = !!matched && !hasText;
   const nickDriven = nickFiltered && !hasText && !highlightDriven;
   const bufferDriven = bufferIds !== undefined && !hasText && !nickFiltered && !highlightDriven;
+  // Set by whichever branch builds halves: the cursor then lives inside them.
+  let cursorInHalves = false;
   if (matched && !highlightDriven) {
     where.push(HIGHLIGHTED_SQL('m'));
   }
@@ -1904,6 +1924,7 @@ export function searchMessagesSql(
       half.push('id < ?');
       halfParams.push(before);
     }
+    cursorInHalves = true;
     const probe = (index: string, stamp: string) =>
       `SELECT id FROM messages INDEXED BY ${index} WHERE ${[stamp, ...half].join(' AND ')}`;
     where.push(
@@ -1937,28 +1958,29 @@ export function searchMessagesSql(
     // caller's networks, fetched each row, and sorted — from:<a bot> on
     // years of history. The network list is the caller's own, filtered to
     // on: when given, so a request-supplied networkId that isn't theirs
-    // yields no halves and no rows — ownership by construction, as before
-    // (PR #798 review). A multi-value nick IN inside one half would sort
-    // again, hence a half per nick.
-    const own = (userNetworkIdsStmt.all(userId) as { id: number }[]).map((n) => n.id);
-    const nets = networkId ? own.filter((id) => id === networkId) : own;
+    // yields no halves and no rows. A multi-value nick IN inside one half
+    // would sort again, hence a half per nick. With in:, each half binds
+    // ITS network's buffer (a payload column, rejected in-index) — a network
+    // that doesn't hold the channel contributes no half.
     const senders = nickList.length > 0 ? nickList : [nick as string];
-    const scope = bufferIds !== undefined && bufferIds.length > 0 ? bufferIds : undefined;
     const halves: string[] = [];
     for (const net of nets) {
+      const scoped = target ? bufferByNet.get(net) : undefined;
+      if (target && scoped === undefined) continue;
       for (const sender of senders) {
-        halves.push(`SELECT id FROM (
-                  SELECT id FROM messages h
-                  WHERE h.network_id = ? AND h.nick = ? COLLATE NOCASE
-                    AND ${SEARCH_ROW_FILTERS('h').join(' AND ')}${
-                      scope ? ` AND h.buffer_id IN (${scope.map(() => '?').join(', ')})` : ''
-                    }${before ? ' AND h.id < ?' : ''}
-                  ORDER BY h.id DESC LIMIT ?)`);
-        params.push(net, sender, ...(scope ?? []));
+        halves.push(
+          pagedHalf(
+            `h.network_id = ? AND h.nick = ? COLLATE NOCASE${scoped === undefined ? '' : ' AND h.buffer_id = ?'}`,
+            !!before,
+          ),
+        );
+        params.push(net, sender);
+        if (scoped !== undefined) params.push(scoped);
         if (before) params.push(before);
         params.push(limit);
       }
     }
+    cursorInHalves = true;
     if (halves.length === 0) where.push('0');
     else where.push(idInHalves('m.id', halves));
   } else if (bufferIds === undefined && networkId) {
@@ -1982,20 +2004,13 @@ export function searchMessagesSql(
       // newest page — a walk of idx_messages_buf_unread that stops at the
       // LIMIT, with type and from_ignored rejected in-index and a row fetch
       // for `mirrored`, which the index doesn't carry — and the outer query
-      // pages the union by id as the highlight path does. The half's filters
-      // are SEARCH_ROW_FILTERS, the outer query's own list — see there for
-      // why they must be the same list. (Each half is wrapped: a compound
-      // select's members can't carry their own ORDER BY / LIMIT directly.)
-      const half = (cursor: string) =>
-        `SELECT id FROM (
-                  SELECT id FROM messages h
-                  WHERE h.buffer_id = ? AND ${SEARCH_ROW_FILTERS('h').join(' AND ')}${cursor}
-                  ORDER BY h.id DESC LIMIT ?)`;
-      const cursor = before ? ' AND h.id < ?' : '';
+      // pages the union by id as the highlight path does.
+      const half = pagedHalf('h.buffer_id = ?', !!before);
+      cursorInHalves = true;
       where.push(
         idInHalves(
           'm.id',
-          bufferIds.map(() => half(cursor)),
+          bufferIds.map(() => half),
         ),
       );
       for (const id of bufferIds) {
@@ -2030,7 +2045,7 @@ export function searchMessagesSql(
   // there), on the FTS rowid with free text — FTS5 takes a rowid range
   // natively, so the stream starts below the cursor — and a plain index
   // range on the single-buffer / on:-only streams.
-  if (before && !highlightDriven && !nickDriven && !(bufferDriven && bufferIds!.length > 1)) {
+  if (before && !cursorInHalves) {
     where.push(hasText ? 'messages_fts.rowid < ?' : 'm.id < ?');
     params.push(before);
   }
