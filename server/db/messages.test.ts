@@ -33,11 +33,12 @@ let listBufferTargets: typeof import('./messages.js').listBufferTargets;
 let loadHistoryWindow: typeof import('./messages.js').loadHistoryWindow;
 let listActiveTargetsInWindow: typeof import('./messages.js').listActiveTargetsInWindow;
 let demoteLegacyServerStatusNotices: typeof import('./index.js').demoteLegacyServerStatusNotices;
+let db: typeof import('./index.js').default;
 
 beforeAll(async () => {
   ({ createUser } = await import('./users.js'));
   ({ createNetwork } = await import('./networks.js'));
-  ({ demoteLegacyServerStatusNotices } = await import('./index.js'));
+  ({ demoteLegacyServerStatusNotices, default: db } = await import('./index.js'));
   ({
     insertMessage,
     listMessages,
@@ -823,9 +824,11 @@ describe('searchMessages in: across networks', () => {
     ).toEqual(['b2', 'b1']);
   });
 
-  // A half with a looser filter than the page would cut its tail short: with
-  // LIMIT 2 and a buffer whose newest two rows are non-chat, the page must
-  // still reach that buffer's chat lines.
+  // A half with a looser filter than the page would cut its tail short: a
+  // buffer whose newest two rows are noise would fill its LIMIT 2 with them,
+  // the page would drop both, and its chat line would never be reached — on
+  // the first page, and on a later one through the cursor. (Checked to fail
+  // with the type filter removed from the halves.)
   it('a buffer whose newest rows are noise still contributes its chat lines', () => {
     const user = createUser('in-multi-noise');
     const mk = (name: string) =>
@@ -843,18 +846,62 @@ describe('searchMessages in: across networks', () => {
         self: false,
       });
     say(b.id, 'b1');
-    say(a.id, 'a1');
     say(b.id, 'noise 1', 'join');
     say(b.id, 'noise 2', 'part');
+    say(a.id, 'a1');
     say(a.id, 'a2');
 
-    const page = searchMessages(user.id, { target: '#shared', limit: 2 });
-    expect(page.map((m) => m.text)).toEqual(['a2', 'a1']);
+    expect(searchMessages(user.id, { target: '#shared', limit: 2 }).map((m) => m.text)).toEqual([
+      'a2',
+      'a1',
+    ]);
+    const a1 = searchMessages(user.id, {
+      target: '#shared',
+      limit: 1,
+      nick: 'bob',
+      query: 'a1',
+    })[0];
     expect(
-      searchMessages(user.id, { target: '#shared', limit: 2, before: page[1].id }).map(
-        (m) => m.text,
-      ),
+      searchMessages(user.id, { target: '#shared', limit: 2, before: a1.id }).map((m) => m.text),
     ).toEqual(['b1']);
+    const a2 = searchMessages(user.id, { target: '#shared', limit: 2 })[0];
+    expect(
+      searchMessages(user.id, { target: '#shared', limit: 2, before: a2.id }).map((m) => m.text),
+    ).toEqual(['a1', 'b1']);
+  });
+});
+
+// SQLite caps one compound SELECT at 500 terms. A channel held on more
+// networks than that is a chain of nested chunks, not a prepare error (local
+// Codex review of #1070 reproduced the throw on 501).
+describe('searchMessages in: across more networks than one compound allows', () => {
+  it('still pages a channel held on 501 networks', () => {
+    const user = createUser('in-501');
+    db.transaction(() => {
+      for (let i = 0; i < 501; i++) {
+        const net = createNetwork(user.id, {
+          name: `n${i}`,
+          host: 'h',
+          port: 6697,
+          tls: true,
+          nick: 'in-501',
+        })!;
+        insertMessage({
+          networkId: net.id,
+          target: '#shared',
+          time: new Date().toISOString(),
+          type: 'message',
+          nick: 'bob',
+          text: `hi ${i}`,
+          self: false,
+        });
+      }
+    })();
+    const page = searchMessages(user.id, { target: '#shared', limit: 50 });
+    expect(page.map((m) => m.text).slice(0, 2)).toEqual(['hi 500', 'hi 499']);
+    expect(page).toHaveLength(50);
+    const next = searchMessages(user.id, { target: '#shared', limit: 50, before: page[49].id });
+    expect(next[0].text).toBe('hi 450');
   });
 });
 

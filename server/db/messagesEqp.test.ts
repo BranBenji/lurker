@@ -305,14 +305,19 @@ describe('highlight feed paths', () => {
       .join(' | ');
   }
 
-  // Every shape: both partial indexes feed the list, the page is seeks, no sort.
   const highlightPlan = (opts: Parameters<typeof searchMessagesSql>[1]) =>
     searchPlan({ matched: true, ...opts });
 
+  // Every shape: both partial indexes feed the list, each SEEKING the caller's
+  // buffers (never a scan of every user's highlights), the page is seeks, no
+  // sort.
   function expectDriven(detail: string) {
     expect(detail).toMatch(/LIST SUBQUERY/);
-    expect(detail).toMatch(/INDEX idx_messages_matched_buf/);
-    expect(detail).toMatch(/COVERING INDEX idx_messages_reply_self_buf/);
+    expect(detail).toMatch(/SEARCH messages USING INDEX idx_messages_matched_buf \(buffer_id=\?/);
+    expect(detail).toMatch(
+      /SEARCH messages USING COVERING INDEX idx_messages_reply_self_buf \(buffer_id=\?/,
+    );
+    expect(detail).not.toMatch(/SCAN messages\b/);
     expect(detail).toMatch(
       /SEARCH m USING (INTEGER PRIMARY KEY \(rowid=\?\)|INDEX idx_messages_net \(network_id=\? AND id=\?)/,
     );
@@ -331,6 +336,15 @@ describe('highlight feed paths', () => {
     expectDriven(detail);
     expect(detail).toMatch(/idx_messages_matched_buf \(buffer_id=\? AND id<\?\)/);
     expect(detail).toMatch(/idx_messages_reply_self_buf \(buffer_id=\? AND id<\?\)/);
+  });
+
+  it('without in:, the halves seek the caller’s own buffers, cursor included', () => {
+    const detail = highlightPlan({ before: 100 });
+    expectDriven(detail);
+    expect(detail).toMatch(/idx_messages_matched_buf \(buffer_id=\? AND id<\?\)/);
+    expect(detail).toMatch(/idx_messages_reply_self_buf \(buffer_id=\? AND id<\?\)/);
+    // The buffer set comes from the caller's own networks, index-only.
+    expect(detail).toMatch(/SEARCH n USING COVERING INDEX idx_networks_user \(user_id=\?\)/);
   });
 
   it('on: and from: stay row checks over the listed ids', () => {
@@ -354,6 +368,13 @@ describe('highlight feed paths', () => {
     expect(detail.match(/idx_messages_buf_unread \(buffer_id=\?\)/g)).toHaveLength(2);
     expect(detail).toMatch(/SEARCH m USING INTEGER PRIMARY KEY \(rowid=\?\)/);
     expect(detail).not.toMatch(/TEMP B-TREE/);
+  });
+
+  // The plan can't show a LIMIT, and a half without one would plan the same
+  // while walking each buffer's whole history: pin it in the statement.
+  it('in: on several networks LIMITs every buffer’s contribution', () => {
+    const built = searchMessagesSql(userId, { target: '#eqp' });
+    expect(built!.sql.match(/ORDER BY h\.id DESC LIMIT \?\)/g)).toHaveLength(2);
   });
 
   it('in: on several networks seeks the cursor inside each buffer', () => {

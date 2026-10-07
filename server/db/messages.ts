@@ -1774,6 +1774,25 @@ export interface SearchMessagesOptions {
   limit?: number;
 }
 
+// Members per nested compound in the multi-buffer in: path, under SQLite's
+// 500-term compound limit; chunks then chain in an outer compound of their own.
+const COMPOUND_CHUNK = 200;
+
+// The per-row filters every search applies, on the given alias. ONE list on
+// purpose: the multi-buffer in: path below LIMITs each buffer's contribution
+// before the outer query filters it, so a half that admitted a row the page
+// then dropped would cut that buffer's tail short — silently, on every later
+// page too. Deriving both from here means they can't diverge.
+const SEARCH_ROW_FILTERS = (alias: string) => [
+  `${alias}.type IN ${COUNTABLE_TYPES_SQL}`,
+  `${alias}.from_ignored = 0`,
+  // Skip server-buffer mirror duplicates of closed-buffer NOTICEs (#439) so a
+  // mirrored notice doesn't surface twice — its real copy in the sender's
+  // buffer is the searchable one. Genuine server-buffer notices (mirrored = 0)
+  // stay searchable.
+  `${alias}.mirrored = 0`,
+];
+
 // The statement searchMessages runs, with its bound parameters — null when the
 // filter set can't match anything. Exported so messagesEqp.test.ts pins the
 // plan of the statement actually issued, not a copy of its shape.
@@ -1798,16 +1817,7 @@ export function searchMessagesSql(
   if (!text && !networkId && !target && !nick && nickList.length === 0 && !matched) return null;
 
   let from = 'messages m JOIN networks n ON n.id = m.network_id';
-  const where: string[] = [
-    'n.user_id = ?',
-    `m.type IN ${COUNTABLE_TYPES_SQL}`,
-    'm.from_ignored = 0',
-    // Skip server-buffer mirror duplicates of closed-buffer NOTICEs (#439) so a
-    // mirrored notice doesn't surface twice — its real copy in the sender's
-    // buffer is the searchable one. Genuine server-buffer notices (mirrored = 0)
-    // stay searchable.
-    'm.mirrored = 0',
-  ];
+  const where: string[] = ['n.user_id = ?', ...SEARCH_ROW_FILTERS('m')];
   const params: (string | number)[] = [userId];
 
   const hasText = !!text;
@@ -1855,13 +1865,18 @@ export function searchMessagesSql(
   // the two stamps are read the way countHighlightsNewer reads them, one probe
   // per partial index, and the ids are handed to the outer query as an IN
   // list: SQLite walks that list in id order, so the ORDER BY needs no sort
-  // and the LIMIT stops the table fetches at a page's worth. The halves are
-  // index-only apart from the rule half's predicate check, so building the
-  // list costs the highlight count, never the table. INDEXED BY, so a change
-  // to either index that no longer serves this fails to prepare (at module
-  // load, since the EQP test issues the real statement) rather than
-  // regressing to the scan. in: and the cursor go inside the halves — the
-  // indexes are keyed (buffer_id, id DESC), so both become seeks there.
+  // and the LIMIT stops the table fetches at a page's worth. Both indexes are
+  // keyed (buffer_id, id DESC), so each half seeks the caller's buffers — the
+  // in: ids when given, else every buffer on their networks (one network's
+  // with on:) — and the list holds the CALLER's highlights, not the
+  // instance's: on a multi-user host another user's 300k highlights would
+  // otherwise be enumerated, and walked past, on every page. The cursor
+  // rides the same seek. The reply half is index-only; the rule half fetches
+  // the row to check its stamp (SQLite never drops an IS NOT NULL as implied),
+  // so the list costs the caller's highlight count, never the table. INDEXED
+  // BY, so a change to either index that no longer serves this fails to
+  // prepare — per request here (the statement is built per call), and in CI
+  // where messagesEqp.test.ts issues the real statement.
   const highlightDriven = !!matched && !hasText;
   if (matched && !highlightDriven) {
     where.push(HIGHLIGHTED_SQL('m'));
@@ -1872,6 +1887,18 @@ export function searchMessagesSql(
     if (bufferIds !== undefined && bufferIds.length > 0) {
       half.push(`buffer_id IN (${bufferIds.map(() => '?').join(', ')})`);
       halfParams.push(...bufferIds);
+    } else if (networkId) {
+      half.push(
+        `buffer_id IN (SELECT b.id FROM buffers b JOIN networks n ON n.id = b.network_id
+                            WHERE n.user_id = ? AND n.id = ?)`,
+      );
+      halfParams.push(userId, networkId);
+    } else {
+      half.push(
+        `buffer_id IN (SELECT b.id FROM buffers b JOIN networks n ON n.id = b.network_id
+                            WHERE n.user_id = ?)`,
+      );
+      halfParams.push(userId);
     }
     if (before) {
       half.push('id < ?');
@@ -1932,21 +1959,28 @@ export function searchMessagesSql(
       // EVERY listed buffer's whole history through idx_messages_buf_unread
       // and sorted the lot — seconds of blocked event loop for a channel the
       // user sits in on two networks. Instead each buffer contributes its own
-      // newest page, an index-only walk that stops at the LIMIT (the row
-      // filters are the index's payload columns, and must match the outer
-      // ones exactly: a half that admitted rows the page then dropped would
-      // have cut its tail short), and the outer query pages the union by id
-      // as the highlight path does.
-      // (Each half is wrapped: a compound select's members can't carry their
-      // own ORDER BY / LIMIT directly.)
+      // newest page — a walk of idx_messages_buf_unread that stops at the
+      // LIMIT, with type and from_ignored rejected in-index and a row fetch
+      // for `mirrored`, which the index doesn't carry — and the outer query
+      // pages the union by id as the highlight path does. The half's filters
+      // are SEARCH_ROW_FILTERS, the outer query's own list — see there for
+      // why they must be the same list. (Each half is wrapped: a compound
+      // select's members can't carry their own ORDER BY / LIMIT directly.)
       const half = (cursor: string) =>
         `SELECT id FROM (
-                  SELECT id FROM messages
-                  WHERE buffer_id = ? AND type IN ${COUNTABLE_TYPES_SQL}
-                    AND from_ignored = 0 AND mirrored = 0${cursor}
-                  ORDER BY id DESC LIMIT ?)`;
-      const cursor = before ? ' AND id < ?' : '';
-      where.push(`m.id IN (${bufferIds.map(() => half(cursor)).join(' UNION ALL ')})`);
+                  SELECT id FROM messages h
+                  WHERE h.buffer_id = ? AND ${SEARCH_ROW_FILTERS('h').join(' AND ')}${cursor}
+                  ORDER BY h.id DESC LIMIT ?)`;
+      const cursor = before ? ' AND h.id < ?' : '';
+      // SQLite caps one compound at SQLITE_MAX_COMPOUND_SELECT (500) terms,
+      // so the halves are nested in chunks: a chain of chunks, each a chain
+      // of halves. No cap on buffers, and the plan is the same per half.
+      const chunks: string[] = [];
+      for (let i = 0; i < bufferIds.length; i += COMPOUND_CHUNK) {
+        const members = bufferIds.slice(i, i + COMPOUND_CHUNK).map(() => half(cursor));
+        chunks.push(`SELECT id FROM (${members.join(' UNION ALL ')})`);
+      }
+      where.push(`m.id IN (${chunks.join(' UNION ALL ')})`);
       for (const id of bufferIds) {
         params.push(id);
         if (before) params.push(before);
