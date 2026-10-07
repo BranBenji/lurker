@@ -18,7 +18,7 @@ Lurker is a delightful self-hosted IRC bouncer and client with a retro aesthetic
 - **Full search.** Search your message history, filter by nick, channel, or network; and jump to any message instantly, no matter how old it is.
 - **Image uploads.** Paste an image into the input box, and Lurker optimizes it, anonymizes it, and uploads it to local storage, S3, Zipline, Chibisafe, or external services like x0.at or catbox.moe.
 - **Customizable UI.** The beautiful retro terminal-style PWA interface has 40+ settings to customize it how you want.
-- **Native apps.** Lurker has official native apps [for iOS](https://github.com/amiantos/lurker-ios) and [for Android](https://github.com/amiantos/lurker-android). There are also third-party clients such as [Spooky](https://github.com/JawshTheDark/lurker-android-upstream) (Android), and [luir](https://luir.org) (TUI), which bring their own flavor to Lurker.
+- **Native apps.** Lurker has official native apps [for iOS](https://github.com/amiantos/lurker-ios) and [for Android](https://github.com/amiantos/lurker-android). A self-hosted server can send native push notifications to both through [push.lurker.chat](https://push.lurker.chat), an optional paid relay. There are also third-party clients such as [Spooky](https://github.com/JawshTheDark/lurker-android-upstream) (Android), and [luir](https://luir.org) (TUI), which bring their own flavor to Lurker.
 - **Built-in bouncer.** Don't want to use the Lurker clients? Then don't. Lurker has a best-in-class IRC bouncer built in, complete with `soju.im/bouncer-networks`, `soju.im/FILEHOST` support and more, so you can use any IRC client you want, like [clircs](https://github.com/rekkals/clircs), [Halloy](https://github.com/squidowl/halloy), [Goguma](https://codeberg.org/emersion/goguma), [HexDroid](https://github.com/boxlabss/hexdroid) and many others.
 - **Inline link & media previews.** Links, images, _and_ videos get proper preview images in every client. Implemented as a separate container, to isolate malicious links from your users' data. (Optional, requires `lurker-previews` container.)
 - **Decoupled IRC connections.** Say goodbye to disconnect/reconnect floods when updating Lurker — a secondary container keeps the connections alive while the main service restarts. (Optional, requires `lurker-engine` container.)
@@ -64,7 +64,7 @@ Then open <http://localhost:8015> and create your admin account.
 
 ## Next Steps
 
-View [the full self-hosted guide](https://docs.lurker.chat/SELF_HOSTING) for information on enabling identd, media previews, web push notifications, and connection decoupling.
+View [the full self-hosted guide](https://docs.lurker.chat/SELF_HOSTING) for information on enabling identd, media previews, web and native push notifications, and connection decoupling.
 
 There's also a [one-shot DigitalOcean deploy script](https://github.com/amiantos/lurker/blob/main/deploy/digitalocean-cloud-init.sh) which comes out of the box with all of this set up for you. If you're a smartypants, that script can teach you everything you need to know to deploy a production-quality Lurker instance.
 
