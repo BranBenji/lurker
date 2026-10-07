@@ -978,7 +978,7 @@ export function loadHistoryWindowSql(
   upper: string | null,
   limit: number,
   { newestFirst = false, events: forEvents, withoutSelf = false }: HistoryWindowOptions = {},
-): { sql: string; params: (string | number | null)[] } {
+): { sql: string; params: (string | number | null)[]; dir: 'ASC' | 'DESC' } {
   const filter = historyFilter('', forEvents, mapping);
   const conds = ['buffer_id = ?', filter.sql];
   const params: (string | number | null)[] = [bufferId, ...filter.params];
@@ -996,11 +996,14 @@ export function loadHistoryWindowSql(
     params.push(upper);
   }
   params.push(limit);
+  // The window's direction, handed back so the reaction merge follows the
+  // same one the statement used.
   const dir = newestFirst ? 'DESC' : 'ASC';
   return {
     sql: `SELECT *, ${BOOKMARKED_COL('messages')} FROM messages WHERE ${conds.join(' AND ')}
        ORDER BY time ${dir}, id ${dir} LIMIT ?`,
     params,
+    dir,
   };
 }
 
@@ -1023,7 +1026,7 @@ export function loadHistoryWindow(
     limit,
     opts,
   );
-  const dir = newestFirst ? 'DESC' : 'ASC';
+  const dir = built.dir;
   const rows = db.prepare(built.sql).all(...built.params) as MessageRow[];
   let window: HistoryRow[] = rows.map(historyRowToEvent);
   if (reactions) {
@@ -1722,8 +1725,9 @@ export function countServerBufferUnread(
   return countUnreadRows(networkId, target, afterId, SERVER_COUNTABLE_TYPES_SQL, true, cap);
 }
 
-// Cheap indexed count of unread highlights since `afterId`. Uses the partial
-// idx_messages_matched index — the old scan+decorate approach was replaced
+// Cheap indexed count of unread highlights since `afterId`. Index-only on the
+// partial idx_messages_matched_buf, whose payload carries every column the
+// probe filters (#1073) — the old scan+decorate approach was replaced
 // once match state moved to insert time. Ignored senders are excluded so the
 // red highlight pip doesn't fire for someone the user can't see. notable=0 lines
 // are excluded too (#470): a Lurker status notice that happens to match a self-

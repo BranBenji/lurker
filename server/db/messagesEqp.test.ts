@@ -117,7 +117,7 @@ describe('highlight-count path', () => {
          AND from_ignored = 0
          AND notable = 1`,
     );
-    expect(detail).toMatch(/USING INDEX idx_messages_matched_buf/);
+    expect(detail).toMatch(/USING COVERING INDEX idx_messages_matched_buf/);
   });
 
   // The reply half (#993): a probe of its own, so it walks its own partial
@@ -130,7 +130,7 @@ describe('highlight-count path', () => {
          AND from_ignored = 0
          AND notable = 1`,
     );
-    expect(detail).toMatch(/USING INDEX idx_messages_reply_self_buf/);
+    expect(detail).toMatch(/USING COVERING INDEX idx_messages_reply_self_buf/);
   });
 });
 
@@ -725,40 +725,42 @@ describe('noise-clock paths', () => {
   });
 });
 
-// The rule-highlight index carries its stamp as a payload column so the
-// highlight reads are index-only (#1073). A deployed DB keeps the older
+// The highlight partial indexes carry their payload columns so the highlight
+// reads and counts are index-only (#1073). A deployed DB keeps the older
 // payload-less shape under the same name unless the boot heal compares the
-// DDL — exercised here against a deliberately old index, as a fresh DB never
-// takes that path.
-describe('rule-highlight index heal', () => {
-  it('rebuilds a payload-less idx_messages_matched_buf to the covering shape', async () => {
-    const { ensureMatchedIndexCurrent } = await import('./index.js');
-    db.exec(`DROP INDEX idx_messages_matched_buf`);
-    db.exec(
-      `CREATE INDEX idx_messages_matched_buf ON messages(buffer_id, id DESC)
-        WHERE matched_rule_id IS NOT NULL`,
+// DDL — exercised here against deliberately old indexes, as a fresh DB never
+// takes that path — and a heal of the current shape must not rebuild.
+describe('highlight index heal', () => {
+  // Any DDL bumps the schema version; a freed root page can be reused by the
+  // CREATE, so the page number alone can't tell a no-op from a rebuild.
+  const schemaVersion = () => db.pragma('schema_version', { simple: true }) as number;
+
+  it('rebuilds payload-less highlight indexes to the covering shape, once', async () => {
+    const { ensureHighlightIndexesCurrent } = await import('./index.js');
+    for (const [name, stamp] of [
+      ['idx_messages_matched_buf', 'matched_rule_id IS NOT NULL'],
+      ['idx_messages_reply_self_buf', 'reply_to_self = 1'],
+    ] as const) {
+      db.exec(`DROP INDEX ${name}`);
+      db.exec(`CREATE INDEX ${name} ON messages(buffer_id, id DESC) WHERE ${stamp}`);
+    }
+    const probe = (name: string, stamp: string) =>
+      plan(`SELECT COUNT(*) FROM messages INDEXED BY ${name}
+        WHERE buffer_id = 1 AND id > 0 AND ${stamp} AND from_ignored = 0 AND notable = 1`);
+    expect(probe('idx_messages_matched_buf', 'matched_rule_id IS NOT NULL')).not.toMatch(
+      /COVERING/,
     );
-    const probe = `SELECT id FROM messages INDEXED BY idx_messages_matched_buf
-      WHERE matched_rule_id IS NOT NULL AND buffer_id = 1`;
-    expect(plan(probe)).toMatch(/USING INDEX idx_messages_matched_buf/);
-    ensureMatchedIndexCurrent();
-    const row = db
-      .prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`)
-      .get('idx_messages_matched_buf') as { sql: string } | undefined;
-    expect(row?.sql).toContain('matched_rule_id)');
-    expect(plan(probe)).toMatch(/USING COVERING INDEX idx_messages_matched_buf/);
-    // Idempotent: the current shape is left alone (same b-tree, not rebuilt).
-    const rootpage = () =>
-      (
-        db
-          .prepare(`SELECT rootpage FROM sqlite_master WHERE name = ?`)
-          .get('idx_messages_matched_buf') as {
-          rootpage: number;
-        }
-      ).rootpage;
-    const before = rootpage();
-    ensureMatchedIndexCurrent();
-    expect(rootpage()).toBe(before);
+    expect(probe('idx_messages_reply_self_buf', 'reply_to_self = 1')).not.toMatch(/COVERING/);
+    ensureHighlightIndexesCurrent();
+    expect(probe('idx_messages_matched_buf', 'matched_rule_id IS NOT NULL')).toMatch(
+      /USING COVERING INDEX idx_messages_matched_buf/,
+    );
+    expect(probe('idx_messages_reply_self_buf', 'reply_to_self = 1')).toMatch(
+      /USING COVERING INDEX idx_messages_reply_self_buf/,
+    );
+    const before = schemaVersion();
+    ensureHighlightIndexesCurrent();
+    expect(schemaVersion()).toBe(before);
   });
 });
 
@@ -768,7 +770,7 @@ describe('rule-highlight index heal', () => {
 // window shape, with and without event playback, must be one range seek on
 // the time index, cursor bounds inside the seek, no sort.
 describe('chathistory window grid', () => {
-  it('16 window shapes, each one seek on idx_messages_buf_time', async () => {
+  it('32 window shapes, each one seek on idx_messages_buf_time', async () => {
     const { loadHistoryWindowSql } = await import('./messages.js');
     const t = (n: number) => new Date(Date.UTC(2026, 0, 1, 0, n)).toISOString();
     let checked = 0;
@@ -806,11 +808,35 @@ describe('chathistory window grid', () => {
     }
     expect(checked).toBe(32);
   });
+
+  // CHATHISTORY TARGETS (listActiveTargetsInWindow shape, messages arm): the
+  // same index turns each buffer's contribution from a walk of its whole
+  // history into a seek of the asked-for time range. The sort is over one row
+  // per buffer, not per message.
+  it('TARGETS seeks each buffer by the time range', async () => {
+    await import('./messages.js'); // registers the SQL functions the statement names
+    const detail = plan(
+      `SELECT b.target AS target, MAX(m.time) AS lastMessageAt
+         FROM messages m JOIN buffers b ON b.id = m.buffer_id
+        WHERE b.network_id = 1
+          AND b.kind NOT IN ('server', 'system', 'dcc') AND substr(b.target, 1, 1) <> '='
+          AND NOT (b.kind = 'dm' AND (m.self = 1) AND (0 OR lurker_is_services_nick(b.target)))
+          AND m.type IN ('message', 'action', 'notice') AND m.mirrored = 0
+          AND m.text IS NOT NULL AND m.text != ''
+          AND m.time > '2026-01-01' AND m.time < '2026-02-01'
+        GROUP BY b.id ORDER BY lastMessageAt DESC LIMIT 50`,
+    );
+    expect(detail).toMatch(
+      /SEARCH m USING INDEX idx_messages_buf_time \(buffer_id=\? AND time>\? AND time<\?\)/,
+    );
+  });
 });
 
 // MARKREAD maps a read pointer (an id) to a time and back (bouncer.ts). Both
-// lookups run on a client's command, and messages.time is unindexed, so each
-// step has to be a seek on the per-buffer id index, never a walk or a sort.
+// lookups run on a client's command and must stay seeks on the per-buffer id
+// index. idx_messages_buf_time (buffer_id, time) now offers the planner a
+// competing path for the time-bounded steps; these pins are what keep it
+// from taking one and turning a MARKREAD into a walk and a sort.
 describe('read-marker paths', () => {
   it('each bisection step is an index seek (newestIdAtOrBefore shape)', () => {
     const detail = plan(
