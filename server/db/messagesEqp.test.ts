@@ -313,7 +313,9 @@ describe('highlight feed paths', () => {
   // sort.
   function expectDriven(detail: string) {
     expect(detail).toMatch(/LIST SUBQUERY/);
-    expect(detail).toMatch(/SEARCH messages USING INDEX idx_messages_matched_buf \(buffer_id=\?/);
+    expect(detail).toMatch(
+      /SEARCH messages USING COVERING INDEX idx_messages_matched_buf \(buffer_id=\?/,
+    );
     expect(detail).toMatch(
       /SEARCH messages USING COVERING INDEX idx_messages_reply_self_buf \(buffer_id=\?/,
     );
@@ -521,7 +523,7 @@ describe('feed plan grid', () => {
         // Both stamps, each seeked by buffer; no LIMIT inside (a partial
         // index holds only highlights, so the probe is the bound).
         expected = {
-          driver: seek('idx_messages_matched_buf', 'buffer_id=\\?', id),
+          driver: seek('COVERING INDEX idx_messages_matched_buf', 'buffer_id=\\?', id),
           seeks: 1,
           halves: null,
           second: seek('idx_messages_reply_self_buf', 'buffer_id=\\?', id),
@@ -720,6 +722,89 @@ describe('noise-clock paths', () => {
       .prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`)
       .get('idx_messages_noise_time') as { sql: string } | undefined;
     expect(row?.sql).toContain(`(${earlyPruneSql})`);
+  });
+});
+
+// The rule-highlight index carries its stamp as a payload column so the
+// highlight reads are index-only (#1073). A deployed DB keeps the older
+// payload-less shape under the same name unless the boot heal compares the
+// DDL — exercised here against a deliberately old index, as a fresh DB never
+// takes that path.
+describe('rule-highlight index heal', () => {
+  it('rebuilds a payload-less idx_messages_matched_buf to the covering shape', async () => {
+    const { ensureMatchedIndexCurrent } = await import('./index.js');
+    db.exec(`DROP INDEX idx_messages_matched_buf`);
+    db.exec(
+      `CREATE INDEX idx_messages_matched_buf ON messages(buffer_id, id DESC)
+        WHERE matched_rule_id IS NOT NULL`,
+    );
+    const probe = `SELECT id FROM messages INDEXED BY idx_messages_matched_buf
+      WHERE matched_rule_id IS NOT NULL AND buffer_id = 1`;
+    expect(plan(probe)).toMatch(/USING INDEX idx_messages_matched_buf/);
+    ensureMatchedIndexCurrent();
+    const row = db
+      .prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`)
+      .get('idx_messages_matched_buf') as { sql: string } | undefined;
+    expect(row?.sql).toContain('matched_rule_id)');
+    expect(plan(probe)).toMatch(/USING COVERING INDEX idx_messages_matched_buf/);
+    // Idempotent: the current shape is left alone (same b-tree, not rebuilt).
+    const rootpage = () =>
+      (
+        db
+          .prepare(`SELECT rootpage FROM sqlite_master WHERE name = ?`)
+          .get('idx_messages_matched_buf') as {
+          rootpage: number;
+        }
+      ).rootpage;
+    const before = rootpage();
+    ensureMatchedIndexCurrent();
+    expect(rootpage()).toBe(before);
+  });
+});
+
+// The bouncer's CHATHISTORY windows (loadHistoryWindow) order by TIME — a
+// timestamp API — and before idx_messages_buf_time every window walked the
+// buffer's whole history through the id index and sorted it (#1075). Every
+// window shape, with and without event playback, must be one range seek on
+// the time index, cursor bounds inside the seek, no sort.
+describe('chathistory window grid', () => {
+  it('16 window shapes, each one seek on idx_messages_buf_time', async () => {
+    const { loadHistoryWindowSql } = await import('./messages.js');
+    const t = (n: number) => new Date(Date.UTC(2026, 0, 1, 0, n)).toISOString();
+    let checked = 0;
+    for (const lower of [null, t(1)]) {
+      for (const upper of [null, t(9)]) {
+        for (const newestFirst of [false, true]) {
+          for (const events of [null, { me: 'alice' }]) {
+            for (const withoutSelf of [false, true]) {
+              const shape = { lower, upper, newestFirst, events, withoutSelf };
+              const built = loadHistoryWindowSql(1, 'rfc1459', lower, upper, 50, {
+                newestFirst,
+                events,
+                withoutSelf,
+              });
+              const lines = (
+                db.prepare(`EXPLAIN QUERY PLAN ${built.sql}`).all(...built.params) as Array<{
+                  detail: string;
+                }>
+              ).map((r) => r.detail);
+              const range = `buffer_id=\\?${lower ? ' AND time>\\?' : ''}${upper ? ' AND time<\\?' : ''}`;
+              expect({
+                shape,
+                seek: lines.filter((d) =>
+                  new RegExp(
+                    `SEARCH messages USING INDEX idx_messages_buf_time \\(${range}\\)`,
+                  ).test(d),
+                ).length,
+                bad: lines.filter((d) => /TEMP B-TREE|^SCAN messages/.test(d)),
+              }).toEqual({ shape, seek: 1, bad: [] });
+              checked += 1;
+            }
+          }
+        }
+      }
+    }
+    expect(checked).toBe(32);
   });
 });
 

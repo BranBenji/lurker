@@ -951,7 +951,9 @@ function historyFilter(
 // These usually coincide (id is assigned in receive order), but a chained/ZNC
 // upstream that replays its buffer as live PRIVMSGs with old server-time tags
 // (stored as event.time) breaks that — old-time rows get fresh, high ids. The
-// time sort is unindexed, but this is an on-demand path with a bounded LIMIT.
+// time sort rides idx_messages_buf_time (buffer_id, time) — one range seek
+// that stops at the LIMIT. Before that index every window walked the whole
+// buffer through the id index and sorted it (#1075).
 //
 // `reactions` (#991): the reactions made in the window join it as rows of their
 // own, in time order among the lines and counting toward the limit, as soju's
@@ -959,27 +961,25 @@ function historyFilter(
 // halloy's continue_chathistory_between starts from its first event, a
 // reaction included — so a reaction must sit at its own time, not beside the
 // line it's on (which could be far older).
-export function loadHistoryWindow(
-  networkId: number,
-  target: string,
+export interface HistoryWindowOptions {
+  newestFirst?: boolean;
+  events?: HistoryEvents | null;
+  reactions?: boolean;
+  withoutSelf?: boolean;
+}
+
+// The window's message statement, with its bound parameters. Exported so
+// messagesEqp.test.ts pins the plan of what actually runs, across every
+// window shape (the feed plan grid).
+export function loadHistoryWindowSql(
+  bufferId: number,
+  mapping: Casemapping | null,
   lower: string | null,
   upper: string | null,
   limit: number,
-  {
-    newestFirst = false,
-    events: forEvents,
-    reactions = false,
-    withoutSelf = false,
-  }: {
-    newestFirst?: boolean;
-    events?: HistoryEvents | null;
-    reactions?: boolean;
-    withoutSelf?: boolean;
-  } = {},
-): HistoryRow[] {
-  const bufferId = resolveBufferIdByNetwork(networkId, target);
-  if (bufferId === undefined) return [];
-  const filter = historyFilter('', forEvents, forEvents?.me ? networkCasemapping(networkId) : null);
+  { newestFirst = false, events: forEvents, withoutSelf = false }: HistoryWindowOptions = {},
+): { sql: string; params: (string | number | null)[] } {
+  const filter = historyFilter('', forEvents, mapping);
   const conds = ['buffer_id = ?', filter.sql];
   const params: (string | number | null)[] = [bufferId, ...filter.params];
   // Our own lines, for a client the bouncer won't replay them to (a DM without
@@ -997,12 +997,34 @@ export function loadHistoryWindow(
   }
   params.push(limit);
   const dir = newestFirst ? 'DESC' : 'ASC';
-  const rows = db
-    .prepare(
-      `SELECT *, ${BOOKMARKED_COL('messages')} FROM messages WHERE ${conds.join(' AND ')}
+  return {
+    sql: `SELECT *, ${BOOKMARKED_COL('messages')} FROM messages WHERE ${conds.join(' AND ')}
        ORDER BY time ${dir}, id ${dir} LIMIT ?`,
-    )
-    .all(...params) as MessageRow[];
+    params,
+  };
+}
+
+export function loadHistoryWindow(
+  networkId: number,
+  target: string,
+  lower: string | null,
+  upper: string | null,
+  limit: number,
+  opts: HistoryWindowOptions = {},
+): HistoryRow[] {
+  const { newestFirst = false, events: forEvents, reactions = false, withoutSelf = false } = opts;
+  const bufferId = resolveBufferIdByNetwork(networkId, target);
+  if (bufferId === undefined) return [];
+  const built = loadHistoryWindowSql(
+    bufferId,
+    forEvents?.me ? networkCasemapping(networkId) : null,
+    lower,
+    upper,
+    limit,
+    opts,
+  );
+  const dir = newestFirst ? 'DESC' : 'ASC';
+  const rows = db.prepare(built.sql).all(...built.params) as MessageRow[];
   let window: HistoryRow[] = rows.map(historyRowToEvent);
   if (reactions) {
     // The limit's worth from each, merged in the window's order: the first

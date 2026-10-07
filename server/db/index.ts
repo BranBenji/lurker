@@ -1398,6 +1398,12 @@ if (!hadNotableColumn) demoteLegacyServerStatusNotices();
 // it:
 const INDEX_BUILD_WARN_ROWS = 250_000;
 
+// The rule-highlight index's current shape; built where the per-buffer indexes
+// are and healed to this DDL by ensureMatchedIndexCurrent below.
+const MATCHED_INDEX_DDL = `CREATE INDEX IF NOT EXISTS idx_messages_matched_buf
+             ON messages(buffer_id, id DESC, matched_rule_id)
+             WHERE matched_rule_id IS NOT NULL`;
+
 // Retire the ancient idx_messages_buffer (network_id, target, id DESC) on DBs
 // old enough to still carry it — superseded twice over by now. (Its
 // replacement idx_messages_unread is itself dropped after the buffer_id
@@ -2345,9 +2351,7 @@ if (schemaVersion < 16 && tableExists('channels')) {
     }
     db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_buf_unread
              ON messages(buffer_id, id DESC, type, from_ignored, notable)`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_matched_buf
-             ON messages(buffer_id, id DESC)
-             WHERE matched_rule_id IS NOT NULL`);
+    db.exec(MATCHED_INDEX_DDL);
     // Only after both successors exist: retire the name-keyed generation.
     // Keeping them would be two dead b-trees maintained on every INSERT (no
     // statement issues their predicate shape anymore); ordering the drops
@@ -2356,6 +2360,48 @@ if (schemaVersion < 16 && tableExists('channels')) {
     db.exec(`DROP INDEX IF EXISTS idx_messages_matched`);
   }
 }
+
+// The rule-highlight index, with the stamp itself as a payload column (#1073).
+// Partial, so it holds only rule-matched rows; (buffer_id, id DESC) is what the
+// highlight reads seek. matched_rule_id rides along because SQLite never drops
+// `matched_rule_id IS NOT NULL` as implied by the partial index's own
+// predicate: without the column every highlight read fetched the table row of
+// every rule highlight just to re-check it — one scattered read per highlight
+// per page, 1.2 s cold on the #1070 reporter's cell. With it the walk is
+// index-only, as the reply half's (idx_messages_reply_self_buf) already was.
+// messagesEqp.test.ts pins COVERING INDEX. (MATCHED_INDEX_DDL is declared
+// with INDEX_BUILD_WARN_ROWS above, ahead of the block that first builds it.)
+
+/**
+ * Build — or REBUILD — the rule-highlight index so its shape is the current
+ * one. `CREATE INDEX IF NOT EXISTS` keys on the name alone, so a deployed
+ * database keeps the payload-less generation forever unless the live DDL is
+ * compared (the ensureNoiseIndexCurrent recipe). The rebuild is one-shot and
+ * blocks startup — a pass over the table, writing only the highlight rows —
+ * under the usual warning. Exported so the heal is testable against a
+ * deliberately old index (messagesEqp.test.ts).
+ */
+export function ensureMatchedIndexCurrent(): void {
+  const live = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`)
+    .get('idx_messages_matched_buf') as { sql: string } | undefined;
+  const normalize = (sql: string) =>
+    sql
+      .replace(/\s+/g, ' ')
+      .replace(/IF NOT EXISTS /, '')
+      .trim();
+  if (live && normalize(live.sql) !== normalize(MATCHED_INDEX_DDL)) {
+    if (db.prepare(`SELECT 1 FROM messages LIMIT 1 OFFSET ?`).get(INDEX_BUILD_WARN_ROWS)) {
+      console.warn(
+        `[db] rebuilding idx_messages_matched_buf with its payload column — one-time, ` +
+          `blocks startup, not resumable. Do not kill the process.`,
+      );
+    }
+    db.exec(`DROP INDEX idx_messages_matched_buf`);
+  }
+  db.exec(MATCHED_INDEX_DDL);
+}
+ensureMatchedIndexCurrent();
 
 // The search-filter indexes: filter-only searches (from:/in:/on: with no free
 // text — searchMessages in db/messages.ts) must satisfy `ORDER BY id DESC
@@ -2393,6 +2439,28 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_net
 db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_net_nick
          ON messages(network_id, nick COLLATE NOCASE, id DESC,
                      buffer_id, type, from_ignored, mirrored)`);
+
+// A buffer's rows in TIME order, for the bouncer's CHATHISTORY windows (#1075).
+// loadHistoryWindow (db/messages.ts) orders by time, not id — chathistory is a
+// timestamp API, and a chained/ZNC upstream can hand us old-time rows with new
+// ids — and without this index every window walked the buffer's whole history
+// through the id index and sorted it: 97 ms warm and 1.5 s cold on a 300k-row
+// buffer, per buffer on every bouncer attach and per page a client scrolls.
+// (buffer_id, time) makes LATEST / BEFORE / AFTER / BETWEEN one range seek
+// that stops at the LIMIT; the rowid SQLite appends gives the id tie-break
+// order for free. Not partial over chat types: the draft/event-playback form
+// ORs event rows in, which a chat-types predicate would not imply. ~14% of
+// the file (103 MB on a 2.9M-row, 760 MB database; 1.4 s to build on NVMe).
+if (
+  !indexExists('idx_messages_buf_time') &&
+  db.prepare(`SELECT 1 FROM messages LIMIT 1 OFFSET ?`).get(INDEX_BUILD_WARN_ROWS)
+) {
+  console.warn(
+    `[db] building idx_messages_buf_time — one-time, blocks startup, not resumable. ` +
+      `Do not kill the process.`,
+  );
+}
+db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_buf_time ON messages(buffer_id, time)`);
 
 // Retention's noise clock (lurker-dev/RETENTION_PLAN.md §3.3): age-based
 // pruning needs a time-ordered access path, and messages.time is otherwise
