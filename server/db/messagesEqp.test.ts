@@ -399,6 +399,246 @@ describe('highlight feed paths', () => {
   });
 });
 
+// Every feed statement, every filter combination. #1070 was a shape nobody
+// had hand-picked (a bare in: resolving on two networks; all-my-highlights),
+// so the pins above are joined by a grid: each statement builder is driven
+// through the full cross product of its filters and each plan is checked by
+// one rule — the page itself (before withReplyCol's re-sort of the LIMITed
+// page) never sorts and never scans a base table. Those are the two shapes
+// whose cost scales with history rather than with the page.
+describe('feed plan grid', () => {
+  let searchMessagesSql: typeof import('./messages.js').searchMessagesSql;
+  let listReactionsToUserSql: typeof import('./reactions.js').listReactionsToUserSql;
+  let listBookmarksForUserSql: typeof import('./bookmarks.js').listBookmarksForUserSql;
+  let userId: number;
+  let netId: number;
+  beforeAll(async () => {
+    ({ searchMessagesSql } = await import('./messages.js'));
+    ({ listReactionsToUserSql } = await import('./reactions.js'));
+    ({ listBookmarksForUserSql } = await import('./bookmarks.js'));
+    const { createUser } = await import('./users.js');
+    const { createNetwork } = await import('./networks.js');
+    const { insertMessage } = await import('./messages.js');
+    userId = createUser('eqp-grid').id;
+    // The channel on two networks, so in: resolves to several buffers — the
+    // shape a single-network fixture can never produce.
+    const nets = ['g1', 'g2'].map(
+      (name) => createNetwork(userId, { name, host: 'h', port: 6697, tls: true, nick: 'me' })!.id,
+    );
+    netId = nets[0];
+    for (const networkId of nets) {
+      insertMessage({
+        networkId,
+        target: '#grid',
+        time: new Date().toISOString(),
+        type: 'message',
+        nick: 'bob',
+        text: 'hi',
+        self: false,
+      });
+    }
+  });
+
+  // The lines of the page's own plan: everything before withReplyCol's
+  // `SCAN page`, whose ORDER BY re-sorts at most LIMIT rows.
+  function pagePlan(sql: string, params: unknown[]): string[] {
+    const rows = (
+      db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params) as Array<{ detail: string }>
+    ).map((r) => r.detail);
+    const cut = rows.indexOf('SCAN page');
+    return cut >= 0 ? rows.slice(0, cut) : rows;
+  }
+  // A sort, or a walk of a base table that isn't an index seek, is the
+  // history-shaped cost. `SCAN messages_fts` is FTS streaming matches; `SCAN
+  // (subquery-N)` is a co-routine half.
+  const offending = (lines: string[]) =>
+    lines.filter(
+      (d) =>
+        /TEMP B-TREE/.test(d) ||
+        /^SCAN (m|h|r|b|n|messages|message_reactions|user_bookmarks|networks|buffers)\b/.test(d),
+    );
+  // Every subset of a filter set, as option objects.
+  function grid<T extends Record<string, unknown>>(dims: T): Partial<T>[] {
+    const keys = Object.keys(dims) as (keyof T)[];
+    const out: Partial<T>[] = [];
+    for (let mask = 0; mask < 1 << keys.length; mask++) {
+      const opts: Partial<T> = {};
+      keys.forEach((k, i) => {
+        if (mask & (1 << i)) opts[k] = dims[k];
+      });
+      out.push(opts);
+    }
+    return out;
+  }
+
+  // Not only "no sort, no scan": a weak plan can pass that (a nick walk
+  // demoted to its network prefix, a cursor that FTS no longer ranges, a
+  // half with no LIMIT). Each shape also has to show the SEEK its driver
+  // owes it — with the cursor inside the seek's range when there is one —
+  // and, when a list of halves drives, one LIMIT per half in the statement.
+  const seek = (index: string, prefix: string, cursor: string | null) =>
+    new RegExp(`${index} \\(${prefix}${cursor ? ` AND ${cursor}` : ''}\\)`, 'g');
+  const count = (text: string, re: RegExp) => (text.match(re) ?? []).length;
+  // A half's own LIMIT (the page's is never followed by `)` in this form).
+  const halfLimits = (sql: string, alias: string) =>
+    count(sql, new RegExp(`ORDER BY ${alias}\\.id DESC LIMIT \\?\\)`, 'g'));
+
+  it('search: 64 filter combinations, each driven by its own seek', () => {
+    let checked = 0;
+    for (const opts of grid({
+      query: 'hello',
+      nick: 'alice',
+      target: '#grid',
+      networkId: netId,
+      matched: true,
+      before: 100,
+    })) {
+      const built = searchMessagesSql(userId, opts);
+      if (!built) continue; // the empty filter set, which never runs
+      checked += 1;
+      const lines = pagePlan(built.sql, built.params);
+      const plan = lines.join(' | ');
+      const id = opts.before ? 'id<\\?' : null;
+      // The buffers in: resolves to: both networks', or on:'s one.
+      const buffers = opts.networkId ? 1 : 2;
+      // `second`: a companion the shape also owes, exactly once — the reply
+      // half of a highlight read, FTS matched once (never re-probed per row),
+      // the page's rowid seek when a list drives.
+      const rowidPage = /SEARCH m USING INTEGER PRIMARY KEY \(rowid=\?\)/g;
+      let expected: { driver: RegExp; seeks: number; halves: number | null; second: RegExp };
+      if (opts.query) {
+        // FTS streams, the cursor as a native rowid range (`<`).
+        expected = {
+          driver: new RegExp(
+            `SCAN messages_fts VIRTUAL TABLE INDEX \\d+:M1${opts.before ? '<' : ''}(?: |$)`,
+            'g',
+          ),
+          seeks: 1,
+          halves: null,
+          second: /SCAN messages_fts/g,
+        };
+      } else if (opts.matched) {
+        // Both stamps, each seeked by buffer; no LIMIT inside (a partial
+        // index holds only highlights, so the probe is the bound).
+        expected = {
+          driver: seek('idx_messages_matched_buf', 'buffer_id=\\?', id),
+          seeks: 1,
+          halves: null,
+          second: seek('idx_messages_reply_self_buf', 'buffer_id=\\?', id),
+        };
+      } else if (opts.nick) {
+        const halves = opts.target ? buffers : opts.networkId ? 1 : 2;
+        expected = {
+          driver: seek('idx_messages_net_nick', 'network_id=\\? AND nick=\\?', id),
+          seeks: halves,
+          halves,
+          second: rowidPage,
+        };
+      } else if (opts.target) {
+        expected = {
+          driver: seek('idx_messages_buf_unread', 'buffer_id=\\?', id),
+          seeks: buffers,
+          halves: buffers > 1 ? buffers : null,
+          second: buffers > 1 ? rowidPage : /SEARCH n USING INTEGER PRIMARY KEY/g,
+        };
+      } else {
+        expected = {
+          driver: seek('idx_messages_net', 'network_id=\\?', id),
+          seeks: 1,
+          halves: null,
+          second: /SEARCH n USING INTEGER PRIMARY KEY/g,
+        };
+      }
+      expect({ opts, bad: offending(lines) }).toEqual({ opts, bad: [] });
+      expect({ opts, seeks: count(plan, expected.driver) }).toEqual({
+        opts,
+        seeks: expected.seeks,
+      });
+      expect({ opts, second: count(plan, expected.second) }).toEqual({ opts, second: 1 });
+      expect({
+        opts,
+        halves: expected.halves === null ? null : halfLimits(built.sql, 'h'),
+      }).toEqual({
+        opts,
+        halves: expected.halves,
+      });
+    }
+    expect(checked).toBe(62);
+  });
+
+  it('search: several from: nicks, one LIMITed seek per (network, nick)', () => {
+    const shapes: [Parameters<typeof searchMessagesSql>[1], number][] = [
+      [{ nicks: ['alice', 'bob'] }, 4],
+      [{ nicks: ['alice', 'bob'], networkId: netId }, 2],
+      [{ nicks: ['alice', 'bob'], target: '#grid', before: 100 }, 4],
+    ];
+    for (const [opts, halves] of shapes) {
+      const built = searchMessagesSql(userId, opts)!;
+      const plan = pagePlan(built.sql, built.params).join(' | ');
+      expect({ opts, bad: offending(plan.split(' | ')) }).toEqual({ opts, bad: [] });
+      const cursor = opts?.before ? 'id<\\?' : null;
+      expect({
+        opts,
+        seeks: count(plan, seek('idx_messages_net_nick', 'network_id=\\? AND nick=\\?', cursor)),
+      }).toEqual({
+        opts,
+        seeks: halves,
+      });
+      expect({ opts, halves: halfLimits(built.sql, 'h') }).toEqual({ opts, halves });
+    }
+  });
+
+  it('reactions: 32 filter combinations, one LIMITed seek per network', () => {
+    let checked = 0;
+    for (const opts of grid({
+      before: 100,
+      networkId: netId,
+      nicks: ['alice', 'bob'],
+      target: '#grid',
+      query: 'x',
+    })) {
+      const built = listReactionsToUserSql(userId, opts);
+      expect({ opts, built: built !== null }).toEqual({ opts, built: true });
+      checked += 1;
+      const lines = pagePlan(built!.sql, built!.params);
+      const halves = opts.networkId ? 1 : 2;
+      expect({ opts, bad: offending(lines) }).toEqual({ opts, bad: [] });
+      expect({
+        opts,
+        seeks: count(
+          lines.join(' | '),
+          seek(
+            'idx_message_reactions_to_self_standing',
+            'network_id=\\?',
+            opts.before ? 'id<\\?' : null,
+          ),
+        ),
+      }).toEqual({ opts, seeks: halves });
+      expect({ opts, halves: halfLimits(built!.sql, 'r') }).toEqual({ opts, halves });
+    }
+    expect(checked).toBe(32);
+  });
+
+  it('bookmarks: both pages walk the bookmark index backwards', () => {
+    for (const opts of [{}, { before: 100 }]) {
+      const built = listBookmarksForUserSql(userId, opts);
+      const lines = pagePlan(built.sql, built.params);
+      expect({ opts, bad: offending(lines) }).toEqual({ opts, bad: [] });
+      expect({
+        opts,
+        seeks: count(
+          lines.join(' | '),
+          seek(
+            'COVERING INDEX idx_user_bookmarks_user_msg',
+            'user_id=\\?',
+            'before' in opts ? 'message_id<\\?' : null,
+          ),
+        ),
+      }).toEqual({ opts, seeks: 1 });
+    }
+  });
+});
+
 // The retention sweep's two statements (db/retention.ts). Count-based
 // retention was chosen partly BECAUSE these ride idx_messages_buf_unread with
 // no new index; these pins are what make that a property rather than a hope.

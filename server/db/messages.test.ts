@@ -871,6 +871,136 @@ describe('searchMessages in: across networks', () => {
   });
 });
 
+describe('searchMessages from: across networks', () => {
+  const rig = (slug: string) => {
+    const user = createUser(slug);
+    const mk = (name: string) =>
+      createNetwork(user.id, { name, host: 'h', port: 6697, tls: true, nick: slug })!;
+    const a = mk('a');
+    const b = mk('b');
+    const say = (networkId: number, nick: string, text: string, type = 'message', target = '#c') =>
+      insertMessage({
+        networkId,
+        target,
+        time: new Date().toISOString(),
+        type,
+        nick,
+        text,
+        self: false,
+      });
+    return { user, a, b, say };
+  };
+
+  // The nick drives through one LIMITed half per (network, nick): the merged
+  // page must be the newest lines across networks in id order, the cursor
+  // must apply in each half, on: narrows, and alts (several nicks) merge.
+  it('merges the newest lines of a nick across networks, pages, narrows, and takes alts', () => {
+    const { user, a, b, say } = rig('from-multi');
+    say(a.id, 'alice', 'a1');
+    say(b.id, 'alice', 'b1');
+    say(a.id, 'bob', 'bob a');
+    say(a.id, 'alice', 'a2');
+    say(b.id, 'Alice', 'b2');
+    say(b.id, 'alice_', 'alt b3');
+
+    const page = searchMessages(user.id, { nick: 'alice', limit: 3 });
+    expect(page.map((m) => m.text)).toEqual(['b2', 'a2', 'b1']);
+    expect(
+      searchMessages(user.id, { nick: 'alice', limit: 3, before: page[2].id }).map((m) => m.text),
+    ).toEqual(['a1']);
+    expect(searchMessages(user.id, { nick: 'alice', networkId: b.id }).map((m) => m.text)).toEqual([
+      'b2',
+      'b1',
+    ]);
+    expect(
+      searchMessages(user.id, { nicks: ['alice', 'alice_'], limit: 3 }).map((m) => m.text),
+    ).toEqual(['alt b3', 'b2', 'a2']);
+    expect(
+      searchMessages(user.id, { nick: 'alice', target: '#c', networkId: a.id }).map((m) => m.text),
+    ).toEqual(['a2', 'a1']);
+  });
+
+  // A nick's newest rows on a network can be its own joins and parts (they
+  // carry the nick). A half that didn't filter type would fill its LIMIT
+  // with them and the page would never reach the chat line beneath.
+  it('a nick whose newest rows on a network are noise still yields its chat lines', () => {
+    const { user, a, b, say } = rig('from-noise');
+    say(b.id, 'alice', 'b1');
+    say(b.id, 'alice', 'joined', 'join');
+    say(b.id, 'alice', 'left', 'part');
+    say(a.id, 'alice', 'a1');
+
+    expect(searchMessages(user.id, { nick: 'alice', limit: 2 }).map((m) => m.text)).toEqual([
+      'a1',
+      'b1',
+    ]);
+  });
+
+  // A networkId that isn't the caller's yields nothing — not another user's
+  // lines, not an error.
+  it('on: with a network the caller does not own matches nothing', () => {
+    const { user, a, say } = rig('from-foreign');
+    say(a.id, 'alice', 'mine');
+    const other = createUser('from-foreign-other');
+    const theirs = createNetwork(other.id, {
+      name: 'x',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'x',
+    })!;
+    say(theirs.id, 'alice', 'theirs');
+    expect(searchMessages(user.id, { nick: 'alice', networkId: theirs.id })).toEqual([]);
+    expect(searchMessages(other.id, { nick: 'alice' }).map((m) => m.text)).toEqual(['theirs']);
+  });
+});
+
+describe('searchMessages free text with on: and a cursor', () => {
+  // Page 2 of a text search scoped to a network (the shape the planner used
+  // to take off FTS): the cursor rides the FTS rowid and the page is right.
+  it('pages a scoped text search by the FTS rowid', () => {
+    const user = createUser('text-cursor');
+    const mk = (name: string) =>
+      createNetwork(user.id, { name, host: 'h', port: 6697, tls: true, nick: 'tc' })!;
+    const a = mk('a');
+    const b = mk('b');
+    const say = (networkId: number, text: string) =>
+      insertMessage({
+        networkId,
+        target: '#t',
+        time: new Date().toISOString(),
+        type: 'message',
+        nick: 'bob',
+        text,
+        self: false,
+      });
+    for (let i = 1; i <= 4; i += 1) {
+      say(a.id, `deploy a${i}`);
+      say(b.id, `deploy b${i}`);
+      say(a.id, `lunch a${i}`);
+    }
+    const page = searchMessages(user.id, { query: 'deploy', networkId: a.id, limit: 2 });
+    expect(page.map((m) => m.text)).toEqual(['deploy a4', 'deploy a3']);
+    expect(
+      searchMessages(user.id, {
+        query: 'deploy',
+        networkId: a.id,
+        limit: 2,
+        before: page[1].id,
+      }).map((m) => m.text),
+    ).toEqual(['deploy a2', 'deploy a1']);
+    expect(
+      searchMessages(user.id, {
+        query: 'deploy',
+        nick: 'bob',
+        target: '#t',
+        before: page[0].id,
+        limit: 2,
+      }).map((m) => m.text),
+    ).toEqual(['deploy b3', 'deploy a3']);
+  });
+});
+
 // SQLite caps one compound SELECT at 500 terms. A channel held on more
 // networks than that is a chain of nested chunks, not a prepare error (local
 // Codex review of #1070 reproduced the throw on 501).
@@ -902,6 +1032,10 @@ describe('searchMessages in: across more networks than one compound allows', () 
     expect(page).toHaveLength(50);
     const next = searchMessages(user.id, { target: '#shared', limit: 50, before: page[49].id });
     expect(next[0].text).toBe('hi 450');
+    // from: + in: on the same 501 networks: one half per network, each
+    // binding its own buffer, so the variable count stays linear.
+    const from = searchMessages(user.id, { nick: 'bob', target: '#shared', limit: 50 });
+    expect(from.map((m) => m.text).slice(0, 2)).toEqual(['hi 500', 'hi 499']);
   });
 });
 

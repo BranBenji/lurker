@@ -89,30 +89,35 @@ export function isBookmarked(userId: number, messageId: number): boolean {
 // Paginated list joined with messages + networks. Row shape matches
 // searchMessages' so the same HistoryMessageRow component can render
 // bookmark items unchanged.
-export function listBookmarksForUser(
+// The statement listBookmarksForUser runs, with its bound parameters.
+// Exported so messagesEqp.test.ts pins its plan. Ordered and paged by the
+// bookmark's own message_id column, so the walk is the (user_id, message_id)
+// index backwards — one streamed range, stopping at the LIMIT. Ordering by
+// m.id (the same value, but on the joined table) made SQLite fetch every one
+// of the user's bookmarks and sort them.
+export function listBookmarksForUserSql(
   userId: number,
   { before, limit = 50 }: { before?: number; limit?: number } = {},
-): BookmarkEvent[] {
+): { sql: string; params: number[] } {
   // Sorted by message id, not read in index order — so the reply quote goes on
   // over the page (withReplyCol), not per candidate row.
-  const inner = before
-    ? `SELECT m.*, n.name AS network_name
+  const inner = `SELECT m.*, n.name AS network_name
        FROM user_bookmarks b
        JOIN messages m ON m.id = b.message_id
        JOIN networks n ON n.id = m.network_id
-       WHERE b.user_id = ?
-         AND m.id < ?
-       ORDER BY m.id DESC
-       LIMIT ?`
-    : `SELECT m.*, n.name AS network_name
-       FROM user_bookmarks b
-       JOIN messages m ON m.id = b.message_id
-       JOIN networks n ON n.id = m.network_id
-       WHERE b.user_id = ?
-       ORDER BY m.id DESC
+       WHERE b.user_id = ?${before ? ' AND b.message_id < ?' : ''}
+       ORDER BY b.message_id DESC
        LIMIT ?`;
   const params = before ? [userId, before, limit] : [userId, limit];
-  const rows = db.prepare(withReplyCol(inner)).all(...params) as BookmarkRow[];
+  return { sql: withReplyCol(inner), params };
+}
+
+export function listBookmarksForUser(
+  userId: number,
+  opts: { before?: number; limit?: number } = {},
+): BookmarkEvent[] {
+  const { sql, params } = listBookmarksForUserSql(userId, opts);
+  const rows = db.prepare(sql).all(...params) as BookmarkRow[];
   return rows.map((row) => {
     const event: BookmarkEvent = {
       id: row.id,
