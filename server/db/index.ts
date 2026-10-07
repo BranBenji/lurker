@@ -1101,6 +1101,70 @@ function indexExists(name: string): boolean {
   return !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?`).get(name);
 }
 
+// Above this many rows, a one-shot index build or rebuild gets the "blocks
+// startup, do not kill" warning (the builds below and the heals here).
+const INDEX_BUILD_WARN_ROWS = 250_000;
+
+/**
+ * Build — or REBUILD — an index whose DDL may have changed under the same
+ * name. `CREATE INDEX IF NOT EXISTS` keys on the name alone, so after an edit
+ * to an index's columns or predicate a deployed database keeps its stale
+ * b-tree forever: INDEXED BY statements fail to prepare (a boot crash-loop a
+ * fresh-DB CI run can never see), or reads quietly lose the covering walk
+ * they were built for. Comparing the live DDL in sqlite_master with the
+ * constant turns "the shape changed" into one ordinary rebuild. Warns on BOTH
+ * paths that build on a big table — a stale shape, and an absent index, which
+ * is what the next boot sees after a kill mid-rebuild — so the operator is
+ * always told not to kill it. Exported so a heal is testable against a
+ * deliberately stale index (messagesEqp.test.ts).
+ */
+export function ensureIndexCurrent(name: string, ddl: string, why: string): void {
+  const normalize = (sql: string) =>
+    sql
+      .replace(/\s+/g, ' ')
+      .replace(/IF NOT EXISTS /, '')
+      .trim();
+  const live = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`)
+    .get(name) as { sql: string } | undefined;
+  const stale = live !== undefined && normalize(live.sql) !== normalize(ddl);
+  if (stale) db.exec(`DROP INDEX ${name}`);
+  if (
+    (stale || live === undefined) &&
+    db.prepare(`SELECT 1 FROM messages LIMIT 1 OFFSET ?`).get(INDEX_BUILD_WARN_ROWS)
+  ) {
+    console.warn(
+      `[db] ${stale ? 'rebuilding' : 'building'} ${name} (${why}) — one-time, blocks startup, ` +
+        `not resumable. Do not kill the process.`,
+    );
+  }
+  db.exec(ddl);
+}
+
+// The two highlight partial indexes (#1073). Each holds only its stamp's rows
+// — rule-matched, or a reply to the user — keyed (buffer_id, id DESC), which
+// is what every highlight read seeks. The three payload columns make those
+// reads index-ONLY: SQLite never drops `matched_rule_id IS NOT NULL` as
+// implied by the partial index's own predicate, so without the stamp in the
+// index the feed fetched the table row of every rule highlight just to
+// re-check it (one scattered read per highlight per page, 1.2 s cold on the
+// #1070 reporter's cell); and countHighlightsNewer filters from_ignored and
+// notable, so without those the unread-highlight count fetched a row per
+// highlight too. Both columns in both indexes, so the count's reply probe
+// (reply_to_self = 1 AND matched_rule_id IS NULL …) is covered as well.
+// Partial, so each is small; a rebuild is one pass over the table.
+// messagesEqp.test.ts pins COVERING INDEX for the feed and the count.
+const MATCHED_INDEX_DDL = `CREATE INDEX IF NOT EXISTS idx_messages_matched_buf
+             ON messages(buffer_id, id DESC, matched_rule_id, from_ignored, notable)
+             WHERE matched_rule_id IS NOT NULL`;
+const REPLY_INDEX_DDL = `CREATE INDEX IF NOT EXISTS idx_messages_reply_self_buf
+         ON messages(buffer_id, id DESC, matched_rule_id, from_ignored, notable)
+         WHERE reply_to_self = 1`;
+export function ensureHighlightIndexesCurrent(): void {
+  ensureIndexCurrent('idx_messages_matched_buf', MATCHED_INDEX_DDL, 'highlight payload columns');
+  ensureIndexCurrent('idx_messages_reply_self_buf', REPLY_INDEX_DDL, 'highlight payload columns');
+}
+
 // Recovery for pre-role SELF-HOSTED installs: if no admin exists, promote the
 // earliest user so a single-user install that pre-dates the role column keeps
 // control. Deliberately SKIPPED in node edition — a cell is managed by the
@@ -1338,13 +1402,9 @@ ensureColumn('messages', 'reply_msgid', 'TEXT');
 // every highlight read ORs this in beside matched_rule_id (HIGHLIGHTED_SQL).
 // Kept out of matched_rule_id because no rule matched — that column names one.
 ensureColumn('messages', 'reply_to_self', 'INTEGER NOT NULL DEFAULT 0');
-// countHighlightsNewer's second probe, the reply half of what
-// idx_messages_matched_buf is for the rule half. Partial, so it holds only the
-// few rows that are replies to the user; building it is one pass over the table
-// on the boot that adds it.
-db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_reply_self_buf
-         ON messages(buffer_id, id DESC)
-         WHERE reply_to_self = 1`);
+// Its index, idx_messages_reply_self_buf (REPLY_INDEX_DDL), is built by
+// ensureHighlightIndexesCurrent further down: its payload columns
+// (from_ignored, notable) are added to the table after this point.
 // The top of a reply's thread: the root's msgid, set on every reply at insert
 // (its parent's root, or — when the parent has none, or isn't one we hold —
 // the parent's msgid). The line that started the thread stores nothing; it's
@@ -1396,7 +1456,6 @@ if (!hadNotableColumn) demoteLegacyServerStatusNotices();
 // values until then. The full rationale (covering payload columns, warn-probe
 // idiom, measured costs) lives at that build site. Warn threshold shared with
 // it:
-const INDEX_BUILD_WARN_ROWS = 250_000;
 
 // Retire the ancient idx_messages_buffer (network_id, target, id DESC) on DBs
 // old enough to still carry it — superseded twice over by now. (Its
@@ -2345,9 +2404,7 @@ if (schemaVersion < 16 && tableExists('channels')) {
     }
     db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_buf_unread
              ON messages(buffer_id, id DESC, type, from_ignored, notable)`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_matched_buf
-             ON messages(buffer_id, id DESC)
-             WHERE matched_rule_id IS NOT NULL`);
+    db.exec(MATCHED_INDEX_DDL);
     // Only after both successors exist: retire the name-keyed generation.
     // Keeping them would be two dead b-trees maintained on every INSERT (no
     // statement issues their predicate shape anymore); ordering the drops
@@ -2356,6 +2413,10 @@ if (schemaVersion < 16 && tableExists('channels')) {
     db.exec(`DROP INDEX IF EXISTS idx_messages_matched`);
   }
 }
+
+// The highlight partial indexes are healed to their current shape here — see
+// ensureHighlightIndexesCurrent beside indexExists.
+ensureHighlightIndexesCurrent();
 
 // The search-filter indexes: filter-only searches (from:/in:/on: with no free
 // text — searchMessages in db/messages.ts) must satisfy `ORDER BY id DESC
@@ -2394,9 +2455,33 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_net_nick
          ON messages(network_id, nick COLLATE NOCASE, id DESC,
                      buffer_id, type, from_ignored, mirrored)`);
 
+// A buffer's rows in TIME order, for the bouncer's CHATHISTORY windows (#1075).
+// loadHistoryWindow (db/messages.ts) orders by time, not id — chathistory is a
+// timestamp API, and a chained/ZNC upstream can hand us old-time rows with new
+// ids — and without this index every window walked the buffer's whole history
+// through the id index and sorted it: 97 ms warm and 1.5 s cold on a 300k-row
+// buffer, per buffer on every bouncer attach and per page a client scrolls.
+// (buffer_id, time) makes LATEST / BEFORE / AFTER / BETWEEN one range seek
+// that stops at the LIMIT; the rowid SQLite appends gives the id tie-break
+// order for free. Not partial over chat types: the draft/event-playback form
+// ORs event rows in, which a chat-types predicate would not imply. ~14% of
+// the file (103 MB on a 2.9M-row, 760 MB database; 1.4 s to build on NVMe).
+if (
+  !indexExists('idx_messages_buf_time') &&
+  db.prepare(`SELECT 1 FROM messages LIMIT 1 OFFSET ?`).get(INDEX_BUILD_WARN_ROWS)
+) {
+  console.warn(
+    `[db] building idx_messages_buf_time — one-time, blocks startup, not resumable. ` +
+      `Do not kill the process.`,
+  );
+}
+db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_buf_time ON messages(buffer_id, time)`);
+
 // Retention's noise clock (lurker-dev/RETENTION_PLAN.md §3.3): age-based
-// pruning needs a time-ordered access path, and messages.time is otherwise
-// unindexed — count-based retention deliberately never needed one. Partial
+// pruning needs a time-led access path across EVERY buffer, and the only
+// other time index, idx_messages_buf_time, leads with buffer_id — one
+// buffer's rows in time order, useless to an age sweep of the whole table.
+// Count-based retention deliberately never needed one of these. Partial
 // over exactly the early-prune types (roughly a third of rows), so the b-tree
 // stays small and every entry the sweep walks is a deletion candidate;
 // buffer_id rides along so the per-user ownership join reads index-only.
@@ -2414,38 +2499,21 @@ export const EARLY_PRUNE_TYPES_SQL = [...EARLY_PRUNE_TYPES]
 
 /**
  * Build — or REBUILD — the noise-clock index so its predicate always matches
- * the current EARLY_PRUNE_TYPES. Self-healing on purpose: `CREATE INDEX IF
- * NOT EXISTS` keys on the name alone, so after an edit to the shared set a
- * deployed database would keep its stale index and the INDEXED BY statements
- * in db/retention.ts would fail to prepare AT MODULE LOAD — a boot
- * crash-loop, on every instance, that a fresh-DB CI run can never see.
- * Comparing the live DDL and dropping on mismatch turns "the set changed"
- * into an ordinary one-time rebuild instead. Exported so the rebuild path is
+ * the current EARLY_PRUNE_TYPES: after an edit to the shared set a deployed
+ * database would otherwise keep its stale index and the INDEXED BY
+ * statements in db/retention.ts would fail to prepare AT MODULE LOAD — a boot
+ * crash-loop, on every instance, that a fresh-DB CI run can never see. The
+ * live-DDL compare is ensureIndexCurrent's; exported so the rebuild path is
  * testable against a deliberately-stale index (messagesEqp.test.ts).
  */
 export function ensureNoiseIndexCurrent(): void {
-  const ddl = `CREATE INDEX IF NOT EXISTS idx_messages_noise_time
+  ensureIndexCurrent(
+    'idx_messages_noise_time',
+    `CREATE INDEX IF NOT EXISTS idx_messages_noise_time
          ON messages(time, buffer_id)
-         WHERE type IN (${EARLY_PRUNE_TYPES_SQL})`;
-  const live = db
-    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`)
-    .get('idx_messages_noise_time') as { sql: string } | undefined;
-  if (
-    live &&
-    (!live.sql.includes(`(${EARLY_PRUNE_TYPES_SQL})`) || !live.sql.includes('(time, buffer_id)'))
-  ) {
-    db.exec(`DROP INDEX idx_messages_noise_time`);
-  }
-  if (
-    !indexExists('idx_messages_noise_time') &&
-    db.prepare(`SELECT 1 FROM messages LIMIT 1 OFFSET ?`).get(INDEX_BUILD_WARN_ROWS)
-  ) {
-    console.warn(
-      `[db] building idx_messages_noise_time — one-time, blocks startup, not resumable. ` +
-        `Do not kill the process.`,
-    );
-  }
-  db.exec(ddl);
+         WHERE type IN (${EARLY_PRUNE_TYPES_SQL})`,
+    'the early-prune type set',
+  );
 }
 ensureNoiseIndexCurrent();
 
