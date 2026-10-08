@@ -23,7 +23,7 @@ features:
   - title: Always-on & multi-user
     details: Stays connected to IRC on your behalf and keeps full message history, so you reattach from any browser — desktop or mobile — right where you left off.
   - title: Full history & search
-    details: Every message is stored and searchable. Auto-away triggers when your last client disconnects, and smart web-push notifications fire on highlights.
+    details: Every message is stored and searchable. Auto-away triggers when your last client disconnects, and smart notifications fire on highlights, as web push in the browser and native push in the iOS and Android apps.
   - title: Modern conveniences
     details: Peer presence, automatic nick regain, join/part summarization, tab completion, drafts, saved messages, image uploads, and a searchable channel browser.
   - title: Customizable & installable

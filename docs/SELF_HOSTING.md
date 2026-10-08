@@ -211,24 +211,21 @@ If you change `VAPID_SUBJECT` later, existing subscriptions continue to work —
 
 ### Push and the mobile apps
 
-**Short version: install Lurker as a home-screen PWA and use Web Push above. That is the supported path for a self-hosted server, and it works on iOS 16.4+ and Android with no developer account and no extra configuration.**
+The Lurker apps for iOS and Android use native push (APNs and FCM). Only the publisher of an app can push to it, so a self-hosted server can't reach the App Store or Play Store builds on its own. [push.lurker.chat](https://push.lurker.chat) is a relay that does it for you, for $20/year per server, every user included.
 
-The first-party Lurker mobile apps use native push (APNs on iOS, FCM on Android), and a self-hosted server **cannot** deliver to them. This isn't a missing feature — it's how the platforms work:
+Your server encrypts each notification for the phone and hands it to the relay, which forwards it to Apple or Google. The relay can't read what it forwards.
 
-- An APNs signing key only signs for the bundle id Apple issued it to.
-- An FCM token is scoped to the Firebase project compiled into the APK; a token from a different project is rejected outright (`MismatchSenderId`).
+To set it up:
 
-So only the publisher of a build can push to that build. Supplying your own Apple or Google credentials to `LURKER_APNS_*` / `LURKER_FCM_SERVICE_ACCOUNT` will not make your server able to push to the App Store or Play Store app — those variables exist for whoever publishes the app, and for anyone running **their own build** of it signed with their own credentials.
-
-You can check what a given server can actually deliver on: `GET /api/push/config` returns a `transports` list. A self-hosted server reports `["webpush"]`, and the apps use that to tell you push isn't available rather than asking for notification permission and then silently never delivering.
-
-**push.lurker.chat.** A paid relay ($20/year per server) lets a self-hosted server push to the official iOS and Android apps. Your server encrypts each notification for the phone, and the relay forwards it without being able to read it. To use it:
-
-1. In **Admin → Notifications**, copy your server's key.
+1. In **Admin → Notifications**, copy the server key.
 2. Sign up at [push.lurker.chat](https://push.lurker.chat), paste the key, and subscribe.
-3. Back in **Admin → Notifications**, turn on **Use push.lurker.chat**. Lurker checks with the relay first and tells you if the key isn't active yet.
+3. Back in **Admin → Notifications**, turn on **Use push.lurker.chat for the iOS and Android apps**. Lurker asks the relay whether the key is active before it switches on, and tells you if it isn't.
 
-Until you turn it on, neither your server nor the apps contact push.lurker.chat, except when you press **check** next to the key.
+Nothing contacts push.lurker.chat until you turn it on. Your server talks to it only while the switch is on, or when you press **check** next to the key. The apps use it only while your server advertises it (`relay` in `GET /api/push/config`). Turn the switch off and both stop.
+
+If you build the apps yourself, signed with your own Apple or Google credentials, your server can push to those builds directly through `LURKER_APNS_*` and `LURKER_FCM_SERVICE_ACCOUNT`. Those variables don't make a server able to reach the official apps.
+
+Web Push for the PWA, above, works regardless and needs no account.
 
 ### File uploads on your own disk
 
