@@ -206,7 +206,7 @@ These are the non-obvious constraints that have bitten changes before:
 - **A channel is `#`, `&`, `+` or `!` — never just `#`.** Testing for `#` alone
   is the most-repeated bug in the project. Use `isChannelTarget` and
   `stripChannelPrefix` from [`shared/channels.ts`](shared/channels.ts); never
-  write a per-call-site prefix test. A *typed* `#` (a completion trigger, a URL
+  write a per-call-site prefix test. A _typed_ `#` (a completion trigger, a URL
   fragment) is a literal character and stays `#`.
 - **Fold IRC target case per network when matching buffers.** Servers send
   channel and nick names with inconsistent casing, and the fold depends on the
