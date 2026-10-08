@@ -370,7 +370,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
-import type { CSSProperties, ComponentPublicInstance } from 'vue';
+import type { CSSProperties, ComponentPublicInstance, ComputedRef } from 'vue';
 import { useNetworksStore, type AwayState } from '../stores/networks.js';
 import { useBuffersStore, type BufferMember } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
@@ -1620,17 +1620,25 @@ function hasInlineText(m: ChatMessage | undefined): boolean {
   return m?.type === 'message' || m?.type === 'notice' || m?.type === 'action';
 }
 
+// Appends repaint the list, but unchanged bodies don't need another formatting,
+// URL, emoji and nick pass (or a fresh segments prop for their child renderer).
+// Each computed tracks text, membership, self nick, palette and emoji readiness,
+// even after cache hits. Weak keys let evicted/replaced messages be collected;
+// ids alone would collide across buffers and reuse stale reply/relay display text.
+const segmentsByMessage = new WeakMap<ChatMessage, ComputedRef<RenderSegment[]>>();
+
 function textSegments(m: ChatMessage | undefined): RenderSegment[] {
   if (!m) return [];
-  if (m.type === 'action') {
-    // Body is "<nick> <text>" — author's nick then the action text.
-    return nicks.splitText(
-      `${m.nick} ${m.text || ''}`,
-      nickSet.value,
-      selfLower.value,
-    ) as RenderSegment[];
+  let segments = segmentsByMessage.get(m);
+  if (!segments) {
+    segments = computed(() => {
+      // An action's body includes its author, unlike a plain message.
+      const text = m.type === 'action' ? `${m.nick} ${m.text || ''}` : m.text || '';
+      return nicks.splitText(text, nickSet.value, selfLower.value) as RenderSegment[];
+    });
+    segmentsByMessage.set(m, segments);
   }
-  return nicks.splitText(m.text || '', nickSet.value, selfLower.value) as RenderSegment[];
+  return segments.value;
 }
 
 function onReplyContextClick(parent: ReplyParent | null | undefined): void {
