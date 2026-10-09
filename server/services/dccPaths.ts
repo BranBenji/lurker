@@ -16,9 +16,14 @@
 
 import fs from 'fs';
 import path from 'path';
-import { capText } from '../utils/capText.js';
+import { capUtf8, utf8Bytes } from '../utils/capUtf8.js';
 
-const MAX_FILENAME_LEN = 255;
+// ext4 and APFS allow 255 BYTES per name, not 255 characters (#1051): an emoji
+// is four bytes, a CJK character three.
+const MAX_FILENAME_BYTES = 255;
+// An extension longer than this is kept whole when the name is cut. Past it,
+// it's treated as the tail of the name and cut along with the rest.
+const MAX_EXT_BYTES = 16;
 const FALLBACK_NAME = 'dcc-download';
 
 /** The configured DCC download root, or null when unset (downloads can't run). */
@@ -27,12 +32,28 @@ export function dccRoot(): string | null {
   return raw === '' ? null : raw;
 }
 
+// `name` split at its extension, unless that's too long to be one.
+function splitExt(name: string): { base: string; ext: string } {
+  const ext = path.extname(name);
+  if (ext === '' || utf8Bytes(ext) > MAX_EXT_BYTES) return { base: name, ext: '' };
+  return { base: name.slice(0, -ext.length), ext };
+}
+
+// `base` + `suffix` + `ext`, with `base` cut so the whole fits one name. The
+// suffix is the collision counter, so a repeat download of a name already at
+// the limit gives up name, not the counter or the extension.
+function fitName(base: string, ext: string, suffix = ''): string {
+  const room = MAX_FILENAME_BYTES - utf8Bytes(suffix) - utf8Bytes(ext);
+  return capUtf8(base, room).trimEnd() + suffix + ext;
+}
+
 /**
  * Reduce an attacker-controlled DCC filename to a safe single path component:
  * take only the basename (both POSIX and Windows separators), drop control chars
- * / NUL, trim whitespace, reject bare '.'/'..', and clamp the length (preserving
- * the extension). Returns a non-empty safe name, falling back to a default when
- * nothing usable remains. The result NEVER contains a path separator.
+ * / NUL, trim whitespace, clamp to 255 UTF-8 bytes (preserving a short
+ * extension), and reject bare '.'/'..'. Returns a non-empty safe name, falling
+ * back to a default when nothing usable remains. The result NEVER contains a
+ * path separator.
  */
 export function sanitizeDccFilename(raw: string): string {
   // Normalise Windows separators to '/', then take the basename — after this
@@ -47,11 +68,13 @@ export function sanitizeDccFilename(raw: string): string {
     })
     .join('');
   name = name.trim();
-  if (name === '' || name === '.' || name === '..') return FALLBACK_NAME;
-  if (name.length > MAX_FILENAME_LEN) {
-    const ext = capText(path.extname(name), 16);
-    name = capText(name, MAX_FILENAME_LEN - ext.length).trimEnd() + ext;
+  if (utf8Bytes(name) > MAX_FILENAME_BYTES) {
+    const { base, ext } = splitExt(name);
+    name = fitName(base, ext);
   }
+  // Checked after the cut, which can leave one of these: '..' followed by a run
+  // of combining marks keeps only the first '.'.
+  if (name === '' || name === '.' || name === '..') return FALLBACK_NAME;
   return name;
 }
 
@@ -69,19 +92,18 @@ export function resolveDccDestination(username: string, rawFilename: string): st
 
   const safeName = sanitizeDccFilename(rawFilename);
   let candidate = path.join(userDir, safeName);
-  const rel = path.relative(userDir, candidate);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
-    throw new Error('refusing unsafe DCC destination path');
-  }
-
   if (fs.existsSync(candidate)) {
-    const ext = path.extname(safeName);
-    const base = safeName.slice(0, safeName.length - ext.length);
+    const { base, ext } = splitExt(safeName);
     let n = 1;
     do {
-      candidate = path.join(userDir, `${base} (${n})${ext}`);
+      candidate = path.join(userDir, fitName(base, ext, ` (${n})`));
       n += 1;
     } while (fs.existsSync(candidate));
+  }
+  // Checked on the name we actually return, de-collided or not.
+  const rel = path.relative(userDir, candidate);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error('refusing unsafe DCC destination path');
   }
   return candidate;
 }

@@ -27,6 +27,7 @@
 // line.
 
 import net from 'net';
+import { ACTION_WRAPPER_BYTES } from '../../shared/wireBudget.js';
 import { capText } from '../utils/capText.js';
 
 // Chosen to match irssi's MAX_CHARS_IN_LINE (line-split.c:32).
@@ -105,16 +106,21 @@ export class DccChat {
   }
 
   /** Send one line of chat text (CRLF is appended; embedded CR/LF is stripped so
-   *  a single message can't inject extra lines). Returns false if the session is
-   *  already closed. */
-  send(text: string): boolean {
-    if (this.closed || !this.socket) return false;
-    const clean = capText(text.replace(/[\r\n]/g, ' '), MAX_LINE_CHARS);
+   *  a single message can't inject extra lines). `action` frames it as a bare
+   *  `\x01ACTION text\x01`. Returns the text as sent — cleaned and capped, for the
+   *  caller to echo — or null if the session is already closed. */
+  send(text: string, opts: { action?: boolean } = {}): string | null {
+    if (this.closed || !this.socket) return null;
+    // Capped before framing (#1051), so a /me at the cap keeps its closing \x01
+    // and still reads as an action. The wrapper is ASCII: its bytes are its units.
+    const room = MAX_LINE_CHARS - (opts.action ? ACTION_WRAPPER_BYTES : 0);
+    const clean = capText(text.replace(/[\r\n]/g, ' '), room);
+    const line = opts.action ? `\u0001ACTION ${clean}\u0001` : clean;
     try {
-      this.socket.write(clean + '\r\n');
-      return true;
+      this.socket.write(line + '\r\n');
+      return clean;
     } catch {
-      return false;
+      return null;
     }
   }
 

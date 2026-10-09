@@ -54,7 +54,7 @@ describe('DccChat', () => {
 
     // a sends back; b receives with CRLF framing.
     const gotB = new Promise<string>((r) => b.once('data', (d) => r(d.toString())));
-    expect(chat.send('reply here')).toBe(true);
+    expect(chat.send('reply here')).toBe('reply here');
     expect(await gotB).toBe('reply here\r\n');
 
     chat.close();
@@ -65,7 +65,7 @@ describe('DccChat', () => {
     const chat = new DccChat({ socket: a });
     chat.start();
     const gotB = new Promise<string>((r) => b.once('data', (d) => r(d.toString())));
-    chat.send('line1\r\nINJECTED');
+    expect(chat.send('line1\r\nINJECTED')).toBe('line1  INJECTED');
     expect(await gotB).toBe('line1  INJECTED\r\n');
     chat.close();
   });
@@ -80,12 +80,12 @@ describe('DccChat', () => {
     await expect(closed).resolves.toBeUndefined();
   });
 
-  it('send() returns false after close', async () => {
+  it('send() returns null after close', async () => {
     const { a } = await socketPair();
     const chat = new DccChat({ socket: a });
     chat.start();
     chat.close();
-    expect(chat.send('nope')).toBe(false);
+    expect(chat.send('nope')).toBeNull();
   });
 
   // irssi force-splits an over-long unterminated line rather than dropping the
@@ -152,6 +152,26 @@ describe('DccChat', () => {
     chat.send('x'.repeat(64 * 1024 - 1) + '😀tail');
     await done;
     expect(got).toBe('x'.repeat(64 * 1024 - 1) + '\r\n');
+    chat.close();
+  });
+
+  // #1051: capping the framed line cut the closing \x01 off, and the peer showed
+  // the /me as a plain message.
+  it('caps an over-long action before framing it, keeping the closing \\x01', async () => {
+    const { a, b } = await socketPair();
+    const chat = new DccChat({ socket: a });
+    chat.start();
+    let got = '';
+    const done = new Promise<void>((r) =>
+      b.on('data', (d) => {
+        got += d.toString();
+        if (got.endsWith('\r\n')) r();
+      }),
+    );
+    const body = 'x'.repeat(64 * 1024 - '\u0001ACTION \u0001'.length);
+    expect(chat.send(body + 'overflow', { action: true })).toBe(body);
+    await done;
+    expect(got).toBe(`\u0001ACTION ${body}\u0001\r\n`);
     chat.close();
   });
 

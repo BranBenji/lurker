@@ -510,6 +510,38 @@ describe('DCC CHAT actions', () => {
     h.conn.closeDccChat('bob');
   });
 
+  // #1051: the line was capped after framing, so a /me at the cap lost its
+  // closing \x01, and the echo persisted the whole typed text either way.
+  it('caps a long line before framing and echoes what the peer got', async () => {
+    enableDcc();
+    allowLoopback();
+    const h = harness();
+    const peer = await startPeer();
+    offerAndAccept(h.conn, 'bob', `CHAT chat ${encodeDccAddress('127.0.0.1')} ${peer.port}`);
+    const sock = await peer.socket;
+    await waitFor(() => h.conn.hasDccChat('bob'));
+
+    let got = '';
+    sock.on('data', (d) => (got += d.toString()));
+    const cap = 64 * 1024;
+    const actionBody = 'a'.repeat(cap - '\u0001ACTION \u0001'.length);
+    h.conn.dccChatSend('bob', actionBody + 'cut', { action: true });
+    await waitFor(() => got.endsWith('\r\n'));
+    expect(got).toBe(`\u0001ACTION ${actionBody}\u0001\r\n`);
+
+    got = '';
+    h.conn.dccChatSend('bob', 'b'.repeat(cap) + 'cut');
+    await waitFor(() => got.endsWith('\r\n'));
+    expect(got).toBe('b'.repeat(cap) + '\r\n');
+
+    const self = h.published.filter((e) => e.self === true);
+    expect(self.map((e) => [e.type, e.text])).toEqual([
+      ['action', actionBody],
+      ['message', 'b'.repeat(cap)],
+    ]);
+    h.conn.closeDccChat('bob');
+  });
+
   it("parses both action dialects inbound, including irssi's CTCP_MESSAGE prefix", async () => {
     enableDcc();
     allowLoopback();

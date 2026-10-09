@@ -7432,9 +7432,11 @@ export class IrcConnection {
       }
       return false;
     }
-    const wire = opts.action ? `\u0001ACTION ${text}\u0001` : text;
-    if (!entry.chat.send(wire)) return false;
-    this.publishDccChatLine(nick, text, true, !!opts.action);
+    // Echo what the peer got, not what was typed: send() strips line breaks and
+    // caps an over-long line (#1051).
+    const sent = entry.chat.send(text, { action: opts.action });
+    if (sent === null) return false;
+    this.publishDccChatLine(nick, sent, true, !!opts.action);
     return true;
   }
 
