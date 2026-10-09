@@ -81,6 +81,8 @@ import { registerIdent, unregisterIdent, isIdentdEnabled, isOidentdFileEnabled }
 import { EngineLink, engineConfigured, engineConnectionId } from './engineLink.js';
 import { ENGINE_CLOSE, EngineTransport, engineCloseCode } from './engineTransport.js';
 import type { EnginePhase, EnginePhaseInfo } from './engineTransport.js';
+import { reattachAbandoned, reattachLive, reattachStarted } from './engineReattachLog.js';
+import type { Reattach } from './engineReattachLog.js';
 import {
   MESSAGE_MAX_BYTES,
   partitionMultiline,
@@ -1026,6 +1028,9 @@ export class IrcConnection {
   // original is at or below it, and the catch-up's own rows are above it
   // (hasRecentMessageLike). Null outside a catch-up.
   private catchUpMaxId: number | null = null;
+  // This catch-up's line for stdout, written at `live` (engineReattachLog.ts).
+  // Null outside a catch-up.
+  private reattachLog: Reattach | null = null;
   // The engine finished registering this socket with no app attached (the
   // previous one died between NICK/USER and 001): nothing ever ran the
   // post-registration steps, so the restore runs them.
@@ -5493,6 +5498,11 @@ export class IrcConnection {
         this.logNet(
           `Re-attached to the engine-held connection as ${info.nick ?? '?'}${away}${how}`,
         );
+        this.reattachLog = reattachStarted(
+          this.network.id,
+          info.detachedForMs ?? 0,
+          info.replay ?? 0,
+        );
         break;
       }
       case 'restored': {
@@ -5543,6 +5553,7 @@ export class IrcConnection {
         const g = info.gap;
         if (!g) break;
         const dropped = g.lastDroppedSeq - g.firstDroppedSeq + 1;
+        if (this.reattachLog) this.reattachLog.dropped += dropped;
         this.publish({
           type: 'notice',
           target: this.serverTarget(),
@@ -5555,6 +5566,8 @@ export class IrcConnection {
       case 'live':
         this.catchingUp = false;
         this.catchUpMaxId = null;
+        if (this.reattachLog) reattachLive(this.reattachLog, info.backlog ?? 0);
+        this.reattachLog = null;
         // Only now is the picture complete: the replay said which channels the
         // socket is in, and the backlog said why (a KICK from one of them is a
         // backlog line, and it is what lowers that channel's autojoin).
@@ -5580,6 +5593,8 @@ export class IrcConnection {
     this.restoring = false;
     this.catchingUp = false;
     this.catchUpMaxId = null;
+    if (this.reattachLog) reattachAbandoned(this.reattachLog);
+    this.reattachLog = null;
     this.restoreUnattended = false;
     this.restoredCallbacks = [];
     this.restoreQueue = [];
