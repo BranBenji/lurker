@@ -17,17 +17,20 @@
 // and silently drop the rest (dcc.h:102, dcc.c:625-626) — loses data with no
 // signal, so it is deliberately NOT copied.
 //
-// ⚠ The cap counts UTF-16 code units, not bytes: the socket is in utf8 mode, so
+// ⚠ The inbound cap counts UTF-16 code units, not bytes: the socket is in utf8 mode, so
 // `data` arrives already decoded (which is what we want — Node reassembles a
 // multi-byte sequence split across two TCP segments, and substitutes U+FFFD for
 // invalid input rather than dropping the line). One astral character therefore
 // counts as two. The cap is a memory bound, not a protocol limit, so that's fine
 // — it just must not be called "bytes". A forced split never lands inside one
 // (#1038): the cut steps back to the last whole character, which opens the next
-// line.
+// line. Outbound is the other way round: what we send is capped in bytes,
+// because that's what the peer's own split counts (see send()).
 
 import net from 'net';
+import { ACTION_WRAPPER_BYTES } from '../../shared/wireBudget.js';
 import { capText } from '../utils/capText.js';
+import { capUtf8 } from '../utils/capUtf8.js';
 
 // Chosen to match irssi's MAX_CHARS_IN_LINE (line-split.c:32).
 const MAX_LINE_CHARS = 64 * 1024;
@@ -105,16 +108,25 @@ export class DccChat {
   }
 
   /** Send one line of chat text (CRLF is appended; embedded CR/LF is stripped so
-   *  a single message can't inject extra lines). Returns false if the session is
-   *  already closed. */
-  send(text: string): boolean {
-    if (this.closed || !this.socket) return false;
-    const clean = capText(text.replace(/[\r\n]/g, ' '), MAX_LINE_CHARS);
+   *  a single message can't inject extra lines). `action` frames it as a bare
+   *  `\x01ACTION text\x01`. Returns the text as sent — cleaned and capped, for the
+   *  caller to echo — or null if the session is already closed. */
+  send(text: string, opts: { action?: boolean } = {}): string | null {
+    if (this.closed || !this.socket) return null;
+    // Capped before framing (#1051), so a /me at the cap keeps its closing \x01
+    // and still reads as an action. In BYTES, the unit irssi splits by, with
+    // room for the CRLF: irssi force-splits a buffer that reaches the cap with
+    // no LF in it, so a line whose CR arrives without its LF would otherwise
+    // come out as the line plus a stray empty one. Our own onData splits past
+    // the cap in UTF-16 units, which a line this size never reaches either.
+    const room = MAX_LINE_CHARS - 2 - (opts.action ? ACTION_WRAPPER_BYTES : 0);
+    const clean = capUtf8(text.replace(/[\r\n]/g, ' '), room);
+    const line = opts.action ? `\u0001ACTION ${clean}\u0001` : clean;
     try {
-      this.socket.write(clean + '\r\n');
-      return true;
+      this.socket.write(line + '\r\n');
+      return clean;
     } catch {
-      return false;
+      return null;
     }
   }
 
