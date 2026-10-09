@@ -102,7 +102,9 @@ export function resolveDccDestination(username: string, rawFilename: string): st
   }
   // Checked on the name we actually return, de-collided or not.
   const rel = path.relative(userDir, candidate);
-  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+  // An escape is '..' as a whole path segment; a name that merely starts with
+  // two dots ('..mkv', '...') is an ordinary file in the user dir.
+  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
     throw new Error('refusing unsafe DCC destination path');
   }
   return candidate;
