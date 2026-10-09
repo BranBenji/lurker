@@ -12,9 +12,9 @@ import { Pet, type PetHost, type Rect, type Stage, type StageWindow } from './pe
 /**
  * The viewport as the screen, its bottom edge the floor, and every element
  * carrying `data-sheep-surface` as a window the sheep can fall onto and walk
- * along the top edge of: the status bar, the icon bar under the buffer list,
- * the message list, the member list, the Lurker buffer button, open dialogs.
- * Surfaces come back in stacking order: by the z-index of the nearest
+ * along the top edge of. Nothing in the app carries one today (the sheep walk
+ * the viewport floor in front of everything); the support stays, tested and
+ * dormant, in case platforms return. Surfaces come back in stacking order: by the z-index of the nearest
  * ancestor that sets one, then document order. An element carrying
  * `data-sheep-scrim` (a modal whose backdrop obscures the app) hides every
  * surface stacked below it, so while such a dialog is up only its card and

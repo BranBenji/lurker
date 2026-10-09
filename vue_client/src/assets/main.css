@@ -68,7 +68,7 @@
        base    in-flow lift (sticky headers, bg layers)
        raised  lifts above sibling content within a component
        modal   modal/overlay shells (AppModal, QuickSwitcher)
-       sheep   the screen mate (SheepOverlay) — walks on dialogs, under toasts and menus
+       sheep   the screen mate (SheepOverlay) — in front of dialogs, under toasts and menus
        toast   toast stack — sits above modals so notifications stay visible
        menu    context menus
        popover input autocomplete (NickPicker) — top of the stack */

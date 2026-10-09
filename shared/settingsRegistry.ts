@@ -1982,7 +1982,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     category: 'sheep',
     group: 'flock',
     type: 'string-list',
-    // One entry per sheep, "<id>:<color>:<name>", in spawn order. Shooing a
+    // One entry per sheep, "<id>:<color>", in spawn order (a legacy third
+    // ":<name>" field still parses and is ignored). Shooing a
     // sheep removes its entry; every client reconciles its own sheep to the list.
     default: [],
     description: 'The sheep walking around, one "<id>:<color>" entry each, in spawn order.',

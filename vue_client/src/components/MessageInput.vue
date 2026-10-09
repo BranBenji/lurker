@@ -2998,11 +2998,6 @@ function dccListRow(t: DccTransfer): string[] {
   return [`#${t.id}`, t.filename, t.state, t.peer_nick, pct];
 }
 
-// /theme — theme presets over the themes store (slash-command-first; the
-// Themes section in Settings > Appearance is a GUI over the same operations).
-// User-wide like /set, so it runs from anywhere including the system buffer.
-// REST-backed + async → fire-and-forget from handleCommand, reports when
-// settled.
 function runSheep(argLine: string, networkId: number | null, target: string): void {
   // The undocumented /sheep (a port of the 1995 eSheep screen mate). The
   // flock is a synced setting (stores/sheep.ts), so every verb that changes
@@ -3087,6 +3082,11 @@ function runSheep(argLine: string, networkId: number | null, target: string): vo
   }
 }
 
+// /theme — theme presets over the themes store (slash-command-first; the
+// Themes section in Settings > Appearance is a GUI over the same operations).
+// User-wide like /set, so it runs from anywhere including the system buffer.
+// REST-backed + async → fire-and-forget from handleCommand, reports when
+// settled.
 async function runTheme(argLine: string, networkId: number | null, target: string): Promise<void> {
   const cmd = parseThemeCommand(argLine);
   const reply = (msg: string) => localInfo(networkId, target, msg);

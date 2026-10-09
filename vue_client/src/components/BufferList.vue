@@ -77,7 +77,6 @@
       </div>
     </div>
 
-    <!-- A sheep surface: standing on this edge puts the sheep inside the LURKER row above. -->
     <div class="buffer-list-scroll">
       <nav
         ref="scroller"
