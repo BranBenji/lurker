@@ -13,6 +13,7 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useConfigStore } from '../stores/config.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
 import { primePreviews, resetLinkPreviewCache } from '../composables/useLinkPreview.js';
 import { loadEmoji } from '../utils/emojiShortcodes.js';
 import * as apiModule from '../api.js';
@@ -86,6 +87,67 @@ describe('MessageList — incremental text parsing', () => {
     expect(wrapper.findAll('[data-msg-id]')).toHaveLength(500);
     expect(wrapper.find('[data-msg-id="1"]').exists()).toBe(false);
   }, 15_000);
+
+  it('reuses relay and reply bodies while refreshing changed display rows', async () => {
+    const relays = useRelayBotsStore();
+    relays.applyUpdate(1, 'bridge', true, '');
+    const b = mountMessages([
+      { ...line(1, '[irc] <alice> hello'), nick: 'bridge' },
+      {
+        ...line(2, 'alice: answer'),
+        replyTo: {
+          msgid: 'parent',
+          parent: {
+            id: 99,
+            nick: 'alice',
+            type: 'message',
+            text: 'question',
+            userhost: null,
+            self: false,
+          },
+        },
+      },
+    ] as Parameters<typeof mountMessages>[0]);
+    await nextTick();
+    expect(wrapper.find('[data-msg-id="1"] .body').text()).toBe('[irc]hello');
+    expect(segments(2)).toEqual([{ text: 'answer' }]);
+    const relaySegments = segments(1);
+    const replySegments = segments(2);
+    const split = vi.spyOn(tokens, 'splitTextByTokens');
+    for (let id = 3; id <= 5; id++) {
+      useBuffersStore().pushMessage(line(id, 'new body'));
+      await nextTick();
+    }
+    expect(split).toHaveBeenCalledTimes(3);
+    expect(segments(1)).toBe(relaySegments);
+    expect(segments(2)).toBe(replySegments);
+
+    b.messages[0].text = '[matrix] <alice> hello';
+    await nextTick();
+    expect(wrapper.find('[data-msg-id="1"] .body').text()).toBe('[matrix]hello');
+    const oldTime = wrapper.find('[data-msg-id="1"] .time').text();
+    b.messages[0].time = '2026-10-08T18:45:00.000Z';
+    await nextTick();
+    expect(wrapper.find('[data-msg-id="1"] .time').text()).not.toBe(oldTime);
+    b.messages[0].text = '[matrix] <carol> edited';
+    await nextTick();
+    expect(wrapper.find('[data-msg-id="1"]').text()).toContain('carol');
+    expect(wrapper.find('[data-msg-id="1"]').text()).toContain('matrix');
+    expect(wrapper.find('[data-msg-id="1"] .body').text()).toBe('[matrix]edited');
+    b.messages[1].replyTo = { msgid: 'parent', parent: null };
+    await nextTick();
+    expect(
+      segments(2)
+        .map((segment) => segment.text)
+        .join(''),
+    ).toBe('alice: answer');
+    relays.applyUpdate(1, 'bridge', false, '');
+    await nextTick();
+    expect(wrapper.find('[data-msg-id="1"] .body').text()).toBe('[matrix] <carol> edited');
+    relays.applyUpdate(1, 'bridge', true, '');
+    await nextTick();
+    expect(wrapper.find('[data-msg-id="1"] .body').text()).toBe('[matrix]edited');
+  });
 
   it('reparses edited text and action authors, even without replacing the message', async () => {
     const b = mountMessages([line(1), { ...line(2, 'waves'), type: 'action' }]);

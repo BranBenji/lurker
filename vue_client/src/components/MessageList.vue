@@ -1117,6 +1117,10 @@ let nowTimer: ReturnType<typeof setInterval> | null = null;
 // insert time across only these types.
 const STRIPED_TYPES = new Set(['message', 'action', 'notice']);
 
+// Keep transformed rows stable across appends, so their segment cache and child
+// props can be reused. Weak keys follow the lifetime of the stored message.
+const displayByMessage = new WeakMap<ChatMessage, ChatMessage>();
+
 // One-pass walk over messages to (a) decide which rows the smart filter
 // should hide and (b) tag rows with alt-row striping.
 const renderRows = computed((): RenderRow[] => {
@@ -1409,6 +1413,23 @@ const renderRows = computed((): RenderRow[] => {
         (prev.nick ?? '').toLowerCase() === (mDisplay.nick ?? '').toLowerCase() &&
         deltaMs >= 0 &&
         deltaMs <= collapseAuthorsWindowMs.value;
+    }
+    if (mDisplay !== m) {
+      const previous = displayByMessage.get(m);
+      // Compare every copied field, not just the transformed body: edits to
+      // metadata (time, reply context, reactions, etc.) must also reach the row.
+      const keys = Object.keys(mDisplay) as (keyof ChatMessage)[];
+      if (
+        previous &&
+        Object.keys(previous).length === keys.length &&
+        keys.every((key) => Object.hasOwn(previous, key) && previous[key] === mDisplay[key])
+      ) {
+        mDisplay = previous;
+      } else {
+        displayByMessage.set(m, mDisplay);
+      }
+    } else {
+      displayByMessage.delete(m);
     }
     out.push({
       m: mDisplay,
