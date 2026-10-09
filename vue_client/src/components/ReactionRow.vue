@@ -22,11 +22,11 @@
       type="button"
       class="chip"
       :class="{ mine: g.mine }"
-      :disabled="!canReact"
-      :title="`${g.nicks.join(', ')} reacted ${g.value}`"
+      :disabled="!chipWorks(g)"
+      :title="chipTitle(g)"
       :aria-label="`${g.value}, ${g.nicks.length} (${g.nicks.join(', ')})`"
       :aria-pressed="g.mine"
-      @click.stop="onChipClick(g.value)"
+      @click.stop="onChipClick(g)"
       @contextmenu.stop
     >
       <span class="value" dir="auto">{{ g.value }}</span
@@ -84,15 +84,25 @@ watch(
     emit('measured');
   },
 );
-const canReact = computed(() => {
-  if (!props.interactive) return false;
-  const state = networks.states[props.message.networkId];
-  return state?.state === 'connected' && !!state.canReact;
-});
+// A chip of ours takes the reaction back, which the network may not allow even
+// where it takes a new one (+draft/unreact denied, #1101); anyone else's adds
+// ours. The store decides (canToggle).
+function chipWorks(g: { value: string }): boolean {
+  if (!props.interactive || props.message.id == null) return false;
+  return reactions.canToggle(props.message.id, g.value, props.message.networkId);
+}
 
-function onChipClick(value: string) {
-  if (!canReact.value || props.message.id == null) return;
-  reactions.toggle(props.message.id, value);
+function chipTitle(g: { value: string; nicks: string[]; mine: boolean }): string {
+  const who = `${g.nicks.join(', ')} reacted ${g.value}`;
+  // Only where the rest of the row still works: a down network greys every chip.
+  return g.mine && !chipWorks(g) && networks.states[props.message.networkId]?.state === 'connected'
+    ? `${who} — this network can't take a reaction back`
+    : who;
+}
+
+function onChipClick(g: { value: string }) {
+  if (!chipWorks(g) || props.message.id == null) return;
+  reactions.toggle(props.message.id, g.value, props.message.networkId);
 }
 </script>
 

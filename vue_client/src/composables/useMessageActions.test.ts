@@ -115,6 +115,30 @@ describe('useMessageActions', () => {
       expect(hasReact(line)).toBe(false);
     });
 
+    // #1101: reply and react are separate answers. A network without echo-message
+    // (or whose CLIENTTAGDENY allows only the reply tag) takes a reply but no
+    // reaction; one from an older server carries canReact alone, which then
+    // stands for both.
+    it('gates reply on canReply and react on canReact', () => {
+      const mine = other({ self: true, msgid: 'm1', type: 'message', target: '#chan' });
+      const keys = (m: MessageLike) =>
+        useMessageActions()
+          .buildActions(m)
+          .map((a) => a.key);
+      useNetworksStore().states = {
+        1: { state: 'connected', canReact: false, canReply: true },
+      } as never;
+      expect(keys(mine)).toContain('reply');
+      expect(keys(mine)).not.toContain('react');
+      useNetworksStore().states = {
+        1: { state: 'connected', canReact: true, canReply: false },
+      } as never;
+      expect(keys(mine)).not.toContain('reply');
+      expect(keys(mine)).toContain('react');
+      useNetworksStore().states = { 1: { state: 'connected', canReact: true } } as never;
+      expect(keys(mine)).toEqual(expect.arrayContaining(['reply', 'react']));
+    });
+
     it('drops copy when there is no text', () => {
       const actions = useMessageActions().buildActions(other({ text: '' }));
       expect(actions.map((a) => a.key)).toEqual(['reply', 'save', 'ignore']);

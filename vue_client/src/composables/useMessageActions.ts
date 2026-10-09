@@ -4,7 +4,7 @@
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useReactionsStore } from '../stores/reactions.js';
-import { useNetworksStore } from '../stores/networks.js';
+import { tagSupport, useNetworksStore } from '../stores/networks.js';
 import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useContextMenu } from './useContextMenu.js';
@@ -58,14 +58,19 @@ export function privateTarget(target: string | null | undefined): boolean {
   return !!target && !isChannelTarget(target) && !target.startsWith(':');
 }
 
-// Whether the network is up and can carry reply tags right now. canReact is the
-// nearest signal the client has: the server's canSendReactions needs a reply tag
-// allowed (plus echo-message and the react tags — a network that denies only
-// those loses Reply on your own lines, never the reverse).
+// Whether the network is up and can carry reply tags right now (canReply,
+// #1101). Independent of reactions: irc.so takes a reply tag but not
+// +draft/unreact, and a network without echo-message takes replies but no
+// reactions at all.
 export function replyTagsGoOut(networkId: number | null | undefined): boolean {
   if (networkId == null) return false;
-  const state = useNetworksStore().states[networkId];
-  return state?.state === 'connected' && !!state.canReact;
+  return tagSupport(useNetworksStore().states[networkId]).reply;
+}
+
+// Whether the network is up and can carry a reaction right now (canReact).
+export function reactionsGoOut(networkId: number | null | undefined): boolean {
+  if (networkId == null) return false;
+  return tagSupport(useNetworksStore().states[networkId]).react;
 }
 
 export interface MessageContext {
@@ -189,7 +194,11 @@ export function useMessageActions(): MessageActionsAPI {
     // canSendReactions). Not a notice — the server's reactionSendTarget says
     // why. It re-checks all of this; the gate just keeps a button off lines
     // where it could only do nothing.
-    if (replyable(message) && message.type !== 'notice' && tagsGoOut) {
+    if (
+      replyable(message) &&
+      message.type !== 'notice' &&
+      reactionsGoOut(message.networkId ?? message.network_id)
+    ) {
       actions.push({ key: 'react', label: 'React', icon: 'fa-solid fa-heart-circle-plus' });
     }
 

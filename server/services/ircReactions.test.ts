@@ -29,6 +29,7 @@ type Ev = Record<string, unknown>;
 let ircd: FakeIrcd;
 let denyIrcd: FakeIrcd;
 let draftDenyIrcd: FakeIrcd;
+let unrealIrcd: FakeIrcd;
 let userId: number;
 let seq = 0;
 
@@ -38,6 +39,13 @@ beforeAll(async () => {
   denyIrcd = await FakeIrcd.start({ isupport: ['CLIENTTAGDENY=*'] });
   // A network that allows the ratified reply tag but forbids the draft name.
   draftDenyIrcd = await FakeIrcd.start({ isupport: ['CLIENTTAGDENY=draft/reply'] });
+  // irc.so's UnrealIRCd, verbatim (#1101): react and both reply names
+  // allowed, draft/unreact not.
+  unrealIrcd = await FakeIrcd.start({
+    isupport: [
+      'CLIENTTAGDENY=*,-draft/react,-draft/typing,-typing,-draft/channel-context,-draft/reply,-reply',
+    ],
+  });
   userId = createUser('reactions-int').id;
 });
 
@@ -45,6 +53,7 @@ afterAll(async () => {
   await ircd.close();
   await denyIrcd.close();
   await draftDenyIrcd.close();
+  await unrealIrcd.close();
 });
 
 function makeNetwork(nick: string, port = ircd.port): Network {
@@ -473,7 +482,13 @@ describe('sending reactions', () => {
       expect(support().at(-1)).toMatchObject({ canReact: true });
       ircd.sendRaw('capdel', ':irc.fake CAP capdel DEL :echo-message');
       await until(() => support().length === 2, 5000, 'react-support after DEL');
-      expect(support().at(-1)).toMatchObject({ canReact: false });
+      // A reply needs no echo (our line is stored when we send it): it stays.
+      expect(support().at(-1)).toMatchObject({
+        canReact: false,
+        canAddReaction: false,
+        canRemoveReaction: false,
+        canReply: true,
+      });
       expect(rig.conn.canSendReactions()).toBe(false);
       ircd.sendRaw('capdel', ':irc.fake CAP capdel ACK :echo-message');
       await until(() => support().length === 3, 5000, 'react-support after ACK');
@@ -501,10 +516,50 @@ describe('sending reactions', () => {
   it('is off on a network whose CLIENTTAGDENY forbids the tags', async () => {
     const rig = await connect('deny1', '#d1', denyIrcd.port);
     try {
-      expect(rig.events.find((e) => e.type === 'react-support')).toMatchObject({ canReact: false });
+      expect(rig.events.find((e) => e.type === 'react-support')).toEqual(
+        expect.objectContaining({
+          canReact: false,
+          canAddReaction: false,
+          canRemoveReaction: false,
+          canReply: false,
+        }),
+      );
       expect(rig.conn.canSendReactions()).toBe(false);
       expect(rig.conn.sendReaction('#d1', 'm1', '👍', false)).toBe(false);
       expect(denyIrcd.client('deny1')!.sent.some((l) => l.includes('TAGMSG'))).toBe(false);
+    } finally {
+      rig.conn.dispose();
+    }
+  });
+
+  // #1101: a network that allows +draft/react but not +draft/unreact still
+  // takes a reaction, and a reply; only taking a reaction back is refused.
+  it('reacts and replies where only draft/unreact is denied, and refuses the unreact', async () => {
+    const rig = await connect('unreal1', '#u1', unrealIrcd.port);
+    try {
+      // canReact keeps its old meaning (both directions), so a client that
+      // predates the split offers nothing here rather than a dead take-back.
+      const support = {
+        canReact: false,
+        canAddReaction: true,
+        canRemoveReaction: false,
+        canReply: true,
+      };
+      expect(rig.events.find((e) => e.type === 'react-support')).toEqual(
+        expect.objectContaining(support),
+      );
+      expect(rig.conn.snapshot()).toMatchObject(support);
+      expect(rig.conn.sendReaction('#u1', 'm1', '👍', true)).toBe(false);
+      expect(rig.conn.sendReaction('#u1', 'm1', '👍', false)).toBe(true);
+      await until(
+        () => unrealIrcd.client('unreal1')!.sent.some((l) => l.includes('TAGMSG #u1')),
+        5000,
+        'reaction sent',
+      );
+      const tagmsgs = unrealIrcd.client('unreal1')!.sent.filter((l) => l.includes('TAGMSG #u1'));
+      expect(tagmsgs).toHaveLength(1);
+      expect(tagmsgs[0]).toContain('+draft/react=👍');
+      expect(tagmsgs[0]).not.toContain('unreact');
     } finally {
       rig.conn.dispose();
     }
