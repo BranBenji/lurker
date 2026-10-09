@@ -62,6 +62,8 @@ export interface EnginePhaseInfo {
   unattended?: boolean;
   swallowed?: string[];
   gap?: Gap;
+  // On `live`: the backlog lines delivered since `attached` (#1069).
+  backlog?: number;
 }
 
 export interface EngineHooks {
@@ -129,6 +131,9 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
   private readonly hooks: EngineHooks | undefined;
   private pending: EngineToApp[] = [];
   private swallowed: string[] = [];
+  // Lines delivered since `attached`, until `live` reports them. Null outside
+  // a catch-up.
+  private backlog: number | null = null;
   private replyTimer: ReturnType<typeof setTimeout> | null = null;
   // Acks are coalesced per synchronous batch (one microtask), so a chunk of a
   // hundred lines is one frame, not a hundred.
@@ -321,7 +326,11 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
         return;
       case 'live':
         if (this.restoring) this.pending.push(frame);
-        else this.hooks?.onPhase?.('live', {});
+        else {
+          const backlog = this.backlog ?? 0;
+          this.backlog = null;
+          this.hooks?.onPhase?.('live', { backlog });
+        }
         return;
       case 'detached':
         this.lostToPeer = true;
@@ -347,6 +356,7 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
     this.connected = true;
     this.restoring = true;
     this.swallowed = [];
+    this.backlog = 0;
     this.hooks?.onPhase?.('attached', {
       detachedForMs: frame.detachedForMs,
       nick: frame.nick,
@@ -383,6 +393,7 @@ export class EngineTransport extends EventEmitter implements FrameHandler {
   }
 
   private deliver(frame: Extract<EngineToApp, { op: 'line' }>): void {
+    if (this.backlog !== null) this.backlog++;
     this.emit('line', frame.line);
     // By the time emit() returns, irc-framework and every ircConnection handler
     // have run — persistence included, better-sqlite3 being synchronous — so

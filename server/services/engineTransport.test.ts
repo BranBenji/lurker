@@ -81,13 +81,16 @@ interface Timeline {
   phases: Array<{ phase: EnginePhase; info: EnginePhaseInfo }>;
   closes: unknown[];
   transport: EngineTransport | null;
+  // Lines from the engine between `restored` and `live`: the backlog `live`
+  // reports a count of.
+  catchUpLines: number;
 }
 
 let counter = 0;
 
 // A Client through the engine, with everything it sees written to a timeline.
 function makeClient(link: EngineLink, id: string, nick: string, opts: { timeoutMs?: number } = {}) {
-  const t: Timeline = { events: [], phases: [], closes: [], transport: null };
+  const t: Timeline = { events: [], phases: [], closes: [], transport: null, catchUpLines: 0 };
   const client = new IRC.Client();
   clients.push(client);
   client.requestCap('message-tags');
@@ -97,6 +100,10 @@ function makeClient(link: EngineLink, id: string, nick: string, opts: { timeoutM
   client.on('nick', (e) => t.events.push(`nick:${e.nick}>${e.new_nick}`));
   client.on('privmsg', (e) => t.events.push(`privmsg:${e.target}:${e.message}`));
   client.on('topic', (e) => t.events.push(`topic:${e.channel}:${e.topic}`));
+  client.on('raw', (e: { from_server: boolean }) => {
+    const last = t.phases.at(-1)?.phase;
+    if (e.from_server && (last === 'restored' || last === 'gap')) t.catchUpLines++;
+  });
   client.on('socket close', (err) => {
     t.events.push(`socket close:${engineCloseCode(err) ?? (err ? 'error' : 'clean')}`);
     t.closes.push(err);
@@ -257,6 +264,11 @@ describe('EngineTransport', () => {
     expect(idx('phase:restored')).toBeLessThan(idx(backlog[0]));
     expect(idx(backlog.at(-1)!)).toBeLessThan(idx('phase:live'));
     expect(ev.filter((e) => e === 'phase:dialing')).toHaveLength(0);
+    // `live` says how many lines that was (#1069) — at least the four, and
+    // anything else the engine held, counted the same way.
+    const live = b.t.phases.find((p) => p.phase === 'live')!;
+    expect(live.info.backlog).toBeGreaterThanOrEqual(4);
+    expect(live.info.backlog).toBe(b.t.catchUpLines);
 
     // The network saw one registration and, since the kill, nothing but the
     // NAMES/MODE the new Client asked for on its synthesised JOIN — no NICK,
@@ -358,6 +370,11 @@ describe('EngineTransport', () => {
     expect(ev.indexOf('phase:restored')).toBeLessThan(ev.indexOf('phase:gap'));
     expect(ev.indexOf('phase:gap')).toBeLessThan(ev.findIndex((e) => e.startsWith('privmsg:')));
     expect(ev.filter((e) => e.startsWith('privmsg:')).at(-1)).toMatch(/line 99 /);
+    // The backlog `live` reports is what survived the gap, not the 100 sent.
+    const live = b.t.phases.find((p) => p.phase === 'live')!;
+    expect(live.info.backlog).toBe(b.t.catchUpLines);
+    expect(live.info.backlog).toBeGreaterThan(0);
+    expect(live.info.backlog).toBeLessThan(100);
   }, 20000);
 
   it('fails with UNREACHABLE when no engine answers, and REFUSED on a bad secret', async () => {
