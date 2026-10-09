@@ -5,6 +5,7 @@ import { defineStore } from 'pinia';
 import { socketSend } from '../composables/useSocket.js';
 import { useHighlightsStore } from './highlights.js';
 import { useBuffersStore } from './buffers.js';
+import { tagSupport, useNetworksStore } from './networks.js';
 import type { MessageReaction } from '../../../shared/reactions.js';
 
 // IRCv3 reactions, two tracks — the same split as bookmarks:
@@ -171,13 +172,32 @@ export const useReactionsStore = defineStore('reactions', {
       }
     },
 
+    // Whether toggling `value` on a line would do anything on its network right
+    // now: taking ours back needs +draft/unreact, which a network can deny while
+    // still taking a new reaction (irc.so, #1101). Every chip, picker button
+    // and typed submit asks this, so none offers what toggle() would refuse.
+    canToggle(messageId: number | string, value: string, networkId: number | null | undefined) {
+      if (networkId == null) return false;
+      const support = tagSupport(useNetworksStore().states[networkId]);
+      return this.isMine(messageId, value) ? support.unreact : support.react;
+    },
+
+    isMine(messageId: number | string, value: string) {
+      const id = Number(messageId);
+      return (this.byMessage.get(id) ?? []).some((r) => r.self && r.value === value);
+    },
+
     // React with `value` on a line, or take ours back if it's already there.
     // Never optimistic: the server's echo is what lights the reaction up.
-    toggle(messageId: number | string, value: string) {
+    toggle(messageId: number | string, value: string, networkId: number | null | undefined) {
       const id = Number(messageId);
-      if (!Number.isFinite(id)) return false;
-      const mine = (this.byMessage.get(id) ?? []).some((r) => r.self && r.value === value);
-      return socketSend({ type: 'react', messageId: id, value, remove: mine });
+      if (!Number.isFinite(id) || !this.canToggle(id, value, networkId)) return false;
+      return socketSend({
+        type: 'react',
+        messageId: id,
+        value,
+        remove: this.isMine(id, value),
+      });
     },
 
     openPicker(message: {

@@ -158,6 +158,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount, onMounted, nextTick } from 'vue';
 import {
+  tagSupport,
   useNetworksStore,
   type ClientCertDigest,
   type ClientCertInfo,
@@ -2754,8 +2755,7 @@ function runReact(argLine: string, networkId: number, target: string, line: stri
     localInfo(networkId, target, `a reaction can be at most ${MAX_REACTION_GRAPHEMES} characters`);
     return true;
   }
-  const state = networks.states[networkId];
-  if (state?.state !== 'connected' || !state.canReact) {
+  if (!tagSupport(networks.states[networkId]).react) {
     localInfo(networkId, target, "this network can't carry reactions right now");
     return true;
   }

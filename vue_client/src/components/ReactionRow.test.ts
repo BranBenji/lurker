@@ -9,6 +9,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
+import { nextTick } from 'vue';
 import { createPinia, setActivePinia } from 'pinia';
 
 vi.mock('../composables/useSocket.js', () => ({
@@ -99,6 +100,30 @@ describe('ReactionRow', () => {
     expect(wrapper.find('.chip.add').exists()).toBe(false);
     await wrapper.find('.chip').trigger('click');
     expect(socketSend).not.toHaveBeenCalled();
+  });
+
+  // #1101: irc.so takes +draft/react but denies +draft/unreact. Our own chip
+  // would take the reaction back, so it stays put; anyone else's still adds ours.
+  it('keeps our own chip still where the network denies unreact', async () => {
+    const wrapper = withReactions([r('me', 'lol', true), r('bob', '🎉')]);
+    useNetworksStore().states[NET] = {
+      ...useNetworksStore().states[NET],
+      canAddReaction: true,
+      canRemoveReaction: false,
+    };
+    await nextTick();
+    const [lol, party] = wrapper.findAll('.chip:not(.add)');
+    expect(lol.attributes('disabled')).toBeDefined();
+    expect(party.attributes('disabled')).toBeUndefined();
+    await lol.trigger('click');
+    expect(socketSend).not.toHaveBeenCalled();
+    await party.trigger('click');
+    expect(socketSend).toHaveBeenLastCalledWith({
+      type: 'react',
+      messageId: 10,
+      value: '🎉',
+      remove: false,
+    });
   });
 
   it('opens the picker from the + chip', async () => {

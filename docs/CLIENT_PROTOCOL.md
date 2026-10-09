@@ -386,7 +386,9 @@ One per network inside `kind:'snapshot'` (`ircConnection.snapshot()`,
   multilineLimits,
   modeSpec: { list, always, onSet, flags, prefix: [ { mode, symbol } ],
               maxModes, topicLen },
-  canReact,                           // reactions can be sent here — see below
+  canReact,                           // legacy: both reaction directions — see below
+  canAddReaction, canRemoveReaction,  // reacting / taking yours back
+  canReply,                           // a reply carries its tag
   userhostBytes,                      // for estimating where a long message splits — see below
   away: { active, since, message, autoSet, backAt } | null,
   channels: [ { name, topic, topicSetBy, topicSetAt,
@@ -427,12 +429,27 @@ saying so. Treat null as "unknown", not as the RFC defaults. It arrives as a
 `mode-spec` frame once the burst ends (usually just after the snapshot, since
 005 follows 001) and again whenever a later 005 changes it.
 
-`canReact` is whether a `react` verb (§6) can go out on this network: it has
-`message-tags` and `echo-message`, and its `CLIENTTAGDENY` doesn't forbid
-`draft/react`, `draft/unreact` or the reply tag. Same timing as `modeSpec`:
-`false` until the burst ends (CLIENTTAGDENY rides a 005), then kept current by
-`react-support` frames (§7.2). Absent on a disconnected network — treat as
-`false`, and offer reacting only while `state` is `'connected'`.
+`canAddReaction` is whether a `react` verb (§6) can go out on this network: it
+has `message-tags` and `echo-message`, and its `CLIENTTAGDENY` doesn't forbid
+`draft/react` or both reply tag names. `canRemoveReaction` is whether one of
+yours can be taken back (`remove: true`): all of that, and `draft/unreact` not
+forbidden. A network can allow the first and deny the second — irc.so's
+UnrealIRCd does — so offer adding a reaction on `canAddReaction` and taking
+yours back only on `canRemoveReaction`; the server refuses a removal there.
+`canReply` is whether a line you send with `replyTo` (§6) carries its reply
+tag: `message-tags`, and `CLIENTTAGDENY` allowing `reply` or `draft/reply`. It
+needs no `echo-message`, so it can be `true` where reactions aren't. Where it's
+`false` a reply still goes out, as a plain line.
+
+`canReact` is the original field, kept for clients that predate the split: it
+is `canRemoveReaction` — both directions work — so such a client never offers
+a take-back the network refuses. A server that sends `canReact` without the
+other three meant it to cover all of them.
+
+All four share `modeSpec`'s timing: `false` until the burst ends (CLIENTTAGDENY
+rides a 005), then kept current by `react-support` frames (§7.2). Absent on a
+disconnected network — treat as `false`, and offer them only while `state` is
+`'connected'`.
 
 `userhostBytes` is the byte length of the `user@host` the network puts in front
 of your lines. It's the real one once a line of yours has shown it (your JOIN,
@@ -674,14 +691,14 @@ and rename-proof.
 
 ### Sending ⏸
 
-| `type`   | Fields                                             | Notes                                                                                                                                                                                                                                                                                                                                                                              |
-| -------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `send`   | `networkId, target, text, clientId?, replyTo?`     | PRIVMSG. Ack via `send-result` iff `clientId` present. `replyTo` is the `id` of a stored line in the same buffer this answers: the first line out carries `+reply`/`+draft/reply` with its msgid. Ignored — the text still goes, as a plain line — when that line has no msgid, is in another buffer, the network can't carry the tags, or the channel is E2E                      |
-| `action` | `networkId, target, text, clientId?, replyTo?`     | CTCP ACTION (`/me`). `replyTo` as for `send`                                                                                                                                                                                                                                                                                                                                       |
-| `notice` | `networkId, target, text, clientId?`               | NOTICE                                                                                                                                                                                                                                                                                                                                                                             |
-| `raw`    | `networkId, line`                                  | Raw IRC line — the escape hatch for `/mode`, `/kick`, `/whois`, unknown commands                                                                                                                                                                                                                                                                                                   |
-| `ctcp`   | `networkId, target, ctcpType, args, issuingTarget` | CTCP request (`/ping`, `/version` at a user)                                                                                                                                                                                                                                                                                                                                       |
-| `react`  | `messageId, value, remove?`                        | IRCv3 reaction (`+draft/react`, or `+draft/unreact` with `remove: true`) on one of your stored lines. Only a `message`/`action` with a `msgid`, in a channel or DM, on a network whose `canReact` is true; never on an E2E channel. Nothing is echoed here — the network's echo arrives as a `reaction` frame, and a refusal is silence, so never render a reaction optimistically |
+| `type`   | Fields                                             | Notes                                                                                                                                                                                                                                                                                                                                                                                          |
+| -------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `send`   | `networkId, target, text, clientId?, replyTo?`     | PRIVMSG. Ack via `send-result` iff `clientId` present. `replyTo` is the `id` of a stored line in the same buffer this answers: the first line out carries `+reply`/`+draft/reply` with its msgid. Ignored — the text still goes, as a plain line — when that line has no msgid, is in another buffer, the network can't carry the tags, or the channel is E2E                                  |
+| `action` | `networkId, target, text, clientId?, replyTo?`     | CTCP ACTION (`/me`). `replyTo` as for `send`                                                                                                                                                                                                                                                                                                                                                   |
+| `notice` | `networkId, target, text, clientId?`               | NOTICE                                                                                                                                                                                                                                                                                                                                                                                         |
+| `raw`    | `networkId, line`                                  | Raw IRC line — the escape hatch for `/mode`, `/kick`, `/whois`, unknown commands                                                                                                                                                                                                                                                                                                               |
+| `ctcp`   | `networkId, target, ctcpType, args, issuingTarget` | CTCP request (`/ping`, `/version` at a user)                                                                                                                                                                                                                                                                                                                                                   |
+| `react`  | `messageId, value, remove?`                        | IRCv3 reaction (`+draft/react`, or `+draft/unreact` with `remove: true`) on one of your stored lines. Only a `message`/`action` with a `msgid`, in a channel or DM, per `canAddReaction` / `canRemoveReaction` (§5.1); never on an E2E channel. Nothing is echoed here — the network's echo arrives as a `reaction` frame, and a refusal is silence, so never render a reaction optimistically |
 
 **Ack contract:** include a client-generated `clientId` on `send`/`action`/
 `notice` and the server replies `{kind:'send-result', clientId, ok, error?}`.
@@ -820,7 +837,7 @@ Also the `type` of rows inside `backlog`/`history` `events[]`. **P** = persisted
 | `channel-topic`               | E   | `topic, setBy, setAt` — 332/331/333: set state, render nothing                |
 | `channel-modes`               | E   | `modes` (full letter string), `modeParams`, `createdAt` — never the key       |
 | `mode-spec`                   | E   | `modeSpec` — the network's channel-mode vocabulary changed (§5.1)             |
-| `react-support`               | E   | `canReact` — whether reactions can be sent here changed (§5.1)                |
+| `react-support`               | E   | the `canReact` family or `canReply` changed (§5.1)                            |
 | `line-budget`                 | E   | `userhostBytes` — the bytes ahead of your text on each line changed (§5.1)    |
 | `channel-joined`              | E   | **you** are in the channel — the materialization signal (§9.1)                |
 | `channel-parted`              | E   | you left, were removed, or lost the connection — mark parted, keep history    |

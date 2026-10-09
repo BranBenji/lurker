@@ -23,7 +23,8 @@
               type="button"
               class="standing-row"
               :class="{ mine: g.mine }"
-              :disabled="!canReact"
+              :disabled="!works(g.value)"
+              :title="g.mine && !works(g.value) ? NO_TAKE_BACK : undefined"
               @click="choose(g.value)"
             >
               <span class="value" dir="auto">{{ g.value }}</span>
@@ -42,7 +43,14 @@
               type="button"
               class="quick-btn"
               :class="{ mine: mineValues.has(item.value) }"
-              :title="mineValues.has(item.value) ? `Take back ${item.value}` : item.title"
+              :disabled="!works(item.value)"
+              :title="
+                !mineValues.has(item.value)
+                  ? item.title
+                  : works(item.value)
+                    ? `Take back ${item.value}`
+                    : NO_TAKE_BACK
+              "
               @click="choose(item.value)"
             >
               {{ item.value }}
@@ -61,12 +69,18 @@
             spellcheck="false"
           />
           <p v-if="tooLong" class="error inline">That's longer than a reaction can be.</p>
+          <p v-else-if="typedValue && !works(typedValue)" class="meta">{{ NO_TAKE_BACK }}</p>
         </template>
         <p v-else class="meta">This network can't carry reactions right now.</p>
       </div>
       <footer class="modal-footer">
         <button type="button" class="btn-secondary" @click="reactions.closePicker()">Cancel</button>
-        <button v-if="canReact" type="submit" class="btn-primary" :disabled="!typedValue">
+        <button
+          v-if="canReact"
+          type="submit"
+          class="btn-primary"
+          :disabled="!typedValue || !works(typedValue)"
+        >
           React
         </button>
       </footer>
@@ -78,7 +92,7 @@
 import { computed, onMounted, ref } from 'vue';
 import AppModal from './AppModal.vue';
 import { useReactionsStore } from '../stores/reactions.js';
-import { useNetworksStore } from '../stores/networks.js';
+import { tagSupport, useNetworksStore } from '../stores/networks.js';
 import { blockImeEnter, useImeSafeInput } from '../composables/useImeSafeInput.js';
 import { reactionFromInput, searchEmojiSync } from '../utils/emojiShortcodes.js';
 import { emojiFn, preloadEmoji } from '../composables/useEmoji.js';
@@ -95,12 +109,18 @@ const title = computed(() => (picker.value.nick ? `react to ${picker.value.nick}
 const groups = computed(() => reactions.groupsFor(picker.value.messageId));
 const mineValues = computed(() => new Set(groups.value.filter((g) => g.mine).map((g) => g.value)));
 
-const canReact = computed(() => {
+const support = computed(() => {
   const id = picker.value.networkId;
-  if (id == null) return false;
-  const state = networks.states[id];
-  return state?.state === 'connected' && !!state.canReact;
+  return tagSupport(id == null ? null : networks.states[id]);
 });
+const canReact = computed(() => support.value.react);
+
+// Choosing a value of ours takes it back, which the network may not allow even
+// where it takes a new one (+draft/unreact denied, #1101): the store decides.
+function works(value: string): boolean {
+  return reactions.canToggle(picker.value.messageId ?? NaN, value, picker.value.networkId);
+}
+const NO_TAKE_BACK = "This network can't take a reaction back.";
 
 const typed = ref('');
 const onTypedInput = useImeSafeInput(typed);
@@ -137,8 +157,8 @@ const rowItems = computed(() =>
 );
 
 function choose(value: string) {
-  if (picker.value.messageId == null || !isValidReactionValue(value)) return;
-  reactions.toggle(picker.value.messageId, value);
+  if (picker.value.messageId == null || !isValidReactionValue(value) || !works(value)) return;
+  reactions.toggle(picker.value.messageId, value, picker.value.networkId);
   reactions.closePicker();
 }
 
@@ -233,7 +253,7 @@ onMounted(() => {
   padding: var(--space-2) var(--space-3);
   cursor: pointer;
 }
-.quick-btn:hover {
+.quick-btn:hover:not(:disabled) {
   border-color: var(--accent);
 }
 .quick-btn.mine {
