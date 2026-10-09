@@ -60,14 +60,15 @@ rows are deliberate — those aren't on the scale by design.)
 Named by role, so it's clear what sits above what. Higher in the list = closer
 to the viewer.
 
-| Token         | Role                                                     |
-| ------------- | -------------------------------------------------------- |
-| `--z-base`    | in-flow lift (sticky headers, background layers)         |
-| `--z-raised`  | lifts above sibling content within a component           |
-| `--z-modal`   | modal / overlay shells (dialogs, quick switcher)         |
-| `--z-toast`   | toast notifications (above modals, so they stay visible) |
-| `--z-menu`    | context menus                                            |
-| `--z-popover` | input autocomplete (nick picker) — top of the stack      |
+| Token         | Role                                                      |
+| ------------- | --------------------------------------------------------- |
+| `--z-base`    | in-flow lift (sticky headers, background layers)          |
+| `--z-raised`  | lifts above sibling content within a component            |
+| `--z-modal`   | modal / overlay shells (dialogs, quick switcher)          |
+| `--z-sheep`   | the screen mate: walks on dialogs, under toasts and menus |
+| `--z-toast`   | toast notifications (above modals, so they stay visible)  |
+| `--z-menu`    | context menus                                             |
+| `--z-popover` | input autocomplete (nick picker) — top of the stack       |
 
 ## Radius (internal)
 
