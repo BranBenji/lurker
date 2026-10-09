@@ -11,7 +11,8 @@
 // ⚠ This module is IMPORTED FOR ITS SIDE EFFECT as server.ts's FIRST import,
 // ahead of 'dotenv/config' and everything that pulls in db/index.ts. Module
 // evaluation follows import-declaration order, and the import phase itself
-// writes to stdio on every boot (the boot migration's '[db] …' lines) —
+// writes to stdio on every boot (the boot migration's '[db] …' lines, and
+// dotenv's banner when DOTENV_QUIET=false or DOTENV_DEBUG asks for it) —
 // guards installed from server.ts's module BODY would arrive after the exact
 // writes that crash a dead-pty boot. That is also why nothing here may import
 // anything: a dependency would evaluate before dotenv populates the
