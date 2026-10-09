@@ -12,8 +12,17 @@
 // "The last" is read from a quiet spell, not from a count of what is open: the
 // engine answers the CONNECTs one at a time, each with its replay, backlog and
 // `live`, so a connection with little backlog can be live before its
-// neighbours' `attached` has even been read. The burst ends BURST_QUIET_MS after
-// a catch-up closes with none open; one that starts inside that spell joins it.
+// neighbours' `attached` has even been read. The burst ends once none is open
+// and none has started or finished for QUIET_MS; one that starts inside that
+// spell joins it. A catch-up still open after STALE_MS stops holding the total
+// (it is counted as still catching up) — every teardown is meant to close it,
+// but one that never does must not silence the totals for the life of the
+// process. Its own line is still written if it ever reaches `live`.
+//
+// The elapsed time runs from the first `attached`. The CONNECT before it is
+// not a better start: until the engine answers, nothing says it will be an
+// attach rather than a dial, and after a lost link it includes the wait for
+// the link itself.
 //
 //   [engine] network 12: re-attached (away 42013ms, replay 180, backlog 3421, gap none)
 //   [engine] 30 connections re-attached in 8.4s (replay 5400, backlog 102345, gap on 2)
@@ -29,22 +38,29 @@ export interface Reattach {
   dropped: number;
 }
 
-const BURST_QUIET_MS = 1000;
+const QUIET_MS = 1000;
+const STALE_MS = 10 * 60_000;
+let quietMs = QUIET_MS;
+let staleMs = STALE_MS;
 
 interface Burst {
   since: number;
   // When the last catch-up in it ended: the total's elapsed time.
   until: number;
+  // When a catch-up last started or ended: the quiet spell runs from here.
+  stirred: number;
+  // The catch-ups between `attached` and `live`, with when each started. Only
+  // ever non-empty while its burst is the current one.
+  open: Map<Reattach, number>;
   conns: number;
   replay: number;
   backlog: number;
   gaps: number;
+  stale: number;
 }
 
-// Catch-ups between `attached` and `live`.
-const open = new Set<Reattach>();
 let burst: Burst | null = null;
-let quietTimer: ReturnType<typeof setTimeout> | null = null;
+let timer: ReturnType<typeof setTimeout> | null = null;
 
 export function reattachStarted(
   networkId: number,
@@ -52,50 +68,86 @@ export function reattachStarted(
   replay: number,
 ): Reattach {
   const r: Reattach = { networkId, detachedForMs, replay, dropped: 0 };
-  open.add(r);
-  if (quietTimer) clearTimeout(quietTimer);
-  quietTimer = null;
-  burst ??= { since: Date.now(), until: 0, conns: 0, replay: 0, backlog: 0, gaps: 0 };
+  const now = Date.now();
+  burst ??= {
+    since: now,
+    until: now,
+    stirred: now,
+    open: new Map(),
+    conns: 0,
+    replay: 0,
+    backlog: 0,
+    gaps: 0,
+    stale: 0,
+  };
+  burst.open.set(r, now);
+  burst.stirred = now;
+  arm();
   return r;
+}
+
+// The engine's `gap`: lines it could not keep while the app was away.
+export function reattachGap(r: Reattach, dropped: number): void {
+  r.dropped += dropped;
 }
 
 // `live`: the backlog is delivered. backlog = the lines it held.
 export function reattachLive(r: Reattach, backlog: number): void {
-  if (!open.delete(r)) return;
   const gap = r.dropped > 0 ? `gap ${r.dropped} dropped` : 'gap none';
   console.log(
     `[engine] network ${r.networkId}: re-attached (away ${r.detachedForMs}ms, replay ${r.replay}, backlog ${backlog}, ${gap})`,
   );
-  if (burst) {
-    burst.until = Date.now();
-    burst.conns++;
-    burst.replay += r.replay;
-    burst.backlog += backlog;
-    if (r.dropped > 0) burst.gaps++;
-  }
-  settle();
+  // Not in the current burst: it went stale, and the burst it was part of has
+  // already been totalled without it.
+  if (!burst?.open.delete(r)) return;
+  burst.until = burst.stirred = Date.now();
+  burst.conns++;
+  burst.replay += r.replay;
+  burst.backlog += backlog;
+  if (r.dropped > 0) burst.gaps++;
 }
 
 // The catch-up ended without `live` — the socket closed, or another attach or
 // dial replaced it. Nothing to report for it, but it no longer holds the total.
 export function reattachAbandoned(r: Reattach): void {
-  if (open.delete(r)) settle();
+  if (burst?.open.delete(r)) burst.stirred = Date.now();
 }
 
-function settle(): void {
-  if (open.size > 0 || !burst || quietTimer) return;
-  quietTimer = setTimeout(endBurst, BURST_QUIET_MS);
-  quietTimer.unref();
+function arm(): void {
+  if (timer || !burst) return;
+  timer = setTimeout(tick, quietMs);
+  timer.unref();
 }
 
-function endBurst(): void {
-  quietTimer = null;
+function tick(): void {
+  timer = null;
   const b = burst;
+  if (!b) return;
+  const now = Date.now();
+  for (const [r, at] of b.open) {
+    if (now - at < staleMs) continue;
+    b.open.delete(r);
+    b.stale++;
+  }
+  if (b.open.size > 0 || now - b.stirred < quietMs) {
+    arm();
+    return;
+  }
   burst = null;
   // One connection's line already says everything a total would.
-  if (!b || b.conns < 2) return;
+  if (b.conns + b.stale < 2) return;
   const secs = ((b.until - b.since) / 1000).toFixed(1);
+  const stale = b.stale > 0 ? `, ${b.stale} still catching up` : '';
   console.log(
-    `[engine] ${b.conns} connections re-attached in ${secs}s (replay ${b.replay}, backlog ${b.backlog}, gap on ${b.gaps})`,
+    `[engine] ${b.conns} connection${b.conns === 1 ? '' : 's'} re-attached in ${secs}s (replay ${b.replay}, backlog ${b.backlog}, gap on ${b.gaps}${stale})`,
   );
+}
+
+// Tests run the burst on a short clock, and start each from nothing.
+export function configureReattachLogForTests(opts: { quietMs?: number; staleMs?: number }): void {
+  if (timer) clearTimeout(timer);
+  timer = null;
+  burst = null;
+  quietMs = opts.quietMs ?? QUIET_MS;
+  staleMs = opts.staleMs ?? STALE_MS;
 }

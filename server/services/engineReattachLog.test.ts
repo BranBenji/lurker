@@ -15,12 +15,16 @@ import { createNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
 import { IrcConnection } from './ircConnection.js';
 import { engineConnectionId } from './engineLink.js';
+import { configureReattachLogForTests } from './engineReattachLog.js';
 import { startEngineHarness } from '../test-utils/engineHarness.js';
 import type { EngineHarness } from '../test-utils/engineHarness.js';
 
 // Small enough that a few hundred lines overflow it, big enough for a handful.
 const BUFFER_BYTES = 8 * 1024;
 const FLOOD = 200;
+// The burst's quiet spell, short here. A burst's total lands within two of
+// these after its last catch-up; three is "it would have by now".
+const QUIET_MS = 200;
 
 let harness: EngineHarness;
 let log: MockInstance<typeof console.log>;
@@ -30,10 +34,12 @@ beforeAll(async () => {
   harness = await startEngineHarness({ secret: 'reattach-log-secret', bufferBytes: BUFFER_BYTES });
   userId = createUser('reattach-log').id;
   log = vi.spyOn(console, 'log');
+  configureReattachLogForTests({ quietMs: QUIET_MS });
 });
 
 afterAll(async () => {
   log.mockRestore();
+  configureReattachLogForTests({});
   await harness.stop();
 });
 
@@ -109,8 +115,10 @@ describe('engine re-attach on stdout', () => {
     await harness.until(() => buffered(quiet) >= quietBefore + 3, 5000, 'the three buffered');
     await settled(flooded);
 
+    // Both CONNECTs out together, as a restart sends them: the engine answers
+    // one at a time, so the first can be live before the second has attached.
     log.mockClear();
-    const second = [await connect(quiet), await connect(flooded)];
+    const second = await Promise.all([connect(quiet), connect(flooded)]);
     const elapsed = Date.now() - detachedAt;
     await harness.until(() => engineLines().length >= 3, 5000, 'the stdout lines');
 
@@ -158,8 +166,7 @@ describe('engine re-attach on stdout', () => {
     log.mockClear();
     const third = await connect(quiet);
     await harness.until(() => engineLines().length >= 1, 5000, 'the stdout line');
-    // Past the quiet spell that would end the burst (engineReattachLog.ts).
-    await new Promise((r) => setTimeout(r, 1500));
+    await new Promise((r) => setTimeout(r, 3 * QUIET_MS));
     expect(engineLines()).toHaveLength(1);
     expect(engineLines()[0]).toMatch(PER_CONN);
     expect(engineLines()[0]).toContain(`network ${quiet.id}:`);

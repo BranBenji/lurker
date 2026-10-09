@@ -81,7 +81,12 @@ import { registerIdent, unregisterIdent, isIdentdEnabled, isOidentdFileEnabled }
 import { EngineLink, engineConfigured, engineConnectionId } from './engineLink.js';
 import { ENGINE_CLOSE, EngineTransport, engineCloseCode } from './engineTransport.js';
 import type { EnginePhase, EnginePhaseInfo } from './engineTransport.js';
-import { reattachAbandoned, reattachLive, reattachStarted } from './engineReattachLog.js';
+import {
+  reattachAbandoned,
+  reattachGap,
+  reattachLive,
+  reattachStarted,
+} from './engineReattachLog.js';
 import type { Reattach } from './engineReattachLog.js';
 import {
   MESSAGE_MAX_BYTES,
@@ -5553,7 +5558,7 @@ export class IrcConnection {
         const g = info.gap;
         if (!g) break;
         const dropped = g.lastDroppedSeq - g.firstDroppedSeq + 1;
-        if (this.reattachLog) this.reattachLog.dropped += dropped;
+        if (this.reattachLog) reattachGap(this.reattachLog, dropped);
         this.publish({
           type: 'notice',
           target: this.serverTarget(),
