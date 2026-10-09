@@ -216,8 +216,9 @@ describe('relay test vectors', () => {
   });
 
   it('are encrypted with the http_ece web-push itself sends with', () => {
-    // Pinned as a devDependency for this suite; a bump that drifted from
-    // web-push's copy would make the vectors check a different library.
+    // Pinned for this suite, and handed to web-push through package.json's
+    // overrides; a bump that drifted from web-push's copy would make the
+    // vectors check a different library.
     const req = createRequire(import.meta.url);
     const fromWebPush = createRequire(req.resolve('web-push')).resolve('http_ece');
     expect(req.resolve('http_ece')).toBe(fromWebPush);
