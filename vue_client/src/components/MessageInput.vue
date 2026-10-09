@@ -170,6 +170,8 @@ import { parseRelayCommand } from '../lib/commands/relay.js';
 import { parseDccCommand } from '../lib/commands/dcc.js';
 import { bufferPeer } from '../lib/commands/ping.js';
 import { parseThemeCommand } from '../lib/commands/theme.js';
+import { parseSheepCommand, SHEEP_USAGE_LINES } from '../lib/commands/sheep.js';
+import { useSheepStore } from '../stores/sheep.js';
 import { useThemesStore } from '../stores/themes.js';
 import { foldThemeName, themeNameError } from '../../../shared/themePresets.js';
 import type { ThemePreset } from '../../../shared/themePresets.js';
@@ -3001,6 +3003,90 @@ function dccListRow(t: DccTransfer): string[] {
 // User-wide like /set, so it runs from anywhere including the system buffer.
 // REST-backed + async → fire-and-forget from handleCommand, reports when
 // settled.
+function runSheep(argLine: string, networkId: number | null, target: string): void {
+  // The undocumented /sheep (a port of the 1995 eSheep screen mate). The
+  // flock is a synced setting (stores/sheep.ts), so every verb that changes
+  // it is a settings write: fire it off and report when it lands, like /theme.
+  const cmd = parseSheepCommand(argLine);
+  const reply = (msg: string) => localInfo(networkId, target, msg);
+  const sheep = useSheepStore();
+  const fail = (err: unknown) =>
+    reply(`/sheep: ${err instanceof Error ? err.message : 'the sheep got lost'}`);
+  switch (cmd.kind) {
+    case 'error':
+      reply(`/sheep: ${cmd.message}`);
+      return;
+    case 'help':
+      for (const line of SHEEP_USAGE_LINES) reply(line);
+      return;
+    case 'spawn':
+      sheep
+        .spawn(cmd.color)
+        .then((e) => reply(`${sheep.describe(e)} wanders in. Right-click a sheep to shoo it.`))
+        .catch(fail);
+      return;
+    case 'off':
+      if (cmd.all) {
+        sheep
+          .shooAll()
+          .then((n) =>
+            reply(n === 0 ? 'no sheep here.' : n === 1 ? 'bye, sheep.' : `bye, ${n} sheep.`),
+          )
+          .catch(fail);
+      } else {
+        sheep
+          .shooLast()
+          .then((e) => reply(e ? `bye, ${sheep.describe(e)}.` : 'no sheep here.'))
+          .catch(fail);
+      }
+      return;
+    case 'list': {
+      const flock = sheep.flock;
+      if (flock.length === 0) {
+        reply('no sheep here. /sheep brings one.');
+        return;
+      }
+      reply(`sheep (${flock.length}):`);
+      flock.forEach((e, i) => reply(`  ${i + 1}. ${sheep.describe(e)} (${e.color})`));
+      return;
+    }
+    case 'sounds':
+      if (cmd.on === null) {
+        reply(`sheep sounds: ${sheep.sounds ? 'on' : 'off'}`);
+        return;
+      }
+      sheep
+        .setSounds(cmd.on)
+        .then(() => reply(`sheep sounds: ${cmd.on ? 'on' : 'off'}`))
+        .catch(fail);
+      return;
+    case 'scale':
+      if (cmd.scale === null) {
+        reply(`sheep scale: ${sheep.scale}`);
+        return;
+      }
+      sheep
+        .setScale(cmd.scale)
+        .then(() => reply(`sheep scale: ${cmd.scale}`))
+        .catch(fail);
+      return;
+    case 'debug': {
+      const lines = sheep.status();
+      if (lines.length === 0) {
+        reply('no sheep running here.');
+        return;
+      }
+      reply(`sheep running here (${lines.length}):`);
+      for (const line of lines) reply(`  ${line}`);
+      return;
+    }
+    case 'about':
+      reply('gSheep by Oliver B., from desktopPet (Adriano Petrucci) — the eSheep revival.');
+      reply("The sheep is Tatsutoshi Nomura's, 1995. https://github.com/Adrianotiger/desktopPet");
+      return;
+  }
+}
+
 async function runTheme(argLine: string, networkId: number | null, target: string): Promise<void> {
   const cmd = parseThemeCommand(argLine);
   const reply = (msg: string) => localInfo(networkId, target, msg);
@@ -3593,6 +3679,10 @@ function handleCommand(line: string, networkId: number | null, target: string): 
     case 'theme':
       // Theme presets. App-scoped like /set; async like /dcc.
       void runTheme(argLine, networkId, target);
+      return true;
+    case 'sheep':
+      // Undocumented. App-scoped; runs from anywhere, including the system buffer.
+      runSheep(argLine, networkId, target);
       return true;
   }
 

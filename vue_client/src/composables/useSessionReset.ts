@@ -16,6 +16,7 @@ import { usePushSubscriptionsStore } from '../stores/pushSubscriptions.js';
 import { usePinsStore } from '../stores/pins.js';
 import { useFavoritesStore } from '../stores/favorites.js';
 import { useNetworkPresetsStore } from '../stores/networkPresets.js';
+import { useSheepStore } from '../stores/sheep.js';
 import { resetSocket } from './useSocket.js';
 import { resetPresence } from './usePresence.js';
 import { resetScrollState } from './useScrollState.js';
@@ -56,6 +57,8 @@ export function resetSession(): void {
   // isn't — leaving it loaded would hand the next user a picker built from a
   // response fetched under someone else's session.
   useNetworkPresetsStore().$reset();
+  // The flock is the account's; it walks off with the session.
+  useSheepStore().reset();
   resetPresence();
   resetScrollState();
   // Closing the first-run flow unmounts it, which is what drops the half-filled

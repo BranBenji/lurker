@@ -10,6 +10,7 @@
   </div>
   <ToastContainer />
   <ContextMenu />
+  <SheepOverlay />
 </template>
 
 <script setup lang="ts">
@@ -21,6 +22,7 @@ import { useTheme } from './composables/useTheme.js';
 import ToastContainer from './components/ToastContainer.vue';
 import ContextMenu from './components/ContextMenu.vue';
 import PausedBanner from './components/PausedBanner.vue';
+import SheepOverlay from './components/SheepOverlay.vue';
 
 const auth = useAuthStore();
 const settings = useSettingsStore();
