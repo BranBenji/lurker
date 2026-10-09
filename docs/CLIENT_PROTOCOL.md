@@ -386,7 +386,7 @@ One per network inside `kind:'snapshot'` (`ircConnection.snapshot()`,
   multilineLimits,
   modeSpec: { list, always, onSet, flags, prefix: [ { mode, symbol } ],
               maxModes, topicLen },
-  canReact,                           // reactions can be sent here — see below
+  canReact, canUnreact, canReply,     // reactions / taking one back / reply tags — see below
   userhostBytes,                      // for estimating where a long message splits — see below
   away: { active, since, message, autoSet, backAt } | null,
   channels: [ { name, topic, topicSetBy, topicSetAt,
@@ -429,10 +429,20 @@ saying so. Treat null as "unknown", not as the RFC defaults. It arrives as a
 
 `canReact` is whether a `react` verb (§6) can go out on this network: it has
 `message-tags` and `echo-message`, and its `CLIENTTAGDENY` doesn't forbid
-`draft/react`, `draft/unreact` or the reply tag. Same timing as `modeSpec`:
-`false` until the burst ends (CLIENTTAGDENY rides a 005), then kept current by
-`react-support` frames (§7.2). Absent on a disconnected network — treat as
-`false`, and offer reacting only while `state` is `'connected'`.
+`draft/react` or both reply tag names. `canUnreact` is whether one of yours can
+be taken back (`remove: true`): everything `canReact` needs, and `draft/unreact`
+not forbidden. A network can allow the first and deny the second — irc.so's
+UnrealIRCd does — so offer adding a reaction on `canReact` and taking yours back
+only on `canUnreact`. `canReply` is whether a line you send with `replyTo` (§6)
+carries its reply tag: `message-tags`, and `CLIENTTAGDENY` allowing `reply` or
+`draft/reply`. It needs no `echo-message`, so it can be `true` where `canReact`
+isn't. Where it's `false` a reply still goes out, as a plain line.
+
+All three share `modeSpec`'s timing: `false` until the burst ends (CLIENTTAGDENY
+rides a 005), then kept current by `react-support` frames (§7.2). Absent on a
+disconnected network — treat as `false`, and offer them only while `state` is
+`'connected'`. `canUnreact` and `canReply` are newer than `canReact`: a server
+that sends `canReact` without them meant it to cover both.
 
 `userhostBytes` is the byte length of the `user@host` the network puts in front
 of your lines. It's the real one once a line of yours has shown it (your JOIN,
@@ -820,7 +830,7 @@ Also the `type` of rows inside `backlog`/`history` `events[]`. **P** = persisted
 | `channel-topic`               | E   | `topic, setBy, setAt` — 332/331/333: set state, render nothing                |
 | `channel-modes`               | E   | `modes` (full letter string), `modeParams`, `createdAt` — never the key       |
 | `mode-spec`                   | E   | `modeSpec` — the network's channel-mode vocabulary changed (§5.1)             |
-| `react-support`               | E   | `canReact` — whether reactions can be sent here changed (§5.1)                |
+| `react-support`               | E   | `canReact`, `canUnreact`, `canReply` changed (§5.1)                           |
 | `line-budget`                 | E   | `userhostBytes` — the bytes ahead of your text on each line changed (§5.1)    |
 | `channel-joined`              | E   | **you** are in the channel — the materialization signal (§9.1)                |
 | `channel-parted`              | E   | you left, were removed, or lost the connection — mark parted, keep history    |

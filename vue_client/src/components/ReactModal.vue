@@ -23,7 +23,7 @@
               type="button"
               class="standing-row"
               :class="{ mine: g.mine }"
-              :disabled="!canReact"
+              :disabled="!works(g.value)"
               @click="choose(g.value)"
             >
               <span class="value" dir="auto">{{ g.value }}</span>
@@ -42,6 +42,7 @@
               type="button"
               class="quick-btn"
               :class="{ mine: mineValues.has(item.value) }"
+              :disabled="!works(item.value)"
               :title="mineValues.has(item.value) ? `Take back ${item.value}` : item.title"
               @click="choose(item.value)"
             >
@@ -78,7 +79,7 @@
 import { computed, onMounted, ref } from 'vue';
 import AppModal from './AppModal.vue';
 import { useReactionsStore } from '../stores/reactions.js';
-import { useNetworksStore } from '../stores/networks.js';
+import { tagSupport, useNetworksStore } from '../stores/networks.js';
 import { blockImeEnter, useImeSafeInput } from '../composables/useImeSafeInput.js';
 import { reactionFromInput, searchEmojiSync } from '../utils/emojiShortcodes.js';
 import { emojiFn, preloadEmoji } from '../composables/useEmoji.js';
@@ -95,12 +96,17 @@ const title = computed(() => (picker.value.nick ? `react to ${picker.value.nick}
 const groups = computed(() => reactions.groupsFor(picker.value.messageId));
 const mineValues = computed(() => new Set(groups.value.filter((g) => g.mine).map((g) => g.value)));
 
-const canReact = computed(() => {
+const support = computed(() => {
   const id = picker.value.networkId;
-  if (id == null) return false;
-  const state = networks.states[id];
-  return state?.state === 'connected' && !!state.canReact;
+  return tagSupport(id == null ? null : networks.states[id]);
 });
+const canReact = computed(() => support.value.react);
+
+// Choosing a value of ours takes it back, which the network may not allow even
+// where it takes a new one (+draft/unreact denied, #1101).
+function works(value: string): boolean {
+  return mineValues.value.has(value) ? support.value.unreact : support.value.react;
+}
 
 const typed = ref('');
 const onTypedInput = useImeSafeInput(typed);
@@ -137,7 +143,7 @@ const rowItems = computed(() =>
 );
 
 function choose(value: string) {
-  if (picker.value.messageId == null || !isValidReactionValue(value)) return;
+  if (picker.value.messageId == null || !isValidReactionValue(value) || !works(value)) return;
   reactions.toggle(picker.value.messageId, value);
   reactions.closePicker();
 }
@@ -233,7 +239,7 @@ onMounted(() => {
   padding: var(--space-2) var(--space-3);
   cursor: pointer;
 }
-.quick-btn:hover {
+.quick-btn:hover:not(:disabled) {
   border-color: var(--accent);
 }
 .quick-btn.mine {

@@ -96,6 +96,31 @@ describe('ReactModal', () => {
     wrapper.unmount();
   });
 
+  // #1101: where +draft/unreact is denied, our own value can't be taken back,
+  // but every other pick still reacts.
+  it('leaves our own value alone where the network denies unreact', async () => {
+    useReactionsStore().noteFromEvents(
+      [{ id: 10, reactions: [{ nick: 'me', value: '👍', self: true }] }],
+      NET,
+    );
+    const wrapper = open();
+    useNetworksStore().states[NET] = { ...useNetworksStore().states[NET], canUnreact: false };
+    await nextTick();
+    const button = (v: string) => wrapper.findAll('.quick .quick-btn').find((b) => b.text() === v)!;
+    expect(button('👍').attributes('disabled')).toBeDefined();
+    expect(wrapper.find('.standing-row').attributes('disabled')).toBeDefined();
+    await button('👍').trigger('click');
+    expect(socketSend).not.toHaveBeenCalled();
+    await button('🎉').trigger('click');
+    expect(socketSend).toHaveBeenLastCalledWith({
+      type: 'react',
+      messageId: 10,
+      value: '🎉',
+      remove: false,
+    });
+    wrapper.unmount();
+  });
+
   it('sends a picked suggestion', async () => {
     const wrapper = open();
     await type(wrapper, 'skul');

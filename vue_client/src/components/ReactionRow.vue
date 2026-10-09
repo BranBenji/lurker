@@ -22,11 +22,11 @@
       type="button"
       class="chip"
       :class="{ mine: g.mine }"
-      :disabled="!canReact"
+      :disabled="!chipWorks(g)"
       :title="`${g.nicks.join(', ')} reacted ${g.value}`"
       :aria-label="`${g.value}, ${g.nicks.length} (${g.nicks.join(', ')})`"
       :aria-pressed="g.mine"
-      @click.stop="onChipClick(g.value)"
+      @click.stop="onChipClick(g)"
       @contextmenu.stop
     >
       <span class="value" dir="auto">{{ g.value }}</span
@@ -48,7 +48,7 @@
 <script setup lang="ts">
 import { computed, nextTick, watch } from 'vue';
 import { useReactionsStore } from '../stores/reactions.js';
-import { useNetworksStore } from '../stores/networks.js';
+import { tagSupport, useNetworksStore } from '../stores/networks.js';
 
 const props = withDefaults(
   defineProps<{
@@ -84,15 +84,20 @@ watch(
     emit('measured');
   },
 );
-const canReact = computed(() => {
-  if (!props.interactive) return false;
-  const state = networks.states[props.message.networkId];
-  return state?.state === 'connected' && !!state.canReact;
-});
+const support = computed(() =>
+  props.interactive ? tagSupport(networks.states[props.message.networkId]) : null,
+);
 
-function onChipClick(value: string) {
-  if (!canReact.value || props.message.id == null) return;
-  reactions.toggle(props.message.id, value);
+// A chip of ours takes the reaction back, which the network may not allow even
+// where it takes a new one (+draft/unreact denied, #1101); anyone else's adds ours.
+function chipWorks(g: { mine: boolean }): boolean {
+  if (!support.value) return false;
+  return g.mine ? support.value.unreact : support.value.react;
+}
+
+function onChipClick(g: { value: string; mine: boolean }) {
+  if (!chipWorks(g) || props.message.id == null) return;
+  reactions.toggle(props.message.id, g.value);
 }
 </script>
 

@@ -800,9 +800,9 @@ export class IrcConnection {
   monitorLimit: number;
   // The last modeSpec sent as a `mode-spec` frame, as JSON (#727).
   private publishedModeSpec: string | null = null;
-  // The last canReact sent as a `react-support` frame; null = none sent on
-  // this connection yet.
-  private publishedCanReact: boolean | null = null;
+  // The last tag support sent as a `react-support` frame, as JSON; null =
+  // none sent on this connection yet.
+  private publishedTagSupport: string | null = null;
   // The last userhostBytes sent as a `line-budget` frame (#1043).
   private publishedUserhostBytes: number | null = null;
   // List fetches on the wire, by folded channel + letter (fetchModeList).
@@ -1987,7 +1987,7 @@ export class IrcConnection {
       // The next snapshot sends a null spec (clientModeSpec), so the burst's
       // end must send a frame even if the network's spec hasn't changed.
       this.publishedModeSpec = null;
-      this.publishedCanReact = null;
+      this.publishedTagSupport = null;
       this.publishedUserhostBytes = null;
       this.rawMonitored.clear();
       // Safety-net presence sweep. The primary one runs in 'socket close',
@@ -5091,20 +5091,27 @@ export class IrcConnection {
     this.publishEphemeral({ type: 'mode-spec', target: this.serverTarget(), modeSpec: spec });
   }
 
-  // Whether clients may offer reactions here, as they see it: false until the
-  // registration burst has ended, for the same reason as clientModeSpec — the
-  // CLIENTTAGDENY that could forbid them rides a 005 that follows the 001 which
-  // pushes the connect snapshot.
-  clientCanReact(): boolean {
-    return this.isupportComplete && this.canSendReactions();
+  // What clients may offer here, as they see it: reacting, taking a reaction
+  // back, and replying with a tag (#1101). All false until the registration
+  // burst has ended, for the same reason as clientModeSpec — the CLIENTTAGDENY
+  // that could forbid them rides a 005 that follows the 001 which pushes the
+  // connect snapshot.
+  clientTagSupport(): { canReact: boolean; canUnreact: boolean; canReply: boolean } {
+    const known = this.isupportComplete;
+    return {
+      canReact: known && this.canSendReactions(),
+      canUnreact: known && this.canSendUnreact(),
+      canReply: known && this.canSendReplies(),
+    };
   }
 
   private publishReactSupportIfChanged(): void {
     if (!this.isupportComplete) return;
-    const canReact = this.clientCanReact();
-    if (canReact === this.publishedCanReact) return;
-    this.publishedCanReact = canReact;
-    this.publishEphemeral({ type: 'react-support', target: this.serverTarget(), canReact });
+    const support = this.clientTagSupport();
+    const json = JSON.stringify(support);
+    if (json === this.publishedTagSupport) return;
+    this.publishedTagSupport = json;
+    this.publishEphemeral({ type: 'react-support', target: this.serverTarget(), ...support });
   }
 
   // List-type channel modes (CHANMODES group A) carry a mask param — bans,
@@ -8459,18 +8466,33 @@ export class IrcConnection {
   // message-tags for the client-only tags; echo-message because the echo is
   // the only thing that records our own reaction (and a reaction we can't see
   // land is one we'd have to guess about); and the network must not deny the
-  // tags via CLIENTTAGDENY. Either reply tag will do — we send both.
+  // tags via CLIENTTAGDENY. Either reply tag will do — we send both. Taking one
+  // back is canSendUnreact: a network can allow +draft/react and still deny
+  // +draft/unreact (irc.so's UnrealIRCd does, #1101), and adding one is still
+  // worth offering there.
   canSendReactions(): boolean {
     if (!this.echoActive()) return false;
-    const net = this.client.network as unknown as { supportsTag?: (tag: string) => boolean };
-    if (typeof net?.supportsTag !== 'function') return false;
     // supportsTag() is false for every tag unless message-tags is negotiated,
     // so this is also the message-tags gate (pinned by the cap-notify test).
-    return (
-      net.supportsTag('draft/react') &&
-      net.supportsTag('draft/unreact') &&
-      (net.supportsTag('reply') || net.supportsTag('draft/reply'))
-    );
+    return this.supportsClientTag('draft/react') && this.canSendReplies();
+  }
+
+  // Whether a reaction of ours can be taken back here: everything a reaction
+  // needs, and +draft/unreact not denied.
+  canSendUnreact(): boolean {
+    return this.canSendReactions() && this.supportsClientTag('draft/unreact');
+  }
+
+  // Whether a line can go out as a reply here: message-tags, and CLIENTTAGDENY
+  // allowing at least one reply tag name (replyTags). No echo-message needed —
+  // without it our own line is stored with its reply link when we send it.
+  canSendReplies(): boolean {
+    return this.supportsClientTag('reply') || this.supportsClientTag('draft/reply');
+  }
+
+  private supportsClientTag(tag: string): boolean {
+    const net = this.client.network as unknown as { supportsTag?: (tag: string) => boolean };
+    return typeof net?.supportsTag === 'function' && net.supportsTag(tag);
   }
 
   // The tags that make an outgoing line a reply to `msgid`, or null when the
@@ -8495,7 +8517,7 @@ export class IrcConnection {
   // halloy and goguma send the pair the same way. A name CLIENTTAGDENY forbids
   // stays off: canSendReactions only needs one of them allowed.
   sendReaction(target: string, msgid: string, value: string, remove: boolean): boolean {
-    if (!this.canSendReactions()) return false;
+    if (!(remove ? this.canSendUnreact() : this.canSendReactions())) return false;
     if (!isValidReactionValue(value)) return false;
     const replyTags = this.replyTags(msgid);
     if (!replyTags) return false;
@@ -8862,8 +8884,9 @@ export class IrcConnection {
       // Null until the registration burst ends (see clientModeSpec); then also
       // sent as a `mode-spec` frame, since 005 follows the 001 that pushes this.
       modeSpec: this.clientModeSpec(),
-      // Whether reactions can be sent here; kept current by `react-support`.
-      canReact: this.clientCanReact(),
+      // Whether reactions can be sent (and taken back) here, and whether a reply
+      // carries its tag; kept current by `react-support` (#1101).
+      ...this.clientTagSupport(),
       // The composer's split estimate measures by this (shared/wireBudget);
       // kept current by `line-budget` (#1043).
       userhostBytes: this.userhostBytes(),
