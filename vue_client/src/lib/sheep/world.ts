@@ -10,23 +10,11 @@ import type { PetModel, PetChild } from './model.js';
 import { Pet, type PetHost, type Rect, type Stage, type StageWindow } from './pet.js';
 
 /**
- * The viewport as the screen, its bottom edge the floor, and every element
- * carrying `data-sheep-surface` as a window the sheep can fall onto and walk
- * along the top edge of. Nothing in the app carries one today (the sheep walk
- * the viewport floor in front of everything); the support stays, tested and
- * dormant, in case platforms return. Surfaces come back in stacking order: by the z-index of the nearest
- * ancestor that sets one, then document order. An element carrying
- * `data-sheep-scrim` (a modal whose backdrop obscures the app) hides every
- * surface stacked below it, so while such a dialog is up only its card and
- * the floor remain.
+ * The viewport as the screen, its bottom edge the floor. The page offers no
+ * surfaces: the sheep walk the floor in front of all the chrome, so windows()
+ * is always empty and the pet engine's window logic never engages.
  */
 export class DomStage implements Stage {
-  private nextId = 1;
-  private readonly ids = new WeakMap<Element, string>();
-  // One step of one pet asks for the surfaces several times: scan the DOM
-  // once per synchronous step (the cache clears on the next microtask).
-  private cache: Array<{ win: StageWindow; z: number }> | null = null;
-
   screen(): Rect {
     return { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight };
   }
@@ -36,67 +24,12 @@ export class DomStage implements Stage {
   }
 
   windows(): StageWindow[] {
-    return this.visible().map((f) => f.win);
+    return [];
   }
 
-  windowRect(id: string): Rect | null {
-    return this.visible().find((f) => f.win.id === id)?.win.rect ?? null;
+  windowRect(_id: string): Rect | null {
+    return null;
   }
-
-  /** The surfaces that are on screen and not behind a scrim, in stacking order. */
-  private visible(): Array<{ win: StageWindow; z: number }> {
-    if (this.cache) return this.cache;
-    const list = this.scan();
-    this.cache = list;
-    queueMicrotask(() => {
-      this.cache = null;
-    });
-    return list;
-  }
-
-  private scan(): Array<{ win: StageWindow; z: number }> {
-    let scrim = -Infinity;
-    for (const el of document.querySelectorAll('[data-sheep-scrim]')) {
-      const r = el.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) scrim = Math.max(scrim, stackOf(el));
-    }
-    const found: Array<{ win: StageWindow; z: number; order: number }> = [];
-    let order = 0;
-    for (const el of document.querySelectorAll('[data-sheep-surface]')) {
-      const r = el.getBoundingClientRect();
-      if (r.width <= 0 || r.height <= 0) continue;
-      const z = stackOf(el);
-      if (z < scrim) continue;
-      found.push({
-        win: { id: this.idFor(el), rect: { x: r.left, y: r.top, w: r.width, h: r.height } },
-        z,
-        order: order++,
-      });
-    }
-    found.sort((a, b) => a.z - b.z || a.order - b.order);
-    return found;
-  }
-
-  private idFor(el: Element): string {
-    let id = this.ids.get(el);
-    if (!id) {
-      id = String(this.nextId++);
-      this.ids.set(el, id);
-    }
-    return id;
-  }
-}
-
-/** The z-index of the nearest ancestor that sets one (0 when none does). */
-function stackOf(el: Element): number {
-  for (let e: Element | null = el; e; e = e.parentElement) {
-    // 'auto' in browsers, '' in happy-dom: neither is a rung.
-    const raw = getComputedStyle(e).zIndex;
-    if (!raw || raw === 'auto') continue;
-    const z = Number(raw);
-    if (Number.isFinite(z)) return z;
-  }
-  return 0;
 }
 
 export interface WorldOptions {
