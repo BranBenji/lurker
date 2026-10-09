@@ -149,9 +149,10 @@ describe('DccChat', () => {
       }),
     );
     // Node would write the lone half as U+FFFD.
-    chat.send('x'.repeat(64 * 1024 - 1) + '😀tail');
+    // The budget is 64 KiB less the CRLF; the emoji straddles its end.
+    chat.send('x'.repeat(64 * 1024 - 3) + '😀tail');
     await done;
-    expect(got).toBe('x'.repeat(64 * 1024 - 1) + '\r\n');
+    expect(got).toBe('x'.repeat(64 * 1024 - 3) + '\r\n');
     chat.close();
   });
 
@@ -168,11 +169,64 @@ describe('DccChat', () => {
         if (got.endsWith('\r\n')) r();
       }),
     );
-    const body = 'x'.repeat(64 * 1024 - '\u0001ACTION \u0001'.length);
+    const body = 'x'.repeat(64 * 1024 - '\u0001ACTION \u0001\r\n'.length);
     expect(chat.send(body + 'overflow', { action: true })).toBe(body);
     await done;
     expect(got).toBe(`\u0001ACTION ${body}\u0001\r\n`);
     chat.close();
+  });
+
+  // irssi splits at 65536 BYTES, so a non-ASCII /me capped in UTF-16 units still
+  // overran it and lost its \x01.
+  it('caps an outgoing line in bytes, not UTF-16 units', async () => {
+    const { a, b } = await socketPair();
+    const chat = new DccChat({ socket: a });
+    chat.start();
+    // Decoded as a stream: a chunk can end inside a character.
+    b.setEncoding('utf8');
+    let got = '';
+    const done = new Promise<void>((r) =>
+      b.on('data', (d: string) => {
+        got += d;
+        if (got.endsWith('\r\n')) r();
+      }),
+    );
+    // 3 bytes each: 21841 of them, the wrapper and the CRLF come to 65534.
+    const body = '漢'.repeat(21841);
+    expect(chat.send('漢'.repeat(30000), { action: true })).toBe(body);
+    await done;
+    expect(got).toBe(`\u0001ACTION ${body}\u0001\r\n`);
+    expect(Buffer.byteLength(got)).toBeLessThanOrEqual(64 * 1024);
+    chat.close();
+  });
+
+  // A receiver force-splits a buffer that reaches the cap with no LF in it. If
+  // the CR of a full-size line arrives without its LF, a line that left no room
+  // for the CRLF comes out as itself plus a stray empty line.
+  it('leaves room for the CRLF, so a full-size line arrives as one line', async () => {
+    const { a, b } = await socketPair();
+    const chat = new DccChat({ socket: a });
+    chat.start();
+    let got = '';
+    const done = new Promise<void>((r) =>
+      b.on('data', (d) => {
+        got += d.toString();
+        if (got.endsWith('\r\n')) r();
+      }),
+    );
+    const body = chat.send('x'.repeat(70000));
+    await done;
+    expect(body).toBe('x'.repeat(64 * 1024 - 2));
+    expect(Buffer.byteLength(got)).toBe(64 * 1024);
+    chat.close();
+
+    // Hand the exact wire to our own receiver, split between the CR and the LF.
+    const lines: string[] = [];
+    const receiver = new DccChat({ onLine: (t) => lines.push(t) });
+    const feed = (receiver as unknown as { onData(chunk: string): void }).onData.bind(receiver);
+    feed(got.slice(0, -1));
+    feed('\n');
+    expect(lines).toEqual([body]);
   });
 
   it('accepts bare LF as a line terminator, not just CRLF', async () => {

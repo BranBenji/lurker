@@ -524,7 +524,7 @@ describe('DCC CHAT actions', () => {
     let got = '';
     sock.on('data', (d) => (got += d.toString()));
     const cap = 64 * 1024;
-    const actionBody = 'a'.repeat(cap - '\u0001ACTION \u0001'.length);
+    const actionBody = 'a'.repeat(cap - '\u0001ACTION \u0001\r\n'.length);
     h.conn.dccChatSend('bob', actionBody + 'cut', { action: true });
     await waitFor(() => got.endsWith('\r\n'));
     expect(got).toBe(`\u0001ACTION ${actionBody}\u0001\r\n`);
@@ -532,12 +532,12 @@ describe('DCC CHAT actions', () => {
     got = '';
     h.conn.dccChatSend('bob', 'b'.repeat(cap) + 'cut');
     await waitFor(() => got.endsWith('\r\n'));
-    expect(got).toBe('b'.repeat(cap) + '\r\n');
+    expect(got).toBe('b'.repeat(cap - 2) + '\r\n');
 
     const self = h.published.filter((e) => e.self === true);
     expect(self.map((e) => [e.type, e.text])).toEqual([
       ['action', actionBody],
-      ['message', 'b'.repeat(cap)],
+      ['message', 'b'.repeat(cap - 2)],
     ]);
     h.conn.closeDccChat('bob');
   });

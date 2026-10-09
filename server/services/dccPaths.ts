@@ -21,8 +21,8 @@ import { capUtf8, utf8Bytes } from '../utils/capUtf8.js';
 // ext4 and APFS allow 255 BYTES per name, not 255 characters (#1051): an emoji
 // is four bytes, a CJK character three.
 const MAX_FILENAME_BYTES = 255;
-// An extension longer than this is kept whole when the name is cut. Past it,
-// it's treated as the tail of the name and cut along with the rest.
+// When a name has to be cut, an extension up to this long is kept whole. A
+// longer one is treated as the tail of the name and cut along with the rest.
 const MAX_EXT_BYTES = 16;
 const FALLBACK_NAME = 'dcc-download';
 
@@ -44,7 +44,21 @@ function splitExt(name: string): { base: string; ext: string } {
 // the limit gives up name, not the counter or the extension.
 function fitName(base: string, ext: string, suffix = ''): string {
   const room = MAX_FILENAME_BYTES - utf8Bytes(suffix) - utf8Bytes(ext);
-  return capUtf8(base, room).trimEnd() + suffix + ext;
+  const cut = capUtf8(base, room);
+  // Only a cut is trimmed: a space it lands on is debris, one the name came
+  // with is the name.
+  return (cut === base ? base : cut.trimEnd()) + suffix + ext;
+}
+
+// `name` de-collided with `suffix` before its extension, whatever that
+// extension's length, as long as the result fits. Only a name that has to be
+// cut to make room goes through fitName and its short-extension rule.
+function withSuffix(name: string, suffix: string): string {
+  const ext = path.extname(name);
+  const whole = name.slice(0, name.length - ext.length) + suffix + ext;
+  if (utf8Bytes(whole) <= MAX_FILENAME_BYTES) return whole;
+  const split = splitExt(name);
+  return fitName(split.base, split.ext, suffix);
 }
 
 /**
@@ -93,10 +107,9 @@ export function resolveDccDestination(username: string, rawFilename: string): st
   const safeName = sanitizeDccFilename(rawFilename);
   let candidate = path.join(userDir, safeName);
   if (fs.existsSync(candidate)) {
-    const { base, ext } = splitExt(safeName);
     let n = 1;
     do {
-      candidate = path.join(userDir, fitName(base, ext, ` (${n})`));
+      candidate = path.join(userDir, withSuffix(safeName, ` (${n})`));
       n += 1;
     } while (fs.existsSync(candidate));
   }
