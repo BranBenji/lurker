@@ -106,4 +106,38 @@ describe('the re-attach burst total', () => {
       '[engine] network 2: re-attached (away 0ms, replay 10, backlog 9, gap none)',
     ]);
   });
+  // A stale catch-up still belongs to its burst until the total: one that goes
+  // live meanwhile is counted, one that is abandoned is not — and neither is
+  // "still catching up".
+  it('counts a stale catch-up that goes live before the total', () => {
+    const a = reattachStarted(1, 0, 10);
+    const late = reattachStarted(2, 0, 10);
+    reattachLive(a, 4);
+    vi.advanceTimersByTime(STALE_MS - QUIET_MS);
+    // A later catch-up keeps the burst open past the stale age.
+    const b = reattachStarted(3, 0, 10);
+    vi.advanceTimersByTime(3 * QUIET_MS);
+    expect(totals()).toEqual([]);
+    reattachLive(late, 6);
+    reattachLive(b, 1);
+    vi.advanceTimersByTime(3 * QUIET_MS);
+    expect(totals()).toEqual([
+      `[engine] 3 connections re-attached in ${((STALE_MS + 2 * QUIET_MS) / 1000).toFixed(1)}s (replay 30, backlog 11, gap on 0)`,
+    ]);
+  });
+
+  it('drops a stale catch-up that is abandoned before the total', () => {
+    const a = reattachStarted(1, 0, 10);
+    const gone = reattachStarted(2, 0, 10);
+    reattachLive(a, 4);
+    vi.advanceTimersByTime(STALE_MS - QUIET_MS);
+    const b = reattachStarted(3, 0, 10);
+    vi.advanceTimersByTime(3 * QUIET_MS);
+    reattachAbandoned(gone);
+    reattachLive(b, 1);
+    vi.advanceTimersByTime(3 * QUIET_MS);
+    expect(totals()).toEqual([
+      `[engine] 2 connections re-attached in ${((STALE_MS + 2 * QUIET_MS) / 1000).toFixed(1)}s (replay 20, backlog 5, gap on 0)`,
+    ]);
+  });
 });

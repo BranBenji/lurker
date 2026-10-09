@@ -15,9 +15,10 @@
 // neighbours' `attached` has even been read. The burst ends once none is open
 // and none has started or finished for QUIET_MS; one that starts inside that
 // spell joins it. A catch-up still open after STALE_MS stops holding the total
-// (it is counted as still catching up) — every teardown is meant to close it,
-// but one that never does must not silence the totals for the life of the
-// process. Its own line is still written if it ever reaches `live`.
+// — every teardown is meant to close it, but one that never does must not
+// silence the totals for the life of the process. It stays in its burst until
+// the total, which counts it if it went live by then and says it is still
+// catching up if it has not. Its own line is written whenever it goes live.
 //
 // The elapsed time runs from the first `attached`. The CONNECT before it is
 // not a better start: until the engine answers, nothing says it will be an
@@ -52,11 +53,12 @@ interface Burst {
   // The catch-ups between `attached` and `live`, with when each started. Only
   // ever non-empty while its burst is the current one.
   open: Map<Reattach, number>;
+  // Open past STALE_MS: still this burst's, but no longer holding it open.
+  stale: Set<Reattach>;
   conns: number;
   replay: number;
   backlog: number;
   gaps: number;
-  stale: number;
 }
 
 let burst: Burst | null = null;
@@ -74,11 +76,11 @@ export function reattachStarted(
     until: now,
     stirred: now,
     open: new Map(),
+    stale: new Set(),
     conns: 0,
     replay: 0,
     backlog: 0,
     gaps: 0,
-    stale: 0,
   };
   burst.open.set(r, now);
   burst.stirred = now;
@@ -99,7 +101,7 @@ export function reattachLive(r: Reattach, backlog: number): void {
   );
   // Not in the current burst: it went stale, and the burst it was part of has
   // already been totalled without it.
-  if (!burst?.open.delete(r)) return;
+  if (!burst || !(burst.open.delete(r) || burst.stale.delete(r))) return;
   burst.until = burst.stirred = Date.now();
   burst.conns++;
   burst.replay += r.replay;
@@ -110,7 +112,7 @@ export function reattachLive(r: Reattach, backlog: number): void {
 // The catch-up ended without `live` — the socket closed, or another attach or
 // dial replaced it. Nothing to report for it, but it no longer holds the total.
 export function reattachAbandoned(r: Reattach): void {
-  if (burst?.open.delete(r)) burst.stirred = Date.now();
+  if (burst && (burst.open.delete(r) || burst.stale.delete(r))) burst.stirred = Date.now();
 }
 
 function arm(): void {
@@ -127,7 +129,7 @@ function tick(): void {
   for (const [r, at] of b.open) {
     if (now - at < staleMs) continue;
     b.open.delete(r);
-    b.stale++;
+    b.stale.add(r);
   }
   if (b.open.size > 0 || now - b.stirred < quietMs) {
     arm();
@@ -135,9 +137,9 @@ function tick(): void {
   }
   burst = null;
   // One connection's line already says everything a total would.
-  if (b.conns + b.stale < 2) return;
+  if (b.conns + b.stale.size < 2) return;
   const secs = ((b.until - b.since) / 1000).toFixed(1);
-  const stale = b.stale > 0 ? `, ${b.stale} still catching up` : '';
+  const stale = b.stale.size > 0 ? `, ${b.stale.size} still catching up` : '';
   console.log(
     `[engine] ${b.conns} connection${b.conns === 1 ? '' : 's'} re-attached in ${secs}s (replay ${b.replay}, backlog ${b.backlog}, gap on ${b.gaps}${stale})`,
   );
