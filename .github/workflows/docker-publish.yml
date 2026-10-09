@@ -33,8 +33,8 @@ env:
   # connections — for nothing. Entries are one-shot: drop them once released.
   #
   # v2.4.3: the engine closure's only change since v2.4.2 is dotenv 17.4.2 →
-  # 18.0.3, whose injection banner moved from stdout to stderr. The engine
-  # reads its environment the same way.
+  # 18.0.5, which stops printing its injection banner. The engine reads its
+  # environment the same way.
   ENGINE_TAG_PINNED_RELEASES: 'v2.4.3'
 
 jobs:

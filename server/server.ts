@@ -3,10 +3,10 @@
 
 // FIRST import on purpose: it installs the dead-pty stdout/stderr guards as an
 // import side effect (#442), and module evaluation follows import-declaration
-// order — dotenv's injection banner and the db module's boot-migration logs
-// write to stdio during the import phase, before any statement in this file
-// runs. Moving this down (or installing from this file's body, as a previous
-// revision did) re-opens the boot-time crash window this exists to close.
+// order — the db module's boot-migration logs write to stdio during the
+// import phase, before any statement in this file runs. Moving this down (or
+// installing from this file's body, as a previous revision did) re-opens the
+// boot-time crash window this exists to close.
 import { onStdioSuppressed, installFatalExceptionExit } from './utils/processGuards.js';
 import 'dotenv/config';
 import http from 'http';
