@@ -79,10 +79,12 @@ export interface NetworkState {
   // echo-message, not denied by CLIENTTAGDENY). False until the registration
   // burst ends; seeded by the snapshot, replaced by `react-support` frames.
   canReact?: boolean;
-  // Whether a reaction of ours can be taken back (+draft/unreact allowed), and
-  // whether a reply carries its tag (#1101). Same timing as canReact; absent
-  // from a server that predates them — read all three through tagSupport().
-  canUnreact?: boolean;
+  // The split answers (#1101): adding a reaction, taking one of ours back
+  // (+draft/unreact allowed), and whether a reply carries its tag. canReact
+  // above keeps its old meaning, both reaction directions. Same timing; absent
+  // from a server that predates them — read all of it through tagSupport().
+  canAddReaction?: boolean;
+  canRemoveReaction?: boolean;
   canReply?: boolean;
   // Bytes of our user@host as the network relays it (or the longest it could
   // be), the input to the composer's split estimate (#1043). Seeded by the
@@ -126,8 +128,8 @@ export function canDisconnect(state: string | null | undefined): boolean {
 /**
  * What the network can carry right now: a reaction, taking one of ours back, a reply's tag. All
  * false unless it's connected. A network can allow +draft/react and still deny +draft/unreact
- * (irc.so's UnrealIRCd, #1101), so each is its own answer. A server that predates canUnreact and
- * canReply only sent canReact, which then implied both — read them through it.
+ * (irc.so's UnrealIRCd, #1101), so each is its own answer. A server that predates the split only
+ * sent canReact, which covered all three — read them through it.
  */
 export function tagSupport(state: NetworkState | null | undefined): {
   react: boolean;
@@ -135,8 +137,12 @@ export function tagSupport(state: NetworkState | null | undefined): {
   reply: boolean;
 } {
   if (state?.state !== 'connected') return { react: false, unreact: false, reply: false };
-  const react = !!state.canReact;
-  return { react, unreact: state.canUnreact ?? react, reply: state.canReply ?? react };
+  const legacy = !!state.canReact;
+  return {
+    react: state.canAddReaction ?? legacy,
+    unreact: state.canRemoveReaction ?? legacy,
+    reply: state.canReply ?? legacy,
+  };
 }
 
 export const useNetworksStore = defineStore('networks', {
@@ -357,7 +363,8 @@ export const useNetworksStore = defineStore('networks', {
       this.states[event.networkId] = {
         ...existing,
         canReact: !!event.canReact,
-        canUnreact: event.canUnreact,
+        canAddReaction: event.canAddReaction,
+        canRemoveReaction: event.canRemoveReaction,
         canReply: event.canReply,
       };
     },

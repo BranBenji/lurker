@@ -23,7 +23,7 @@
       class="chip"
       :class="{ mine: g.mine }"
       :disabled="!chipWorks(g)"
-      :title="`${g.nicks.join(', ')} reacted ${g.value}`"
+      :title="chipTitle(g)"
       :aria-label="`${g.value}, ${g.nicks.length} (${g.nicks.join(', ')})`"
       :aria-pressed="g.mine"
       @click.stop="onChipClick(g)"
@@ -48,7 +48,7 @@
 <script setup lang="ts">
 import { computed, nextTick, watch } from 'vue';
 import { useReactionsStore } from '../stores/reactions.js';
-import { tagSupport, useNetworksStore } from '../stores/networks.js';
+import { useNetworksStore } from '../stores/networks.js';
 
 const props = withDefaults(
   defineProps<{
@@ -84,20 +84,25 @@ watch(
     emit('measured');
   },
 );
-const support = computed(() =>
-  props.interactive ? tagSupport(networks.states[props.message.networkId]) : null,
-);
-
 // A chip of ours takes the reaction back, which the network may not allow even
-// where it takes a new one (+draft/unreact denied, #1101); anyone else's adds ours.
-function chipWorks(g: { mine: boolean }): boolean {
-  if (!support.value) return false;
-  return g.mine ? support.value.unreact : support.value.react;
+// where it takes a new one (+draft/unreact denied, #1101); anyone else's adds
+// ours. The store decides (canToggle).
+function chipWorks(g: { value: string }): boolean {
+  if (!props.interactive || props.message.id == null) return false;
+  return reactions.canToggle(props.message.id, g.value, props.message.networkId);
 }
 
-function onChipClick(g: { value: string; mine: boolean }) {
+function chipTitle(g: { value: string; nicks: string[]; mine: boolean }): string {
+  const who = `${g.nicks.join(', ')} reacted ${g.value}`;
+  // Only where the rest of the row still works: a down network greys every chip.
+  return g.mine && !chipWorks(g) && networks.states[props.message.networkId]?.state === 'connected'
+    ? `${who} — this network can't take a reaction back`
+    : who;
+}
+
+function onChipClick(g: { value: string }) {
   if (!chipWorks(g) || props.message.id == null) return;
-  reactions.toggle(props.message.id, g.value);
+  reactions.toggle(props.message.id, g.value, props.message.networkId);
 }
 </script>
 

@@ -106,7 +106,11 @@ describe('ReactionRow', () => {
   // would take the reaction back, so it stays put; anyone else's still adds ours.
   it('keeps our own chip still where the network denies unreact', async () => {
     const wrapper = withReactions([r('me', 'lol', true), r('bob', '🎉')]);
-    useNetworksStore().states[NET] = { ...useNetworksStore().states[NET], canUnreact: false };
+    useNetworksStore().states[NET] = {
+      ...useNetworksStore().states[NET],
+      canAddReaction: true,
+      canRemoveReaction: false,
+    };
     await nextTick();
     const [lol, party] = wrapper.findAll('.chip:not(.add)');
     expect(lol.attributes('disabled')).toBeDefined();

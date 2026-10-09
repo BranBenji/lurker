@@ -104,12 +104,22 @@ describe('ReactModal', () => {
       NET,
     );
     const wrapper = open();
-    useNetworksStore().states[NET] = { ...useNetworksStore().states[NET], canUnreact: false };
+    useNetworksStore().states[NET] = {
+      ...useNetworksStore().states[NET],
+      canAddReaction: true,
+      canRemoveReaction: false,
+    };
     await nextTick();
     const button = (v: string) => wrapper.findAll('.quick .quick-btn').find((b) => b.text() === v)!;
     expect(button('👍').attributes('disabled')).toBeDefined();
     expect(wrapper.find('.standing-row').attributes('disabled')).toBeDefined();
     await button('👍').trigger('click');
+    expect(socketSend).not.toHaveBeenCalled();
+    // Typing it is the same take-back: the React button is off and says why.
+    await type(wrapper, '👍');
+    expect(wrapper.find('button[type=submit]').attributes('disabled')).toBeDefined();
+    expect(wrapper.text()).toContain("This network can't take a reaction back.");
+    await wrapper.find('form').trigger('submit');
     expect(socketSend).not.toHaveBeenCalled();
     await button('🎉').trigger('click');
     expect(socketSend).toHaveBeenLastCalledWith({

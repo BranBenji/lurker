@@ -12,6 +12,7 @@ import { socketSend } from '../composables/useSocket.js';
 import { useReactionsStore } from './reactions.js';
 import { useHighlightsStore } from './highlights.js';
 import { useBuffersStore } from './buffers.js';
+import { useNetworksStore } from './networks.js';
 import type { ReactionFrame } from './reactions.js';
 
 const NET = 1;
@@ -118,7 +119,13 @@ describe('reactions store', () => {
   // shown until the server's echo comes back as a frame.
   it('toggles by sending, never by rendering', () => {
     const store = useReactionsStore();
-    store.toggle(10, '👍');
+    useNetworksStore().states[NET] = {
+      networkId: NET,
+      channels: [],
+      state: 'connected',
+      canReact: true,
+    };
+    store.toggle(10, '👍', NET);
     expect(socketSend).toHaveBeenLastCalledWith({
       type: 'react',
       messageId: 10,
@@ -127,13 +134,41 @@ describe('reactions store', () => {
     });
     expect(store.groupsFor(10)).toEqual([]);
     store.applyFrame(frame({ nick: 'me', self: true }));
-    store.toggle(10, '👍');
+    store.toggle(10, '👍', NET);
     expect(socketSend).toHaveBeenLastCalledWith({
       type: 'react',
       messageId: 10,
       value: '👍',
       remove: true,
     });
+  });
+
+  // #1101: one gate for every way in. Taking ours back needs canRemoveReaction;
+  // adding needs canAddReaction; a server that predates them sent canReact for both.
+  it('refuses a take-back the network denies, and still adds', () => {
+    const store = useReactionsStore();
+    const networks = useNetworksStore();
+    const at = (fields: Record<string, unknown>) => {
+      networks.states[NET] = { networkId: NET, channels: [], state: 'connected', ...fields };
+    };
+    store.applyFrame(frame({ nick: 'me', self: true }));
+    at({ canReact: false, canAddReaction: true, canRemoveReaction: false });
+    expect(store.canToggle(10, '👍', NET)).toBe(false);
+    expect(store.toggle(10, '👍', NET)).toBe(false);
+    expect(socketSend).not.toHaveBeenCalled();
+    expect(store.canToggle(10, '🎉', NET)).toBe(true);
+    store.toggle(10, '🎉', NET);
+    expect(socketSend).toHaveBeenLastCalledWith({
+      type: 'react',
+      messageId: 10,
+      value: '🎉',
+      remove: false,
+    });
+    at({ canReact: true });
+    expect(store.canToggle(10, '👍', NET)).toBe(true);
+    at({ canReact: true, state: 'reconnecting' });
+    expect(store.canToggle(10, '🎉', NET)).toBe(false);
+    expect(store.canToggle(10, '🎉', null)).toBe(false);
   });
 });
 

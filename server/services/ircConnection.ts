@@ -5091,16 +5091,27 @@ export class IrcConnection {
     this.publishEphemeral({ type: 'mode-spec', target: this.serverTarget(), modeSpec: spec });
   }
 
-  // What clients may offer here, as they see it: reacting, taking a reaction
-  // back, and replying with a tag (#1101). All false until the registration
-  // burst has ended, for the same reason as clientModeSpec — the CLIENTTAGDENY
-  // that could forbid them rides a 005 that follows the 001 which pushes the
+  // What clients may offer here, as they see it (#1101): adding a reaction,
+  // taking one back, and replying with a tag. `canReact` keeps the meaning it
+  // shipped with — both reaction directions — so a client that predates the
+  // split never offers a take-back the network refuses; newer clients read
+  // the three explicit answers. All false until the registration burst has
+  // ended, for the same reason as clientModeSpec — the CLIENTTAGDENY that
+  // could forbid them rides a 005 that follows the 001 which pushes the
   // connect snapshot.
-  clientTagSupport(): { canReact: boolean; canUnreact: boolean; canReply: boolean } {
+  clientTagSupport(): {
+    canReact: boolean;
+    canAddReaction: boolean;
+    canRemoveReaction: boolean;
+    canReply: boolean;
+  } {
     const known = this.isupportComplete;
+    const add = known && this.canSendReactions();
+    const remove = add && this.supportsClientTag('draft/unreact');
     return {
-      canReact: known && this.canSendReactions(),
-      canUnreact: known && this.canSendUnreact(),
+      canReact: remove,
+      canAddReaction: add,
+      canRemoveReaction: remove,
       canReply: known && this.canSendReplies(),
     };
   }
@@ -8501,11 +8512,9 @@ export class IrcConnection {
   // saying who it answers. Each name the network allows goes out: `+reply` is
   // the ratified one, `+draft/reply` what older clients still read.
   replyTags(msgid: string): Record<string, string> | null {
-    const net = this.client.network as unknown as { supportsTag?: (tag: string) => boolean };
-    if (typeof net?.supportsTag !== 'function') return null;
     const tags: Record<string, string> = {};
-    if (net.supportsTag('reply')) tags['+reply'] = msgid;
-    if (net.supportsTag('draft/reply')) tags['+draft/reply'] = msgid;
+    if (this.supportsClientTag('reply')) tags['+reply'] = msgid;
+    if (this.supportsClientTag('draft/reply')) tags['+draft/reply'] = msgid;
     return Object.keys(tags).length ? tags : null;
   }
 

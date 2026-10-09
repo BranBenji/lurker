@@ -485,7 +485,8 @@ describe('sending reactions', () => {
       // A reply needs no echo (our line is stored when we send it): it stays.
       expect(support().at(-1)).toMatchObject({
         canReact: false,
-        canUnreact: false,
+        canAddReaction: false,
+        canRemoveReaction: false,
         canReply: true,
       });
       expect(rig.conn.canSendReactions()).toBe(false);
@@ -516,7 +517,12 @@ describe('sending reactions', () => {
     const rig = await connect('deny1', '#d1', denyIrcd.port);
     try {
       expect(rig.events.find((e) => e.type === 'react-support')).toEqual(
-        expect.objectContaining({ canReact: false, canUnreact: false, canReply: false }),
+        expect.objectContaining({
+          canReact: false,
+          canAddReaction: false,
+          canRemoveReaction: false,
+          canReply: false,
+        }),
       );
       expect(rig.conn.canSendReactions()).toBe(false);
       expect(rig.conn.sendReaction('#d1', 'm1', '👍', false)).toBe(false);
@@ -531,7 +537,14 @@ describe('sending reactions', () => {
   it('reacts and replies where only draft/unreact is denied, and refuses the unreact', async () => {
     const rig = await connect('unreal1', '#u1', unrealIrcd.port);
     try {
-      const support = { canReact: true, canUnreact: false, canReply: true };
+      // canReact keeps its old meaning (both directions), so a client that
+      // predates the split offers nothing here rather than a dead take-back.
+      const support = {
+        canReact: false,
+        canAddReaction: true,
+        canRemoveReaction: false,
+        canReply: true,
+      };
       expect(rig.events.find((e) => e.type === 'react-support')).toEqual(
         expect.objectContaining(support),
       );
