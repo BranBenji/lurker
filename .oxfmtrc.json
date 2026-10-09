@@ -7,6 +7,7 @@
     "package-lock.json",
     "vue_client/package-lock.json",
     "integrations/autonotes/package-lock.json",
-    "LICENSE"
+    "LICENSE",
+    "vue_client/public/sheep/gsheep.json"
   ]
 }

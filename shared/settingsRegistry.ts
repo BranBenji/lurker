@@ -1970,6 +1970,44 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'history included. 0 keeps closed buffers forever; the smallest nonzero ' +
       'value is 7. Buffers containing a bookmarked message are never deleted.',
   },
+  // ─── /sheep ───────────────────────────────────────────────────────────
+  // The undocumented /sheep (the 1995 eSheep screen mate, run from the gSheep
+  // pets under vue_client/public/sheep). Synced like any setting so the same
+  // flock walks every desktop PWA. The category is deliberately absent from
+  // CATEGORIES: these never show in the settings pane or /set — the command
+  // and a sheep's right-click menu are their only surface.
+  {
+    key: 'sheep.flock',
+    label: 'Sheep on screen',
+    category: 'sheep',
+    group: 'flock',
+    type: 'string-list',
+    // One entry per sheep, "<id>:<color>", in spawn order (a legacy third
+    // ":<name>" field still parses and is ignored). Shooing a
+    // sheep removes its entry; every client reconciles its own sheep to the list.
+    default: [],
+    description: 'The sheep walking around, one "<id>:<color>" entry each, in spawn order.',
+  },
+  {
+    key: 'sheep.sounds',
+    label: 'Sheep sounds',
+    category: 'sheep',
+    group: 'flock',
+    type: 'bool',
+    default: true,
+    description: 'Whether the sheep make their noises.',
+  },
+  {
+    key: 'sheep.scale',
+    label: 'Sheep size',
+    category: 'sheep',
+    group: 'flock',
+    type: 'int',
+    min: 1,
+    max: 3,
+    default: 1,
+    description: 'Pixel scale of the sheep: 1 is the original 40px, 2 and 3 are bigger.',
+  },
 ]);
 
 const BY_KEY = new Map(REGISTRY.map((opt) => [opt.key, opt] as const));
