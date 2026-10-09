@@ -324,6 +324,19 @@ describe('sheep store (debug trace)', () => {
     sheep.sprites[999] = { ...Object.values(sheep.sprites)[0], id: 999 };
     expect(sheep.status()).toContain('ghost sprites: #999');
   });
+
+  it('a sheep that arrives while the tab is hidden starts paused', async () => {
+    const vis = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+    try {
+      settingsWith(['aaa111:red']);
+      const sheep = useSheepStore();
+      await sheep.reconcile();
+      await flush();
+      expect(sheep.status()[0]).toMatch(/ paused/);
+    } finally {
+      vis.mockRestore();
+    }
+  });
 });
 
 describe('sheep store (phone layout)', () => {

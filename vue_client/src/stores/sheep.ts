@@ -199,6 +199,11 @@ export const useSheepStore = defineStore('sheep', {
         let pet = petByKey.get(entry.id);
         if (!pet) {
           pet = w.spawn();
+          // listen() only pauses on a visibility CHANGE: a sheep that arrives
+          // while the tab is already hidden would otherwise run and bleat unseen.
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+            pet.pause();
+          }
           petByKey.set(entry.id, pet);
         }
         entryByPet.set(pet.id, entry);
