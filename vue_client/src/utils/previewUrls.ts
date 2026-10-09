@@ -365,13 +365,9 @@ export function segmentsWithoutUrls(
   // ⚠ Copied, never mutated in place. `filter` and `slice` both preserve object identity, so an
   // in-place trim would reach back into the caller's array — which is a Vue PROP.
   //
-  // ⚠ The damage is latent rather than visible, and that is the reason to state it: MessageList
-  // calls `textSegments(m)` in the template, so it hands over a freshly built array on every
-  // render and nothing today survives long enough to be corrupted twice. Memoising that split is
-  // an obvious optimisation for a component mounted per row — and the moment someone does, an
-  // in-place trim writes the shortened text back into the cache, so the body stays mangled after
-  // the preview is gone. (An earlier version of this comment claimed the split was ALREADY
-  // memoised. It is not: `useNickColors.splitText` calls straight through.)
+  // MessageList memoises the split in `segmentsByMessage`, sharing the array across renders.
+  // These copies are required: an in-place trim would corrupt the cached segments and leave
+  // the body shortened even after the preview is gone and its URL should be shown again.
   if (isTrimmableText(out[0])) out[0] = { ...out[0], text: out[0].text.replace(/^\s+/, '') };
   const last = out.length - 1;
   if (isTrimmableText(out[last]))

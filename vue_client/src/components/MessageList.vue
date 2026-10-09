@@ -370,7 +370,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
-import type { CSSProperties, ComponentPublicInstance } from 'vue';
+import type { CSSProperties, ComponentPublicInstance, ComputedRef } from 'vue';
 import { useNetworksStore, type AwayState } from '../stores/networks.js';
 import { useBuffersStore, type BufferMember } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
@@ -1117,6 +1117,10 @@ let nowTimer: ReturnType<typeof setInterval> | null = null;
 // insert time across only these types.
 const STRIPED_TYPES = new Set(['message', 'action', 'notice']);
 
+// Keep transformed rows stable across appends, so their segment cache and child
+// props can be reused. Weak keys follow the lifetime of the stored message.
+const displayByMessage = new WeakMap<ChatMessage, ChatMessage>();
+
 // One-pass walk over messages to (a) decide which rows the smart filter
 // should hide and (b) tag rows with alt-row striping.
 const renderRows = computed((): RenderRow[] => {
@@ -1410,6 +1414,23 @@ const renderRows = computed((): RenderRow[] => {
         deltaMs >= 0 &&
         deltaMs <= collapseAuthorsWindowMs.value;
     }
+    if (mDisplay !== m) {
+      const previous = displayByMessage.get(m);
+      // Compare every copied field, not just the transformed body: edits to
+      // metadata (time, reply context, reactions, etc.) must also reach the row.
+      const keys = Object.keys(mDisplay) as (keyof ChatMessage)[];
+      if (
+        previous &&
+        Object.keys(previous).length === keys.length &&
+        keys.every((key) => Object.hasOwn(previous, key) && previous[key] === mDisplay[key])
+      ) {
+        mDisplay = previous;
+      } else {
+        displayByMessage.set(m, mDisplay);
+      }
+    } else {
+      displayByMessage.delete(m);
+    }
     out.push({
       m: mDisplay,
       alt: STRIPED_TYPES.has(m.type) && !!m.alt,
@@ -1620,17 +1641,25 @@ function hasInlineText(m: ChatMessage | undefined): boolean {
   return m?.type === 'message' || m?.type === 'notice' || m?.type === 'action';
 }
 
+// Appends repaint the list, but unchanged bodies don't need another formatting,
+// URL, emoji and nick pass (or a fresh segments prop for their child renderer).
+// Each computed tracks text, membership, self nick, palette and emoji readiness,
+// even after cache hits. Weak keys let evicted/replaced messages be collected;
+// ids alone would collide across buffers and reuse stale reply/relay display text.
+const segmentsByMessage = new WeakMap<ChatMessage, ComputedRef<RenderSegment[]>>();
+
 function textSegments(m: ChatMessage | undefined): RenderSegment[] {
   if (!m) return [];
-  if (m.type === 'action') {
-    // Body is "<nick> <text>" — author's nick then the action text.
-    return nicks.splitText(
-      `${m.nick} ${m.text || ''}`,
-      nickSet.value,
-      selfLower.value,
-    ) as RenderSegment[];
+  let segments = segmentsByMessage.get(m);
+  if (!segments) {
+    segments = computed(() => {
+      // An action's body includes its author, unlike a plain message.
+      const text = m.type === 'action' ? `${m.nick} ${m.text || ''}` : m.text || '';
+      return nicks.splitText(text, nickSet.value, selfLower.value) as RenderSegment[];
+    });
+    segmentsByMessage.set(m, segments);
   }
-  return nicks.splitText(m.text || '', nickSet.value, selfLower.value) as RenderSegment[];
+  return segments.value;
 }
 
 function onReplyContextClick(parent: ReplyParent | null | undefined): void {
