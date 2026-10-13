@@ -16,7 +16,8 @@ import {
   reportRow,
   type OwnerDeleteAnswer,
 } from './moderationReport.js';
-import { deleteUpload, getUploadForReport } from '../db/uploadHistory.js';
+import { deleteUploadUnlessRemoved, getUploadForReport } from '../db/uploadHistory.js';
+import { getHostedUploaderId } from '../db/uploaderConfig.js';
 import { NODE_UPLOAD_PROVIDER_ID } from './uploadProviders/nodeUpload.js';
 import * as systemLog from './systemLog.js';
 
@@ -27,12 +28,20 @@ const HOSTED_PROVIDERS: ReadonlySet<string> = new Set([NODE_UPLOAD_PROVIDER_ID, 
 /**
  * Is this row deleted through the control plane? Only on a node that can reach
  * it (controlPlaneConfigured is false outside node edition), only for what the
- * hosted dropper stored (anything else a cell has goes through its own driver),
- * and not for the cell's admin: that's the operator's account on the cell, with
- * no control-plane account to own an upload.
+ * hosted dropper stored, and not for the cell's admin: that's the operator's
+ * account on the cell, with no control-plane account to own an upload.
+ *
+ * "What the hosted dropper stored" is the hosted uploader config, or no config
+ * at all with the dropper's name: hosted uploads from before #510 recorded none.
+ * A row naming any other config came from an uploader of the user's own (an
+ * imported archive's Hoarder, say), which only its own driver can delete.
  */
-export function hostedDeletable(provider: string, isAdmin: boolean): boolean {
-  return !isAdmin && HOSTED_PROVIDERS.has(provider) && controlPlaneConfigured();
+export function hostedDeletable(
+  row: { provider: string; uploader_config_id: number | null },
+  isAdmin: boolean,
+): boolean {
+  if (isAdmin || !HOSTED_PROVIDERS.has(row.provider) || !controlPlaneConfigured()) return false;
+  return row.uploader_config_id == null || row.uploader_config_id === getHostedUploaderId();
 }
 
 export type HostedDeleteResult =
@@ -61,7 +70,11 @@ async function deleteOnce(userId: number, id: number): Promise<HostedDeleteResul
     if (row && (await reportRow(row))) answer = await requestOwnerDelete(id, userId);
   }
   if (answer.status >= 200 && answer.status < 300) {
-    deleteUpload(userId, id);
+    // A takedown that landed while the control plane was answering keeps its
+    // tombstone; the bytes are gone either way.
+    if (!deleteUploadUnlessRemoved(userId, id) && getUploadForReport(userId, id)) {
+      return { ok: false, status: 409, error: 'this upload was removed by moderation' };
+    }
     return { ok: true };
   }
   return refusal(answer);

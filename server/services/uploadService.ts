@@ -339,7 +339,10 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
   // a ref only if this specific upload's bytes can be destroyed later. Hosted
   // uploads are deleted through the control plane instead (control-plane #55).
   const canDelete =
-    hostedDeletable(resolved.driver.driver, input.isAdmin) ||
+    hostedDeletable(
+      { provider: resolved.driver.driver, uploader_config_id: resolved.configId },
+      input.isAdmin,
+    ) ||
     (Boolean(result.ref) && deletableWith(resolved.driver, resolved.driverConfig));
   return {
     id,

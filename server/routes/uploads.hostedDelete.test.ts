@@ -94,10 +94,15 @@ beforeEach(() => {
 
 let n = 0;
 // A hosted upload as the dropper leaves one: a CDN URL and thumbnail, no ref.
-function hostedUpload(owner = userId, provider = 'dropper'): number {
+function hostedUpload(
+  owner = userId,
+  provider = 'dropper',
+  uploaderConfigId: number | null = null,
+): number {
   n += 1;
   return history.insertUpload(owner, {
     provider,
+    uploader_config_id: uploaderConfigId,
     url: `https://cdn.test/f${n}.png`,
     mime: 'image/png',
     byte_size: 100,
@@ -241,5 +246,36 @@ describe('hosted upload delete (node edition, control-plane #55)', () => {
     ]);
     expect([a.status, b.status]).toEqual([200, 200]);
     expect(deleteCalls).toHaveLength(1);
+  });
+
+  it('deletes uploads the hosted uploader recorded itself', async () => {
+    const { getHostedUploaderId } = await import('../db/uploaderConfig.js');
+    const hostedId = getHostedUploaderId();
+    expect(hostedId).not.toBeNull(); // seeded from the operator env on a node
+    const id = hostedUpload(userId, 'dropper', hostedId);
+    expect((await agent.delete(`/api/uploads/${id}`)).status).toBe(200);
+    expect(exists(id)).toBe(false);
+  });
+
+  it("leaves a dropper row from the user's own uploader (an imported archive) to its driver", async () => {
+    const { getHostedUploaderId } = await import('../db/uploaderConfig.js');
+    const theirOwn = (getHostedUploaderId() as number) + 1000;
+    const id = hostedUpload(userId, 'dropper', theirOwn);
+    const list = await agent.get('/api/uploads');
+    expect(list.body.items.find((i: { id: number }) => i.id === id).can_delete).toBe(false);
+    expect((await agent.delete(`/api/uploads/${id}`)).status).toBe(409);
+    expect(deleteCalls).toEqual([]);
+  });
+
+  it('keeps the tombstone when a takedown lands while the control plane is answering', async () => {
+    const id = hostedUpload();
+    deleteAnswers = [{ status: 200, body: { ok: true, cdn_purged: true }, delayMs: 150 }];
+    const pending = agent.delete(`/api/uploads/${id}`).then((r) => r);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    history.markUploadRemovedById(id); // the control plane's takedown push
+    const res = await pending;
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/removed by moderation/);
+    expect(history.getUploadForReap(userId, id)?.removed).toBe(1);
   });
 });

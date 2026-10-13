@@ -257,6 +257,16 @@ export function getUploadForReap(userId: number, id: number): UploadReapRow | un
     .get(userId, Number(id)) as UploadReapRow | undefined;
 }
 
+// Drop the row unless moderation took it down meanwhile: a tombstone is the
+// owner's record of why the upload went, and outlives their own delete.
+export function deleteUploadUnlessRemoved(userId: number, id: number): boolean {
+  return (
+    db
+      .prepare('DELETE FROM upload_history WHERE user_id = ? AND id = ? AND removed = 0')
+      .run(userId, Number(id)).changes > 0
+  );
+}
+
 export function deleteUpload(userId: number, id: number): boolean {
   const info = db
     .prepare(

@@ -238,7 +238,7 @@ router.get('/', (req: Request, res: Response) => {
       // uploader still exists with a delete-capable driver. No ref (x0, anonymous
       // catbox, pre-#541 rows) → the client never shows a delete button.
       const can_delete =
-        hostedDeletable(r.provider, isAdmin) ||
+        hostedDeletable({ provider: r.provider, uploader_config_id }, isAdmin) ||
         (Boolean(has_ref) && configDeletable(uploader_config_id));
       // Prefer a remote CDN thumbnail; otherwise fall back to the local
       // BLOB-serving route when an inline thumbnail exists.
@@ -311,7 +311,7 @@ router.delete('/:id', async (req: Request, res: Response) => {
   }
   // Hosted (node edition): the control plane deletes the bytes, since the cell
   // holds no delete key (control-plane #55). Anything else goes to its driver.
-  if (!row.removed && hostedDeletable(row.provider, req.user!.role === 'admin')) {
+  if (!row.removed && hostedDeletable(row, req.user!.role === 'admin')) {
     const out = await deleteHostedUpload(req.user!.id, id);
     if (!out.ok) {
       if (out.retryAfter) res.set('Retry-After', String(out.retryAfter));

@@ -301,3 +301,20 @@ export function deleteUploaderConfig(id: number): boolean {
   const info = db.prepare('DELETE FROM uploader_config WHERE id = ?').run(id);
   return info.changes > 0;
 }
+
+/**
+ * The hosted cell's locked instance uploader (the operator's dropper), or null
+ * off a hosted cell. Uploads it produced are the ones the control plane can
+ * delete (control-plane #55). Both driver ids, as in the seed: rows from before
+ * #537's rename say `hoarder`.
+ */
+export function getHostedUploaderId(): number | null {
+  const r = db
+    .prepare(
+      `SELECT id FROM uploader_config
+        WHERE scope = 'instance' AND locked = 1 AND driver IN ('dropper', 'hoarder')
+        LIMIT 1`,
+    )
+    .get() as { id: number } | undefined;
+  return r ? r.id : null;
+}
