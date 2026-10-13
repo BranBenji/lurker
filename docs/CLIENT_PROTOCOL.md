@@ -1394,7 +1394,7 @@ trail the server's own; it is `null` until the engine has answered once.
 | `GET /:id/thumb`       | Binary thumbnail                                                                                                                                                                                                                                                            |
 | `PUT /:id/favorite`    | Star it → `{ok, favorite:true}`. `404` if no such upload                                                                                                                                                                                                                    |
 | `DELETE /:id/favorite` | Unstar it → `{ok, favorite:false}`. Succeeds on an already-unstarred row; `404` only means no such upload                                                                                                                                                                   |
-| `DELETE /:id`          | `409` if not deletable                                                                                                                                                                                                                                                      |
+| `DELETE /:id`          | `409` if not deletable (or taken down by moderation). On the hosted service the control plane deletes the bytes, so it can also answer `429` (with `Retry-After`), `502` or `503`; the row is kept and a retry is safe                                                      |
 
 `/api/uploaders` manages upload destinations (list/select/create/update/delete;
 secrets write-only). Standalone serves local files publicly at

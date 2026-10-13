@@ -39,7 +39,8 @@ export interface DriverCapabilities {
   // uploads). The full row predicate is deletableWith() in resolve.ts —
   // supportsDelete AND canDeleteWith(config) AND ref present — since a config
   // can lose the credential delete() needs after refs were captured. x0 has no
-  // delete API at all; hosted dropper deletion stays CP-mediated (CP #55).
+  // delete API at all. Hosted dropper uploads are deleted through the control
+  // plane instead (services/hostedUploadDelete.ts, control-plane #55).
   supportsDelete: boolean;
   // true only where WE construct the storage key (s3, local — none in P0). The
   // preserve-original-filename option (#517) is a no-op where the remote host

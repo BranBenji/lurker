@@ -32,6 +32,7 @@ import {
   type ResolvedUploader,
 } from './uploadProviders/resolve.js';
 import { insertUpload } from '../db/uploadHistory.js';
+import { hostedDeleteAvailable } from './hostedUploadDelete.js';
 import { reportUploadSoon } from './moderationReport.js';
 
 // Uploads land in a temp file, never in the heap. multer's memoryStorage used to
@@ -335,8 +336,11 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
   });
 
   // Deletability is decided at capture time (decision 8): the driver returned
-  // a ref only if this specific upload's bytes can be destroyed later.
-  const canDelete = Boolean(result.ref) && deletableWith(resolved.driver, resolved.driverConfig);
+  // a ref only if this specific upload's bytes can be destroyed later. Hosted
+  // uploads are deleted through the control plane instead (control-plane #55).
+  const canDelete =
+    hostedDeleteAvailable() ||
+    (Boolean(result.ref) && deletableWith(resolved.driver, resolved.driverConfig));
   return {
     id,
     url: mainUrl,

@@ -296,6 +296,18 @@ export function listUnsyncedUploads(limit = 50): UnsyncedUploadRow[] {
     .all(lim) as UnsyncedUploadRow[];
 }
 
+// One of the user's rows, in the shape the reporter sends: a hosted delete
+// reports a row the control plane hasn't indexed yet before asking again.
+export function getUploadForReport(userId: number, id: number): UnsyncedUploadRow | undefined {
+  return db
+    .prepare(
+      `SELECT id, user_id, url, thumbnail_url, mime, byte_size, width, height
+       FROM upload_history
+       WHERE user_id = ? AND id = ?`,
+    )
+    .get(userId, Number(id)) as UnsyncedUploadRow | undefined;
+}
+
 export function markUploadSynced(id: number): void {
   db.prepare('UPDATE upload_history SET synced_to_cp = 1 WHERE id = ?').run(Number(id));
 }

@@ -177,6 +177,23 @@ describe('POST /api/uploads (node edition)', () => {
     expect(row.provider).toBe('dropper');
   });
 
+  it('offers delete on a fresh upload only once the cell can reach the control plane (control-plane #55)', async () => {
+    const upload = () =>
+      agent
+        .post('/api/uploads')
+        .attach('image', smallPng, { filename: 'd.png', contentType: 'image/png' });
+    // Not wired to a control plane: nothing could delete the bytes.
+    expect((await upload()).body.can_delete).toBe(false);
+    vi.stubEnv('LURKER_ORCHESTRATOR_URL', 'http://127.0.0.1:9');
+    vi.stubEnv('LURKER_NODE_NAME', 'cell-test');
+    vi.stubEnv('LURKER_NODE_SECRET', 'fleet-secret');
+    try {
+      expect((await upload()).body.can_delete).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('hands the provider operator env credentials, not per-user settings', async () => {
     stub.capturedSecrets = null;
     await agent

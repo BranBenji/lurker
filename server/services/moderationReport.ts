@@ -37,6 +37,11 @@ function readConfig(): ReporterConfig | null {
   return { url, name, secret };
 }
 
+/** True when this cell can talk to the control plane (a configured node). */
+export function controlPlaneConfigured(): boolean {
+  return readConfig() !== null;
+}
+
 /** The per-upload moderation record the control plane indexes. */
 export interface UploadReport {
   cell_upload_id: number;
@@ -103,6 +108,55 @@ export async function flushUnsyncedUploads(batch = 50): Promise<number> {
     synced++;
   }
   return synced;
+}
+
+/**
+ * The control plane's answer to an owner delete (control-plane #55). `code` is
+ * the CP's machine-readable reason on a refusal ('not_indexed', 'taken_down',
+ * …); status 0 means it couldn't be reached.
+ */
+export interface OwnerDeleteAnswer {
+  status: number;
+  code?: string;
+  error?: string;
+  retryAfter?: number;
+}
+
+// Ask the control plane to delete one of this cell's hosted uploads. Cells hold
+// only the upload key, never the delete key, so the CP does the deleting (R2 +
+// CDN) after checking the upload is this cell's and this user's. Never throws.
+export async function requestOwnerDelete(
+  cellUploadId: number,
+  cellUserId: number,
+): Promise<OwnerDeleteAnswer> {
+  const cfg = readConfig();
+  if (!cfg) return { status: 0, error: 'not a configured node' };
+  try {
+    const res = await fetch(`${cfg.url.replace(/\/+$/, '')}/_cp/moderation/uploads/delete`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${cfg.secret}`,
+        'User-Agent': USER_AGENT,
+      },
+      body: JSON.stringify({
+        cell: cfg.name,
+        cell_user_id: cellUserId,
+        cell_upload_id: cellUploadId,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const body = (await res.json().catch(() => null)) as { code?: string; error?: string } | null;
+    const retry = Number(res.headers.get('retry-after'));
+    return {
+      status: res.status,
+      code: body?.code,
+      error: body?.error,
+      ...(Number.isFinite(retry) && retry > 0 ? { retryAfter: retry } : {}),
+    };
+  } catch (err) {
+    return { status: 0, error: (err as Error).message };
+  }
 }
 
 const DEFAULT_INTERVAL_MS = 60_000;
