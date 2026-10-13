@@ -15,6 +15,7 @@ import {
 import { thumbnailFormat } from '../services/thumbnailFormat.js';
 import { driverIds } from '../services/uploadProviders/index.js';
 import { loadDriverForRef, deletableWith } from '../services/uploadProviders/resolve.js';
+import { hostedDeletable, deleteHostedUpload } from '../services/hostedUploadDelete.js';
 import type { UploadListRow } from '../db/uploadHistory.js';
 import {
   listUploads,
@@ -220,6 +221,8 @@ router.get('/', (req: Request, res: Response) => {
   const favorites = req.query.favorites === '1' || req.query.favorites === 'true';
   const rows: UploadListRow[] = listUploads(req.user!.id, { before, limit, q, kind, favorites });
   const configDeletable = configDeletableCheck();
+  // Hosted rows are deleted through the control plane, not a driver handle.
+  const isAdmin = req.user!.role === 'admin';
   res.json({
     items: rows.map((r) => {
       const { has_thumbnail, thumbnail_url, removed, uploader_config_id, has_ref, ...rest } = r;
@@ -234,7 +237,9 @@ router.get('/', (req: Request, res: Response) => {
       // driver captured a delete handle at upload time AND its configured
       // uploader still exists with a delete-capable driver. No ref (x0, anonymous
       // catbox, pre-#541 rows) → the client never shows a delete button.
-      const can_delete = Boolean(has_ref) && configDeletable(uploader_config_id);
+      const can_delete =
+        hostedDeletable({ provider: r.provider, uploader_config_id }, isAdmin) ||
+        (Boolean(has_ref) && configDeletable(uploader_config_id));
       // Prefer a remote CDN thumbnail; otherwise fall back to the local
       // BLOB-serving route when an inline thumbnail exists.
       const thumb = thumbnail_url || (has_thumbnail ? `/api/uploads/${r.id}/thumb` : null);
@@ -302,6 +307,18 @@ router.delete('/:id', async (req: Request, res: Response) => {
   const row = getUploadForReap(req.user!.id, id);
   if (!row) {
     res.status(404).json({ error: 'not found' });
+    return;
+  }
+  // Hosted (node edition): the control plane deletes the bytes, since the cell
+  // holds no delete key (control-plane #55). Anything else goes to its driver.
+  if (!row.removed && hostedDeletable(row, req.user!.role === 'admin')) {
+    const out = await deleteHostedUpload(req.user!.id, id);
+    if (!out.ok) {
+      if (out.retryAfter) res.set('Retry-After', String(out.retryAfter));
+      res.status(out.status).json({ error: out.error });
+      return;
+    }
+    res.json({ ok: true });
     return;
   }
   const loaded =

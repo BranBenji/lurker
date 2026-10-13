@@ -257,6 +257,16 @@ export function getUploadForReap(userId: number, id: number): UploadReapRow | un
     .get(userId, Number(id)) as UploadReapRow | undefined;
 }
 
+// Drop the row unless moderation took it down meanwhile: a tombstone is the
+// owner's record of why the upload went, and outlives their own delete.
+export function deleteUploadUnlessRemoved(userId: number, id: number): boolean {
+  return (
+    db
+      .prepare('DELETE FROM upload_history WHERE user_id = ? AND id = ? AND removed = 0')
+      .run(userId, Number(id)).changes > 0
+  );
+}
+
 export function deleteUpload(userId: number, id: number): boolean {
   const info = db
     .prepare(
@@ -269,6 +279,8 @@ export function deleteUpload(userId: number, id: number): boolean {
 }
 
 /** A row the moderation reporter still needs to push to the control plane. */
+const REPORT_COLS = 'id, user_id, url, thumbnail_url, mime, byte_size, width, height';
+
 export interface UnsyncedUploadRow {
   id: number;
   user_id: number;
@@ -287,13 +299,21 @@ export function listUnsyncedUploads(limit = 50): UnsyncedUploadRow[] {
   const lim = Math.max(1, Math.min(500, Number(limit) || 50));
   return db
     .prepare(
-      `SELECT id, user_id, url, thumbnail_url, mime, byte_size, width, height
+      `SELECT ${REPORT_COLS}
        FROM upload_history
        WHERE synced_to_cp = 0
        ORDER BY id ASC
        LIMIT ?`,
     )
     .all(lim) as UnsyncedUploadRow[];
+}
+
+// One of the user's rows, in the shape the reporter sends: a hosted delete
+// reports a row the control plane hasn't indexed yet before asking again.
+export function getUploadForReport(userId: number, id: number): UnsyncedUploadRow | undefined {
+  return db
+    .prepare(`SELECT ${REPORT_COLS} FROM upload_history WHERE user_id = ? AND id = ?`)
+    .get(userId, Number(id)) as UnsyncedUploadRow | undefined;
 }
 
 export function markUploadSynced(id: number): void {

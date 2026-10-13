@@ -17,7 +17,11 @@
 
 import { isNodeMode } from '../utils/edition.js';
 import { USER_AGENT } from '../utils/userAgent.js';
-import { listUnsyncedUploads, markUploadSynced } from '../db/uploadHistory.js';
+import {
+  listUnsyncedUploads,
+  markUploadSynced,
+  type UnsyncedUploadRow,
+} from '../db/uploadHistory.js';
 import * as systemLog from './systemLog.js';
 
 interface ReporterConfig {
@@ -35,6 +39,11 @@ function readConfig(): ReporterConfig | null {
   const secret = (process.env.LURKER_NODE_SECRET || '').trim();
   if (!url || !name || !secret) return null;
   return { url, name, secret };
+}
+
+/** True when this cell can talk to the control plane (a configured node). */
+export function controlPlaneConfigured(): boolean {
+  return readConfig() !== null;
 }
 
 /** The per-upload moderation record the control plane indexes. */
@@ -63,6 +72,7 @@ export async function reportUpload(rec: UploadReport): Promise<boolean> {
         'User-Agent': USER_AGENT,
       },
       body: JSON.stringify({ cell: cfg.name, ...rec }),
+      signal: AbortSignal.timeout(15_000),
     });
     return res.ok;
   } catch {
@@ -81,6 +91,22 @@ export function reportUploadSoon(rec: UploadReport): void {
   });
 }
 
+// Report one history row and mark it synced once the control plane has it.
+export async function reportRow(r: UnsyncedUploadRow): Promise<boolean> {
+  const ok = await reportUpload({
+    cell_upload_id: r.id,
+    cell_user_id: r.user_id,
+    url: r.url,
+    thumb_url: r.thumbnail_url,
+    mime: r.mime,
+    byte_size: r.byte_size,
+    width: r.width,
+    height: r.height,
+  });
+  if (ok) markUploadSynced(r.id);
+  return ok;
+}
+
 // Drain rows the CP hasn't acknowledged (it was down at upload time). One batch
 // per call; the timer calls it again next tick. Stops at the first failure so we
 // don't hammer a CP that's still down.
@@ -88,21 +114,61 @@ export async function flushUnsyncedUploads(batch = 50): Promise<number> {
   if (!readConfig()) return 0;
   let synced = 0;
   for (const r of listUnsyncedUploads(batch)) {
-    const ok = await reportUpload({
-      cell_upload_id: r.id,
-      cell_user_id: r.user_id,
-      url: r.url,
-      thumb_url: r.thumbnail_url,
-      mime: r.mime,
-      byte_size: r.byte_size,
-      width: r.width,
-      height: r.height,
-    });
-    if (!ok) break;
-    markUploadSynced(r.id);
+    if (!(await reportRow(r))) break;
     synced++;
   }
   return synced;
+}
+
+/**
+ * The control plane's answer to an owner delete (control-plane #55). `code` is
+ * the CP's machine-readable reason on a refusal ('not_indexed', 'taken_down',
+ * …); status 0 means it couldn't be reached.
+ */
+export interface OwnerDeleteAnswer {
+  status: number;
+  code?: string;
+  error?: string;
+  retryAfter?: number;
+}
+
+// Ask the control plane to delete one of this cell's hosted uploads. Cells hold
+// only the upload key, never the delete key, so the CP does the deleting (R2 +
+// CDN) after checking the upload is this cell's and this user's. Never throws.
+export async function requestOwnerDelete(
+  cellUploadId: number,
+  cellUserId: number,
+): Promise<OwnerDeleteAnswer> {
+  const cfg = readConfig();
+  if (!cfg) return { status: 0, error: 'not a configured node' };
+  try {
+    const res = await fetch(`${cfg.url.replace(/\/+$/, '')}/_cp/moderation/uploads/delete`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${cfg.secret}`,
+        'User-Agent': USER_AGENT,
+      },
+      body: JSON.stringify({
+        cell: cfg.name,
+        cell_user_id: cellUserId,
+        cell_upload_id: cellUploadId,
+      }),
+      // The control plane deletes from R2 and purges the CDN before it answers,
+      // each with its own 10s limit; give it room for both.
+      signal: AbortSignal.timeout(30_000),
+    });
+    const body = (await res.json().catch(() => null)) as { code?: string; error?: string } | null;
+    const retry = Number(res.headers.get('retry-after'));
+    return {
+      status: res.status,
+      code: body?.code,
+      error: body?.error,
+      ...(Number.isFinite(retry) && retry > 0 ? { retryAfter: retry } : {}),
+    };
+  } catch (err) {
+    return { status: 0, error: (err as Error).message };
+  }
 }
 
 const DEFAULT_INTERVAL_MS = 60_000;
