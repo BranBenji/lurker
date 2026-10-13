@@ -65,10 +65,14 @@ async function connect(net: Network): Promise<IrcConnection> {
 }
 
 // The app "shuts down": detach, never QUIT, and the engine keeps the socket.
+// Waited for, not asserted at once: the engine offers a socket as held only once
+// it has seen registration finish (engine/server.ts isSession), which can trail
+// the app's own 'connected' by a beat.
 async function detach(conn: IrcConnection): Promise<void> {
   conn.detach();
   await harness.until(() => conn.state === 'disconnected', 5000, 'detached');
-  expect(harness.engine.held()).toContain(engineConnectionId(userId, conn.network.id));
+  const id = engineConnectionId(userId, conn.network.id);
+  await harness.until(() => harness.engine.held().includes(id), 5000, 'held by the engine');
 }
 
 const buffered = (net: Network) =>
