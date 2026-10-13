@@ -153,10 +153,11 @@ POST https://app.lurker.chat/_cp/auth/app/login     (no auth)
 (`lurker-ios` `Backend.swift:26-39`.) The hosted token is a signed, **chat-scoped**
 claim: it works for all proxied chat traffic (REST + WS against
 `app.lurker.chat`) but is rejected on control-plane account/billing routes —
-account administration stays on the web. Revocation is **global-only** (password
-reset invalidates every session, via the session epoch); there is no per-device
-revoke on hosted. After minting, use the token exactly as in §3.1 — same header,
-same endpoints — the control plane proxies you to the right cell transparently.
+account administration stays on the web. Revocation is **global-only** (a
+password change or reset invalidates every session, via the session epoch);
+there is no per-device revoke on hosted. After minting, use the token exactly as
+in §3.1 — same header, same endpoints — the control plane proxies you to the
+right cell transparently.
 
 ### 3.4 Browser flows (for completeness)
 

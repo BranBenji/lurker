@@ -10,7 +10,8 @@
       Signed in as <strong>{{ identity }}</strong>
     </p>
     <p v-if="config.isNode" class="section-desc">
-      Manage your subscription and payment details on the <a href="/billing">billing</a> page.
+      Change your password or email, manage billing, or close your account on your
+      <a href="/account">account</a> page.
     </p>
     <p v-else class="section-desc">
       You can sign in with a passkey, a password, or both. Removing your last sign-in method would
