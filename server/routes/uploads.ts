@@ -15,8 +15,7 @@ import {
 import { thumbnailFormat } from '../services/thumbnailFormat.js';
 import { driverIds } from '../services/uploadProviders/index.js';
 import { loadDriverForRef, deletableWith } from '../services/uploadProviders/resolve.js';
-import { hostedDeleteAvailable, deleteHostedUpload } from '../services/hostedUploadDelete.js';
-import { isNodeMode } from '../utils/edition.js';
+import { hostedDeletable, deleteHostedUpload } from '../services/hostedUploadDelete.js';
 import type { UploadListRow } from '../db/uploadHistory.js';
 import {
   listUploads,
@@ -223,7 +222,7 @@ router.get('/', (req: Request, res: Response) => {
   const rows: UploadListRow[] = listUploads(req.user!.id, { before, limit, q, kind, favorites });
   const configDeletable = configDeletableCheck();
   // Hosted rows are deleted through the control plane, not a driver handle.
-  const hosted = hostedDeleteAvailable();
+  const isAdmin = req.user!.role === 'admin';
   res.json({
     items: rows.map((r) => {
       const { has_thumbnail, thumbnail_url, removed, uploader_config_id, has_ref, ...rest } = r;
@@ -238,7 +237,9 @@ router.get('/', (req: Request, res: Response) => {
       // driver captured a delete handle at upload time AND its configured
       // uploader still exists with a delete-capable driver. No ref (x0, anonymous
       // catbox, pre-#541 rows) → the client never shows a delete button.
-      const can_delete = hosted || (Boolean(has_ref) && configDeletable(uploader_config_id));
+      const can_delete =
+        hostedDeletable(r.provider, isAdmin) ||
+        (Boolean(has_ref) && configDeletable(uploader_config_id));
       // Prefer a remote CDN thumbnail; otherwise fall back to the local
       // BLOB-serving route when an inline thumbnail exists.
       const thumb = thumbnail_url || (has_thumbnail ? `/api/uploads/${r.id}/thumb` : null);
@@ -309,12 +310,8 @@ router.delete('/:id', async (req: Request, res: Response) => {
     return;
   }
   // Hosted (node edition): the control plane deletes the bytes, since the cell
-  // holds no delete key (control-plane #55).
-  if (isNodeMode()) {
-    if (row.removed || !hostedDeleteAvailable()) {
-      res.status(409).json({ error: 'this upload cannot be deleted' });
-      return;
-    }
+  // holds no delete key (control-plane #55). Anything else goes to its driver.
+  if (!row.removed && hostedDeletable(row.provider, req.user!.role === 'admin')) {
     const out = await deleteHostedUpload(req.user!.id, id);
     if (!out.ok) {
       if (out.retryAfter) res.set('Retry-After', String(out.retryAfter));

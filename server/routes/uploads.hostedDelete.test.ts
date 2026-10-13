@@ -22,7 +22,12 @@ const ctx = setupTestDb('routes-uploads-hosted-delete');
 
 // A stand-in control plane: the owner-delete endpoint answers whatever the test
 // sets, and the report endpoint records what it's sent.
-type Answer = { status: number; body: Record<string, unknown>; headers?: Record<string, string> };
+type Answer = {
+  status: number;
+  body: Record<string, unknown> | string;
+  headers?: Record<string, string>;
+  delayMs?: number;
+};
 let deleteAnswers: Answer[] = [];
 const deleteCalls: { auth?: string; body: Record<string, unknown> }[] = [];
 const reports: Record<string, unknown>[] = [];
@@ -33,9 +38,15 @@ function startFakeCp(): Promise<string> {
   app.use(express.json());
   app.post('/_cp/moderation/uploads/delete', (req, res) => {
     deleteCalls.push({ auth: req.headers.authorization, body: req.body });
-    const a = deleteAnswers.shift() ?? { status: 200, body: { ok: true, cdn_purged: true } };
-    for (const [k, v] of Object.entries(a.headers ?? {})) res.set(k, v);
-    res.status(a.status).json(a.body);
+    const a: Answer = deleteAnswers.shift() ?? {
+      status: 200,
+      body: { ok: true, cdn_purged: true },
+    };
+    setTimeout(() => {
+      for (const [k, v] of Object.entries(a.headers ?? {})) res.set(k, v);
+      if (typeof a.body === 'string') res.status(a.status).type('text/plain').send(a.body);
+      else res.status(a.status).json(a.body);
+    }, a.delayMs ?? 0);
   });
   app.post('/_cp/moderation/uploads', (req, res) => {
     reports.push(req.body);
@@ -50,6 +61,8 @@ function startFakeCp(): Promise<string> {
 
 let app: Express;
 let agent: LurkerTestAgent;
+let adminAgent: LurkerTestAgent;
+let adminId: number;
 let userId: number;
 let otherUserId: number;
 let history: typeof import('../db/uploadHistory.js');
@@ -63,6 +76,9 @@ beforeAll(async () => {
   otherUserId = createUser('hosted-delete-bob').id;
   app = createTestApp({ '/api/uploads': router });
   agent = await createAuthedAgent(app, userId);
+  // The operator's own account on the cell: no control-plane account behind it.
+  adminId = createUser('hosted-delete-operator', { role: 'admin' }).id;
+  adminAgent = await createAuthedAgent(app, adminId);
 });
 
 afterAll(() => {
@@ -78,10 +94,10 @@ beforeEach(() => {
 
 let n = 0;
 // A hosted upload as the dropper leaves one: a CDN URL and thumbnail, no ref.
-function hostedUpload(owner = userId): number {
+function hostedUpload(owner = userId, provider = 'dropper'): number {
   n += 1;
   return history.insertUpload(owner, {
-    provider: 'dropper',
+    provider,
     url: `https://cdn.test/f${n}.png`,
     mime: 'image/png',
     byte_size: 100,
@@ -139,6 +155,9 @@ describe('hosted upload delete (node edition, control-plane #55)', () => {
     [{ status: 409, body: { code: 'taken_down' } }, 409, /removed by moderation/],
     [{ status: 502, body: { code: 'storage_unavailable' } }, 502, /try again/],
     [{ status: 403, body: { code: 'not_from_cell' } }, 502, /could not delete/],
+    [{ status: 403, body: { code: 'not_owner' } }, 409, /cannot be deleted/],
+    // A proxy's answer has no JSON: the status alone still says what happened.
+    [{ status: 409, body: 'Conflict' }, 409, /removed by moderation/],
     [{ status: 503, body: { code: 'storage_unconfigured' } }, 503, /could not delete/],
   ])('keeps the row when the control plane refuses (%j → %i)', async (answer, status, message) => {
     const id = hostedUpload();
@@ -181,5 +200,46 @@ describe('hosted upload delete (node edition, control-plane #55)', () => {
     history.markUploadRemovedById(removed);
     expect((await agent.delete(`/api/uploads/${removed}`)).status).toBe(409);
     expect(deleteCalls).toEqual([]);
+  });
+
+  it('passes on a bare 429 from a proxy, Retry-After and all', async () => {
+    const id = hostedUpload();
+    deleteAnswers = [{ status: 429, body: 'Too Many Requests', headers: { 'Retry-After': '5' } }];
+    const res = await agent.delete(`/api/uploads/${id}`);
+    expect(res.status).toBe(429);
+    expect(res.headers['retry-after']).toBe('5');
+  });
+
+  it('deletes rows from before the dropper was renamed (provider hoarder)', async () => {
+    const id = hostedUpload(userId, 'hoarder');
+    expect((await agent.delete(`/api/uploads/${id}`)).status).toBe(200);
+    expect(exists(id)).toBe(false);
+  });
+
+  it('leaves rows from any other uploader to their own driver', async () => {
+    const id = hostedUpload(userId, 'catbox');
+    const list = await agent.get('/api/uploads');
+    expect(list.body.items.find((i: { id: number }) => i.id === id).can_delete).toBe(false);
+    expect((await agent.delete(`/api/uploads/${id}`)).status).toBe(409);
+    expect(deleteCalls).toEqual([]);
+  });
+
+  it("offers no hosted delete to the cell's admin, who has no control-plane account", async () => {
+    const id = hostedUpload(adminId);
+    const list = await adminAgent.get('/api/uploads');
+    expect(list.body.items.find((i: { id: number }) => i.id === id).can_delete).toBe(false);
+    expect((await adminAgent.delete(`/api/uploads/${id}`)).status).toBe(409);
+    expect(deleteCalls).toEqual([]);
+  });
+
+  it('a double tap asks the control plane once', async () => {
+    const id = hostedUpload();
+    deleteAnswers = [{ status: 200, body: { ok: true, cdn_purged: true }, delayMs: 100 }];
+    const [a, b] = await Promise.all([
+      agent.delete(`/api/uploads/${id}`),
+      agent.delete(`/api/uploads/${id}`),
+    ]);
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect(deleteCalls).toHaveLength(1);
   });
 });

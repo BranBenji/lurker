@@ -17,7 +17,11 @@
 
 import { isNodeMode } from '../utils/edition.js';
 import { USER_AGENT } from '../utils/userAgent.js';
-import { listUnsyncedUploads, markUploadSynced } from '../db/uploadHistory.js';
+import {
+  listUnsyncedUploads,
+  markUploadSynced,
+  type UnsyncedUploadRow,
+} from '../db/uploadHistory.js';
 import * as systemLog from './systemLog.js';
 
 interface ReporterConfig {
@@ -68,6 +72,7 @@ export async function reportUpload(rec: UploadReport): Promise<boolean> {
         'User-Agent': USER_AGENT,
       },
       body: JSON.stringify({ cell: cfg.name, ...rec }),
+      signal: AbortSignal.timeout(15_000),
     });
     return res.ok;
   } catch {
@@ -86,6 +91,22 @@ export function reportUploadSoon(rec: UploadReport): void {
   });
 }
 
+// Report one history row and mark it synced once the control plane has it.
+export async function reportRow(r: UnsyncedUploadRow): Promise<boolean> {
+  const ok = await reportUpload({
+    cell_upload_id: r.id,
+    cell_user_id: r.user_id,
+    url: r.url,
+    thumb_url: r.thumbnail_url,
+    mime: r.mime,
+    byte_size: r.byte_size,
+    width: r.width,
+    height: r.height,
+  });
+  if (ok) markUploadSynced(r.id);
+  return ok;
+}
+
 // Drain rows the CP hasn't acknowledged (it was down at upload time). One batch
 // per call; the timer calls it again next tick. Stops at the first failure so we
 // don't hammer a CP that's still down.
@@ -93,18 +114,7 @@ export async function flushUnsyncedUploads(batch = 50): Promise<number> {
   if (!readConfig()) return 0;
   let synced = 0;
   for (const r of listUnsyncedUploads(batch)) {
-    const ok = await reportUpload({
-      cell_upload_id: r.id,
-      cell_user_id: r.user_id,
-      url: r.url,
-      thumb_url: r.thumbnail_url,
-      mime: r.mime,
-      byte_size: r.byte_size,
-      width: r.width,
-      height: r.height,
-    });
-    if (!ok) break;
-    markUploadSynced(r.id);
+    if (!(await reportRow(r))) break;
     synced++;
   }
   return synced;
@@ -144,7 +154,9 @@ export async function requestOwnerDelete(
         cell_user_id: cellUserId,
         cell_upload_id: cellUploadId,
       }),
-      signal: AbortSignal.timeout(15_000),
+      // The control plane deletes from R2 and purges the CDN before it answers,
+      // each with its own 10s limit; give it room for both.
+      signal: AbortSignal.timeout(30_000),
     });
     const body = (await res.json().catch(() => null)) as { code?: string; error?: string } | null;
     const retry = Number(res.headers.get('retry-after'));
