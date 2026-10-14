@@ -6371,7 +6371,10 @@ export class IrcConnection {
     // own client configured. Sharing the bucket meant a fourth `/dcc chat` in a
     // minute vanished with no trace on either side, which is exactly how it
     // presented in QA.
-    if (type === 'DCC' && dccEnabledForUser(this.network.user_id)) {
+    if (
+      type === 'DCC' &&
+      (dccEnabledForUser(this.network.user_id) || this.isAwaitedDccAccept(nick, args))
+    ) {
       // Say why, rather than letting it fall through to the generic
       // "requested CTCP DCC (no reply)". Only reached when DCC is otherwise
       // enabled for this user, so nobody who never had DCC sees a new line.
@@ -6666,6 +6669,18 @@ export class IrcConnection {
   }
 
   // The sender accepted our resume: start receiving (appending) from our partial.
+  // A DCC ACCEPT answering a resume we asked for is part of a transfer already
+  // running, so it gets past a grant revoked since (#1080): revoking stops what
+  // starts next, and what is running finishes.
+  private isAwaitedDccAccept(nick: string, args: string): boolean {
+    if (this.dccPendingResume.size === 0) return false;
+    const parsed = parseDcc(args);
+    return (
+      parsed.kind === 'accept' &&
+      this.dccPendingResume.has(this.dccResumeKey(nick, parsed.filename))
+    );
+  }
+
   private handleDccAccept(nick: string, accept: DccAccept): void {
     const key = this.dccResumeKey(nick, accept.filename);
     const pending = this.dccPendingResume.get(key);

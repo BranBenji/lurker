@@ -1470,11 +1470,18 @@ transport limit is shared between the two, which does mean lowering
 `code: "archive_too_large"`; there is no way to compress an archive to fit, so
 check before uploading.
 
-### DCC — `/api/dcc` (403 unless enabled for the account)
+### DCC — `/api/dcc` (self-hosted only)
 
-`GET /config` is the one route that answers without the grant: `{enabled: false}`,
-or `{enabled: true, directory, maxFileBytes, allowPrivateHosts}` (`directory` null
-when the server has no download dir; `maxFileBytes` 0 for no cap).
+DCC needs the instance switch (`features.dcc`) and, per account, an admin's
+grant. With the instance switch off, every route but `/config` is 403. With it
+on, an account without the grant can still read: `GET /` and `GET|HEAD /:id/file`
+answer, because what an account received stays its own after a grant is
+revoked. Every `POST` needs the grant and is 403 without it.
+
+`GET /config` answers either way: `{enabled: false}`, or `{enabled: true,
+directory, maxFileBytes, allowPrivateHosts}` (`directory` null when the server has
+no download dir; `maxFileBytes` 0 for no cap). `enabled` is the grant: a client
+shows DCC actions only when it is true.
 
 `GET /?limit` list · `POST /:id/accept|reject|cancel`. Live updates via
 `dcc-transfer` frames; a transfer's bytes move over IRC, not HTTP.
