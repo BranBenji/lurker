@@ -118,7 +118,7 @@ describe('GET /api/dcc/config', () => {
         receive: true,
         maxFileBytes: 100 * 1024 * 1024,
         allowPrivateHosts: false,
-        usedBytes: 0,
+        usedBytes: expect.any(Number),
         limitBytes: null,
       });
     } finally {
@@ -135,17 +135,17 @@ describe('GET /api/dcc/config', () => {
 
   it('reports what the account uses, and its limit', async () => {
     const { setDccStorageLimit } = await import('../db/dccStorageLimits.js');
-    const root = path.join(tmpRoot, 'usage-root');
-    fs.mkdirSync(path.join(root, 'dcc-alice'), { recursive: true });
-    fs.writeFileSync(path.join(root, 'dcc-alice', 'a.bin'), Buffer.alloc(2048));
-    process.env.LURKER_DCC_DIR = root;
+    const before = (await aliceAgent.get('/api/dcc/config')).body.usedBytes as number;
+    transfer(path.join(tmpRoot, 'usage'), 'counted.mkv');
     setDccStorageLimit(alice.id, 10 * 1024 * 1024);
     try {
       const res = await aliceAgent.get('/api/dcc/config');
-      expect(res.body).toMatchObject({ usedBytes: 2048, limitBytes: 10 * 1024 * 1024 });
+      expect(res.body).toMatchObject({
+        usedBytes: before + BYTES.length,
+        limitBytes: 10 * 1024 * 1024,
+      });
     } finally {
       setDccStorageLimit(alice.id, null);
-      delete process.env.LURKER_DCC_DIR;
     }
   });
 
@@ -190,20 +190,20 @@ describe('DELETE /api/dcc/:id/file', () => {
     expect(fs.existsSync(path.join(dir, 'busy.mkv'))).toBe(true);
   });
 
-  // The path is free once a file is removed by hand, so an older row can name
-  // a file that now belongs to a newer transfer.
-  it('leaves a newer transfer’s file at the same path alone', async () => {
+  // A path belongs to one row. When a newer transfer takes it (the name came
+  // free after its file was removed by hand, or a resume continued the older
+  // row's partial), the older row lets go: it can't delete the newer file.
+  it('leaves a file that a newer transfer took over alone', async () => {
     const dir = path.join(tmpRoot, 'del-reused');
     const older = transfer(dir, 'ep.mkv');
     const newer = transfer(dir, 'ep.mkv');
-    expect((await aliceAgent.delete(`/api/dcc/${older}/file`)).status).toBe(200);
+    expect((await getRow(older)).destination_path).toBeNull();
+    expect((await aliceAgent.delete(`/api/dcc/${older}/file`)).status).toBe(404);
     expect(fs.existsSync(path.join(dir, 'ep.mkv'))).toBe(true);
-    expect((await getRow(newer)).file_deleted_at).toBeNull();
     expect((await getBytes(aliceAgent, `/api/dcc/${newer}/file`)).status).toBe(200);
   });
 
-  // A resume finishes under a new row at its earlier row's path: one file.
-  it('deletes a resumed file once, for both of its rows', async () => {
+  it('deletes a resumed file through the row that finished it', async () => {
     const { updateDccTransferState } = await import('../db/dccTransfers.js');
     const dir = path.join(tmpRoot, 'del-resumed');
     const first = transfer(dir, 'long.mkv', { complete: false });
@@ -211,8 +211,6 @@ describe('DELETE /api/dcc/:id/file', () => {
     const resumed = transfer(dir, 'long.mkv');
     expect((await aliceAgent.delete(`/api/dcc/${resumed}/file`)).status).toBe(200);
     expect(fs.existsSync(path.join(dir, 'long.mkv'))).toBe(false);
-    expect((await getRow(first)).file_deleted_at).toBeTruthy();
-    expect((await getRow(first)).destination_path).toBeNull();
   });
 
   it('is 404 for another user’s transfer', async () => {

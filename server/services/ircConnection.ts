@@ -146,7 +146,7 @@ import {
   dccExternalHost,
   dccMaxFileBytes,
 } from './dccConfig.js';
-import { dccUsedBytes, hasFreeSpaceFor, resolveDccDestination } from './dccPaths.js';
+import { hasFreeSpaceFor, resolveDccDestination } from './dccPaths.js';
 import { getDccStorageLimit } from '../db/dccStorageLimits.js';
 import { DccChat } from './dccChat.js';
 import { openDccListener, type DccListenHandle } from './dccListener.js';
@@ -160,7 +160,7 @@ import { DccReceiver } from './dccReceiver.js';
 import {
   type DccTransferRow,
   DCC_ACTIVE_STATES,
-  dccReservedBytes,
+  dccUsageBytes,
   findArmedRequest,
   findResumableTransfer,
   getDccTransfer,
@@ -6540,6 +6540,7 @@ export class IrcConnection {
   private acceptDccOffer(transferId: number, nick: string, offer: DccSend): void {
     if (offer.passive) {
       updateDccTransferState(transferId, 'failed', 'passive DCC not yet supported');
+      this.publishDcc(transferId);
       this.surfaceCtcp(nick, `DCC: passive transfer from ${nick} not yet supported`);
       return;
     }
@@ -6548,6 +6549,7 @@ export class IrcConnection {
     // opt back in for a LAN bot via LURKER_DCC_ALLOW_PRIVATE_HOSTS).
     if (!dccAllowPrivateHosts() && isBlockedDccHost(offer.host)) {
       updateDccTransferState(transferId, 'failed', `blocked address ${offer.host}`);
+      this.publishDcc(transferId);
       this.surfaceCtcp(
         nick,
         `DCC: refusing "${offer.filename}" — sender address ${offer.host} is private/reserved`,
@@ -6558,12 +6560,14 @@ export class IrcConnection {
     // honor an operator per-file cap.
     if (offer.size <= 0) {
       updateDccTransferState(transferId, 'failed', 'offer has no advertised size');
+      this.publishDcc(transferId);
       this.surfaceCtcp(nick, `DCC: refusing "${offer.filename}" — no advertised file size`);
       return;
     }
     const cap = dccMaxFileBytes();
     if (cap > 0 && offer.size > cap) {
       updateDccTransferState(transferId, 'failed', `exceeds ${formatBytes(cap)} limit`);
+      this.publishDcc(transferId);
       this.surfaceCtcp(
         nick,
         `DCC: refusing "${offer.filename}" (${formatBytes(offer.size)}) — over the ${formatBytes(cap)} limit`,
@@ -6591,6 +6595,7 @@ export class IrcConnection {
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         updateDccTransferState(transferId, 'failed', reason);
+        this.publishDcc(transferId);
         this.surfaceCtcp(nick, `DCC: cannot start "${offer.filename}" — ${reason}`);
         return;
       }
@@ -6599,24 +6604,24 @@ export class IrcConnection {
     // the receiver also caps writes at the advertised size, so it's the ceiling.
     if (!hasFreeSpaceFor(path.dirname(destPath), offer.size - startOffset)) {
       updateDccTransferState(transferId, 'failed', 'insufficient disk space');
+      this.publishDcc(transferId);
       this.surfaceCtcp(
         nick,
         `DCC: refusing "${offer.filename}" (${formatBytes(offer.size)}) — not enough free disk space`,
       );
       return;
     }
-    // The admin's per-user limit (#1125): what is on disk, plus what transfers in
-    // flight will still add, plus what this one needs. A resume's partial is
-    // already on disk, so it needs only the rest; its own earlier row isn't in
-    // flight any more, so it's left out of the reservation.
+    // The admin's per-user limit (#1125): what the user's other transfers have
+    // on disk or will still write, plus this whole file. A resume's earlier row
+    // is left out, because its partial is part of this file.
     const limit = getDccStorageLimit(this.network.user_id);
     if (limit !== null) {
-      const used =
-        dccUsedBytes(username) +
-        dccReservedBytes(this.network.user_id, prior ? [transferId, prior.id] : [transferId]);
-      if (used + (offer.size - startOffset) > limit) {
+      const exclude = startOffset > 0 && prior ? [transferId, prior.id] : [transferId];
+      const used = dccUsageBytes(this.network.user_id, exclude).committed;
+      if (used + offer.size > limit) {
         const numbers = `${formatBytes(used)} of ${formatBytes(limit)} used`;
         updateDccTransferState(transferId, 'failed', `over your DCC storage limit (${numbers})`);
+        this.publishDcc(transferId);
         this.surfaceCtcp(
           nick,
           `DCC: refusing "${offer.filename}" (${formatBytes(offer.size)}) — over your storage limit (${numbers})`,

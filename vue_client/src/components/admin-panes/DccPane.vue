@@ -2,11 +2,16 @@
   Copyright (c) 2026 Brad Root
   SPDX-License-Identifier: MPL-2.0
 
-  Admin panel → DCC (#1080). The instance's DCC settings, and which parts of DCC
-  each account may use: chat, and receiving files, granted separately so an
-  admin can allow direct chats without letting files land on the box. Every
-  part also needs LURKER_DCC_ENABLED. With it off the grants still list, so an
-  admin can clear them before turning DCC back on.
+  Admin panel → DCC (#1080, #1125). The instance's DCC settings, and per user:
+  which parts of DCC they may use (chat, and receiving files, granted separately
+  so an admin can allow direct chats without letting files land on the box), a
+  storage limit, and what their received files take now. Every part also needs
+  LURKER_DCC_ENABLED. With it off the grants still list, so an admin can clear
+  them before turning DCC back on.
+
+  The table is read-only. "edit" opens one editor under that row with all three
+  settings and one save, so there is a single way to change anything and a
+  single confirmation that it saved; the table's columns never move.
 -->
 
 <template>
@@ -15,12 +20,12 @@
     <p class="section-desc">
       Direct connections between people on IRC: chats, and files sent to this server.
     </p>
-    <p v-if="error" class="error inline">{{ error }}</p>
+    <p v-if="loadError" class="error inline">{{ loadError }}</p>
 
     <template v-if="info">
       <p v-if="!info.enabled" class="muted small">
         DCC is off for this instance. Set <code>LURKER_DCC_ENABLED</code> to turn it on; until then
-        the grants below do nothing.
+        the settings below do nothing.
       </p>
       <table v-else class="facts">
         <tbody>
@@ -48,7 +53,7 @@
         </tbody>
       </table>
 
-      <table class="grants">
+      <table class="users">
         <thead>
           <tr>
             <th scope="col">user</th>
@@ -56,57 +61,86 @@
             <th scope="col">receive</th>
             <th scope="col">limit</th>
             <th scope="col">used</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="u in info.users" :key="u.id">
-            <th scope="row">{{ u.username }}</th>
-            <td v-for="part in PARTS" :key="part">
-              <!-- With DCC off for the instance, a grant can still be cleared
-                   but not given. -->
-              <input
-                type="checkbox"
-                :checked="u[part]"
-                :disabled="busy || (!info.enabled && !u[part])"
-                :aria-label="`${part} for ${u.username}`"
-                @change="toggle(u, part, $event)"
-              />
-            </td>
-            <td>
-              <!-- In GB; blank is no limit. Nothing saves on its own: "save"
-                   (or Enter) appears once the value differs from what's
-                   stored, and "saved" confirms it landed. -->
-              <form class="limit-form" @submit.prevent="saveLimit(u)">
-                <input
-                  class="limit"
-                  type="number"
-                  min="0"
-                  step="any"
-                  placeholder="none"
-                  :value="draftFor(u)"
+          <template v-for="u in info.users" :key="u.id">
+            <tr :class="{ open: editing?.id === u.id }">
+              <th scope="row">{{ u.username }}</th>
+              <td>{{ u.chat ? 'on' : '—' }}</td>
+              <td>{{ u.receive ? 'on' : '—' }}</td>
+              <td>{{ u.limitBytes === null ? 'none' : formatBytes(u.limitBytes) }}</td>
+              <td>{{ u.usedBytes ? formatBytes(u.usedBytes) : '—' }}</td>
+              <td class="act">
+                <span v-if="savedFor === u.id" class="muted" role="status">saved</span>
+                <button
+                  v-else-if="editing?.id !== u.id"
+                  class="link"
                   :disabled="busy"
-                  :aria-label="`storage limit in GB for ${u.username}`"
-                  @input="onDraft(u, $event)"
-                />
-                GB
-                <button v-if="isDirty(u)" type="submit" class="link" :disabled="busy">save</button>
-                <span v-else-if="savedFor === u.id" class="muted" role="status">saved</span>
-              </form>
-            </td>
-            <td>{{ u.usedBytes ? formatBytes(u.usedBytes) : '—' }}</td>
-          </tr>
+                  @click="startEdit(u)"
+                >
+                  edit
+                </button>
+              </td>
+            </tr>
+            <tr v-if="editing?.id === u.id" class="editor">
+              <td colspan="6">
+                <form @submit.prevent="save(u)">
+                  <!-- With DCC off for the instance, a part can be taken away
+                       but not given. -->
+                  <label>
+                    <input
+                      v-model="editing.chat"
+                      type="checkbox"
+                      :disabled="busy || (!info.enabled && !u.chat)"
+                    />
+                    chat
+                  </label>
+                  <label>
+                    <input
+                      v-model="editing.receive"
+                      type="checkbox"
+                      :disabled="busy || (!info.enabled && !u.receive)"
+                    />
+                    receive files
+                  </label>
+                  <label>
+                    limit
+                    <input
+                      v-model="editing.limit"
+                      class="limit"
+                      type="number"
+                      step="any"
+                      placeholder="none"
+                      :disabled="busy"
+                    />
+                    GB
+                  </label>
+                  <span class="muted small">blank for no limit</span>
+                  <span class="buttons">
+                    <button type="submit" class="link" :disabled="busy">save</button>
+                    <button type="button" class="link" :disabled="busy" @click="editing = null">
+                      cancel
+                    </button>
+                  </span>
+                </form>
+                <p v-if="editError" class="error inline">{{ editError }}</p>
+              </td>
+            </tr>
+          </template>
         </tbody>
       </table>
       <p class="muted small">
-        Turning one off stops what starts next. Anything already running finishes, and files already
-        received stay theirs to download.
+        Turning a part off stops what starts next. Anything already running finishes, and files
+        already received stay theirs to download.
       </p>
       <p class="muted small">
         A limit caps what a user's received files take on disk. A transfer that would go over it is
-        refused; nothing is deleted. Users can delete their own files in the Transfers list.
+        refused; nothing is deleted. Users delete their own files in the Transfers list.
       </p>
     </template>
-    <p v-else-if="!error" class="muted small">Loading…</p>
+    <p v-else-if="!loadError" class="muted small">Loading…</p>
   </section>
 </template>
 
@@ -114,9 +148,6 @@
 import { ref, onMounted, onUnmounted } from 'vue';
 import { api } from '../../api.js';
 import { formatBytes } from '../../utils/formatBytes.js';
-
-type Part = 'chat' | 'receive';
-const PARTS: readonly Part[] = ['chat', 'receive'];
 
 interface DccUser {
   id: number;
@@ -136,93 +167,75 @@ interface DccInfo {
   users: DccUser[];
 }
 
+const GB = 1024 * 1024 * 1024;
+
 const info = ref<DccInfo | null>(null);
-const error = ref('');
+const loadError = ref('');
 const busy = ref(false);
+// The one row being edited, and what its editor holds. `limit` is in GB, ''
+// for none.
+const editing = ref<{ id: number; chat: boolean; receive: boolean; limit: string } | null>(null);
+const editError = ref('');
+// The row that just saved, for a moment of "saved".
+const savedFor = ref<number | null>(null);
+let savedTimer: ReturnType<typeof setTimeout> | undefined;
 
 onMounted(async () => {
   try {
     info.value = await api<DccInfo>('/api/admin/dcc');
   } catch (e: any) {
-    error.value = e?.message || 'failed to load DCC settings';
+    loadError.value = e?.message || 'failed to load DCC settings';
   }
 });
-
-const GB = 1024 * 1024 * 1024;
-
-function limitGb(u: DccUser): string {
-  return u.limitBytes === null ? '' : String(Math.round((u.limitBytes / GB) * 100) / 100);
-}
-
-// What the admin has typed but not saved, per user. Absent means the field
-// shows what's stored.
-const drafts = ref<Record<number, string>>({});
-// The row that just saved, for a moment of "saved".
-const savedFor = ref<number | null>(null);
-let savedTimer: ReturnType<typeof setTimeout> | undefined;
-
-function draftFor(u: DccUser): string {
-  return drafts.value[u.id] ?? limitGb(u);
-}
-
-function onDraft(u: DccUser, event: Event) {
-  drafts.value[u.id] = (event.target as HTMLInputElement).value;
-  if (savedFor.value === u.id) savedFor.value = null;
-}
-
-function isDirty(u: DccUser): boolean {
-  const draft = drafts.value[u.id];
-  return draft !== undefined && draft.trim() !== limitGb(u);
-}
-
 onUnmounted(() => clearTimeout(savedTimer));
 
-async function saveLimit(u: DccUser) {
-  if (!isDirty(u)) return;
-  const raw = drafts.value[u.id].trim();
+// Enough precision that a small limit never reads as 0.
+function limitGb(bytes: number | null): string {
+  return bytes === null ? '' : String(Number((bytes / GB).toPrecision(6)));
+}
+
+function startEdit(u: DccUser) {
+  editError.value = '';
+  savedFor.value = null;
+  editing.value = { id: u.id, chat: u.chat, receive: u.receive, limit: limitGb(u.limitBytes) };
+}
+
+async function save(u: DccUser) {
+  const draft = editing.value;
+  if (!draft) return;
+  // v-model on a number input hands back a number, or '' when it's empty.
+  const raw = String(draft.limit).trim();
   const gb = Number(raw);
   if (raw !== '' && !(Number.isFinite(gb) && gb > 0)) {
-    // Kept as typed, so it can be fixed rather than retyped.
-    error.value = 'a limit is a number of GB above 0, or blank for none';
+    editError.value = 'a limit is a number of GB above 0, or blank for none';
     return;
   }
-  error.value = '';
+  editError.value = '';
   busy.value = true;
   try {
-    const next = await api<{ limitBytes: number | null }>(`/api/admin/dcc/users/${u.id}`, {
-      method: 'PUT',
-      body: { limitBytes: raw === '' ? null : Math.max(1, Math.round(gb * GB)) },
-    });
+    const next = await api<{ chat: boolean; receive: boolean; limitBytes: number | null }>(
+      `/api/admin/dcc/users/${u.id}`,
+      {
+        method: 'PUT',
+        body: {
+          chat: draft.chat,
+          receive: draft.receive,
+          limitBytes: raw === '' ? null : Math.max(1, Math.round(gb * GB)),
+        },
+      },
+    );
+    u.chat = next.chat;
+    u.receive = next.receive;
     u.limitBytes = next.limitBytes;
-    delete drafts.value[u.id];
+    editing.value = null;
     savedFor.value = u.id;
     clearTimeout(savedTimer);
     savedTimer = setTimeout(() => {
       if (savedFor.value === u.id) savedFor.value = null;
     }, 2000);
   } catch (e: any) {
-    // The draft stays, with "save" still showing: nothing changed.
-    error.value = e?.message || 'failed to set the limit';
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function toggle(u: DccUser, part: Part, event: Event) {
-  const box = event.target as HTMLInputElement;
-  error.value = '';
-  busy.value = true;
-  try {
-    const next = await api<{ chat: boolean; receive: boolean }>(`/api/admin/dcc/users/${u.id}`, {
-      method: 'PUT',
-      body: { [part]: !u[part] },
-    });
-    u.chat = next.chat;
-    u.receive = next.receive;
-  } catch (e: any) {
-    // The box flipped itself on click; nothing changed, so flip it back.
-    box.checked = u[part];
-    error.value = e?.message || 'failed to change DCC';
+    // The editor stays open with what was typed: nothing changed.
+    editError.value = e?.message || 'failed to save';
   } finally {
     busy.value = false;
   }
@@ -236,35 +249,60 @@ code {
   overflow-wrap: anywhere;
 }
 .facts,
-.grants {
+.users {
   margin: var(--space-6) 0;
   border-collapse: collapse;
 }
 .facts th,
 .facts td,
-.grants th,
-.grants td {
+.users th,
+.users td {
   padding: var(--space-1) var(--space-6) var(--space-1) 0;
   text-align: left;
   font-weight: normal;
   vertical-align: top;
 }
 .facts th,
-.grants thead th {
+.users thead th {
   color: var(--fg-muted);
 }
-.grants tbody th {
+.users tbody th {
   color: var(--fg);
 }
-.warn {
-  color: var(--warn);
+/* Wide enough for "edit" or "saved", so swapping them never moves a column. */
+.users .act {
+  min-width: 4em;
 }
-.limit-form {
+.users .act .link {
+  padding: 0;
+}
+.users tr.open th,
+.users tr.open td {
+  color: var(--accent);
+}
+.editor td {
+  padding: var(--space-2) 0 var(--space-6) var(--space-6);
+  border-left: 2px solid var(--accent);
+}
+.editor form {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-6);
+}
+.editor label {
+  display: inline-flex;
   align-items: center;
   gap: var(--space-2);
 }
-.limit {
+.editor .limit {
   width: 6em;
+}
+.editor .buttons {
+  display: inline-flex;
+  gap: var(--space-2);
+}
+.warn {
+  color: var(--warn);
 }
 </style>

@@ -28,6 +28,7 @@ import {
 import {
   insertDccTransfer,
   listDccTransfers,
+  markDccCompleted,
   markDccReceiving,
   updateDccTransferState,
 } from '../db/dccTransfers.js';
@@ -406,14 +407,51 @@ describe('arm-on-trigger + auto-accept', () => {
       return conn;
     };
 
-    it('refuses a transfer that would take the account over, counting what is on disk', () => {
+    // A finished file the user still has counts what it received.
+    const received = (name: string, bytes: number) => {
+      const id = insertDccTransfer(1, {
+        network_id: 1,
+        peer_nick: 'other',
+        filename: name,
+        advertised_size: bytes,
+        state: 'pending_approval',
+      });
+      markDccReceiving(id, {
+        filename: name,
+        advertised_size: bytes,
+        destination_path: path.join(userDir(), name),
+        received_bytes: bytes,
+      });
+      markDccCompleted(id, bytes);
+      return id;
+    };
+
+    it('refuses a transfer that would take the account over, and says so live', () => {
       const conn = setup();
-      fs.writeFileSync(path.join(userDir(), 'old.bin'), Buffer.alloc(3000));
+      const published: Array<Record<string, unknown>> = [];
+      conn.onEvent = ((e: Record<string, unknown>) => published.push(e)) as typeof conn.onEvent;
+      received('old.bin', 3000);
       setDccStorageLimit(1, 6000);
       offer(conn, 50612, 5000);
       const row = listDccTransfers(1)[0];
       expect(row.state).toBe('failed');
       expect(row.error).toMatch(/over your DCC storage limit \(2\.9 KB of 5\.9 KB used\)/);
+      // An armed request has no HTTP reply to carry the row: the frame is it.
+      expect(published.at(-1)).toMatchObject({
+        type: 'dcc-transfer',
+        transfer: { id: row.id, state: 'failed' },
+      });
+    });
+
+    it('stops counting a file once it is deleted', () => {
+      const conn = setup();
+      const old = received('old.bin', 3000);
+      db.prepare(
+        "UPDATE dcc_transfers SET destination_path = NULL, file_deleted_at = 'x' WHERE id = ?",
+      ).run(old);
+      setDccStorageLimit(1, 6000);
+      offer(conn, 50612, 5000);
+      expect(listDccTransfers(1)[0].error ?? '').not.toMatch(/storage limit/);
     });
 
     // A transfer in flight will still add its remaining bytes.

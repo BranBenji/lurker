@@ -22,7 +22,8 @@ import {
   userIdsWithCapability,
 } from '../db/userCapabilities.js';
 import { dccAllowPrivateHosts, dccMasterEnabled, dccMaxFileBytes } from '../services/dccConfig.js';
-import { DCC_FREE_DISK_FLOOR_BYTES, dccRoot, dccUsedBytes } from '../services/dccPaths.js';
+import { DCC_FREE_DISK_FLOOR_BYTES, dccRoot } from '../services/dccPaths.js';
+import { listDccStoredBytes } from '../db/dccTransfers.js';
 import {
   getDccStorageLimit,
   listDccStorageLimits,
@@ -45,6 +46,7 @@ router.get('/', (_req: Request, res: Response) => {
   const chat = userIdsWithCapability(CAPABILITY_DCC_CHAT);
   const receive = userIdsWithCapability(CAPABILITY_DCC_RECEIVE);
   const limits = listDccStorageLimits();
+  const stored = listDccStoredBytes();
   res.json({
     // LURKER_DCC_ENABLED. Off, no grant does anything — but grants still list,
     // so an admin can clear them before turning DCC back on.
@@ -62,7 +64,7 @@ router.get('/', (_req: Request, res: Response) => {
       // Null for no limit (#1125).
       limitBytes: limits.get(u.id) ?? null,
       // What the account's received files take on disk, partials included.
-      usedBytes: dccUsedBytes(u.username),
+      usedBytes: stored.get(u.id) ?? 0,
     })),
   });
 });

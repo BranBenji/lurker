@@ -35,6 +35,16 @@ const LIST = new Set(['list', 'ls']);
 // Not `get`: irssi's `/dcc get` accepts an offer, and it does here too.
 const DOWNLOAD = new Set(['download', 'save']);
 const DELETE = new Set(['delete', 'rm']);
+// The verbs that act on one transfer by id.
+const BY_ID: ReadonlyArray<
+  [ReadonlySet<string>, 'accept' | 'reject' | 'cancel' | 'download' | 'delete']
+> = [
+  [ACCEPT, 'accept'],
+  [REJECT, 'reject'],
+  [CANCEL, 'cancel'],
+  [DOWNLOAD, 'download'],
+  [DELETE, 'delete'],
+];
 
 const USAGE =
   'usage: /dcc [list] · /dcc accept|reject|cancel|download|delete <id> · ' +
@@ -131,21 +141,8 @@ export function parseDccCommand(argLine: string): DccCommand {
     return { kind: 'error', message: 'usage: /dcc close chat <nick>' };
   }
 
-  const isAccept = ACCEPT.has(verb);
-  const isReject = REJECT.has(verb);
-  const isCancel = CANCEL.has(verb);
-  const isDownload = DOWNLOAD.has(verb);
-  const isDelete = DELETE.has(verb);
-  if (isAccept || isReject || isCancel || isDownload || isDelete) {
-    const kind = isAccept
-      ? 'accept'
-      : isReject
-        ? 'reject'
-        : isCancel
-          ? 'cancel'
-          : isDownload
-            ? 'download'
-            : 'delete';
+  const kind = BY_ID.find(([words]) => words.has(verb))?.[1];
+  if (kind) {
     const id = parseId(parts[1]);
     if (id == null) return { kind: 'error', message: `usage: /dcc ${kind} <id>` };
     return { kind, id };

@@ -85,30 +85,43 @@ describe('/api/admin/dcc', () => {
   // #1125: the admin's per-user space control. A whole number of bytes, or
   // null for none; the list reports it with what the account uses now.
   it('sets and clears a storage limit, and reports usage', async () => {
-    const fs = await import('fs');
-    const os = await import('os');
-    const path = await import('path');
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-admin-dcc-'));
-    process.env.LURKER_DCC_DIR = root;
-    try {
-      const { createUser } = await import('../db/users.js');
-      const target = createUser('dcc-limited');
-      fs.mkdirSync(path.join(root, 'dcc-limited'));
-      fs.writeFileSync(path.join(root, 'dcc-limited', 'a.bin'), Buffer.alloc(1500));
-      const url = `/api/admin/dcc/users/${target.id}`;
-      const set = await adminAgent.put(url).send({ limitBytes: 50 * 1024 ** 3 });
-      expect(set.status).toBe(200);
-      expect(set.body.limitBytes).toBe(50 * 1024 ** 3);
-      const row = (await adminAgent.get('/api/admin/dcc')).body.users.find(
-        (u: { id: number }) => u.id === target.id,
-      );
-      expect(row).toMatchObject({ limitBytes: 50 * 1024 ** 3, usedBytes: 1500 });
-      expect((await adminAgent.put(url).send({ limitBytes: null })).body.limitBytes).toBeNull();
-      for (const bad of [0, -5, 1.5, '10', true]) {
-        expect((await adminAgent.put(url).send({ limitBytes: bad })).status).toBe(400);
-      }
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+    const { createUser } = await import('../db/users.js');
+    const { createNetwork } = await import('../db/networks.js');
+    const { insertDccTransfer, markDccReceiving, markDccCompleted } =
+      await import('../db/dccTransfers.js');
+    const target = createUser('dcc-limited');
+    const net = createNetwork(target.id, {
+      name: 'n',
+      host: 'irc.example',
+      port: 6697,
+      tls: true,
+      nick: 'x',
+    })!;
+    const id = insertDccTransfer(target.id, {
+      network_id: net.id,
+      peer_nick: 'bot',
+      filename: 'a.bin',
+      advertised_size: 1500,
+      state: 'pending_approval',
+    });
+    markDccReceiving(id, {
+      filename: 'a.bin',
+      advertised_size: 1500,
+      destination_path: '/srv/dcc/dcc-limited/a.bin',
+      received_bytes: 1500,
+    });
+    markDccCompleted(id, 1500);
+    const url = `/api/admin/dcc/users/${target.id}`;
+    const set = await adminAgent.put(url).send({ limitBytes: 50 * 1024 ** 3 });
+    expect(set.status).toBe(200);
+    expect(set.body.limitBytes).toBe(50 * 1024 ** 3);
+    const row = (await adminAgent.get('/api/admin/dcc')).body.users.find(
+      (u: { id: number }) => u.id === target.id,
+    );
+    expect(row).toMatchObject({ limitBytes: 50 * 1024 ** 3, usedBytes: 1500 });
+    expect((await adminAgent.put(url).send({ limitBytes: null })).body.limitBytes).toBeNull();
+    for (const bad of [0, -5, 1.5, '10', true]) {
+      expect((await adminAgent.put(url).send({ limitBytes: bad })).status).toBe(400);
     }
   });
 

@@ -209,6 +209,15 @@ export interface DccReceivingFields {
  *  real filename/size/destination (and any filename CRC) from the offer, the
  *  starting byte count (non-zero on resume), and clearing any prior error. */
 export function markDccReceiving(id: number, f: DccReceivingFields): void {
+  // A path belongs to one row (#1125). Taking one — a resume continuing an
+  // earlier row's partial, or a name free again after its file was removed by
+  // hand — releases it from every other row, so a file is downloaded, deleted
+  // and counted against the storage limit through exactly one row.
+  db.prepare(
+    `UPDATE dcc_transfers SET destination_path = NULL
+     WHERE destination_path = ? AND id != ?
+       AND user_id = (SELECT user_id FROM dcc_transfers WHERE id = ?)`,
+  ).run(f.destination_path, Number(id), Number(id));
   db.prepare(
     `UPDATE dcc_transfers
        SET state = 'receiving', filename = ?, advertised_size = ?, destination_path = ?,
@@ -267,45 +276,45 @@ export function markDccCompleted(
   ).run(received, crcActual, crcStatus, Number(id));
 }
 
-/** Bytes still to land for the user's transfers in flight — what they will add
- *  to the disk on top of what is already there (#1125). `exclude` leaves out
- *  rows the caller is accounting for itself. */
-export function dccReservedBytes(userId: number, exclude: number[] = []): number {
-  const row = db
+/** What the user's received DCC files take (#1125), counted from the rows that
+ *  still own a file. `stored` is what is on disk now. `committed` adds what
+ *  transfers in flight will still write: one of those counts its full
+ *  advertised size. `exclude` leaves out rows the caller accounts for itself. */
+export function dccUsageBytes(
+  userId: number,
+  exclude: number[] = [],
+): { stored: number; committed: number } {
+  return db
     .prepare(
-      `SELECT COALESCE(SUM(MAX(0, advertised_size - received_bytes)), 0) AS reserved
+      `SELECT COALESCE(SUM(received_bytes), 0) AS stored,
+              COALESCE(SUM(CASE WHEN state IN ('connecting', 'receiving', 'stalled', 'verifying')
+                                THEN MAX(advertised_size, received_bytes)
+                                ELSE received_bytes END), 0) AS committed
        FROM dcc_transfers
-       WHERE user_id = ? AND state IN ('connecting', 'receiving', 'stalled', 'verifying')
+       WHERE user_id = ? AND destination_path IS NOT NULL
          AND id NOT IN (SELECT value FROM json_each(?))`,
     )
-    .get(userId, JSON.stringify(exclude)) as { reserved: number };
-  return row.reserved;
+    .get(userId, JSON.stringify(exclude)) as { stored: number; committed: number };
 }
 
-/** Whether a newer row of the user's points at `destPath`. A path is free to
- *  reuse once its file is gone, so an older row can name a file that now belongs
- *  to a newer transfer. (Older rows at the same path are the same file: a
- *  resume continues its earlier row's partial under a new row.) */
-export function newerDccRowAtPath(userId: number, id: number, destPath: string): boolean {
-  return !!db
+/** What each user's received files take on disk — one query for the admin
+ *  roster. Users with none are absent. */
+export function listDccStoredBytes(): Map<number, number> {
+  const rows = db
     .prepare(
-      'SELECT 1 FROM dcc_transfers WHERE user_id = ? AND id > ? AND destination_path = ? LIMIT 1',
+      `SELECT user_id, SUM(received_bytes) AS stored FROM dcc_transfers
+       WHERE destination_path IS NOT NULL GROUP BY user_id`,
     )
-    .get(userId, Number(id), destPath);
+    .all() as { user_id: number; stored: number }[];
+  return new Map(rows.map((r) => [r.user_id, r.stored]));
 }
 
-/** Record that the user deleted the file of row `id`, and of every older row at
- *  the same path when `andOlder` (the same file, resumed): each stays as
- *  history, with no path to serve, resume or count. */
-export function markDccFileDeleted(
-  userId: number,
-  id: number,
-  destPath: string,
-  andOlder: boolean,
-): void {
+/** Record that the user deleted the row's file: the row stays as history, with
+ *  no path to serve, resume or count. */
+export function markDccFileDeleted(id: number): void {
   db.prepare(
     `UPDATE dcc_transfers
        SET destination_path = NULL, file_deleted_at = datetime('now'), updated_at = datetime('now')
-     WHERE user_id = ? AND destination_path = ? AND (id = ? OR (? AND id < ?))`,
-  ).run(userId, destPath, Number(id), andOlder ? 1 : 0, Number(id));
+     WHERE id = ?`,
+  ).run(Number(id));
 }

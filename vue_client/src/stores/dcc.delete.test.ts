@@ -31,18 +31,21 @@ function row(state: DccState, over: Partial<DccTransfer> = {}): DccTransfer {
 
 // #1125: Delete shows wherever a finished transfer left a file on the server.
 describe('hasFile', () => {
-  it('is true for a completed file and for a partial left behind', () => {
-    expect(hasFile(row('completed', { received_bytes: 1000 }))).toBe(true);
-    expect(hasFile(row('failed', { received_bytes: 400 }))).toBe(true);
-    expect(hasFile(row('cancelled', { received_bytes: 1 }))).toBe(true);
+  const at = { destination_path: '/srv/dcc/a/f.bin' };
+
+  it('is true for a finished row that still owns a file', () => {
+    expect(hasFile(row('completed', at))).toBe(true);
+    expect(hasFile(row('failed', at))).toBe(true);
+    expect(hasFile(row('cancelled', at))).toBe(true);
   });
 
-  it('is false in flight, with nothing written, or once deleted', () => {
-    expect(hasFile(row('receiving', { received_bytes: 400 }))).toBe(false);
-    expect(hasFile(row('stalled', { received_bytes: 400 }))).toBe(false);
+  // Deleted, never written, or taken over by a newer transfer (a resume): the
+  // server cleared the path, so there is nothing for this row to offer.
+  it('is false in flight, or once the row no longer owns a file', () => {
+    expect(hasFile(row('receiving', at))).toBe(false);
+    expect(hasFile(row('stalled', at))).toBe(false);
     expect(hasFile(row('rejected'))).toBe(false);
-    expect(hasFile(row('failed'))).toBe(false);
-    expect(hasFile(row('completed', { file_deleted_at: '2026-10-13 01:00:00' }))).toBe(false);
+    expect(hasFile(row('completed', { destination_path: null }))).toBe(false);
   });
 });
 
@@ -54,9 +57,9 @@ describe('dcc store deleteFile', () => {
 
   it('DELETEs the file and applies the row it gets back', async () => {
     const dcc = useDccStore();
-    dcc.applyTransfer(row('completed', { received_bytes: 1000 }));
+    dcc.applyTransfer(row('completed', { destination_path: '/srv/dcc/a/f.bin' }));
     h.api.mockResolvedValue({
-      transfer: row('completed', { received_bytes: 1000, file_deleted_at: '2026-10-13 01:00:00' }),
+      transfer: row('completed', { destination_path: null, file_deleted_at: '2026-10-13 01:00' }),
     });
     await dcc.deleteFile(7);
     expect(h.api).toHaveBeenCalledWith('/api/dcc/7/file', { method: 'DELETE' });

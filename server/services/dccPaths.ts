@@ -152,34 +152,3 @@ export function hasFreeSpaceFor(
     return true;
   }
 }
-
-/** Bytes under `dir`, counting every file at any depth (a partial included, and
- *  anything an admin put there by hand). Symlinks count as themselves, never
- *  their targets. 0 when the dir doesn't exist. */
-export function dccDirBytes(dir: string): number {
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
-  let total = 0;
-  for (const e of entries) {
-    const p = path.join(dir, e.name);
-    if (e.isDirectory()) total += dccDirBytes(p);
-    else {
-      try {
-        total += fs.lstatSync(p).size;
-      } catch {
-        /* removed while we walked */
-      }
-    }
-  }
-  return total;
-}
-
-/** How much `username`'s received files take on disk (#1125). */
-export function dccUsedBytes(username: string): number {
-  const dir = dccUserDir(username);
-  return dir ? dccDirBytes(dir) : 0;
-}
