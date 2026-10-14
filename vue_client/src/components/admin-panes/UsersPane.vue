@@ -37,7 +37,7 @@
           {{ u.username }}
           <span v-if="u.role === 'admin'" class="role-tag">admin</span>
           <span v-if="u.isPaused" class="paused-tag">paused</span>
-          <span v-if="canGrantDcc && u.dcc" class="dcc-tag">dcc</span>
+          <span v-if="!config.isNode && u.dcc" class="dcc-tag">dcc</span>
           <span
             v-if="adminStore.identdEnabled && u.effectiveIdent"
             class="ident-tag"
@@ -152,12 +152,12 @@
             {{ u.isPaused ? 'resume' : 'pause' }}
           </button>
           <button
-            v-if="canGrantDcc"
+            v-if="canGrantDcc || (!config.isNode && u.dcc)"
             class="link"
             :disabled="adminBusy"
             :title="
               u.dcc
-                ? 'turn off DCC — offers are ignored from now on; transfers and chats already running finish'
+                ? 'turn off DCC — offers are ignored from now on; anything already running finishes, and their received files stay theirs to download'
                 : 'turn on DCC — file transfers and direct chats for this account'
             "
             @click="onToggleDcc(u)"
@@ -226,7 +226,9 @@ const users = computed(() => adminStore.users);
 const canAssignIdents = computed(() => adminStore.identdEnabled && !config.isNode);
 
 // DCC needs the operator's LURKER_DCC_ENABLED before a grant means anything, so
-// the switch and the tag only appear on an instance that runs it.
+// granting only appears on an instance that runs it. An existing grant keeps
+// its tag and its "turn off" either way: an operator who switched DCC off
+// should still be able to clear grants before switching it back on.
 const canGrantDcc = computed(() => adminStore.dccEnabled && !config.isNode);
 
 const adminError = ref('');

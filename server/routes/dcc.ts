@@ -13,7 +13,12 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 
 import { requireAuth } from '../middleware/auth.js';
 import ircManager from '../services/ircManager.js';
-import { dccAllowPrivateHosts, dccEnabledForUser, dccMaxFileBytes } from '../services/dccConfig.js';
+import {
+  dccAllowPrivateHosts,
+  dccEnabledForUser,
+  dccMasterEnabled,
+  dccMaxFileBytes,
+} from '../services/dccConfig.js';
 import { dccUserDir, sanitizeDccFilename } from '../services/dccPaths.js';
 import { getDccTransfer, listDccTransfers } from '../db/dccTransfers.js';
 import { getNetwork } from '../db/networks.js';
@@ -43,13 +48,16 @@ router.get('/config', (req: Request, res: Response) => {
   });
 });
 
-// The two-tier DCC gate (cell master switch AND per-user capability) guards
-// every DCC entry point — the inbound-CTCP path checks it, so the API must too,
-// or a stale pending_approval row could be accepted after a grant is revoked.
-// Gating reads as well as writes keeps the whole surface dark when DCC is off
-// (and gives the /dcc command + Transfers modal a clear "not enabled" error).
+// The two-tier DCC gate (cell master switch AND per-user capability). The
+// instance switch guards everything: with it off the whole surface is dark.
+// The per-user grant guards everything that starts or acts on a transfer or a
+// chat — the inbound-CTCP path checks it, so the API must too, or a stale
+// pending_approval row could be accepted after a grant is revoked. Reads are
+// the exception (#1080): an account whose grant was revoked keeps what it
+// already received, so its list and its downloads stay open.
 router.use((req: Request, res: Response, next) => {
-  if (!dccEnabledForUser(req.user!.id)) {
+  const read = req.method === 'GET' || req.method === 'HEAD';
+  if (read ? !dccMasterEnabled() : !dccEnabledForUser(req.user!.id)) {
     res.status(403).json({ error: 'DCC is not enabled for this account' });
     return;
   }

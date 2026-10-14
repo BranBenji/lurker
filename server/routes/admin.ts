@@ -158,14 +158,15 @@ router.get('/users', (_req: Request, res: Response) => {
     identdEnabled: isIdentdEnabled() || isOidentdFileEnabled(),
     // Whether the instance runs DCC (LURKER_DCC_ENABLED). Without it a grant
     // does nothing, so the panel hides the per-user switch.
-    dccEnabled: !isNodeMode() && dccMasterEnabled(),
+    dccEnabled: dccMasterEnabled(),
   });
 });
 
 // Grant or revoke DCC for an account (#1080). DCC needs two switches: the
 // operator's LURKER_DCC_ENABLED, then this per-user grant. Revoking stops what
-// would start next: offers are ignored and the /api/dcc routes refuse. A
-// transfer or chat already running is left to finish.
+// would start next: offers are ignored and the /api/dcc actions refuse. A
+// transfer or chat already running is left to finish, and what the account
+// received stays its own: the list and the downloads stay open to it.
 router.put('/users/:id/dcc', (req: Request, res: Response) => {
   if (isNodeMode()) {
     res.status(409).json({ error: 'DCC is not available in node edition' });

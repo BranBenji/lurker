@@ -28,7 +28,11 @@
           </tr>
           <tr>
             <th scope="row">Largest file</th>
-            <td>{{ config.maxFileBytes ? formatBytes(config.maxFileBytes) : 'no limit' }}</td>
+            <td v-if="config.maxFileBytes">
+              {{ formatBytes(config.maxFileBytes) }}
+              <span class="muted">— offers that don't say their size are refused</span>
+            </td>
+            <td v-else>no limit</td>
           </tr>
           <tr>
             <th scope="row">Peers on private networks</th>

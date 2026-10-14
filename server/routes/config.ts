@@ -37,7 +37,7 @@ router.get('/', (_req: Request, res: Response) => {
       bouncer: !isNodeMode() && isBouncerEnabled(),
       // Whether this instance runs DCC at all (LURKER_DCC_ENABLED). Each account
       // still needs an admin's grant; GET /api/dcc/config says whether it has one.
-      dcc: !isNodeMode() && dccMasterEnabled(),
+      dcc: dccMasterEnabled(),
     },
   });
 });

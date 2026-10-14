@@ -16,6 +16,7 @@ import net from 'net';
 
 import { CAPABILITY_DCC, userHasCapability } from '../db/userCapabilities.js';
 import { parseTruthyEnv } from '../utils/truthyEnv.js';
+import { isNodeMode } from '../utils/edition.js';
 import { encodeDccAddress } from './dcc.js';
 
 /** Parse a raw LURKER_DCC_ENABLED value to a boolean. Pure (no env access) so
@@ -27,9 +28,11 @@ export function parseDccEnabled(raw: string | undefined): boolean {
 }
 
 /** The cell-wide DCC master switch. Read live (not cached) so an operator flip
- *  — and tests — take effect without a process restart. */
+ *  — and tests — take effect without a process restart. Always off in node
+ *  edition: DCC is self-host only, and this is the one place that says so, so
+ *  what /api/config advertises and what every path enforces can't disagree. */
 export function dccMasterEnabled(): boolean {
-  return parseDccEnabled(process.env.LURKER_DCC_ENABLED);
+  return !isNodeMode() && parseDccEnabled(process.env.LURKER_DCC_ENABLED);
 }
 
 /** Whether `userId` may use DCC: the master switch AND a per-user grant. The
@@ -42,7 +45,8 @@ export function dccEnabledForUser(userId: number): boolean {
  *  LURKER_DCC_MAX_FILE_MB. 0 (unset / non-positive / unparseable) means no cap. */
 export function dccMaxFileBytes(): number {
   const mb = Number((process.env.LURKER_DCC_MAX_FILE_MB ?? '').trim());
-  return Number.isFinite(mb) && mb > 0 ? Math.floor(mb) * 1024 * 1024 : 0;
+  // Floor the BYTES, not the MB: 0.5 floored first is 0, which reads as no cap.
+  return Number.isFinite(mb) && mb > 0 ? Math.floor(mb * 1024 * 1024) : 0;
 }
 
 /** Whether to allow dialing private/loopback/reserved DCC hosts

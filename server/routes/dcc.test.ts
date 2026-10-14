@@ -261,9 +261,30 @@ describe('GET /api/dcc/:id/file', () => {
     }
   });
 
-  it('is 403 for an account without DCC', async () => {
-    const id = transfer(path.join(tmpRoot, 'gated'), 'gated.mkv');
-    const res = await carolAgent.get(`/api/dcc/${id}/file`);
-    expect(res.status).toBe(403);
+  // A revoked grant stops what starts next; what the account already received
+  // stays its own (#1080).
+  it('still serves the owner after their grant is revoked, but refuses actions', async () => {
+    const { setUserCapability, CAPABILITY_DCC } = await import('../db/userCapabilities.js');
+    const id = transfer(path.join(tmpRoot, 'revoked'), 'kept.mkv');
+    setUserCapability(alice.id, CAPABILITY_DCC, false);
+    try {
+      expect((await getBytes(aliceAgent, `/api/dcc/${id}/file`)).status).toBe(200);
+      const list = await aliceAgent.get('/api/dcc');
+      expect(list.body.transfers.some((t: { id: number }) => t.id === id)).toBe(true);
+      expect((await aliceAgent.post(`/api/dcc/${id}/cancel`)).status).toBe(403);
+    } finally {
+      setUserCapability(alice.id, CAPABILITY_DCC, true);
+    }
+  });
+
+  it('is dark for everyone while the instance switch is off', async () => {
+    const id = transfer(path.join(tmpRoot, 'dark'), 'dark.mkv');
+    delete process.env.LURKER_DCC_ENABLED;
+    try {
+      expect((await aliceAgent.get(`/api/dcc/${id}/file`)).status).toBe(403);
+      expect((await aliceAgent.get('/api/dcc')).status).toBe(403);
+    } finally {
+      process.env.LURKER_DCC_ENABLED = '1';
+    }
   });
 });

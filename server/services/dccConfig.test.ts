@@ -81,6 +81,11 @@ describe('dccMaxFileBytes', () => {
     process.env.LURKER_DCC_MAX_FILE_MB = '100';
     expect(dccMaxFileBytes()).toBe(100 * 1024 * 1024);
   });
+
+  it('keeps a fractional cap rather than flooring it to no cap', () => {
+    process.env.LURKER_DCC_MAX_FILE_MB = '0.5';
+    expect(dccMaxFileBytes()).toBe(512 * 1024);
+  });
 });
 
 describe('dccAllowPrivateHosts', () => {
