@@ -2084,12 +2084,12 @@ export const CATEGORIES: readonly SettingCategory[] = Object.freeze([
     selfHostedOnly: true,
     requiresFeature: 'bouncer',
   },
-  // What DCC does for this account: where received files land and the limits
-  // the operator set. Only where the instance runs DCC; the pane itself says
-  // when this account hasn't been granted it.
+  // What DCC does for this account: which parts it has, where received files
+  // land and the limits the operator set. Only where the instance runs DCC; the
+  // pane itself says when this account hasn't been granted any of it.
   {
-    id: 'transfers',
-    label: 'Transfers',
+    id: 'dcc',
+    label: 'DCC',
     kind: 'bespoke',
     selfHostedOnly: true,
     requiresFeature: 'dcc',

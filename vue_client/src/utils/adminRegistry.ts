@@ -11,8 +11,11 @@
 // Settings today, relocated here. The commented entries below are the known
 // incoming domains; each becomes a live tab by adding its ADMIN_TABS row and a
 // pane in views/Admin.vue's component map, no other wiring:
-//   - capabilities      — per-user feature grants the admin toggles (e.g. DCC)
 //   - moderation        — upload takedowns / abuse review
+//
+// Per-user grants live with the feature they grant: DCC's are on the DCC tab,
+// beside the instance's DCC settings. A generic grants tab waits for a second
+// feature that needs one.
 //
 // `uploaders` is the tab #299 penciled in as "instance defaults": the instance's
 // configured uploaders, which one new accounts inherit, and whether users may
@@ -23,6 +26,8 @@ export interface AdminTab {
   id: string;
   /** Sidebar label. */
   label: string;
+  /** Hidden in the hosted (node) edition, where the feature doesn't exist. */
+  selfHostedOnly?: boolean;
 }
 
 export const ADMIN_TABS: readonly AdminTab[] = Object.freeze([
@@ -33,14 +38,20 @@ export const ADMIN_TABS: readonly AdminTab[] = Object.freeze([
   { id: 'notifications', label: 'Notifications' },
   { id: 'storage', label: 'Storage' },
   { id: 'lockouts', label: 'Lockouts' },
-  // { id: 'capabilities', label: 'Capabilities' },
+  // Who gets DCC chat and receiving, and the instance's DCC settings (#1080).
+  { id: 'dcc', label: 'DCC', selfHostedOnly: true },
   // { id: 'moderation', label: 'Moderation' },
 ]);
+
+/** The tabs this edition shows. */
+export function visibleAdminTabs(isNode: boolean): readonly AdminTab[] {
+  return ADMIN_TABS.filter((t) => !(isNode && t.selfHostedOnly));
+}
 
 /** The first (default) tab id — where bare /admin lands. */
 export const DEFAULT_ADMIN_TAB = ADMIN_TABS[0].id;
 
-/** Whether `id` names a real admin tab. */
-export function isAdminTab(id: string | undefined): boolean {
-  return !!id && ADMIN_TABS.some((t) => t.id === id);
+/** Whether `id` names an admin tab this edition shows. */
+export function isAdminTab(id: string | undefined, isNode = false): boolean {
+  return !!id && visibleAdminTabs(isNode).some((t) => t.id === id);
 }

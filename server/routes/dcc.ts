@@ -9,14 +9,21 @@
 // its `=nick` buffer. All routes are user-scoped via requireAuth.
 
 import fs from 'fs';
-import { Router, type NextFunction, type Request, type Response } from 'express';
+import {
+  Router,
+  type NextFunction,
+  type Request,
+  type RequestHandler,
+  type Response,
+} from 'express';
 
 import { requireAuth } from '../middleware/auth.js';
 import ircManager from '../services/ircManager.js';
 import {
   dccAllowPrivateHosts,
-  dccEnabledForUser,
+  dccChatEnabledForUser,
   dccMasterEnabled,
+  dccReceiveEnabledForUser,
   dccMaxFileBytes,
 } from '../services/dccConfig.js';
 import { dccUserDir, sanitizeDccFilename } from '../services/dccPaths.js';
@@ -28,18 +35,21 @@ const router = Router();
 router.use(requireAuth);
 
 /**
- * GET /api/dcc/config — whether DCC is on for this account and, if it is, the
- * limits the operator set (#1080). Mounted ahead of the gate below on purpose:
+ * GET /api/dcc/config — which parts of DCC this account has (#1080), and the
+ * limits on receiving when it may. Mounted ahead of the gate below on purpose:
  * Settings asks this to say "not turned on for your account" instead of
  * reading a 403.
  */
 router.get('/config', (req: Request, res: Response) => {
-  if (!dccEnabledForUser(req.user!.id)) {
-    res.json({ enabled: false });
+  const chat = dccChatEnabledForUser(req.user!.id);
+  const receive = dccReceiveEnabledForUser(req.user!.id);
+  if (!receive) {
+    res.json({ chat, receive });
     return;
   }
   res.json({
-    enabled: true,
+    chat,
+    receive,
     // Null when LURKER_DCC_DIR is unset, in which case nothing can be received.
     directory: dccUserDir(req.user!.username),
     // 0 means no cap.
@@ -48,21 +58,32 @@ router.get('/config', (req: Request, res: Response) => {
   });
 });
 
-// The two-tier DCC gate (cell master switch AND per-user capability). The
-// instance switch guards everything: with it off the whole surface is dark.
-// The per-user grant guards everything that starts or acts on a transfer or a
-// chat — the inbound-CTCP path checks it, so the API must too, or a stale
-// pending_approval row could be accepted after a grant is revoked. Reads are
-// the exception (#1080): an account whose grant was revoked keeps what it
-// already received, so its list and its downloads stay open.
-router.use((req: Request, res: Response, next) => {
-  const read = req.method === 'GET' || req.method === 'HEAD';
-  if (read ? !dccMasterEnabled() : !dccEnabledForUser(req.user!.id)) {
-    res.status(403).json({ error: 'DCC is not enabled for this account' });
+// The DCC gate is two-tier (#1080). The instance switch (LURKER_DCC_ENABLED)
+// guards everything here: with it off the whole surface is dark. The per-user
+// grants guard only what STARTS something — accepting a file needs the receive
+// grant, offering a chat the chat grant (needs() on those routes) — because
+// revoking a grant stops what starts next. Reading your transfers, downloading
+// what you received, and stopping things (reject, cancel, closing a chat) stay
+// open to the account whatever its grants.
+router.use((_req: Request, res: Response, next) => {
+  if (!dccMasterEnabled()) {
+    res.status(403).json({ error: 'DCC is not enabled on this server' });
     return;
   }
   next();
 });
+
+function needs(grant: (userId: number) => boolean, what: string): RequestHandler {
+  return (req, res, next) => {
+    if (!grant(req.user!.id)) {
+      res.status(403).json({ error: `DCC ${what} is not enabled for this account` });
+      return;
+    }
+    next();
+  };
+}
+const needsReceive = needs(dccReceiveEnabledForUser, 'receiving');
+const needsChat = needs(dccChatEnabledForUser, 'chat');
 
 // A transfer id is a positive integer row id; reject anything else up front so a
 // non-numeric :id can't reach better-sqlite3 as NaN (which throws → 500).
@@ -149,7 +170,7 @@ router.get('/:id/file', (req: Request, res: Response, next: NextFunction) => {
 // by the central requireAuth gate (#573); the GET list above stays available.
 
 /** POST /api/dcc/:id/accept — accept a pending offer and start the download. */
-router.post('/:id/accept', (req: Request, res: Response) => {
+router.post('/:id/accept', needsReceive, (req: Request, res: Response) => {
   const id = transferId(req);
   if (id == null) {
     res.status(404).json({ error: 'transfer not found' });
@@ -230,7 +251,7 @@ function chatTarget(req: Request, res: Response): { networkId: number; nick: str
  * refused, timed out) lands in the `=nick` buffer, because a DCC handshake can
  * take as long as the peer takes to answer.
  */
-router.post('/chat', (req: Request, res: Response) => {
+router.post('/chat', needsChat, (req: Request, res: Response) => {
   const t = chatTarget(req, res);
   if (!t) return;
   const passive = req.body?.passive === true;

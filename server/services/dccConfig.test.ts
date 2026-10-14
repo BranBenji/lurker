@@ -7,11 +7,16 @@ import '../test-utils/isolateDb.js';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { createUser } from '../db/users.js';
-import { CAPABILITY_DCC, setUserCapability } from '../db/userCapabilities.js';
+import {
+  CAPABILITY_DCC_CHAT,
+  CAPABILITY_DCC_RECEIVE,
+  setUserCapability,
+} from '../db/userCapabilities.js';
 import {
   dccActiveListenAvailable,
   dccAllowPrivateHosts,
-  dccEnabledForUser,
+  dccChatEnabledForUser,
+  dccReceiveEnabledForUser,
   dccListenBindHost,
   dccMasterEnabled,
   dccMaxFileBytes,
@@ -52,17 +57,31 @@ describe('dcc gate', () => {
 
   it('requires BOTH the master switch and a per-user grant', () => {
     // neither
-    expect(dccEnabledForUser(userId)).toBe(false);
+    expect(dccReceiveEnabledForUser(userId)).toBe(false);
     // grant only
-    setUserCapability(userId, CAPABILITY_DCC, true);
-    expect(dccEnabledForUser(userId)).toBe(false);
+    setUserCapability(userId, CAPABILITY_DCC_RECEIVE, true);
+    expect(dccReceiveEnabledForUser(userId)).toBe(false);
     // master only
-    setUserCapability(userId, CAPABILITY_DCC, false);
+    setUserCapability(userId, CAPABILITY_DCC_RECEIVE, false);
     process.env.LURKER_DCC_ENABLED = '1';
-    expect(dccEnabledForUser(userId)).toBe(false);
+    expect(dccReceiveEnabledForUser(userId)).toBe(false);
     // both
-    setUserCapability(userId, CAPABILITY_DCC, true);
-    expect(dccEnabledForUser(userId)).toBe(true);
+    setUserCapability(userId, CAPABILITY_DCC_RECEIVE, true);
+    expect(dccReceiveEnabledForUser(userId)).toBe(true);
+  });
+
+  // An admin can allow direct chats without letting files land on the box
+  // (#1080), so neither grant implies the other.
+  it('grants chat and receiving separately', () => {
+    process.env.LURKER_DCC_ENABLED = '1';
+    setUserCapability(userId, CAPABILITY_DCC_RECEIVE, false);
+    setUserCapability(userId, CAPABILITY_DCC_CHAT, true);
+    expect(dccChatEnabledForUser(userId)).toBe(true);
+    expect(dccReceiveEnabledForUser(userId)).toBe(false);
+    setUserCapability(userId, CAPABILITY_DCC_CHAT, false);
+    setUserCapability(userId, CAPABILITY_DCC_RECEIVE, true);
+    expect(dccChatEnabledForUser(userId)).toBe(false);
+    expect(dccReceiveEnabledForUser(userId)).toBe(true);
   });
 });
 

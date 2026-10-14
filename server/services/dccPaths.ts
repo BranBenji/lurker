@@ -129,6 +129,9 @@ export function resolveDccDestination(username: string, rawFilename: string): st
   return candidate;
 }
 
+/** Free space a transfer must leave on the download dir's disk. */
+export const DCC_FREE_DISK_FLOOR_BYTES = 64 * 1024 * 1024;
+
 /**
  * Whether `dir`'s filesystem has room for `bytes` plus a safety margin. Used to
  * refuse a transfer that would fill the cell disk (the offer's advertised size is
@@ -138,7 +141,7 @@ export function resolveDccDestination(username: string, rawFilename: string): st
 export function hasFreeSpaceFor(
   dir: string,
   bytes: number,
-  marginBytes = 64 * 1024 * 1024,
+  marginBytes = DCC_FREE_DISK_FLOOR_BYTES,
 ): boolean {
   try {
     const st = fs.statfsSync(dir);

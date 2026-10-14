@@ -9,9 +9,11 @@
 
 import db from './index.js';
 
-/** The DCC download-manager capability. Gating is two-tier: the cell-wide
- *  LURKER_DCC_ENABLED master switch AND this per-user grant must both be on. */
-export const CAPABILITY_DCC = 'dcc';
+/** DCC is granted in parts (#1080), each two-tier: the cell-wide
+ *  LURKER_DCC_ENABLED master switch AND the per-user grant must both be on.
+ *  An admin can allow direct chats without letting files land on the box. */
+export const CAPABILITY_DCC_CHAT = 'dcc.chat';
+export const CAPABILITY_DCC_RECEIVE = 'dcc.receive';
 
 export interface UserCapabilityRow {
   capability: string;
@@ -43,7 +45,7 @@ export function setUserCapability(userId: number, capability: string, enabled: b
 }
 
 /** Every user holding `capability` — one query for a whole roster (the admin
- *  Users list) rather than one per row. */
+ *  DCC table) rather than one per row. */
 const holdersStmt = db.prepare(
   'SELECT user_id FROM user_capabilities WHERE capability = ? AND enabled = 1',
 );

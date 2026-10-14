@@ -141,7 +141,8 @@ import type { DccAccept, DccChat as DccChatOffer, DccSend } from './dcc.js';
 import {
   dccActiveListenAvailable,
   dccAllowPrivateHosts,
-  dccEnabledForUser,
+  dccChatEnabledForUser,
+  dccReceiveEnabledForUser,
   dccExternalHost,
   dccMaxFileBytes,
 } from './dccConfig.js';
@@ -6371,10 +6372,7 @@ export class IrcConnection {
     // own client configured. Sharing the bucket meant a fourth `/dcc chat` in a
     // minute vanished with no trace on either side, which is exactly how it
     // presented in QA.
-    if (
-      type === 'DCC' &&
-      (dccEnabledForUser(this.network.user_id) || this.isAwaitedDccAccept(nick, args))
-    ) {
+    if (type === 'DCC' && this.dccRequestAllowed(nick, args)) {
       // Say why, rather than letting it fall through to the generic
       // "requested CTCP DCC (no reply)". Only reached when DCC is otherwise
       // enabled for this user, so nobody who never had DCC sees a new line.
@@ -6473,7 +6471,7 @@ export class IrcConnection {
     // mentioned mid-sentence in ordinary conversation doesn't arm an auto-accept.
     const m = /^\s*xdcc\s+(?:send|get)\s+(#?\d+)/i.exec(text);
     if (!m) return;
-    if (!dccEnabledForUser(this.network.user_id) || this.dccBlockedByProxy()) return;
+    if (!dccReceiveEnabledForUser(this.network.user_id) || this.dccBlockedByProxy()) return;
     // ⚠ NOT a channel test (#724): `#` here is the XDCC PACK-NUMBER sigil.
     const pack = m[1].startsWith('#') ? m[1] : `#${m[1]}`;
     insertDccTransfer(this.network.user_id, {
@@ -6669,16 +6667,31 @@ export class IrcConnection {
   }
 
   // The sender accepted our resume: start receiving (appending) from our partial.
-  // A DCC ACCEPT answering a resume we asked for is part of a transfer already
-  // running, so it gets past a grant revoked since (#1080): revoking stops what
-  // starts next, and what is running finishes.
-  private isAwaitedDccAccept(nick: string, args: string): boolean {
-    if (this.dccPendingResume.size === 0) return false;
+  // Whether an inbound DCC request reaches the DCC handlers, by the grant for
+  // what it is (#1080): a chat offer needs the chat grant, a file offer the
+  // receive grant. Refused, it falls through to the generic "requested CTCP
+  // DCC" line, as it did before the account had DCC at all. A DCC ACCEPT
+  // answering a resume we asked for is part of a transfer already running, so
+  // it gets past a receive grant revoked since: revoking stops what starts
+  // next, and what is running finishes.
+  private dccRequestAllowed(nick: string, args: string): boolean {
+    const userId = this.network.user_id;
     const parsed = parseDcc(args);
-    return (
-      parsed.kind === 'accept' &&
-      this.dccPendingResume.has(this.dccResumeKey(nick, parsed.filename))
-    );
+    switch (parsed.kind) {
+      case 'chat':
+        return dccChatEnabledForUser(userId);
+      case 'send':
+        return dccReceiveEnabledForUser(userId);
+      case 'accept':
+        return (
+          dccReceiveEnabledForUser(userId) ||
+          this.dccPendingResume.has(this.dccResumeKey(nick, parsed.filename))
+        );
+      default:
+        // Malformed or a subtype we never act on: shown as the generic line
+        // either way, through the DCC path when the account has any part of it.
+        return dccChatEnabledForUser(userId) || dccReceiveEnabledForUser(userId);
+    }
   }
 
   private handleDccAccept(nick: string, accept: DccAccept): void {
@@ -7032,7 +7045,7 @@ export class IrcConnection {
 
   private dccChatAllowed(nick: string, verb: string): boolean {
     if (this.disposed) return false;
-    if (!dccEnabledForUser(this.network.user_id)) return false;
+    if (!dccChatEnabledForUser(this.network.user_id)) return false;
     if (this.dccBlockedByProxy()) {
       this.dccChatNotice(nick, `Can't ${verb} — DCC does not go through this network's proxy.`);
       return false;

@@ -18,6 +18,7 @@ let app: Express;
 let aliceAgent: LurkerTestAgent;
 let bobAgent: LurkerTestAgent;
 let carolAgent: LurkerTestAgent;
+let daveAgent: LurkerTestAgent;
 let alice: User;
 let aliceNet: Network;
 let tmpRoot: string;
@@ -65,7 +66,8 @@ beforeAll(async () => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-dcc-route-'));
   const { createUser } = await import('../db/users.js');
   const { createNetwork } = await import('../db/networks.js');
-  const { setUserCapability, CAPABILITY_DCC } = await import('../db/userCapabilities.js');
+  const { setUserCapability, CAPABILITY_DCC_CHAT, CAPABILITY_DCC_RECEIVE } =
+    await import('../db/userCapabilities.js');
   ({ insertDccTransfer, markDccReceiving, markDccCompleted } =
     await import('../db/dccTransfers.js'));
   const { default: dccRouter } = await import('./dcc.js');
@@ -73,8 +75,13 @@ beforeAll(async () => {
   alice = createUser('dcc-alice');
   const bob = createUser('dcc-bob');
   const carol = createUser('dcc-carol');
-  setUserCapability(alice.id, CAPABILITY_DCC, true);
-  setUserCapability(bob.id, CAPABILITY_DCC, true);
+  // Chat without files (#1080).
+  const dave = createUser('dcc-dave');
+  for (const u of [alice, bob]) {
+    setUserCapability(u.id, CAPABILITY_DCC_CHAT, true);
+    setUserCapability(u.id, CAPABILITY_DCC_RECEIVE, true);
+  }
+  setUserCapability(dave.id, CAPABILITY_DCC_CHAT, true);
   aliceNet = createNetwork(alice.id, {
     name: 'rizon',
     host: 'irc.rizon.net',
@@ -86,6 +93,7 @@ beforeAll(async () => {
   aliceAgent = await createAuthedAgent(app, alice.id);
   bobAgent = await createAuthedAgent(app, bob.id);
   carolAgent = await createAuthedAgent(app, carol.id);
+  daveAgent = await createAuthedAgent(app, dave.id);
 });
 
 afterAll(() => {
@@ -104,7 +112,8 @@ describe('GET /api/dcc/config', () => {
       const res = await aliceAgent.get('/api/dcc/config');
       expect(res.status).toBe(200);
       expect(res.body).toEqual({
-        enabled: true,
+        chat: true,
+        receive: true,
         directory: path.join(tmpRoot, 'root', 'dcc-alice'),
         maxFileBytes: 100 * 1024 * 1024,
         allowPrivateHosts: false,
@@ -120,16 +129,23 @@ describe('GET /api/dcc/config', () => {
     expect(res.body.directory).toBeNull();
   });
 
-  it('answers enabled:false, not 403, to an account without the grant', async () => {
+  it('answers, not 403s, an account without a grant', async () => {
     const res = await carolAgent.get('/api/dcc/config');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ enabled: false });
+    expect(res.body).toEqual({ chat: false, receive: false });
+  });
+
+  it('reports chat alone, with no receiving limits, for a chat-only account', async () => {
+    expect((await daveAgent.get('/api/dcc/config')).body).toEqual({ chat: true, receive: false });
   });
 
   it('is off for everyone while the instance switch is off', async () => {
     delete process.env.LURKER_DCC_ENABLED;
     try {
-      expect((await aliceAgent.get('/api/dcc/config')).body).toEqual({ enabled: false });
+      expect((await aliceAgent.get('/api/dcc/config')).body).toEqual({
+        chat: false,
+        receive: false,
+      });
     } finally {
       process.env.LURKER_DCC_ENABLED = '1';
     }
@@ -262,19 +278,44 @@ describe('GET /api/dcc/:id/file', () => {
   });
 
   // A revoked grant stops what starts next; what the account already received
-  // stays its own (#1080).
-  it('still serves the owner after their grant is revoked, but refuses actions', async () => {
-    const { setUserCapability, CAPABILITY_DCC } = await import('../db/userCapabilities.js');
+  // stays its own, and stopping things never needs a grant (#1080).
+  it('after the receive grant is revoked: serves files, refuses accept, allows reject', async () => {
+    const { setUserCapability, CAPABILITY_DCC_RECEIVE } = await import('../db/userCapabilities.js');
     const id = transfer(path.join(tmpRoot, 'revoked'), 'kept.mkv');
-    setUserCapability(alice.id, CAPABILITY_DCC, false);
+    const offer = insertDccTransfer(alice.id, {
+      network_id: aliceNet.id,
+      peer_nick: 'bot',
+      filename: 'offered.mkv',
+      advertised_size: 10,
+      state: 'pending_approval',
+    });
+    setUserCapability(alice.id, CAPABILITY_DCC_RECEIVE, false);
     try {
       expect((await getBytes(aliceAgent, `/api/dcc/${id}/file`)).status).toBe(200);
       const list = await aliceAgent.get('/api/dcc');
       expect(list.body.transfers.some((t: { id: number }) => t.id === id)).toBe(true);
-      expect((await aliceAgent.post(`/api/dcc/${id}/cancel`)).status).toBe(403);
+      const accept = await aliceAgent.post(`/api/dcc/${offer}/accept`);
+      expect(accept.status).toBe(403);
+      expect(accept.body.error).toMatch(/receiving/);
+      expect((await aliceAgent.post(`/api/dcc/${offer}/reject`)).status).toBe(200);
     } finally {
-      setUserCapability(alice.id, CAPABILITY_DCC, true);
+      setUserCapability(alice.id, CAPABILITY_DCC_RECEIVE, true);
     }
+  });
+
+  // Chat without files: the chat routes pass the gate (the 400 is the body
+  // check behind it), file actions do not.
+  it('lets a chat-only account offer chats but not accept files', async () => {
+    expect((await daveAgent.post('/api/dcc/chat').send({})).status).toBe(400);
+    const accept = await daveAgent.post('/api/dcc/1/accept');
+    expect(accept.status).toBe(403);
+    expect(accept.body.error).toMatch(/receiving/);
+  });
+
+  it('refuses a chat offer from an account without the chat grant', async () => {
+    const res = await carolAgent.post('/api/dcc/chat').send({ networkId: 1, nick: 'bob' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/chat/);
   });
 
   it('is dark for everyone while the instance switch is off', async () => {

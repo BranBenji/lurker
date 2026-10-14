@@ -42,6 +42,8 @@ import UploadersPane from '../components/admin-panes/UploadersPane.vue';
 import NetworksPane from '../components/admin-panes/NetworksPane.vue';
 import StoragePane from '../components/admin-panes/StoragePane.vue';
 import LockoutsPane from '../components/admin-panes/LockoutsPane.vue';
+import DccPane from '../components/admin-panes/DccPane.vue';
+import { useConfigStore } from '../stores/config.js';
 import NotificationsPane from '../components/admin-panes/NotificationsPane.vue';
 
 useSocket();
@@ -58,12 +60,15 @@ const PANES: Record<string, Component> = {
   notifications: NotificationsPane,
   storage: StoragePane,
   lockouts: LockoutsPane,
+  dcc: DccPane,
 };
+
+const config = useConfigStore();
 
 const activeTabId = computed((): string => {
   const param = route.params.tab;
   const id = Array.isArray(param) ? param[0] : param;
-  return isAdminTab(id) ? id : DEFAULT_ADMIN_TAB;
+  return isAdminTab(id, config.isNode) ? id : DEFAULT_ADMIN_TAB;
 });
 
 const activePaneComponent = computed(() => PANES[activeTabId.value] || null);

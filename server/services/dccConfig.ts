@@ -14,7 +14,11 @@
 
 import net from 'net';
 
-import { CAPABILITY_DCC, userHasCapability } from '../db/userCapabilities.js';
+import {
+  CAPABILITY_DCC_CHAT,
+  CAPABILITY_DCC_RECEIVE,
+  userHasCapability,
+} from '../db/userCapabilities.js';
 import { parseTruthyEnv } from '../utils/truthyEnv.js';
 import { isNodeMode } from '../utils/edition.js';
 import { encodeDccAddress } from './dcc.js';
@@ -35,10 +39,17 @@ export function dccMasterEnabled(): boolean {
   return !isNodeMode() && parseDccEnabled(process.env.LURKER_DCC_ENABLED);
 }
 
-/** Whether `userId` may use DCC: the master switch AND a per-user grant. The
- *  single gate every DCC entry point (CTCP wiring, API, commands) checks. */
-export function dccEnabledForUser(userId: number): boolean {
-  return dccMasterEnabled() && userHasCapability(userId, CAPABILITY_DCC);
+/** Whether `userId` may hold DCC chats: the master switch AND the chat grant.
+ *  Every chat entry point (inbound offers, /api/dcc/chat, /dcc chat) checks it. */
+export function dccChatEnabledForUser(userId: number): boolean {
+  return dccMasterEnabled() && userHasCapability(userId, CAPABILITY_DCC_CHAT);
+}
+
+/** Whether `userId` may receive files: the master switch AND the receive grant.
+ *  Every file entry point (inbound SEND offers, XDCC arming, the transfer
+ *  actions) checks it. */
+export function dccReceiveEnabledForUser(userId: number): boolean {
+  return dccMasterEnabled() && userHasCapability(userId, CAPABILITY_DCC_RECEIVE);
 }
 
 /** Operator cap on a single accepted DCC file, in bytes, from

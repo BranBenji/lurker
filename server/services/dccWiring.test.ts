@@ -20,7 +20,11 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import db from '../db/index.js';
 import { createNetwork } from '../db/networks.js';
 import { createUser } from '../db/users.js';
-import { CAPABILITY_DCC, setUserCapability } from '../db/userCapabilities.js';
+import {
+  CAPABILITY_DCC_CHAT,
+  CAPABILITY_DCC_RECEIVE,
+  setUserCapability,
+} from '../db/userCapabilities.js';
 import {
   insertDccTransfer,
   listDccTransfers,
@@ -43,7 +47,7 @@ afterEach(() => {
   delete process.env.LURKER_DCC_DIR;
   delete process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS;
   delete process.env.LURKER_DCC_MAX_FILE_MB;
-  setUserCapability(1, CAPABILITY_DCC, false);
+  setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
   db.prepare('DELETE FROM dcc_transfers').run();
   activeSender?.close();
   activeSender = null;
@@ -105,7 +109,7 @@ function harness() {
 // Both tiers of the gate on: cell-wide master switch + per-user grant.
 function enableDcc() {
   process.env.LURKER_DCC_ENABLED = '1';
-  setUserCapability(1, CAPABILITY_DCC, true);
+  setUserCapability(1, CAPABILITY_DCC_RECEIVE, true);
 }
 
 function makePayload(n: number): Buffer {
@@ -220,7 +224,7 @@ describe('inbound DCC SEND — disabled (gate closed)', () => {
   });
 
   it('stays closed when only the per-user grant is on (master off)', () => {
-    setUserCapability(1, CAPABILITY_DCC, true);
+    setUserCapability(1, CAPABILITY_DCC_RECEIVE, true);
     const { conn } = harness();
     conn.client.emit('ctcp request', {
       nick: 'bot',
@@ -228,6 +232,27 @@ describe('inbound DCC SEND — disabled (gate closed)', () => {
       message: 'DCC SEND f.bin 16843009 50612 1024',
     });
     expect(listDccTransfers(1)).toHaveLength(0);
+  });
+
+  // Chat without files (#1080): a file offer to a chat-only account reads as
+  // it would to an account without DCC at all, and arms nothing.
+  it('stays closed to file offers and XDCC triggers for a chat-only account', () => {
+    process.env.LURKER_DCC_ENABLED = '1';
+    setUserCapability(1, CAPABILITY_DCC_CHAT, true);
+    try {
+      const { conn, ctcpLines } = harness();
+      conn.client.say = vi.fn<(target: string, text: string) => void>();
+      conn.say('bot', 'xdcc send #1');
+      conn.client.emit('ctcp request', {
+        nick: 'bot',
+        type: 'DCC',
+        message: 'DCC SEND f.bin 16843009 50612 1024',
+      });
+      expect(listDccTransfers(1)).toHaveLength(0);
+      expect(ctcpLines().at(-1)?.text).toBe('bot requested CTCP DCC (no reply)');
+    } finally {
+      setUserCapability(1, CAPABILITY_DCC_CHAT, false);
+    }
   });
 });
 
@@ -492,7 +517,7 @@ describe('arm-on-trigger + auto-accept', () => {
       String(have),
     );
 
-    setUserCapability(1, CAPABILITY_DCC, false);
+    setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
     conn.client.emit('ctcp request', {
       nick: 'bot',
       type: 'DCC',
