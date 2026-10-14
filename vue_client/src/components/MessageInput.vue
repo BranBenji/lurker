@@ -2630,8 +2630,8 @@ const COMMANDS_LINES = [
   "          [-autosendcmd '<cmds>'] [-channel <#chan>] [-auto|-noauto] <name>",
   '      modify <name> [-flags…]   ·   remove <name>   ·   move <name> <position>',
   '      connect <name>   ·   disconnect <name>   (Lurker folds irssi /server into these)',
-  '  /dcc [list]            — DCC downloads: list, or accept/reject/cancel <id>',
-  '      e.g. /dcc   ·   /dcc accept 3   ·   /dcc reject 3   ·   /dcc cancel 3',
+  '  /dcc [list]            — DCC downloads: list, or accept/reject/cancel/download <id>',
+  '      e.g. /dcc   ·   /dcc accept 3   ·   /dcc cancel 3   ·   /dcc download 3',
   '  /dcc chat <nick>       — open a direct peer-to-peer chat, in a =nick buffer',
   '      also accepts an offer someone made you; /dcc close chat <nick> ends or declines',
   '      e.g. /dcc chat bob   ·   /dcc chat -passive bob   ·   /dcc close chat bob',
@@ -2974,6 +2974,16 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
       await dcc.closeChat(networkId, cmd.nick);
     } catch (e: any) {
       localInfo(networkId, target, `/dcc close: ${e?.message || 'failed'}`);
+    }
+    return;
+  }
+  if (cmd.kind === 'download') {
+    const name = dcc.transfers.find((t) => t.id === cmd.id)?.filename;
+    try {
+      await dcc.download(cmd.id);
+      localInfo(networkId, target, `/dcc download: #${cmd.id}${name ? ` ${name}` : ''}`);
+    } catch (e: any) {
+      localInfo(networkId, target, `/dcc download: #${cmd.id} — ${e?.message || 'failed'}`);
     }
     return;
   }

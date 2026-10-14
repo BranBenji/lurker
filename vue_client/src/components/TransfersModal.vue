@@ -6,9 +6,10 @@
 <!--
   Transfers view for the DCC download manager (#270 phase 2). Lists the user's
   inbound DCC transfers and lets them act on each: accept / reject an unsolicited
-  offer, or cancel one in flight. The list seeds from GET /api/dcc on open and
-  then updates live as `dcc-transfer` frames arrive over the WS. The same
-  operations are available headless via /dcc — this is a view over that core.
+  offer, cancel one in flight, or download a completed file (#1079). The list
+  seeds from GET /api/dcc on open and then updates live as `dcc-transfer` frames
+  arrive over the WS. Everything but the download is also available headless via
+  /dcc — this is a view over that core.
 -->
 
 <template>
@@ -55,6 +56,14 @@
               @click="onCancel(t)"
             >
               Cancel
+            </button>
+            <button
+              v-else-if="t.state === 'completed'"
+              class="link"
+              :disabled="dcc.busy[t.id]"
+              @click="onDownload(t)"
+            >
+              Download
             </button>
           </div>
         </li>
@@ -202,6 +211,11 @@ function onAccept(t: DccTransfer) {
 }
 function onReject(t: DccTransfer) {
   dcc.reject(t.id).catch(() => {
+    /* error surfaced via dcc.actionError */
+  });
+}
+function onDownload(t: DccTransfer) {
+  dcc.download(t.id).catch(() => {
     /* error surfaced via dcc.actionError */
   });
 }
