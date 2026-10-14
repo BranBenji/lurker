@@ -210,6 +210,7 @@ import { useMediaViewer } from '../composables/useMediaViewer.js';
 import { useCopyFeedback } from '../composables/useCopyFeedback.js';
 import { formatRelative } from '../utils/timestamp.js';
 import { joinMeta } from '../utils/metaLine.js';
+import { formatBytes } from '../utils/formatBytes.js';
 import { iconForMime } from '../utils/uploaders.js';
 import { mediaKindForUrl } from '../utils/uploadHostMatch.js';
 import { useImeSafeInput } from '../composables/useImeSafeInput.js';
@@ -447,12 +448,6 @@ async function onDelete(u: UploadRow) {
   } finally {
     deletingId.value = null;
   }
-}
-
-function formatBytes(n: number) {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // Deliberately does NOT name the uploader. Which backend a file happened to land on is

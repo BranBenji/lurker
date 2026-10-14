@@ -36,6 +36,13 @@ import { crc32Hex, crc32Update } from './dcc.js';
 import { setDccStorageLimit } from '../db/dccStorageLimits.js';
 import { IrcConnection } from './ircConnection.js';
 
+// Transfer rows reach the user's clients as `dcc-transfer` frames (#1084).
+const userFrame = vi.fn<(frame: Record<string, unknown>) => void>();
+const frames = () =>
+  userFrame.mock.calls.map(
+    ([frame]) => frame as { kind: string; transfer: Record<string, unknown> },
+  );
+
 beforeAll(() => {
   createUser('dcc-wire-alice'); // id 1
   createNetwork(1, { name: 'n', host: 'h', port: 6697, tls: true, nick: 'alice' }); // network id 1
@@ -92,6 +99,7 @@ function makeConn(networkFields: Record<string, unknown> = {}): IrcConnection {
       ...networkFields,
     },
     onEvent: () => {},
+    onUserFrame: userFrame,
   });
 }
 
@@ -317,6 +325,13 @@ describe('arm-on-trigger + auto-accept', () => {
     expect(row.destination_path).toBe(path.join(tmpDir, 'dcc-wire-alice', 'payload.bin'));
     expect(fs.readFileSync(row.destination_path as string).equals(payload)).toBe(true);
     expect(row.crc_status).toBe('absent'); // filename carried no CRC → size is the integrity signal
+    // A progress checkpoint goes out as the row its write returned (#1084).
+    expect(
+      frames().some(
+        (f) => f.transfer.state === 'receiving' && Number(f.transfer.received_bytes) > 0,
+      ),
+    ).toBe(true);
+    expect(frames().at(-1)?.transfer).toMatchObject({ id: row.id, state: 'completed' });
   });
 
   it('fails an armed passive offer (not yet supported)', () => {
@@ -428,8 +443,6 @@ describe('arm-on-trigger + auto-accept', () => {
 
     it('refuses a transfer that would take the account over, and says so live', () => {
       const conn = setup();
-      const published: Array<Record<string, unknown>> = [];
-      conn.onEvent = ((e: Record<string, unknown>) => published.push(e)) as typeof conn.onEvent;
       received('old.bin', 3000);
       setDccStorageLimit(1, 6000);
       offer(conn, 50612, 5000);
@@ -437,8 +450,8 @@ describe('arm-on-trigger + auto-accept', () => {
       expect(row.state).toBe('failed');
       expect(row.error).toMatch(/over your DCC storage limit \(2\.9 KB of 5\.9 KB used\)/);
       // An armed request has no HTTP reply to carry the row: the frame is it.
-      expect(published.at(-1)).toMatchObject({
-        type: 'dcc-transfer',
+      expect(frames().at(-1)).toMatchObject({
+        kind: 'dcc-transfer',
         transfer: { id: row.id, state: 'failed' },
       });
     });
@@ -559,11 +572,6 @@ describe('arm-on-trigger + auto-accept', () => {
     conn.client.say = vi.fn<(target: string, text: string) => void>();
     const resumeReq = vi.fn<(target: string, type: string, ...p: string[]) => void>();
     conn.client.ctcpRequest = resumeReq;
-    const published: Array<{
-      type?: string;
-      transfer?: { id: number; destination_path: unknown };
-    }> = [];
-    conn.onEvent = ((e: (typeof published)[number]) => published.push(e)) as typeof conn.onEvent;
 
     conn.say('bot', 'xdcc send #1');
     // Bot offers the full file; Lurker sees the partial and asks to resume.
@@ -583,7 +591,7 @@ describe('arm-on-trigger + auto-accept', () => {
     // The resume took over the earlier row's file (#1125): that row let go of
     // it, and every open view hears so.
     expect(
-      published.some((e) => e.transfer?.id === priorId && e.transfer.destination_path === null),
+      frames().some((f) => f.transfer.id === priorId && f.transfer.destination_path === null),
     ).toBe(true);
 
     // Bot accepts the resume → Lurker connects and appends.

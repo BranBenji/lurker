@@ -637,3 +637,32 @@ describe('planChannelRejoins', () => {
     expect(conn.client.join).toHaveBeenCalledWith('#x', undefined);
   });
 });
+
+// #1084: a connection's DCC transfer rows reach wsHub's fan-out as their own
+// frame, tagged with the connection's user, not as a synthetic IRC event.
+describe('ircManager and a connection’s user frames', () => {
+  it('re-emits them as user-frame, with the connection’s user', async () => {
+    const { setNetworkClientCert } = await import('../db/networks.js');
+    const user = createUser('user-frame');
+    const network = createNetwork(user.id, {
+      name: 'user-frame-net',
+      host: 'irc.example.test',
+      port: 6697,
+      tls: true,
+      nick: 'nick',
+      autoconnect: false,
+    })!;
+    // Refused over its certificate, so no socket opens (see above).
+    setNetworkClientCert(network.id, user.id, { cert: 'cert-only', key: '' });
+    const conn = ircManager.startNetwork(user.id, network.id)!;
+    const heard = vi.fn<(userId: number, frame: Record<string, unknown>) => void>();
+    ircManager.on('user-frame', heard);
+    try {
+      const frame = { kind: 'dcc-transfer', transfer: { id: 7 } };
+      conn.onUserFrame(frame);
+      expect(heard).toHaveBeenCalledWith(user.id, frame);
+    } finally {
+      ircManager.off('user-frame', heard);
+    }
+  });
+});

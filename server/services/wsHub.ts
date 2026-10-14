@@ -2191,19 +2191,14 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       .catch((err) => console.warn('[push] friend-online deliver failed:', err?.message || err));
   }
 
+  // What a connection has for every one of the user's clients that isn't an
+  // IRC event (a DCC transfer row), already shaped as its frame.
+  ircManager.on('user-frame', (userId: number, frame: WsPayload) => fanOut(userId, frame));
+
   ircManager.on('event', (rawEvent) => {
     // EnrichedEvent (from ircConnection) is a strict superset of MessageEvent.
     const event = rawEvent as MessageEvent & { userId: number; state?: string };
     const eventUserId = event.userId;
-    // DCC transfer updates (#270 phase 2) are user-scoped, not buffer messages —
-    // fan them out as their own frame, skipping message decoration/buffer logic.
-    if ((event as { type?: string }).type === 'dcc-transfer') {
-      fanOut(eventUserId, {
-        kind: 'dcc-transfer',
-        transfer: (event as unknown as { transfer: unknown }).transfer,
-      });
-      return;
-    }
     // A reaction was added or removed (handleReaction). It patches a line the
     // client may or may not have loaded, so it's its own frame rather than an
     // `irc` row: no decoration, no push, no unread bump, and — unlike a message —
