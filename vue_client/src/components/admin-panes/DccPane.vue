@@ -125,10 +125,7 @@
                       />
                       GB
                     </span>
-                    <small>
-                      Blank for no limit. A transfer that would go over it is refused; nothing is
-                      deleted.
-                    </small>
+                    <small>Blank for no limit.</small>
                   </label>
                   <p v-if="editError" class="error inline">{{ editError }}</p>
                   <div class="buttons">
