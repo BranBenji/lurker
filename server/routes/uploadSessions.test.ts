@@ -117,9 +117,30 @@ describe('/api/upload-sessions', () => {
     expect(done.body.url).toMatch(/^https:\/\/stub\.example\/.*\.txt$/);
     expect(stub.received!.equals(file)).toBe(true);
 
-    // The session is over: its row and its file are gone.
-    expect((await alice.get(`/api/upload-sessions/${id}`)).status).toBe(404);
+    // The file is handed on and gone; the session keeps the answer, for a
+    // client whose connection dropped before it arrived.
+    await new Promise((r) => setTimeout(r, 20)); // the unlink is fire-and-forget
     expect(fs.existsSync(sessions.uploadSessionPath(id))).toBe(false);
+    const after = await alice.get(`/api/upload-sessions/${id}`);
+    expect(after.body).toMatchObject({ state: 'done', offset: file.length });
+    expect(after.body.result).toEqual({ status: 200, body: done.body });
+  });
+
+  // Finishing can outlast a proxy's patience, and the client asks again.
+  it('answers complete again with the same answer, without handing the file on twice', async () => {
+    const file = text(2);
+    const { id } = (await open({ purpose: 'upload', size: file.length, filename: 'twice.txt' }))
+      .body;
+    await sendAll(id, file);
+    const first = await alice.post(`/api/upload-sessions/${id}/complete`).send({});
+    stub.received = null;
+    const second = await alice.post(`/api/upload-sessions/${id}/complete`).send({});
+    expect(second.status).toBe(200);
+    expect(second.body).toEqual(first.body);
+    expect(stub.received).toBeNull();
+    const late = await put(id, file.length, Buffer.from('x'));
+    expect(late.status).toBe(409);
+    expect(late.body.code).toBe('session_closed');
   });
 
   it('answers a chunk at the wrong offset with the real one, and resumes from it', async () => {
@@ -265,7 +286,8 @@ describe('/api/upload-sessions', () => {
       const res = await alice.post(`/api/upload-sessions/${id}/complete`).send({});
       expect(res.status).toBe(400);
       expect(res.body.code).toBe('not_a_zip');
-      expect((await alice.get(`/api/upload-sessions/${id}`)).status).toBe(404);
+      const after = await alice.get(`/api/upload-sessions/${id}`);
+      expect(after.body.result).toEqual({ status: 400, body: res.body });
     });
   });
 });

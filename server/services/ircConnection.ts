@@ -146,7 +146,8 @@ import {
   dccExternalHost,
   dccMaxFileBytes,
 } from './dccConfig.js';
-import { dccFileBytes, hasFreeSpaceFor, resolveDccDestination } from './dccPaths.js';
+import { dccFileBytes, resolveDccDestination } from './dccPaths.js';
+import { hasFreeSpaceFor } from '../utils/diskSpace.js';
 import { getDccStorageLimit } from '../db/dccStorageLimits.js';
 import { DccChat } from './dccChat.js';
 import { openDccListener, type DccListenHandle } from './dccListener.js';

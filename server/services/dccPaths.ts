@@ -17,7 +17,7 @@
 import fs from 'fs';
 import path from 'path';
 import { capUtf8, utf8Bytes } from '../utils/capUtf8.js';
-import { FREE_DISK_FLOOR_BYTES, hasFreeSpaceFor } from '../utils/diskSpace.js';
+import { FREE_DISK_FLOOR_BYTES } from '../utils/diskSpace.js';
 
 // ext4 and APFS allow 255 BYTES per name, not 255 characters (#1051): an emoji
 // is four bytes, a CJK character three.
@@ -143,7 +143,6 @@ export function resolveDccDestination(
  *  advertised size wouldn't leave it (the receiver also caps writes at that
  *  size). */
 export const DCC_FREE_DISK_FLOOR_BYTES = FREE_DISK_FLOOR_BYTES;
-export { hasFreeSpaceFor };
 
 /** The size of the file at `p`, or null when there is none (#1125). Symlinks
  *  count as themselves. */

@@ -402,8 +402,11 @@ function migrate() {
     -- A file arriving in chunks (#650): uploads and imports, each chunk its own
     -- request so no proxy's body limit caps the file. The bytes so far are a
     -- file under tmp/upload-sessions named by id; its size is the offset, so
-    -- nothing here counts bytes. updated_at moves with every chunk, and a
-    -- session idle for a day is swept with its file.
+    -- nothing here counts bytes. state: 'open' taking chunks, 'processing'
+    -- while complete hands the file on, 'done' with the answer complete gave
+    -- in result ({status, body} JSON), kept so a client whose connection
+    -- dropped can still read it. updated_at moves with every chunk and at
+    -- done, and a session idle for a day is swept with its file.
     CREATE TABLE IF NOT EXISTS upload_sessions (
       id TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,
@@ -412,6 +415,8 @@ function migrate() {
       filename TEXT NOT NULL,
       mime TEXT,
       uploader_id INTEGER,
+      state TEXT NOT NULL DEFAULT 'open',
+      result TEXT,
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
@@ -2607,6 +2612,10 @@ ensureColumn('user_drafts', 'reply_message_id', 'INTEGER');
 ensureColumn('user_drafts', 'reply_addressed', 'INTEGER NOT NULL DEFAULT 0');
 ensureColumn('input_history', 'reply_message_id', 'INTEGER');
 ensureColumn('input_history', 'reply_addressed', 'INTEGER NOT NULL DEFAULT 0');
+// #650: upload_sessions shipped to no release without these, but a dev DB
+// that ran the branch before them has the table.
+ensureColumn('upload_sessions', 'state', "TEXT NOT NULL DEFAULT 'open'");
+ensureColumn('upload_sessions', 'result', 'TEXT');
 
 // One placement per buffer: a favorite and a pin are mutually exclusive
 // (favorite⇒unpin and pin⇒unfavorite in the wsHub verbs). Enforce it on every

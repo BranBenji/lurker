@@ -4,11 +4,12 @@
 // Chunked, resumable uploads (#650); see services/uploadSessions.ts.
 //
 //   POST   /                  {purpose, size, filename, mime?, uploaderId?}
-//                             → 201 {id, purpose, size, offset, chunkBytes}
-//   GET    /:id               → {id, purpose, size, offset, chunkBytes}
+//                             → 201 {id, purpose, size, offset, chunkBytes, state}
+//   GET    /:id               → the same, and once done `result`: what
+//                             complete answered, {status, body}
 //   PUT    /:id               raw chunk, Upload-Offset header → {offset}
 //   POST   /:id/complete      {progressToken?} → what POST /api/uploads or
-//                             POST /api/imports answers
+//                             POST /api/imports answers; again once done
 //   DELETE /:id               → {ok: true}
 //
 // Every refusal that concerns where the file is carries `offset`, so a client
@@ -23,7 +24,6 @@ import {
   appendUploadChunk,
   createUploadSession,
   finishUploadSession,
-  UploadSessionError,
   uploadSessionStatus,
 } from '../services/uploadSessions.js';
 import { processUpload, UploadRequestError } from '../services/uploadService.js';
@@ -34,7 +34,7 @@ const router = Router();
 router.use(requireAuth);
 
 function fail(res: Response, next: NextFunction, err: unknown): void {
-  if (err instanceof UploadSessionError || err instanceof UploadRequestError) {
+  if (err instanceof UploadRequestError) {
     // A chunk whose client went away has no one to answer.
     if (!res.writableEnded && !res.destroyed) {
       res.status(err.status).json({ error: err.message, ...err.extra });
@@ -83,25 +83,32 @@ router.put('/:id', async (req: Request, res: Response, next: NextFunction) => {
 router.post('/:id/complete', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const tokenRaw = (req.body as { progressToken?: unknown } | undefined)?.progressToken;
-    await finishUploadSession(req.user!.id, String(req.params.id), async (row, filePath) => {
-      if (row.purpose === 'import') {
-        await answerImport(req.user!.id, filePath, res);
-        return;
-      }
-      const uploaded = await processUpload({
-        userId: req.user!.id,
-        isAdmin: req.user!.role === 'admin',
-        tempPath: filePath,
-        size: row.size,
-        claimedMime: row.mime ?? 'application/octet-stream',
-        originalName: row.filename,
-        requestedUploaderId: row.uploader_id,
-        progressToken: typeof tokenRaw === 'string' && tokenRaw ? capText(tokenRaw, 64) : null,
-        chunked: true,
-        baseUrl: () => requestBaseUrl(req),
-      });
-      res.json(uploaded);
-    });
+    const { status, body } = await finishUploadSession(
+      req.user!.id,
+      String(req.params.id),
+      async (row, filePath) => {
+        if (row.purpose === 'import') return answerImport(req.user!.id, filePath);
+        try {
+          const uploaded = await processUpload({
+            userId: req.user!.id,
+            isAdmin: req.user!.role === 'admin',
+            tempPath: filePath,
+            size: row.size,
+            claimedMime: row.mime ?? 'application/octet-stream',
+            originalName: row.filename,
+            requestedUploaderId: row.uploader_id,
+            progressToken: typeof tokenRaw === 'string' && tokenRaw ? capText(tokenRaw, 64) : null,
+            chunked: true,
+            baseUrl: () => requestBaseUrl(req),
+          });
+          return { status: 200, body: { ...uploaded } };
+        } catch (err) {
+          if (!(err instanceof UploadRequestError)) throw err;
+          return { status: err.status, body: { error: err.message, ...err.extra } };
+        }
+      },
+    );
+    res.status(status).json(body);
   } catch (err) {
     fail(res, next, err);
   }

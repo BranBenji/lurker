@@ -150,6 +150,9 @@ export interface SendOptions {
   headers?: Record<string, string>;
   /** Bytes of the body sent so far, of `total`. */
   onProgress?: (loaded: number, total: number) => void;
+  /** Give up when this long passes with no bytes sent and no answer. A
+   *  connection a network change left half-open never errors by itself. */
+  stallMs?: number;
 }
 
 // A request whose body is a form or raw bytes, sent with XHR for its upload
@@ -158,7 +161,7 @@ export function apiSend<T = any>(
   method: string,
   url: string,
   body: FormData | Blob,
-  { headers, onProgress }: SendOptions = {},
+  { headers, onProgress, stallMs }: SendOptions = {},
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -166,7 +169,19 @@ export function apiSend<T = any>(
     xhr.withCredentials = true;
     xhr.responseType = 'text';
     for (const [name, value] of Object.entries(headers ?? {})) xhr.setRequestHeader(name, value);
+    let stalled = false;
+    let stallTimer: ReturnType<typeof setTimeout> | undefined;
+    const armStall = () => {
+      if (!stallMs) return;
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        stalled = true;
+        xhr.abort();
+      }, stallMs);
+    };
+    xhr.addEventListener('loadend', () => clearTimeout(stallTimer));
     xhr.upload.addEventListener('progress', (e) => {
+      armStall();
       if (!onProgress || !e.lengthComputable) return;
       onProgress(e.loaded, e.total);
     });
@@ -192,7 +207,10 @@ export function apiSend<T = any>(
       }
     });
     xhr.addEventListener('error', () => reject(new Error('network error')));
-    xhr.addEventListener('abort', () => reject(new Error('upload aborted')));
+    xhr.addEventListener('abort', () =>
+      reject(new Error(stalled ? 'network stalled' : 'upload aborted')),
+    );
     xhr.send(body);
+    armStall();
   });
 }

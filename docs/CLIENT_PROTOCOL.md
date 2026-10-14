@@ -1482,22 +1482,33 @@ instead, and a client that loses its connection asks where the server got to and
 carries on from there. Uploads and imports both go this way; what happens to the
 finished file is the same as for the single request.
 
-| Endpoint             | Notes                                                                                                                                                                                                                                                                                                        |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `POST /`             | `{purpose: 'upload'\|'import', size, filename, mime?, uploaderId?}` → `201 {id, purpose, size, offset, chunkBytes}`. The size is checked here, before any bytes: `413` over the cap, `409 account_not_empty` for an import, `507` when the server's disk can't take it. `uploaderId` is an upload's override |
-| `PUT /:id`           | One chunk as the raw body (`application/octet-stream`), with an `Upload-Offset` header → `{offset}`. At most `chunkBytes`, and never past `size`                                                                                                                                                             |
-| `GET /:id`           | → `{id, purpose, size, offset, chunkBytes}`. Where to carry on from                                                                                                                                                                                                                                          |
-| `POST /:id/complete` | `{progressToken?}` → exactly what `POST /api/uploads` or `POST /api/imports` answers, with the same errors. Ends the session whatever the outcome                                                                                                                                                            |
-| `DELETE /:id`        | → `{ok:true}`. Drops the session and its bytes                                                                                                                                                                                                                                                               |
+| Endpoint             | Notes                                                                                                                                                                                                                                                                                                                                           |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /`             | `{purpose: 'upload'\|'import', size, filename, mime?, uploaderId?}` → `201` with the session (as `GET`). The size is checked here, before any bytes: `413` over the cap, `409 account_not_empty` for an import, `507` when the server's disk can't take it alongside what other sessions will still write. `uploaderId` is an upload's override |
+| `PUT /:id`           | One chunk as the raw body (`application/octet-stream`), with an `Upload-Offset` header → `{offset}`. At most `chunkBytes`, and never past `size`                                                                                                                                                                                                |
+| `GET /:id`           | → `{id, purpose, size, offset, chunkBytes, state, result?}`. `state` is `open` (taking chunks), `processing` (complete is handing the file on) or `done`, with `result: {status, body}`: what complete answered                                                                                                                                 |
+| `POST /:id/complete` | `{progressToken?}` → exactly what `POST /api/uploads` or `POST /api/imports` answers, with the same status and errors. Asked again once done, it answers the same again                                                                                                                                                                         |
+| `DELETE /:id`        | → `{ok:true}`. Drops the session and its bytes. `409` while a request is working on it                                                                                                                                                                                                                                                          |
 
 **The offset is the server's.** A chunk is taken only at the session's current
 offset, which is how many bytes it holds. Anything else is a `409` with
 `code: "offset_mismatch"` and the real `offset`. A chunk that was cut off partway
 leaves what arrived, so after any failure, `GET` the session (or read the
-`offset` in the `409`) and send from there. Every refusal about the file's
-position carries `offset`; `409 session_busy` means a request for the session is
-still running (often the one your client gave up on), so wait and ask again.
-`413 chunk_too_large` and a `404` (no such session, or not yours) are final.
+`offset` in the refusal) and send from there. Every refusal about a chunk
+carries `offset`. Worth retrying: no answer at all, any `409`, `408`, `429`, and
+any `5xx` (`507` is the server's disk filling, `500` its write failing).
+`409 session_busy` means another request for the session is still running
+(often the one your client gave up on), so wait and ask again. A `413` and a
+`404` (no such session, or not yours) are final. A chunk can stall without
+erroring when a network change leaves the connection half-open, so give up on
+one that sends nothing for a while and ask the session.
+
+**Complete can outlast the connection.** Handing on a large file takes time (a
+500 MB import runs for minutes), longer than a proxy may wait (Cloudflare gives
+up at 100 s). So the session keeps the answer: when complete's own response is
+lost, times out or is a `409 processing`, `GET` the session until it is `done`
+and read `result`; a `result.status` outside 2xx is the refusal the request
+would have been. Don't `DELETE` a session you are still waiting on.
 
 **Sizes.** `uploadChunkBytes` (on the `snapshot`, the `settings` frame beside
 `maxUploadBytes`, and `GET /api/uploads`) is the largest chunk, and the same
@@ -1508,8 +1519,10 @@ media against when you upload in chunks. A file that fits in one chunk gains
 nothing from a session; send it with `POST /api/uploads`. **Absent means the
 server has no sessions**: upload in one request, as before.
 
-A session survives a server restart. One with no chunk for a day is removed,
-bytes and all.
+A session survives a server restart; one cut off mid-complete by the restart
+ends `done` with a `500` result, and the file has to be sent again. A session
+idle for a day (counted from its last chunk, or from when it was done) is
+removed, bytes and all.
 
 ### DCC — `/api/dcc` (self-hosted only)
 

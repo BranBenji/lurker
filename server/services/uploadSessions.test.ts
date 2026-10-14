@@ -9,7 +9,17 @@ import '../test-utils/isolateDb.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+
+// The free-disk floor, watched: what each check asked for, and the answer.
+const disk = vi.hoisted(() => ({ full: false, asked: [] as number[] }));
+vi.mock('../utils/diskSpace.js', () => ({
+  FREE_DISK_FLOOR_BYTES: 1024 ** 3,
+  hasFreeSpaceFor: (_dir: string, bytes: number) => {
+    disk.asked.push(bytes);
+    return !disk.full;
+  },
+}));
 
 import db from '../db/index.js';
 import { createUser } from '../db/users.js';
@@ -18,6 +28,9 @@ import {
   abortUploadSession,
   appendUploadChunk,
   createUploadSession,
+  finishUploadSession,
+  startUploadSessionSweeper,
+  stopUploadSessionSweeper,
   sweepUploadSessions,
   UPLOAD_SESSION_DIR,
   UPLOAD_SESSION_IDLE_MS,
@@ -103,6 +116,97 @@ describe('a chunk', () => {
       status: 413,
       extra: { code: 'chunk_too_large', offset: 0 },
     });
+  });
+});
+
+describe('the disk', () => {
+  // Ten sessions that each fit alone could together fill it.
+  it('must hold a new file and everything the open sessions will still write', async () => {
+    const half = open(64);
+    await appendUploadChunk(user.id, half, '0', 10, PassThrough.from([Buffer.alloc(10)]));
+    const still = (
+      db.prepare(`SELECT id, size FROM upload_sessions WHERE state = 'open'`).all() as {
+        id: string;
+        size: number;
+      }[]
+    ).reduce((n, r) => n + r.size - uploadSessionOffset(r.id), 0);
+    open(50);
+    expect(disk.asked.at(-1)).toBe(50 + still);
+  });
+
+  it('refuses a chunk once something else has taken the space', async () => {
+    const id = open(64);
+    disk.full = true;
+    try {
+      await expect(
+        appendUploadChunk(user.id, id, '0', 4, PassThrough.from([Buffer.from('abcd')])),
+      ).rejects.toMatchObject({ status: 507, extra: { offset: 0 } });
+      expect(uploadSessionOffset(id)).toBe(0);
+    } finally {
+      disk.full = false;
+    }
+  });
+
+  // The client is still there; telling it its chunk was cut off would be a lie
+  // it treats as final.
+  it('reports its own write failing as the server’s fault, not a cut-off chunk', async () => {
+    const id = open(64);
+    fs.chmodSync(uploadSessionPath(id), 0o400);
+    try {
+      await expect(
+        appendUploadChunk(user.id, id, '0', 4, PassThrough.from([Buffer.from('abcd')])),
+      ).rejects.toMatchObject({ status: 500, extra: { offset: 0 } });
+    } finally {
+      fs.chmodSync(uploadSessionPath(id), 0o600);
+    }
+  });
+});
+
+describe('finishing', () => {
+  const full = async (size = 4) => {
+    const id = open(size);
+    await appendUploadChunk(user.id, id, '0', size, PassThrough.from([Buffer.alloc(size, 97)]));
+    return id;
+  };
+
+  it('is processing until the file is handed on, and can be neither dropped nor finished twice', async () => {
+    const id = await full();
+    let release!: () => void;
+    const pending = finishUploadSession(user.id, id, async () => {
+      await new Promise<void>((r) => (release = r));
+      return { status: 200, body: { ok: true } };
+    });
+    expect(uploadSessionStatus(user.id, id).state).toBe('processing');
+    expect(() => abortUploadSession(user.id, id)).toThrow(/being processed/);
+    await expect(
+      finishUploadSession(user.id, id, async () => ({ status: 200, body: {} })),
+    ).rejects.toMatchObject({ status: 409, extra: { code: 'processing' } });
+    release();
+    await expect(pending).resolves.toEqual({ status: 200, body: { ok: true } });
+    expect(uploadSessionStatus(user.id, id)).toMatchObject({
+      state: 'done',
+      result: { status: 200, body: { ok: true } },
+    });
+  });
+
+  it('keeps a 500 as the answer when handing the file on throws', async () => {
+    const id = await full();
+    await expect(
+      finishUploadSession(user.id, id, async () => {
+        throw new Error('driver exploded');
+      }),
+    ).rejects.toThrow('driver exploded');
+    expect(uploadSessionStatus(user.id, id).result?.status).toBe(500);
+  });
+
+  it('ends at boot what a stopped process left processing', async () => {
+    const id = await full();
+    db.prepare(`UPDATE upload_sessions SET state = 'processing' WHERE id = ?`).run(id);
+    startUploadSessionSweeper();
+    stopUploadSessionSweeper();
+    const status = uploadSessionStatus(user.id, id);
+    expect(status.state).toBe('done');
+    expect(status.result?.status).toBe(500);
   });
 });
 

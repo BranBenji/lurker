@@ -11,18 +11,21 @@
 //            byte is sent
 //   chunk    appends bytes at an offset, which must be exactly where the file
 //            ends now; anything else is answered with the real offset
-//   status   tells a client that lost track where to carry on
+//   status   tells a client that lost track where to carry on, or, once the
+//            session is done, what complete answered
 //   complete hands the assembled file to what a single request would have
-//            (the upload pipeline, the importer), and ends the session
+//            (the upload pipeline, the importer) and keeps the answer
 //
 // The file's size IS the offset, so a chunk cut off halfway leaves a prefix
-// of what was sent, and the client carries on from there. A session survives
-// a restart (its row and file stay); one idle for a day is swept.
+// of what was sent, and the client carries on from there. Complete can outlast
+// a proxy's patience (a 500 MB import takes minutes, Cloudflare waits 100 s),
+// so the session keeps its answer and a client that lost the response reads it
+// from status; asking complete again replays it. A session survives a restart;
+// one idle for a day is swept.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { once } from 'node:events';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { Readable } from 'node:stream';
@@ -31,12 +34,18 @@ import { hasFreeSpaceFor } from '../utils/diskSpace.js';
 import {
   allUploadSessionIds,
   deleteUploadSession,
+  endStrandedUploadSessions,
   getUploadSession,
   idleUploadSessionIds,
   insertUploadSession,
+  markUploadSessionDone,
+  markUploadSessionProcessing,
+  openUploadSessions,
   touchUploadSession,
   type UploadPurpose,
+  type UploadSessionResult,
   type UploadSessionRow,
+  type UploadSessionState,
 } from '../db/uploadSessions.js';
 import {
   chunkedCapBytesFor,
@@ -51,26 +60,21 @@ import {
   UploaderUnavailableError,
 } from './uploadProviders/resolve.js';
 import { accountIsEmpty } from './importService.js';
+import { UploadRequestError } from './uploadService.js';
 
-/** Where sessions keep their bytes. Owner-only: an import is an archive with
- *  the source account's network passwords in it. */
+/** Where sessions keep their bytes. Owner-only, files 0600: an import is an
+ *  archive with the source account's network passwords in it. */
 export const UPLOAD_SESSION_DIR = path.join(resolveDataDir(), 'tmp', 'upload-sessions');
 fs.mkdirSync(UPLOAD_SESSION_DIR, { recursive: true, mode: 0o700 });
-
-/** A session with no chunk for this long is abandoned. */
-export const UPLOAD_SESSION_IDLE_MS = 24 * 60 * 60 * 1000;
-
-/** A refusal to answer with `status`; `extra` rides along in the JSON body. */
-export class UploadSessionError extends Error {
-  readonly status: number;
-  readonly extra: Record<string, unknown>;
-  constructor(status: number, message: string, extra: Record<string, unknown> = {}) {
-    super(message);
-    this.name = 'UploadSessionError';
-    this.status = status;
-    this.extra = extra;
-  }
+try {
+  // mkdir leaves an existing directory's mode alone.
+  fs.chmodSync(UPLOAD_SESSION_DIR, 0o700);
+} catch {
+  // A filesystem without POSIX modes; nothing to tighten.
 }
+
+/** A session with no activity for this long is abandoned. */
+export const UPLOAD_SESSION_IDLE_MS = 24 * 60 * 60 * 1000;
 
 // Sessions with a request working on their file: a chunk being written, or the
 // file being handed on. A second request for one of them is refused, because
@@ -96,6 +100,9 @@ export interface UploadSessionStatus {
   size: number;
   offset: number;
   chunkBytes: number;
+  state: UploadSessionState;
+  /** What complete answered, once done. */
+  result?: UploadSessionResult;
 }
 
 function statusOf(row: UploadSessionRow): UploadSessionStatus {
@@ -103,20 +110,35 @@ function statusOf(row: UploadSessionRow): UploadSessionStatus {
     id: row.id,
     purpose: row.purpose,
     size: row.size,
-    offset: uploadSessionOffset(row.id),
+    // A done session's file is gone; it held all of it.
+    offset: row.state === 'open' ? uploadSessionOffset(row.id) : row.size,
     chunkBytes: uploadChunkBytes(),
+    state: row.state,
+    ...(row.state === 'done' && row.result
+      ? { result: JSON.parse(row.result) as UploadSessionResult }
+      : {}),
   };
 }
 
 /** The caller's session, or a 404. */
 export function requireUploadSession(userId: number, id: string): UploadSessionRow {
-  const row = typeof id === 'string' ? getUploadSession(userId, id) : undefined;
-  if (!row) throw new UploadSessionError(404, 'no such upload session');
+  const row = getUploadSession(userId, id);
+  if (!row) throw new UploadRequestError(404, 'no such upload session');
   return row;
 }
 
 export function uploadSessionStatus(userId: number, id: string): UploadSessionStatus {
   return statusOf(requireUploadSession(userId, id));
+}
+
+/** Refuse a request for a session another request is working on. */
+function assertIdle(id: string): void {
+  if (busy.has(id)) {
+    throw new UploadRequestError(409, 'this upload session is busy with another request', {
+      code: 'session_busy',
+      offset: uploadSessionOffset(id),
+    });
+  }
 }
 
 /** The largest file `purpose` takes for this user. An upload's cap is its
@@ -137,10 +159,19 @@ function capFor(
   } catch (err) {
     // As processUpload answers them, so a session fails the way a single
     // request would, only before the bytes rather than after.
-    if (err instanceof UploaderNotConfiguredError) throw new UploadSessionError(503, err.message);
-    if (err instanceof UploaderUnavailableError) throw new UploadSessionError(400, err.message);
+    if (err instanceof UploaderNotConfiguredError) throw new UploadRequestError(503, err.message);
+    if (err instanceof UploaderUnavailableError) throw new UploadRequestError(400, err.message);
     throw err;
   }
+}
+
+/** Bytes the open sessions will still write, every account's. Free disk is
+ *  checked against these too, or ten sessions that each fit alone would
+ *  together fill it. */
+function bytesStillToCome(): number {
+  let total = 0;
+  for (const s of openUploadSessions()) total += Math.max(0, s.size - uploadSessionOffset(s.id));
+  return total;
 }
 
 export function createUploadSession(
@@ -149,14 +180,14 @@ export function createUploadSession(
 ): UploadSessionStatus {
   const purpose = body.purpose;
   if (purpose !== 'upload' && purpose !== 'import') {
-    throw new UploadSessionError(400, "purpose must be 'upload' or 'import'");
+    throw new UploadRequestError(400, "purpose must be 'upload' or 'import'");
   }
   const size = body.size;
   if (typeof size !== 'number' || !Number.isSafeInteger(size) || size <= 0) {
-    throw new UploadSessionError(400, 'size must be a whole number of bytes above 0');
+    throw new UploadRequestError(400, 'size must be a whole number of bytes above 0');
   }
   if (typeof body.filename !== 'string') {
-    throw new UploadSessionError(400, 'filename must be a string');
+    throw new UploadRequestError(400, 'filename must be a string');
   }
   // No control characters: the name goes into a provider's multipart header
   // and the uploads list (processUpload strips them too).
@@ -166,14 +197,14 @@ export function createUploadSession(
   let uploaderId: number | null = null;
   if (body.uploaderId != null) {
     if (purpose !== 'upload' || !Number.isInteger(body.uploaderId)) {
-      throw new UploadSessionError(400, 'uploaderId must be an integer, on an upload');
+      throw new UploadRequestError(400, 'uploaderId must be an integer, on an upload');
     }
     uploaderId = body.uploaderId as number;
   }
 
   const cap = capFor(purpose, user, uploaderId);
   if (size > cap) {
-    throw new UploadSessionError(
+    throw new UploadRequestError(
       413,
       purpose === 'import'
         ? `archive exceeds ${formatCapMb(cap)} MB`
@@ -184,20 +215,27 @@ export function createUploadSession(
   // The importer refuses an account with data in it. Said now, not after the
   // archive has crossed the network.
   if (purpose === 'import' && !accountIsEmpty(user.id)) {
-    throw new UploadSessionError(
+    throw new UploadRequestError(
       409,
       'target account already has data; imports require a fresh account',
       { code: 'account_not_empty' },
     );
   }
-  if (!hasFreeSpaceFor(UPLOAD_SESSION_DIR, size)) {
-    throw new UploadSessionError(507, 'not enough free disk space on the server for this file');
+  if (!hasFreeSpaceFor(UPLOAD_SESSION_DIR, size + bytesStillToCome())) {
+    throw new UploadRequestError(507, 'not enough free disk space on the server for this file');
   }
 
   const id = crypto.randomBytes(16).toString('hex');
   fs.writeFileSync(uploadSessionPath(id), '', { flag: 'wx', mode: 0o600 });
   insertUploadSession(user.id, { id, purpose, size, filename, mime, uploaderId });
-  return { id, purpose, size, offset: 0, chunkBytes: uploadChunkBytes() };
+  return {
+    id,
+    purpose,
+    size,
+    offset: 0,
+    chunkBytes: uploadChunkBytes(),
+    state: 'open',
+  };
 }
 
 /**
@@ -213,109 +251,151 @@ export async function appendUploadChunk(
   body: Readable,
 ): Promise<{ offset: number }> {
   const row = requireUploadSession(userId, id);
-  if (busy.has(id)) {
-    throw new UploadSessionError(409, 'this upload session is busy with another request', {
-      code: 'session_busy',
-      offset: uploadSessionOffset(id),
+  assertIdle(id);
+  if (row.state !== 'open') {
+    throw new UploadRequestError(409, 'this upload session has all of its file', {
+      code: 'session_closed',
+      offset: row.size,
     });
   }
   const offset = uploadSessionOffset(id);
   const claimed = typeof offsetHeader === 'string' ? Number(offsetHeader) : NaN;
   if (!Number.isSafeInteger(claimed) || claimed !== offset) {
-    throw new UploadSessionError(409, `this upload session is at byte ${offset}`, {
+    throw new UploadRequestError(409, `this upload session is at byte ${offset}`, {
       code: 'offset_mismatch',
       offset,
     });
   }
   const allowed = Math.min(uploadChunkBytes(), row.size - offset);
   if (declaredLength != null && declaredLength > allowed) {
-    throw new UploadSessionError(413, `a chunk here may be at most ${allowed} bytes`, {
+    throw new UploadRequestError(413, `a chunk here may be at most ${allowed} bytes`, {
       code: 'chunk_too_large',
+      offset,
+    });
+  }
+  // The space was there when the session opened; other writers may have taken
+  // it since.
+  if (!hasFreeSpaceFor(UPLOAD_SESSION_DIR, allowed)) {
+    throw new UploadRequestError(507, 'not enough free disk space on the server for this file', {
       offset,
     });
   }
 
   busy.add(id);
-  const out = fs.createWriteStream(uploadSessionPath(id), { flags: 'a' });
-  let seen = 0;
+  let writeError: NodeJS.ErrnoException | null = null;
   let over = false;
-  const limit = new Transform({
-    transform(chunk: Buffer, _enc, cb) {
-      seen += chunk.length;
-      if (seen > allowed) {
-        over = true;
-        cb(new Error('chunk too large'));
-        return;
-      }
-      cb(null, chunk);
-    },
-  });
   let cutOff = false;
   try {
-    await pipeline(body, limit, out);
-  } catch {
-    // Over the limit, or the client went away mid-chunk. A body without a
-    // Content-Length is the only way past the check above, and the pipeline
-    // closes its connection.
-    cutOff = !over;
-  } finally {
+    const out = fs.createWriteStream(uploadSessionPath(id), { flags: 'a', mode: 0o600 });
+    const closed = new Promise<void>((resolve) => out.once('close', () => resolve()));
+    out.on('error', (err: NodeJS.ErrnoException) => {
+      // The pipeline hands the client's own failure (a reset, a hang-up) on
+      // to the file too; only the file's syscalls failing are ours.
+      if (err.syscall === 'open' || err.syscall === 'write' || err.syscall === 'close') {
+        writeError = err;
+      }
+    });
+    let seen = 0;
+    const limit = new Transform({
+      transform(chunk: Buffer, _enc, cb) {
+        seen += chunk.length;
+        if (seen > allowed) {
+          over = true;
+          cb(new Error('chunk too large'));
+          return;
+        }
+        cb(null, chunk);
+      },
+    });
+    try {
+      await pipeline(body, limit, out);
+    } catch {
+      // Over the limit (a body without a Content-Length is the only way past
+      // the check above), our own disk failing, or the client going away.
+      cutOff = !over;
+    }
     // ⚠ Not free until the file is closed: a write still in flight would land
     // after the next chunk read the offset, and splice into it.
-    if (!out.closed) await once(out, 'close');
+    await closed;
     if (over) fs.truncateSync(uploadSessionPath(id), offset);
+  } finally {
     busy.delete(id);
     touchUploadSession(id);
   }
+  const now = uploadSessionOffset(id);
   if (over) {
-    throw new UploadSessionError(413, `a chunk here may be at most ${allowed} bytes`, {
+    throw new UploadRequestError(413, `a chunk here may be at most ${allowed} bytes`, {
       code: 'chunk_too_large',
-      offset,
+      offset: now,
     });
+  }
+  const failed = writeError as NodeJS.ErrnoException | null;
+  if (failed) {
+    console.warn(`[lurker] upload session ${id}: write failed:`, failed.message);
+    throw new UploadRequestError(
+      failed.code === 'ENOSPC' ? 507 : 500,
+      failed.code === 'ENOSPC'
+        ? 'not enough free disk space on the server for this file'
+        : 'the server could not write this chunk',
+      { offset: now },
+    );
   }
   if (cutOff) {
-    throw new UploadSessionError(400, 'the chunk was cut off', {
+    throw new UploadRequestError(400, 'the chunk was cut off', {
       code: 'interrupted',
-      offset: uploadSessionOffset(id),
+      offset: now,
     });
   }
-  return { offset: uploadSessionOffset(id) };
+  return { offset: now };
 }
 
 /**
- * Hand a whole session's file to `use`, then end the session whatever `use`
- * does: the file is removed and the row with it. A session short of its size
- * is refused with the offset, and stays.
+ * Hand a whole session's file to `use` and keep what it answers, which is
+ * also this call's answer. A session already done answers the same again, so
+ * a client that lost the response can ask twice. The file is removed once
+ * used; the row stays, done, until the sweep. A session short of its size is
+ * refused with the offset, and stays open.
  */
-export async function finishUploadSession<T>(
+export async function finishUploadSession(
   userId: number,
   id: string,
-  use: (row: UploadSessionRow, filePath: string) => Promise<T>,
-): Promise<T> {
+  use: (row: UploadSessionRow, filePath: string) => Promise<UploadSessionResult>,
+): Promise<UploadSessionResult> {
   const row = requireUploadSession(userId, id);
-  if (busy.has(id)) {
-    throw new UploadSessionError(409, 'this upload session is busy with another request', {
-      code: 'session_busy',
-      offset: uploadSessionOffset(id),
+  if (row.state === 'done' && row.result) return JSON.parse(row.result) as UploadSessionResult;
+  if (row.state === 'processing' || busy.has(id)) {
+    throw new UploadRequestError(409, 'this upload session is busy with another request', {
+      code: row.state === 'processing' ? 'processing' : 'session_busy',
+      offset: row.state === 'processing' ? row.size : uploadSessionOffset(id),
     });
   }
   const offset = uploadSessionOffset(id);
   if (offset !== row.size) {
-    throw new UploadSessionError(409, `this upload session has ${offset} of ${row.size} bytes`, {
+    throw new UploadRequestError(409, `this upload session has ${offset} of ${row.size} bytes`, {
       code: 'incomplete',
       offset,
     });
   }
   busy.add(id);
+  markUploadSessionProcessing(id);
+  let result: UploadSessionResult = {
+    status: 500,
+    body: { error: 'the server failed while handling this file' },
+  };
   try {
-    return await use(row, uploadSessionPath(id));
+    result = await use(row, uploadSessionPath(id));
+    return result;
   } finally {
-    endSession(id);
+    // A throw from `use` keeps the 500 above, so a client asking later hears
+    // the same as the one whose request failed.
+    markUploadSessionDone(id, result);
+    // The local upload driver may have renamed the file away already.
+    fs.promises.unlink(uploadSessionPath(id)).catch(() => {});
     busy.delete(id);
   }
 }
 
-/** Remove the session and its file. The local upload driver may have renamed
- *  the file away already, which is the good case. */
+/** Remove the session and its file. */
 function endSession(id: string): void {
   deleteUploadSession(id);
   fs.promises.unlink(uploadSessionPath(id)).catch(() => {});
@@ -326,21 +406,22 @@ function endSession(id: string): void {
  *  file on, and a chunk in flight ends with its connection anyway. The sweep
  *  takes what is left. */
 export function abortUploadSession(userId: number, id: string): void {
-  requireUploadSession(userId, id);
-  if (busy.has(id)) {
-    throw new UploadSessionError(409, 'this upload session is busy with another request', {
-      code: 'session_busy',
-      offset: uploadSessionOffset(id),
+  const row = requireUploadSession(userId, id);
+  if (row.state === 'processing') {
+    throw new UploadRequestError(409, 'this upload session is being processed', {
+      code: 'processing',
+      offset: row.size,
     });
   }
+  assertIdle(id);
   endSession(id);
 }
 
 /**
- * Remove sessions idle for a day, and files under the session dir that no
- * session owns (a session whose account was deleted, a crash between writing
- * the file and the row) once they are as old. Skips a session a request is
- * working on.
+ * Remove sessions idle for a day (a done one counts from when it finished),
+ * and files under the session dir that no session owns (a session whose
+ * account was deleted, a crash between writing the file and the row) once
+ * they are as old. Skips a session a request is working on.
  */
 export async function sweepUploadSessions(now = Date.now()): Promise<number> {
   const cutoff = now - UPLOAD_SESSION_IDLE_MS;
@@ -375,9 +456,15 @@ export async function sweepUploadSessions(now = Date.now()): Promise<number> {
 
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
 
-/** Sweep now and every hour after. */
+/** At boot: end what a stopped process left mid-complete, then sweep now and
+ *  every hour after. */
 export function startUploadSessionSweeper(): void {
   if (sweepTimer) return;
+  const stranded = endStrandedUploadSessions({
+    status: 500,
+    body: { error: 'the server restarted while handling this file; send it again' },
+  });
+  if (stranded > 0) console.log(`[lurker] ended ${stranded} upload session(s) cut off mid-way`);
   const run = () =>
     void sweepUploadSessions().catch((err: unknown) => {
       console.warn('[lurker] upload session sweep failed:', (err as Error).message);

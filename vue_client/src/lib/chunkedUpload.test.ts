@@ -24,18 +24,49 @@ const file = new Blob(['0123456789abcdefghij']); // 20 bytes, chunks of 8
 
 // A server holding `held` bytes. A chunk is taken only at its offset; `drop`
 // makes the next n chunks fail as a lost connection would, after `keep` of
-// their bytes arrived.
-function server({ drop = 0, keep = 0 } = {}) {
-  const state = { held: 0, drop, sent: [] as string[], completed: false, deleted: false };
+// their bytes arrived. `lostCompletes` complete calls are processed but their
+// answer never arrives, and the session then reads 'processing' for
+// `processingPolls` looks before it is done with `result`.
+function server({
+  drop = 0,
+  keep = 0,
+  lostCompletes = 0,
+  processingPolls = 0,
+  result = { status: 200, body: { url: 'https://x/stored' } as Record<string, unknown> },
+} = {}) {
+  const state = {
+    held: 0,
+    drop,
+    sent: [] as string[],
+    completes: 0,
+    deleted: false,
+    session: 'open' as 'open' | 'processing' | 'done',
+    polls: 0,
+  };
   h.api.mockImplementation(async (url, opts) => {
     if (url === '/api/upload-sessions') return { id: 's1', offset: 0, chunkBytes: 8 };
     if (url === SESSION && opts?.method === 'DELETE') {
       state.deleted = true;
       return { ok: true };
     }
-    if (url === SESSION) return { offset: state.held };
+    if (url === SESSION) {
+      if (state.session === 'processing' && state.polls++ >= processingPolls)
+        state.session = 'done';
+      return {
+        offset: state.held,
+        size: 20,
+        state: state.session,
+        ...(state.session === 'done' ? { result } : {}),
+      };
+    }
     if (url === `${SESSION}/complete`) {
-      state.completed = true;
+      state.completes++;
+      if (state.session === 'open' && lostCompletes > 0) {
+        lostCompletes--;
+        state.session = 'processing';
+        throw new Error('network error');
+      }
+      state.session = 'done';
       return { url: 'https://x/done', body: opts?.body };
     }
     throw new Error(`unexpected ${url}`);
@@ -67,6 +98,7 @@ const send = (extra: Record<string, unknown> = {}) =>
     purpose: 'upload',
     filename: 'f.bin',
     retryDelayMs: () => 0,
+    pollMs: 0,
     ...extra,
   });
 
@@ -97,7 +129,7 @@ describe('uploadInChunks', () => {
     // The first try left "012" behind; the rest went from there.
     expect(s.sent).toEqual(['3456789a', 'bcdefghi', 'j']);
     expect(s.held).toBe(20);
-    expect(s.completed).toBe(true);
+    expect(s.completes).toBe(1);
   });
 
   it('gives up on a refusal no retry changes, and drops the session', async () => {
@@ -106,6 +138,49 @@ describe('uploadInChunks', () => {
     await expect(send()).rejects.toThrow('too big');
     expect(h.apiSend).toHaveBeenCalledTimes(1);
     expect(h.api).toHaveBeenLastCalledWith(SESSION, { method: 'DELETE' });
+  });
+
+  it('retries a chunk a proxy timed out or rate-limited', async () => {
+    const s = server();
+    h.apiSend.mockRejectedValueOnce(Object.assign(new Error('timeout'), { status: 408 }));
+    h.apiSend.mockRejectedValueOnce(Object.assign(new Error('slow down'), { status: 429 }));
+    await send();
+    expect(s.held).toBe(20);
+  });
+
+  // A 500 MB import outlasts Cloudflare's 100 s: the answer is lost, the work isn't.
+  it('reads the answer from the session when complete’s own answer is lost', async () => {
+    const s = server({ lostCompletes: 1, processingPolls: 2 });
+    await expect(send()).resolves.toEqual({ url: 'https://x/stored' });
+    expect(s.completes).toBe(1); // asked once; the session had the rest
+    expect(s.deleted).toBe(false);
+  });
+
+  it('throws the stored refusal as the request would have', async () => {
+    server({
+      lostCompletes: 1,
+      result: { status: 400, body: { error: 'not a zip', code: 'not_a_zip' } },
+    });
+    await expect(send()).rejects.toMatchObject({
+      message: 'not a zip',
+      status: 400,
+      data: { code: 'not_a_zip' },
+    });
+  });
+
+  it('asks complete again once the server stops being busy', async () => {
+    const s = server();
+    const real = h.api.getMockImplementation()!;
+    let busyOnce = true;
+    h.api.mockImplementation(async (url, opts) => {
+      if (url === `${SESSION}/complete` && busyOnce) {
+        busyOnce = false;
+        throw Object.assign(new Error('busy'), { status: 409 });
+      }
+      return real(url, opts);
+    });
+    await expect(send()).resolves.toMatchObject({ url: 'https://x/done' });
+    expect(s.completes).toBe(1);
   });
 
   it('gives up after six failures in a row', async () => {

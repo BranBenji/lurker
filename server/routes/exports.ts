@@ -229,7 +229,8 @@ importRouter.post('/', importUpload, async (req: Request, res: Response, next: N
       res.status(400).json({ error: 'no archive uploaded' });
       return;
     }
-    await answerImport(req.user!.id, req.file.path, res);
+    const { status, body } = await answerImport(req.user!.id, req.file.path);
+    res.status(status).json(body);
   } catch (err) {
     next(err);
   } finally {
@@ -238,17 +239,21 @@ importRouter.post('/', importUpload, async (req: Request, res: Response, next: N
   }
 });
 
-/** Restore the archive at `filePath` into the user's account and answer with
- *  the outcome; shared by the multipart route and an import session (#650).
- *  Throws only what isn't an ImportError. The caller removes the file. */
-export async function answerImport(userId: number, filePath: string, res: Response): Promise<void> {
+/** Restore the archive at `filePath` into the user's account; the answer as
+ *  an HTTP status and body. Shared by the multipart route and an import
+ *  session (#650), which keeps it. Throws only what isn't an ImportError. The
+ *  caller removes the file. */
+export async function answerImport(
+  userId: number,
+  filePath: string,
+): Promise<{ status: number; body: Record<string, unknown> }> {
   try {
     const result = await importFromZipFile(userId, filePath);
     // The account was empty, so every network it has now came from the archive.
     for (const network of listNetworksForUser(userId)) {
       ircManager.networkChanged(userId, network.id);
     }
-    res.json({ ok: true, ...result });
+    return { status: 200, body: { ok: true, ...result } };
   } catch (err) {
     if (err instanceof ImportError) {
       // ImportError.code is assigned in the JS constructor — not in the TS type yet
@@ -273,8 +278,7 @@ export async function answerImport(userId: number, filePath: string, res: Respon
                         : e.code === 'bad_bookmarks'
                           ? 400
                           : 500;
-      res.status(status).json({ error: e.message, code: e.code });
-      return;
+      return { status, body: { error: e.message, code: e.code } };
     }
     throw err;
   }
