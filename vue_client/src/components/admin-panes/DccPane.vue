@@ -86,46 +86,63 @@
             </tr>
             <tr v-if="editing?.id === u.id" class="editor">
               <td colspan="6">
-                <form @submit.prevent="save(u)">
+                <!-- Shaped like the Add a network form on Admin → Networks. -->
+                <form class="panel" @submit.prevent="save(u)">
+                  <h3>DCC for {{ u.username }}</h3>
                   <!-- With DCC off for the instance, a part can be taken away
                        but not given. -->
-                  <label>
+                  <label class="check">
                     <input
                       v-model="editing.chat"
                       type="checkbox"
                       :disabled="busy || (!info.enabled && !u.chat)"
                     />
-                    chat
+                    <span>
+                      Chat
+                      <small>Direct chats with people on IRC.</small>
+                    </span>
                   </label>
-                  <label>
+                  <label class="check">
                     <input
                       v-model="editing.receive"
                       type="checkbox"
                       :disabled="busy || (!info.enabled && !u.receive)"
                     />
-                    receive files
+                    <span>
+                      Receive files
+                      <small>Bots and people on IRC can send files to this server.</small>
+                    </span>
                   </label>
-                  <label>
-                    limit
-                    <input
-                      v-model="editing.limit"
-                      class="limit"
-                      type="number"
-                      step="any"
-                      placeholder="none"
+                  <label class="field">
+                    <span>Storage limit</span>
+                    <span class="amount">
+                      <input
+                        v-model="editing.limit"
+                        type="number"
+                        step="any"
+                        placeholder="none"
+                        :disabled="busy"
+                      />
+                      GB
+                    </span>
+                    <small>
+                      Blank for no limit. A transfer that would go over it is refused; nothing is
+                      deleted.
+                    </small>
+                  </label>
+                  <p v-if="editError" class="error inline">{{ editError }}</p>
+                  <div class="buttons">
+                    <button
+                      type="button"
+                      class="btn-secondary"
                       :disabled="busy"
-                    />
-                    GB
-                  </label>
-                  <span class="muted small">blank for no limit</span>
-                  <span class="buttons">
-                    <button type="submit" class="link" :disabled="busy">save</button>
-                    <button type="button" class="link" :disabled="busy" @click="editing = null">
-                      cancel
+                      @click="editing = null"
+                    >
+                      Cancel
                     </button>
-                  </span>
+                    <button type="submit" class="btn-primary" :disabled="busy">Save</button>
+                  </div>
                 </form>
-                <p v-if="editError" class="error inline">{{ editError }}</p>
               </td>
             </tr>
           </template>
@@ -136,8 +153,7 @@
         already received stay theirs to download.
       </p>
       <p class="muted small">
-        A limit caps what a user's received files take on disk. A transfer that would go over it is
-        refused; nothing is deleted. Users delete their own files in the Transfers list.
+        Users delete their own received files in the Transfers list to make room under a limit.
       </p>
     </template>
     <p v-else-if="!loadError" class="muted small">Loading…</p>
@@ -309,26 +325,49 @@ code {
   border-top: none;
 }
 .editor td {
-  padding: 0 0 var(--space-4) var(--space-6);
-  border-left: 2px solid var(--accent);
+  padding: 0 0 var(--space-4);
 }
-.editor form {
+/* As .add in admin-panes/NetworksPane.vue. */
+.panel {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-6);
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
 }
-.editor label {
-  display: inline-flex;
+.panel h3 {
+  margin: 0;
+}
+.panel label {
+  color: var(--fg);
+}
+.panel small {
+  display: block;
+  color: var(--fg-muted);
+}
+.panel .check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+.panel .field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.panel .amount {
+  display: flex;
   align-items: center;
   gap: var(--space-2);
 }
-.editor .limit {
-  width: 6em;
+.panel .amount input {
+  width: 8em;
 }
-.editor .buttons {
-  display: inline-flex;
-  gap: var(--space-2);
+.panel .buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
 }
 .warn {
   color: var(--warn);

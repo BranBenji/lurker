@@ -70,7 +70,7 @@ describe('Admin → DCC', () => {
     await editButton(w).trigger('click');
     const boxes = w.findAll('tr.editor input[type="checkbox"]');
     await boxes[1].setValue(true); // receive
-    await w.find('tr.editor input.limit').setValue('25');
+    await w.find('tr.editor input[type="number"]').setValue('25');
     h.api.mockResolvedValueOnce({ chat: true, receive: true, limitBytes: 25 * GB });
     await w.find('tr.editor form').trigger('submit');
     await flushPromises();
@@ -86,7 +86,7 @@ describe('Admin → DCC', () => {
   it('clears the limit when the field is emptied', async () => {
     const w = await mountPane();
     await editButton(w).trigger('click');
-    await w.find('tr.editor input.limit').setValue('');
+    await w.find('tr.editor input[type="number"]').setValue('');
     h.api.mockResolvedValueOnce({ chat: true, receive: false, limitBytes: null });
     await w.find('tr.editor form').trigger('submit');
     await flushPromises();
@@ -100,10 +100,10 @@ describe('Admin → DCC', () => {
   it('changes nothing on cancel', async () => {
     const w = await mountPane();
     await editButton(w).trigger('click');
-    await w.find('tr.editor input.limit').setValue('99');
+    await w.find('tr.editor input[type="number"]').setValue('99');
     await w
       .findAll('tr.editor button')
-      .find((b) => b.text() === 'cancel')!
+      .find((b) => b.text() === 'Cancel')!
       .trigger('click');
     expect(w.find('tr.editor').exists()).toBe(false);
     expect(h.api).toHaveBeenCalledTimes(1); // just the load
@@ -113,19 +113,19 @@ describe('Admin → DCC', () => {
   it('keeps the editor open with what was typed when the save fails', async () => {
     const w = await mountPane();
     await editButton(w).trigger('click');
-    await w.find('tr.editor input.limit').setValue('25');
+    await w.find('tr.editor input[type="number"]').setValue('25');
     h.api.mockRejectedValueOnce(new Error('network down'));
     await w.find('tr.editor form').trigger('submit');
     await flushPromises();
     expect(w.find('tr.editor').text()).toContain('network down');
-    expect((w.find('tr.editor input.limit').element as HTMLInputElement).value).toBe('25');
+    expect((w.find('tr.editor input[type="number"]').element as HTMLInputElement).value).toBe('25');
     expect(row(w)).not.toContain('saved');
   });
 
   it('refuses a limit that is not a positive number, without a request', async () => {
     const w = await mountPane();
     await editButton(w).trigger('click');
-    await w.find('tr.editor input.limit').setValue('-3');
+    await w.find('tr.editor input[type="number"]').setValue('-3');
     await w.find('tr.editor form').trigger('submit');
     await flushPromises();
     expect(h.api).toHaveBeenCalledTimes(1);
@@ -136,7 +136,9 @@ describe('Admin → DCC', () => {
   it('shows a small saved limit with the precision it has', async () => {
     const w = await mountPane({ limitBytes: Math.round(0.001 * GB) });
     await editButton(w).trigger('click');
-    expect((w.find('tr.editor input.limit').element as HTMLInputElement).value).toBe('0.001');
+    expect((w.find('tr.editor input[type="number"]').element as HTMLInputElement).value).toBe(
+      '0.001',
+    );
   });
 
   // With DCC off for the instance a grant can be cleared before it comes back
