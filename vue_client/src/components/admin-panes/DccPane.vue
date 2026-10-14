@@ -73,19 +73,25 @@
               />
             </td>
             <td>
-              <!-- In GB; blank is no limit. Saved when the field is left. -->
-              <input
-                class="limit"
-                type="number"
-                min="0"
-                step="any"
-                placeholder="none"
-                :value="limitGb(u)"
-                :disabled="busy"
-                :aria-label="`storage limit in GB for ${u.username}`"
-                @change="setLimit(u, $event)"
-              />
-              GB
+              <!-- In GB; blank is no limit. Nothing saves on its own: "save"
+                   (or Enter) appears once the value differs from what's
+                   stored, and "saved" confirms it landed. -->
+              <form class="limit-form" @submit.prevent="saveLimit(u)">
+                <input
+                  class="limit"
+                  type="number"
+                  min="0"
+                  step="any"
+                  placeholder="none"
+                  :value="draftFor(u)"
+                  :disabled="busy"
+                  :aria-label="`storage limit in GB for ${u.username}`"
+                  @input="onDraft(u, $event)"
+                />
+                GB
+                <button v-if="isDirty(u)" type="submit" class="link" :disabled="busy">save</button>
+                <span v-else-if="savedFor === u.id" class="muted" role="status">saved</span>
+              </form>
             </td>
             <td>{{ u.usedBytes ? formatBytes(u.usedBytes) : '—' }}</td>
           </tr>
@@ -105,7 +111,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, onMounted, onUnmounted } from 'vue';
 import { api } from '../../api.js';
 import { formatBytes } from '../../utils/formatBytes.js';
 
@@ -148,12 +154,35 @@ function limitGb(u: DccUser): string {
   return u.limitBytes === null ? '' : String(Math.round((u.limitBytes / GB) * 100) / 100);
 }
 
-async function setLimit(u: DccUser, event: Event) {
-  const field = event.target as HTMLInputElement;
-  const raw = field.value.trim();
+// What the admin has typed but not saved, per user. Absent means the field
+// shows what's stored.
+const drafts = ref<Record<number, string>>({});
+// The row that just saved, for a moment of "saved".
+const savedFor = ref<number | null>(null);
+let savedTimer: ReturnType<typeof setTimeout> | undefined;
+
+function draftFor(u: DccUser): string {
+  return drafts.value[u.id] ?? limitGb(u);
+}
+
+function onDraft(u: DccUser, event: Event) {
+  drafts.value[u.id] = (event.target as HTMLInputElement).value;
+  if (savedFor.value === u.id) savedFor.value = null;
+}
+
+function isDirty(u: DccUser): boolean {
+  const draft = drafts.value[u.id];
+  return draft !== undefined && draft.trim() !== limitGb(u);
+}
+
+onUnmounted(() => clearTimeout(savedTimer));
+
+async function saveLimit(u: DccUser) {
+  if (!isDirty(u)) return;
+  const raw = drafts.value[u.id].trim();
   const gb = Number(raw);
   if (raw !== '' && !(Number.isFinite(gb) && gb > 0)) {
-    field.value = limitGb(u);
+    // Kept as typed, so it can be fixed rather than retyped.
     error.value = 'a limit is a number of GB above 0, or blank for none';
     return;
   }
@@ -165,11 +194,16 @@ async function setLimit(u: DccUser, event: Event) {
       body: { limitBytes: raw === '' ? null : Math.max(1, Math.round(gb * GB)) },
     });
     u.limitBytes = next.limitBytes;
+    delete drafts.value[u.id];
+    savedFor.value = u.id;
+    clearTimeout(savedTimer);
+    savedTimer = setTimeout(() => {
+      if (savedFor.value === u.id) savedFor.value = null;
+    }, 2000);
   } catch (e: any) {
+    // The draft stays, with "save" still showing: nothing changed.
     error.value = e?.message || 'failed to set the limit';
   } finally {
-    // Show what's stored, whichever way it went.
-    field.value = limitGb(u);
     busy.value = false;
   }
 }
@@ -224,6 +258,11 @@ code {
 }
 .warn {
   color: var(--warn);
+}
+.limit-form {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 .limit {
   width: 6em;
