@@ -3,9 +3,10 @@
   SPDX-License-Identifier: MPL-2.0
 
   What DCC does for this account (#1080): which parts an admin granted (chat,
-  receiving files), and, for receiving, where files land and the limits the
-  operator set. The category only exists where the instance runs DCC
-  (features.dcc); the grants come from GET /api/dcc/config. Read-only.
+  receiving files), and, for receiving, the limits the operator set. Where files
+  land on the server is the admin's business (Admin → DCC), not shown here. The
+  category only exists where the instance runs DCC (features.dcc); the grants
+  come from GET /api/dcc/config. Read-only.
 -->
 
 <template>
@@ -29,13 +30,6 @@
               <td>{{ config.receive ? 'on' : 'off' }}</td>
             </tr>
             <template v-if="config.receive">
-              <tr>
-                <th scope="row">Saved to</th>
-                <td>
-                  <code v-if="config.directory">{{ config.directory }}</code>
-                  <span v-else class="warn">not set — nothing can be received until it is</span>
-                </td>
-              </tr>
               <tr>
                 <th scope="row">Largest file</th>
                 <td v-if="config.maxFileBytes">
@@ -78,7 +72,6 @@ import { formatBytes } from '../../utils/formatBytes.js';
 interface DccConfig {
   chat: boolean;
   receive: boolean;
-  directory?: string | null;
   maxFileBytes?: number;
   allowPrivateHosts?: boolean;
 }
@@ -98,10 +91,6 @@ onMounted(async () => {
 
 <style src="./panes.css"></style>
 <style scoped>
-code {
-  color: var(--fg);
-  overflow-wrap: anywhere;
-}
 .limits {
   margin: var(--space-6) 0;
   border-collapse: collapse;
@@ -115,8 +104,5 @@ code {
 }
 .limits th {
   color: var(--fg-muted);
-}
-.warn {
-  color: var(--warn);
 }
 </style>

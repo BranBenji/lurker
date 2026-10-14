@@ -1481,9 +1481,8 @@ and stopping (`POST /:id/reject|cancel`, `POST /chat/close`) need no grant,
 because revoking one stops what starts next and what an account received stays
 its own.
 
-`GET /config` answers either way: `{chat, receive}`, plus `directory`,
-`maxFileBytes` and `allowPrivateHosts` when `receive` is true (`directory` null
-when the server has no download dir; `maxFileBytes` 0 for no cap). A client shows
+`GET /config` answers either way: `{chat, receive}`, plus `maxFileBytes` and
+`allowPrivateHosts` when `receive` is true (`maxFileBytes` 0 for no cap). A client shows
 chat actions only when `chat` is true, and file actions only when `receive` is.
 
 `GET /?limit` list · `POST /:id/accept|reject|cancel`. Live updates via

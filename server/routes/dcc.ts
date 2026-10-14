@@ -26,7 +26,7 @@ import {
   dccReceiveEnabledForUser,
   dccMaxFileBytes,
 } from '../services/dccConfig.js';
-import { dccUserDir, sanitizeDccFilename } from '../services/dccPaths.js';
+import { sanitizeDccFilename } from '../services/dccPaths.js';
 import { getDccTransfer, listDccTransfers } from '../db/dccTransfers.js';
 import { getNetwork } from '../db/networks.js';
 import { isChannelTarget } from '../../shared/channels.js';
@@ -50,8 +50,6 @@ router.get('/config', (req: Request, res: Response) => {
   res.json({
     chat,
     receive,
-    // Null when LURKER_DCC_DIR is unset, in which case nothing can be received.
-    directory: dccUserDir(req.user!.username),
     // 0 means no cap.
     maxFileBytes: dccMaxFileBytes(),
     allowPrivateHosts: dccAllowPrivateHosts(),

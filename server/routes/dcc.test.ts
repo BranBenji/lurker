@@ -105,7 +105,9 @@ afterAll(() => {
 // Settings asks this to say whether DCC is on for the account, so it answers
 // rather than 403ing like the rest of /api/dcc.
 describe('GET /api/dcc/config', () => {
-  it('reports the limits to an account with DCC', async () => {
+  // The server's paths are the admin's business (Admin → DCC), never a
+  // member's: nothing in the answer names a directory.
+  it('reports the limits, but no path, to an account with DCC', async () => {
     process.env.LURKER_DCC_DIR = path.join(tmpRoot, 'root');
     process.env.LURKER_DCC_MAX_FILE_MB = '100';
     try {
@@ -114,7 +116,6 @@ describe('GET /api/dcc/config', () => {
       expect(res.body).toEqual({
         chat: true,
         receive: true,
-        directory: path.join(tmpRoot, 'root', 'dcc-alice'),
         maxFileBytes: 100 * 1024 * 1024,
         allowPrivateHosts: false,
       });
@@ -122,11 +123,6 @@ describe('GET /api/dcc/config', () => {
       delete process.env.LURKER_DCC_DIR;
       delete process.env.LURKER_DCC_MAX_FILE_MB;
     }
-  });
-
-  it('says when no download directory is configured', async () => {
-    const res = await aliceAgent.get('/api/dcc/config');
-    expect(res.body.directory).toBeNull();
   });
 
   it('answers, not 403s, an account without a grant', async () => {
