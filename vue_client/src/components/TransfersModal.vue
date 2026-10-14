@@ -316,8 +316,9 @@ function clearsWithAll(t: DccTransfer): boolean {
   return !isCancellable(t) && !holdsPartial(t);
 }
 function onClear(t: DccTransfer) {
-  if (holdsPartial(t) && !confirm(`Delete the partial download of "${t.filename}"?`)) return;
-  dcc.clearTransfer(t.id).catch(() => {
+  const partial = holdsPartial(t);
+  if (partial && !confirm(`Delete the partial download of "${t.filename}"?`)) return;
+  dcc.clearTransfer(t.id, partial).catch(() => {
     /* error surfaced via dcc.actionError */
   });
 }

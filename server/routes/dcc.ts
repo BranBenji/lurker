@@ -34,6 +34,8 @@ import {
   clearDccTransfer,
   clearFinishedDccTransfers,
   dccUsageBytes,
+  holdsDccPartial,
+  type ClearedDccTransfer,
   getDccTransfer,
   listDccTransfers,
   markDccFileDeleted,
@@ -256,9 +258,13 @@ router.delete('/:id/file', (req: Request, res: Response) => {
   res.json({ transfer });
 });
 
-/** Tell every tab which transfers left the list, and redraw the files they
+/** After transfers left the list: remove what they held on disk that was
+ *  theirs rather than a kept file, tell every tab, and redraw the files they
  *  received, which no longer name a transfer. */
-function publishCleared(userId: number, cleared: { id: number; file_id: number | null }[]): void {
+function afterCleared(userId: number, cleared: ClearedDccTransfer[]): void {
+  for (const t of cleared) {
+    if (t.destination_path && t.file_id == null) fs.rmSync(t.destination_path, { force: true });
+  }
   fanOutToUser(userId, { kind: 'dcc-transfers-cleared', ids: cleared.map((t) => t.id) });
   for (const t of cleared) {
     const file = t.file_id == null ? undefined : getDccFile(userId, t.file_id);
@@ -268,9 +274,11 @@ function publishCleared(userId: number, cleared: { id: number; file_id: number |
 
 /**
  * DELETE /api/dcc/:id — clear a finished transfer from the list (#1133). The
- * file it received stays in Files; a partial it still holds is deleted with
- * it, since nothing else would ever reach those bytes. A transfer still in
- * flight is refused (409): cancel it first.
+ * file it received stays in Files. A partial it still holds goes with it,
+ * since nothing else would ever reach those bytes, but only with
+ * `?partial=delete`, which a client sends once the user has said so; without
+ * it, 409 with `partial: true`. A transfer still in flight is refused (409):
+ * cancel it first.
  */
 router.delete('/:id', (req: Request, res: Response) => {
   const id = rowId(req);
@@ -283,9 +291,12 @@ router.delete('/:id', (req: Request, res: Response) => {
     res.status(409).json({ error: 'cancel the transfer before clearing it' });
     return;
   }
-  if (t.destination_path && t.file_id == null) fs.rmSync(t.destination_path, { force: true });
+  if (holdsDccPartial(t) && req.query.partial !== 'delete') {
+    res.status(409).json({ error: 'transfer holds a partial download', partial: true });
+    return;
+  }
   clearDccTransfer(req.user!.id, t.id);
-  publishCleared(req.user!.id, [t]);
+  afterCleared(req.user!.id, [t]);
   res.json({ ids: [t.id] });
 });
 
@@ -295,7 +306,7 @@ router.delete('/:id', (req: Request, res: Response) => {
  */
 router.post('/clear', (req: Request, res: Response) => {
   const cleared = clearFinishedDccTransfers(req.user!.id);
-  if (cleared.length) publishCleared(req.user!.id, cleared);
+  if (cleared.length) afterCleared(req.user!.id, cleared);
   res.json({ ids: cleared.map((t) => t.id) });
 });
 

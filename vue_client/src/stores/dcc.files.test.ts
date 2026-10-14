@@ -215,7 +215,31 @@ describe('dcc store, clearing transfers (#1133)', () => {
     expect(holdsPartial(partial)).toBe(true);
     expect(holdsPartial(kept)).toBe(false);
     expect(holdsPartial(t(3, 'rejected'))).toBe(false);
+    // A path with nothing received is a reservation, not a partial.
+    expect(holdsPartial({ ...t(5, 'failed'), destination_path: '/e', received_bytes: 0 })).toBe(
+      false,
+    );
     expect(holdsPartial({ ...t(4, 'receiving'), destination_path: '/r' })).toBe(false);
+  });
+
+  it('never brings a cleared transfer back on a late action response', async () => {
+    const dcc = useDccStore();
+    dcc.applyTransfer(t(6, 'receiving'));
+    let answer!: (v: unknown) => void;
+    h.api.mockReturnValueOnce(new Promise((r) => (answer = r)));
+    const cancelling = dcc.cancel(6);
+    dcc.applyTransfer(t(6, 'cancelled'));
+    dcc.dropTransfers([6]); // another tab cleared it
+    answer({ transfer: t(6, 'cancelled') });
+    await cancelling;
+    expect(dcc.transfers).toEqual([]);
+  });
+
+  it('asks the server to delete a partial only when told to', async () => {
+    const dcc = useDccStore();
+    h.api.mockResolvedValue({ ids: [7] });
+    await dcc.clearTransfer(7, true);
+    expect(h.api).toHaveBeenLastCalledWith('/api/dcc/7?partial=delete', { method: 'DELETE' });
   });
 
   it('keeps a clear that landed while the list was on its way', async () => {

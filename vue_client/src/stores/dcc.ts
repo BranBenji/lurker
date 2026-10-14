@@ -123,10 +123,11 @@ export function percentReceived(t: DccTransfer): number {
 }
 
 // Whether a finished transfer holds part of a download (#1133): bytes on disk
-// that are its own, not a kept file. Clearing it from the list deletes them, as
-// the server does for a row with a path and no kept file.
+// that are its own, not a kept file, as the server decides it. A path with
+// nothing received is only a reservation. Clearing one from the list deletes
+// the bytes, so it takes the user's say-so.
 export function holdsPartial(t: DccTransfer): boolean {
-  return hasFile(t) && t.file_id == null;
+  return hasFile(t) && t.file_id == null && t.received_bytes > 0;
 }
 
 // Whether a finished transfer left a file on the server to download or delete
@@ -162,8 +163,12 @@ type DccAction = 'accept' | 'reject' | 'cancel';
 let inflightLoad: Promise<DccTransfer[]> | null = null;
 // Transfer frames that land while the list loads, applied again on top of it:
 // the response may predate them (a completion arriving as a reconnect refetch
-// is on its way would otherwise rewind the row, a cleared one reappear).
-let transfersMissed: Array<DccTransfer | number> = [];
+// is on its way would otherwise rewind the row).
+let transfersMissed: DccTransfer[] = [];
+// Transfers cleared from the list (#1133). Ids are never reused, so a row
+// arriving late for one of these (a list read before the clear, an action's
+// response slower than the clear's frame) is history already gone.
+const clearedIds = new Set<number>();
 let inflightFiles: Promise<DccFile[]> | null = null;
 // Frames that land while the files list loads: the response was read before
 // them, so they are applied again on top of it.
@@ -237,13 +242,12 @@ export const useDccStore = defineStore('dcc', {
       inflightLoad = (async () => {
         try {
           const { transfers } = await api<{ transfers: DccTransfer[] }>('/api/dcc');
-          this.transfers = (transfers || []).toSorted((a, b) => b.id - a.id);
+          this.transfers = (transfers || [])
+            .filter((t) => !clearedIds.has(t.id))
+            .toSorted((a, b) => b.id - a.id);
           const missed = transfersMissed;
           transfersMissed = [];
-          for (const op of missed) {
-            if (typeof op === 'number') this.dropTransfers([op]);
-            else this.applyTransfer(op);
-          }
+          for (const t of missed) this.applyTransfer(t);
           this.loaded = true;
           return this.transfers;
         } catch (e: any) {
@@ -268,7 +272,7 @@ export const useDccStore = defineStore('dcc', {
     // cancel/accept POST response carrying 'receiving' resolving after the live
     // 'cancelled'/'completed' frame already landed). Drop such a regression.
     applyTransfer(t: DccTransfer): void {
-      if (!t || typeof t.id !== 'number') return;
+      if (!t || typeof t.id !== 'number' || clearedIds.has(t.id)) return;
       if (inflightLoad) transfersMissed.push(t);
       const idx = this.transfers.findIndex((x) => x.id === t.id);
       if (idx >= 0) {
@@ -304,13 +308,14 @@ export const useDccStore = defineStore('dcc', {
       return this.changeRow(id, dccFileUrl(id), 'DELETE', 'delete failed');
     },
 
-    // Clear a finished transfer from the list (#1133). Its file stays in Files;
-    // a partial it held is deleted with it.
-    async clearTransfer(id: number): Promise<void> {
+    // Clear a finished transfer from the list (#1133). Its file stays in Files.
+    // A partial it holds goes with it only when `deletePartial` says the user
+    // agreed; otherwise the server refuses (409, `partial: true`).
+    async clearTransfer(id: number, deletePartial = false): Promise<void> {
       this.busy[id] = true;
       delete this.actionError[id];
       try {
-        await api(`/api/dcc/${id}`, { method: 'DELETE' });
+        await api(`/api/dcc/${id}${deletePartial ? '?partial=delete' : ''}`, { method: 'DELETE' });
         this.dropTransfers([id]);
       } catch (e: any) {
         this.actionError[id] = e?.message || 'clear failed';
@@ -340,9 +345,8 @@ export const useDccStore = defineStore('dcc', {
     // Transfers gone from the list, from a `dcc-transfers-cleared` frame or
     // our own clear.
     dropTransfers(ids: number[]): void {
-      if (inflightLoad) transfersMissed.push(...ids);
-      const gone = new Set(ids);
-      this.transfers = this.transfers.filter((t) => !gone.has(t.id));
+      for (const id of ids) clearedIds.add(id);
+      this.transfers = this.transfers.filter((t) => !clearedIds.has(t.id));
       for (const id of ids) {
         delete this.busy[id];
         delete this.actionError[id];

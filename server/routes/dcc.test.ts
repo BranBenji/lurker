@@ -556,12 +556,17 @@ describe('clearing transfers', () => {
     expect(Buffer.compare(bytes.body, BYTES)).toBe(0);
   });
 
-  it('deletes a partial with the transfer that holds it', async () => {
-    const { updateDccTransferState } = await import('../db/dccTransfers.js');
+  it('deletes a partial with the transfer that holds it, when asked to', async () => {
+    const { markDccFailed } = await import('../db/dccTransfers.js');
     const dir = path.join(tmpRoot, 'clear-partial');
     const id = transfer(dir, 'half.mkv', { complete: false });
-    updateDccTransferState(id, 'failed', 'interrupted');
-    expect((await aliceAgent.delete(`/api/dcc/${id}`)).status).toBe(200);
+    markDccFailed(id, BYTES.length, 'interrupted');
+    // Only once the user has said so.
+    const refused = await aliceAgent.delete(`/api/dcc/${id}`);
+    expect(refused.status).toBe(409);
+    expect(refused.body.partial).toBe(true);
+    expect(fs.existsSync(path.join(dir, 'half.mkv'))).toBe(true);
+    expect((await aliceAgent.delete(`/api/dcc/${id}?partial=delete`)).status).toBe(200);
     expect(fs.existsSync(path.join(dir, 'half.mkv'))).toBe(false);
     expect(await ids()).not.toContain(id);
   });
@@ -576,19 +581,22 @@ describe('clearing transfers', () => {
   });
 
   it('clears every finished one but those in flight or holding a partial', async () => {
-    const { updateDccTransferState } = await import('../db/dccTransfers.js');
+    const { updateDccTransferState, markDccFailed } = await import('../db/dccTransfers.js');
     const dir = path.join(tmpRoot, 'clear-all');
     const done = transfer(dir, 'a.mkv');
     const active = transfer(dir, 'b.mkv', { complete: false });
     const partial = transfer(dir, 'c.mkv', { complete: false });
-    updateDccTransferState(partial, 'failed', 'interrupted');
+    markDccFailed(partial, BYTES.length, 'interrupted');
+    // The peer never connected: a reserved path, nothing received.
+    const refused = transfer(dir, 'e.mkv', { complete: false, write: false });
+    markDccFailed(refused, 0, 'connection refused');
     const empty = transfer(dir, 'd.mkv', { complete: false, write: false });
     updateDccTransferState(empty, 'rejected');
     const { markDccFileDeleted } = await import('../db/dccTransfers.js');
     markDccFileDeleted(empty);
     fanOut.mockClear();
     const res = await aliceAgent.post('/api/dcc/clear');
-    expect(res.body.ids).toEqual(expect.arrayContaining([done, empty]));
+    expect(res.body.ids).toEqual(expect.arrayContaining([done, empty, refused]));
     expect(res.body.ids).not.toContain(active);
     expect(res.body.ids).not.toContain(partial);
     expect(fanOut).toHaveBeenCalledWith(alice.id, {

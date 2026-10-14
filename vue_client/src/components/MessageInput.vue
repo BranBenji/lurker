@@ -194,13 +194,7 @@ import { useInputHistoryStore } from '../stores/inputHistory.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore, onInsertUrl } from '../stores/uploads.js';
-import {
-  useDccStore,
-  holdsPartial,
-  percentReceived,
-  type DccFile,
-  type DccTransfer,
-} from '../stores/dcc.js';
+import { useDccStore, percentReceived, type DccFile, type DccTransfer } from '../stores/dcc.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
@@ -3020,10 +3014,12 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
         localInfo(networkId, target, `/dcc clear: ${n} finished transfer(s) cleared`);
         return;
       }
-      // The panel's × asks before a partial goes; a command can't, so it
-      // takes the explicit /dcc delete first.
-      const row = (dcc.loaded ? dcc.transfers : await dcc.load()).find((t) => t.id === cmd.id);
-      if (row && holdsPartial(row)) {
+      await dcc.clearTransfer(cmd.id);
+      localInfo(networkId, target, `/dcc clear: #${cmd.id} cleared`);
+    } catch (e: any) {
+      // The panel's × asks before a partial goes; a command can't, so the
+      // server refuses and the explicit /dcc delete comes first.
+      if (e?.status === 409 && e?.data?.partial && cmd.id != null) {
         localInfo(
           networkId,
           target,
@@ -3031,9 +3027,6 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
         );
         return;
       }
-      await dcc.clearTransfer(cmd.id);
-      localInfo(networkId, target, `/dcc clear: #${cmd.id} cleared`);
-    } catch (e: any) {
       const which = cmd.id == null ? '' : ` #${cmd.id} —`;
       localInfo(networkId, target, `/dcc clear:${which} ${e?.message || 'failed'}`);
     }

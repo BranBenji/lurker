@@ -402,18 +402,32 @@ export function clearDccTransfer(userId: number, id: number): void {
   db.prepare('DELETE FROM dcc_transfers WHERE user_id = ? AND id = ?').run(userId, Number(id));
 }
 
+/** Whether a transfer holds part of a download (#1133): bytes of its own on
+ *  disk, not a kept file. A path with nothing received is only a reservation
+ *  (the peer never connected). */
+export function holdsDccPartial(
+  t: Pick<DccTransferRow, 'destination_path' | 'file_id' | 'received_bytes'>,
+): boolean {
+  return !!t.destination_path && t.file_id == null && t.received_bytes > 0;
+}
+
+export interface ClearedDccTransfer {
+  id: number;
+  file_id: number | null;
+  destination_path: string | null;
+}
+
 /** Clear every finished transfer from the list, keeping the files (#1133).
  *  One still holding a partial stays: those are bytes on disk, which only the
- *  user deletes. Returns the rows cleared, with the kept file each received. */
-export function clearFinishedDccTransfers(
-  userId: number,
-): { id: number; file_id: number | null }[] {
+ *  user deletes. Returns the rows cleared, with the kept file each received
+ *  and any path one had reserved, for the caller to remove. */
+export function clearFinishedDccTransfers(userId: number): ClearedDccTransfer[] {
   return db
     .prepare(
       `DELETE FROM dcc_transfers
        WHERE user_id = ? AND state IN ('completed', 'failed', 'rejected', 'cancelled')
-         AND (destination_path IS NULL OR file_id IS NOT NULL)
-       RETURNING id, file_id`,
+         AND NOT (destination_path IS NOT NULL AND file_id IS NULL AND received_bytes > 0)
+       RETURNING id, file_id, destination_path`,
     )
-    .all(userId) as { id: number; file_id: number | null }[];
+    .all(userId) as ClearedDccTransfer[];
 }

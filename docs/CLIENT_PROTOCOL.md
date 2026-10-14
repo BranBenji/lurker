@@ -1568,8 +1568,10 @@ that received it stays, its `file_deleted_at` set. Live: a `dcc-file` frame
 `dcc-transfer` frames; a transfer's bytes move over IRC, not HTTP.
 
 `DELETE /:id` → `{ids}` clears a finished transfer from the list. Its kept file
-stays; a partial it still holds is deleted with it. 409 while the transfer is
-still active (cancel it first). `POST /clear` → `{ids}` clears every finished
+stays. A partial it still holds (`received_bytes` > 0, no `file_id`) is deleted
+with it, but only with `?partial=delete`, sent once the user has confirmed;
+without it the answer is 409 with `partial: true`. 409 too while the transfer
+is still active (cancel it first). `POST /clear` → `{ids}` clears every finished
 transfer except one still holding a partial. Both publish
 `dcc-transfers-cleared` (`{ids}`), and a `dcc-file` for each kept file whose
 transfer went. Need no grant.
