@@ -2680,10 +2680,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // #872: `maxStaticImageDimension` rides beside it — the longest edge the
     // pipeline keeps of a static image, so a phone can shrink a 48MP photo before
     // sending it instead of uploading ~100 MB to produce a ~300 KB WebP.
-    const { maxUploadBytes, maxStaticImageDimension } = advertisedUploadLimits(
-      userId,
-      findUserById(userId)?.role === 'admin',
-    );
+    const { maxUploadBytes, maxStaticImageDimension, maxChunkedUploadBytes, uploadChunkBytes } =
+      advertisedUploadLimits(userId, findUserById(userId)?.role === 'admin');
     // Global ignore rules (network_id NULL) aren't tied to any one network blob,
     // so they ride alongside the per-network snapshot as their own field (#350).
     send(ws, {
@@ -2694,6 +2692,9 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       protocolVersion: PROTOCOL_VERSION,
       maxUploadBytes,
       maxStaticImageDimension,
+      // #650: what a chunked upload session takes, file and chunk.
+      maxChunkedUploadBytes,
+      uploadChunkBytes,
       networks,
       globalIgnores: ircManager.listGlobalIgnoresFor(userId),
       ...(isFreshConnect ? { cursor } : {}),

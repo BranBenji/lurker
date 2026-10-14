@@ -739,6 +739,13 @@ export const EXPORT_TABLES = Object.freeze({
       "the cell's disk (not in the export) and an in-flight transfer can't resume elsewhere",
   },
 
+  upload_sessions: {
+    mode: 'skip',
+    reason:
+      'chunked uploads in progress (#650); a staging file on this instance and its ' +
+      'offset, abandoned after a day — nothing to carry anywhere else',
+  },
+
   dcc_storage_limits: {
     mode: 'skip',
     reason:

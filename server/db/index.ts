@@ -399,6 +399,24 @@ function migrate() {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    -- A file arriving in chunks (#650): uploads and imports, each chunk its own
+    -- request so no proxy's body limit caps the file. The bytes so far are a
+    -- file under tmp/upload-sessions named by id; its size is the offset, so
+    -- nothing here counts bytes. updated_at moves with every chunk, and a
+    -- session idle for a day is swept with its file.
+    CREATE TABLE IF NOT EXISTS upload_sessions (
+      id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      purpose TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      filename TEXT NOT NULL,
+      mime TEXT,
+      uploader_id INTEGER,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     -- How much a user's received DCC files may take on disk (#1125), set by an
     -- admin. No row means no limit.
     CREATE TABLE IF NOT EXISTS dcc_storage_limits (

@@ -5,6 +5,7 @@ import { ref } from 'vue';
 import { defineStore } from 'pinia';
 import { mimeMatchesKind, type UploadKind } from '../../../shared/uploadKinds.js';
 import { api, apiMultipart } from '../api.js';
+import { uploadInChunks } from '../lib/chunkedUpload.js';
 import { makeClientId } from '../utils/clientId.js';
 
 // "Insert URL into MessageInput" needs to reach across the component tree.
@@ -145,6 +146,10 @@ export const useUploadsStore = defineStore('uploads', {
     current: null as UploadCurrent | null, // { progress: 0-100, filename: string|null }
     failedAt: null as number | null, // epoch ms; status-bar renders "Upload failed" until cleared
     failedMessage: '',
+    // The largest chunk an upload session takes (#650), from the snapshot. A
+    // file bigger than one chunk goes in chunks; null (a server without
+    // sessions) sends everything in one request, as before.
+    chunkBytes: null as number | null,
 
     recent: [] as UploadItem[], // paginated history rows
     cursor: null as number | null, // smallest id seen, used as `before=` for the next page
@@ -223,19 +228,27 @@ export const useUploadsStore = defineStore('uploads', {
       };
       this.failedAt = null;
       this.failedMessage = '';
+      const onProgress = (pct: number) => {
+        if (!this.current) return;
+        this.current.progress = pct;
+        // The moment the browser leg is done, stop claiming to be uploading. This
+        // is the whole of "tier 1": it needs no server cooperation, so the bar
+        // stops lying even when the WS frames never come.
+        if (pct >= 100 && this.current.phase === 'uploading') {
+          this.current.phase = 'processing';
+        }
+      };
       try {
-        const result = await apiMultipart('/api/uploads', fd, {
-          onProgress: (pct) => {
-            if (!this.current) return;
-            this.current.progress = pct;
-            // The moment the browser leg is done, stop claiming to be uploading. This
-            // is the whole of "tier 1": it needs no server cooperation, so the bar
-            // stops lying even when the WS frames never come.
-            if (pct >= 100 && this.current.phase === 'uploading') {
-              this.current.phase = 'processing';
-            }
-          },
-        });
+        const result =
+          this.chunkBytes != null && file.size > this.chunkBytes
+            ? await uploadInChunks(file, {
+                purpose: 'upload',
+                filename: name,
+                progressToken: token,
+                onProgress,
+                onSent: () => onProgress(100),
+              })
+            : await apiMultipart('/api/uploads', fd, { onProgress });
         emitInsert(result.url);
         // Prepend the new row optimistically without a refetch. Prefer a remote
         // thumbnail URL the server returned (node edition stores thumbs on the

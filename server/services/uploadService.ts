@@ -16,6 +16,7 @@ import { bufferSource, fileSource, type UploadSource } from './uploadProviders/s
 import {
   effectiveSettings,
   capBytesFor,
+  chunkedCapBytesFor,
   formatCapMb,
   staticImageMaxDimension,
 } from './uploadLimits.js';
@@ -76,6 +77,9 @@ export interface UploadInput {
   /** A per-upload uploader override, or null for the user's default. */
   requestedUploaderId: number | null;
   progressToken: string | null;
+  /** Arrived in chunks (#650): no proxy limit applied to the file, so none
+   *  caps it here. */
+  chunked?: boolean;
   /** The instance's public origin, asked for only when a local upload's
    *  root-relative URL needs absolutizing. '' leaves the URL relative. */
   baseUrl: () => string;
@@ -142,8 +146,11 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
   // policy is on the instance row, not their settings. Clamped to the
   // instance's transport ceiling last (#627), so a body the proxy in front of
   // us would have rejected anyway is refused with a real 413 rather than an
-  // edge-level connection reset.
-  const maxBytes = capBytesFor(resolved.policy, settings);
+  // edge-level connection reset. A chunked upload never crossed the proxy in
+  // one piece, so it gets the cap without that ceiling (#650).
+  const maxBytes = input.chunked
+    ? chunkedCapBytesFor(resolved.policy, settings)
+    : capBytesFor(resolved.policy, settings);
   if (input.size > maxBytes) {
     throw new UploadRequestError(413, `file exceeds ${formatCapMb(maxBytes)} MB`);
   }
