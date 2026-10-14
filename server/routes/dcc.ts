@@ -31,6 +31,8 @@ import { sanitizeDccFilename } from '../services/dccPaths.js';
 import { fanOutToUser } from '../services/wsHub.js';
 import {
   DCC_ACTIVE_STATES,
+  clearDccTransfer,
+  clearFinishedDccTransfers,
   dccUsageBytes,
   getDccTransfer,
   listDccTransfers,
@@ -246,6 +248,39 @@ router.delete('/:id/file', (req: Request, res: Response) => {
   // The user's other tabs and devices drop Download and Delete too.
   fanOutToUser(req.user!.id, { kind: 'dcc-transfer', transfer });
   res.json({ transfer });
+});
+
+/**
+ * DELETE /api/dcc/:id — clear a finished transfer from the list (#1133). The
+ * file it received stays in Files; a partial it still holds is deleted with
+ * it, since nothing else would ever reach those bytes. A transfer still in
+ * flight is refused (409): cancel it first.
+ */
+router.delete('/:id', (req: Request, res: Response) => {
+  const id = rowId(req);
+  const t = id == null ? undefined : getDccTransfer(req.user!.id, id);
+  if (!t) {
+    res.status(404).json({ error: 'transfer not found' });
+    return;
+  }
+  if (DCC_ACTIVE_STATES.has(t.state)) {
+    res.status(409).json({ error: 'cancel the transfer before clearing it' });
+    return;
+  }
+  if (t.destination_path && t.file_id == null) fs.rmSync(t.destination_path, { force: true });
+  clearDccTransfer(req.user!.id, t.id);
+  fanOutToUser(req.user!.id, { kind: 'dcc-transfers-cleared', ids: [t.id] });
+  res.json({ ids: [t.id] });
+});
+
+/**
+ * POST /api/dcc/clear — clear every finished transfer from the list (#1133).
+ * Files stay, and so does a transfer still holding a partial download.
+ */
+router.post('/clear', (req: Request, res: Response) => {
+  const ids = clearFinishedDccTransfers(req.user!.id);
+  if (ids.length) fanOutToUser(req.user!.id, { kind: 'dcc-transfers-cleared', ids });
+  res.json({ ids });
 });
 
 /** GET /api/dcc/files — the files the account keeps (#1133), newest first. */

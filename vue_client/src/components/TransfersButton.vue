@@ -4,7 +4,8 @@
 
   The DCC Transfers button, in the desktop rail and the mobile top bar; each
   view gives it its own button class. Self-revealing: DCC is off for almost
-  everyone, so it only appears once a transfer exists (or the panel is open).
+  everyone, so it only appears while the account has a transfer or a file (or
+  the panel is open), and goes again once both lists are empty.
   Color-as-signal (house style, no count badge): the glyph turns warn-colored
   while an unsolicited offer awaits a decision.
 -->
@@ -17,7 +18,7 @@
     :title="title"
     @click="dcc.open()"
   >
-    <i class="fa-solid fa-download"></i>
+    <i class="fa-solid fa-folder-open"></i>
   </button>
 </template>
 

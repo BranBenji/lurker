@@ -2634,6 +2634,7 @@ const COMMANDS_LINES = [
   '  /dcc [list]            — DCC downloads: list, or accept/reject/cancel/download/delete <id>',
   '      e.g. /dcc   ·   /dcc accept 3   ·   /dcc download 3   ·   /dcc delete 3',
   '  /dcc files             — the files you keep from DCC, until you delete them',
+  '  /dcc clear [<id>]      — take finished transfers off the list; your files stay',
   '  /dcc chat <nick>       — open a direct peer-to-peer chat, in a =nick buffer',
   '      also accepts an offer someone made you; /dcc close chat <nick> ends or declines',
   '      e.g. /dcc chat bob   ·   /dcc chat -passive bob   ·   /dcc close chat bob',
@@ -3002,6 +3003,21 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
       localInfo(networkId, target, `/dcc delete: #${cmd.id} ${t?.filename ?? ''} — file deleted`);
     } catch (e: any) {
       localInfo(networkId, target, `/dcc delete: #${cmd.id} — ${e?.message || 'failed'}`);
+    }
+    return;
+  }
+  if (cmd.kind === 'clear') {
+    try {
+      if (cmd.id == null) {
+        const n = await dcc.clearFinished();
+        localInfo(networkId, target, `/dcc clear: ${n} finished transfer(s) cleared`);
+        return;
+      }
+      await dcc.clearTransfer(cmd.id);
+      localInfo(networkId, target, `/dcc clear: #${cmd.id} cleared`);
+    } catch (e: any) {
+      const which = cmd.id == null ? '' : ` #${cmd.id} —`;
+      localInfo(networkId, target, `/dcc clear:${which} ${e?.message || 'failed'}`);
     }
     return;
   }

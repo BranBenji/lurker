@@ -20,6 +20,15 @@ describe('parseDccCommand', () => {
     expect(parseDccCommand('FILES')).toEqual({ kind: 'files' });
   });
 
+  it('parses clear, for every finished transfer or one by id (#1133)', () => {
+    expect(parseDccCommand('clear')).toEqual({ kind: 'clear', id: null });
+    expect(parseDccCommand('CLEAR 7')).toEqual({ kind: 'clear', id: 7 });
+    expect(parseDccCommand('clear x')).toEqual({
+      kind: 'error',
+      message: 'usage: /dcc clear [<id>]',
+    });
+  });
+
   it('parses accept/reject/cancel with an id', () => {
     expect(parseDccCommand('accept 7')).toEqual({ kind: 'accept', id: 7 });
     expect(parseDccCommand('reject 12')).toEqual({ kind: 'reject', id: 12 });

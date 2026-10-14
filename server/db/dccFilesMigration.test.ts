@@ -94,6 +94,9 @@ describe('dcc_files v24 migration (#1133)', () => {
         origin: 'received',
         // ISO, like every file kept since, whatever the transfer row held.
         created_at: '2026-10-01T12:00:00.000Z',
+        // Who sent it travels with the file, past the transfer's clearing.
+        peer_nick: 'bot',
+        network_id: null,
       }),
     ]);
     const t = db.prepare('SELECT file_id, destination_path FROM dcc_transfers WHERE id = 1').get();

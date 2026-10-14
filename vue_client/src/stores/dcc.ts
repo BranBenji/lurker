@@ -9,13 +9,14 @@
 // response and, redundantly, the live frame the server publishes on the change.
 //
 // DCC is OFF for almost everyone (a self-host opt-in + per-user grant; dark on
-// hosted cells), so this store stays empty and the UI affordance stays hidden
-// until a transfer actually exists. There's no boot fetch: the store loads
-// lazily when the Transfers modal opens or `/dcc list` runs, and the live frame
-// reveals the affordance the moment an offer lands.
+// hosted cells), so the UI affordance stays hidden until the account has a
+// transfer or a file. On an instance that runs DCC, both lists load with every
+// snapshot (resync), so the affordance is there from the start whenever there
+// is something in it; live frames keep it current.
 
 import { defineStore } from 'pinia';
 import { api } from '../api.js';
+import { useConfigStore } from './config.js';
 
 // Mirror of the server DccTransferState union (db/dccTransfers.ts). Two entry
 // states (requested / pending_approval), an active receive path, and terminal
@@ -154,8 +155,8 @@ type DccAction = 'accept' | 'reject' | 'cancel';
 let inflightLoad: Promise<DccTransfer[]> | null = null;
 // Transfer frames that land while the list loads, applied again on top of it:
 // the response may predate them (a completion arriving as a reconnect refetch
-// is on its way would otherwise rewind the row).
-let transfersMissed: DccTransfer[] = [];
+// is on its way would otherwise rewind the row, a cleared one reappear).
+let transfersMissed: Array<DccTransfer | number> = [];
 let inflightFiles: Promise<DccFile[]> | null = null;
 // Frames that land while the files list loads: the response was read before
 // them, so they are applied again on top of it.
@@ -208,6 +209,8 @@ export const useDccStore = defineStore('dcc', {
     busy: {} as Record<number, boolean>,
     // Per-transfer last action error (cleared on the next attempt / success).
     actionError: {} as Record<number, string>,
+    // Clear all is in flight.
+    clearing: false,
   }),
   getters: {
     hasAny: (s): boolean => s.transfers.length > 0 || s.files.length > 0,
@@ -229,7 +232,10 @@ export const useDccStore = defineStore('dcc', {
           this.transfers = (transfers || []).toSorted((a, b) => b.id - a.id);
           const missed = transfersMissed;
           transfersMissed = [];
-          for (const t of missed) this.applyTransfer(t);
+          for (const op of missed) {
+            if (typeof op === 'number') this.dropTransfers([op]);
+            else this.applyTransfer(op);
+          }
           this.loaded = true;
           return this.transfers;
         } catch (e: any) {
@@ -288,6 +294,51 @@ export const useDccStore = defineStore('dcc', {
     // marked deleted.
     async deleteFile(id: number): Promise<DccTransfer> {
       return this.changeRow(id, dccFileUrl(id), 'DELETE', 'delete failed');
+    },
+
+    // Clear a finished transfer from the list (#1133). Its file stays in Files;
+    // a partial it held is deleted with it.
+    async clearTransfer(id: number): Promise<void> {
+      this.busy[id] = true;
+      delete this.actionError[id];
+      try {
+        await api(`/api/dcc/${id}`, { method: 'DELETE' });
+        this.dropTransfers([id]);
+      } catch (e: any) {
+        this.actionError[id] = e?.message || 'clear failed';
+        throw e;
+      } finally {
+        delete this.busy[id];
+      }
+    },
+
+    // Clear every finished transfer but those still holding a partial. Files
+    // stay. Resolves with how many went.
+    async clearFinished(): Promise<number> {
+      this.clearing = true;
+      this.listError = '';
+      try {
+        const { ids } = await api<{ ids: number[] }>('/api/dcc/clear', { method: 'POST' });
+        this.dropTransfers(ids || []);
+        return ids?.length ?? 0;
+      } catch (e: any) {
+        this.listError = e?.message || 'clear failed';
+        throw e;
+      } finally {
+        this.clearing = false;
+      }
+    },
+
+    // Transfers gone from the list, from a `dcc-transfers-cleared` frame or
+    // our own clear.
+    dropTransfers(ids: number[]): void {
+      if (inflightLoad) transfersMissed.push(...ids);
+      const gone = new Set(ids);
+      this.transfers = this.transfers.filter((t) => !gone.has(t.id));
+      for (const id of ids) {
+        delete this.busy[id];
+        delete this.actionError[id];
+      }
     },
 
     // A request that answers with the transfer's authoritative row: the row's
@@ -440,11 +491,15 @@ export const useDccStore = defineStore('dcc', {
       this.panelOpen = false;
     },
 
-    // After the socket reconnects: frames sent while it was down are gone, so
-    // a list already shown is fetched again.
-    resync(): void {
-      if (this.loaded) this.load().catch(() => {});
-      if (this.filesLoaded) this.loadFiles().catch(() => {});
+    // With every snapshot, on an instance that runs DCC: both lists, so the
+    // panel's button shows whenever the account has anything in it, and what
+    // changed while the socket was down (frames nobody heard) is caught up.
+    async resync(): Promise<void> {
+      const config = useConfigStore();
+      await config.fetch();
+      if (!config.features.dcc) return;
+      this.load().catch(() => {});
+      this.loadFiles().catch(() => {});
     },
   },
 });

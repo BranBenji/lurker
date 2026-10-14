@@ -5,9 +5,9 @@
 // `list` opens the Transfers view and `files` the files the account keeps
 // (#1133); accept / reject / cancel act on one transfer
 // by its numeric id (the id shown in the list), download saves a completed
-// one through the browser, and delete removes its file from the server; `chat`
-// opens a direct chat with
-// a peer and `close` ends one.
+// one through the browser, and delete removes its file from the server; `clear`
+// takes one finished transfer off the list, or every one, keeping the files;
+// `chat` opens a direct chat with a peer and `close` ends one.
 //
 // Pure and dependency-free so it unit-tests outside the Vue SFC, like the other
 // command parsers.
@@ -26,6 +26,8 @@ export type DccCommand =
   | { kind: 'cancel'; id: number }
   | { kind: 'download'; id: number }
   | { kind: 'delete'; id: number }
+  /** One transfer by id, or null for every finished one. */
+  | { kind: 'clear'; id: number | null }
   | { kind: 'chat'; nick: string; passive: boolean }
   | { kind: 'chatClose'; nick: string }
   | { kind: 'error'; message: string };
@@ -51,6 +53,7 @@ const BY_ID: ReadonlyArray<
 
 const USAGE =
   'usage: /dcc [list] · /dcc files · /dcc accept|reject|cancel|download|delete <id> · ' +
+  '/dcc clear [<id>] · ' +
   '/dcc chat [-passive] <nick> · ' +
   '/dcc close chat <nick>';
 
@@ -86,6 +89,13 @@ export function parseDccCommand(argLine: string): DccCommand {
 
   if (LIST.has(verb)) return { kind: 'list' };
   if (FILES.has(verb)) return { kind: 'files' };
+  if (verb === 'clear') {
+    if (!parts[1]) return { kind: 'clear', id: null };
+    const id = parseId(parts[1]);
+    return id != null
+      ? { kind: 'clear', id }
+      : { kind: 'error', message: 'usage: /dcc clear [<id>]' };
+  }
 
   // The chat verbs follow irssi's syntax exactly, so a habit carried over from
   // irssi does what it did there:

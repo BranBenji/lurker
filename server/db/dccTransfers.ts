@@ -394,3 +394,26 @@ export function dccPathClaimed(userId: number, destPath: string): boolean {
       .get(userId, destPath) || dccFileAt(userId, destPath)
   );
 }
+
+/** Clear one finished transfer from the list (#1133). The file it received is
+ *  the account's and stays. A partial it still owns is the caller's to remove
+ *  first. */
+export function clearDccTransfer(userId: number, id: number): void {
+  db.prepare('DELETE FROM dcc_transfers WHERE user_id = ? AND id = ?').run(userId, Number(id));
+}
+
+/** Clear every finished transfer from the list, keeping the files (#1133).
+ *  One still holding a partial stays: those are bytes on disk, which only the
+ *  user deletes. Returns the ids cleared. */
+export function clearFinishedDccTransfers(userId: number): number[] {
+  return (
+    db
+      .prepare(
+        `DELETE FROM dcc_transfers
+         WHERE user_id = ? AND state IN ('completed', 'failed', 'rejected', 'cancelled')
+           AND (destination_path IS NULL OR file_id IS NOT NULL)
+         RETURNING id`,
+      )
+      .all(userId) as { id: number }[]
+  ).map((r) => r.id);
+}

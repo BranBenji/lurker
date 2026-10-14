@@ -11,8 +11,13 @@ const h = vi.hoisted(() => ({
   api: vi.fn<(url: string, opts?: { method?: string }) => Promise<unknown>>(),
 }));
 vi.mock('../api.js', () => ({ api: h.api }));
+// Whether the instance runs DCC, as /api/config said.
+const features = vi.hoisted(() => ({ dcc: true }));
+vi.mock('./config.js', () => ({
+  useConfigStore: () => ({ fetch: async () => 'standalone', features }),
+}));
 
-import { keptFileUrl, useDccStore, type DccFile } from './dcc.js';
+import { keptFileUrl, useDccStore, type DccFile, type DccTransfer } from './dcc.js';
 
 function file(id: number, over: Partial<DccFile> = {}): DccFile {
   return {
@@ -102,16 +107,27 @@ describe('dcc store files, while the list loads', () => {
     expect(dcc.files.map((f) => f.id)).toEqual([9, 1]);
   });
 
-  it('fetches a list it shows again after a reconnect, and not one it never loaded', async () => {
+  // So the panel's button is there from the start whenever there is anything
+  // in it, as friends and favorites are.
+  it('loads both lists with every snapshot, on an instance that runs DCC', async () => {
     const dcc = useDccStore();
-    dcc.resync();
-    expect(h.api).not.toHaveBeenCalled();
-    h.api.mockResolvedValue({ files: [file(1)] });
-    await dcc.loadFiles();
-    h.api.mockClear();
-    dcc.resync();
+    h.api.mockImplementation(async (url) =>
+      url === '/api/dcc/files' ? { files: [file(1)] } : { transfers: [] },
+    );
+    await dcc.resync();
+    expect(h.api).toHaveBeenCalledWith('/api/dcc');
     expect(h.api).toHaveBeenCalledWith('/api/dcc/files');
-    expect(h.api).not.toHaveBeenCalledWith('/api/dcc');
+    await vi.waitFor(() => expect(dcc.hasAny).toBe(true));
+  });
+
+  it('asks nothing of an instance without DCC', async () => {
+    features.dcc = false;
+    try {
+      await useDccStore().resync();
+      expect(h.api).not.toHaveBeenCalled();
+    } finally {
+      features.dcc = true;
+    }
   });
 });
 
@@ -140,5 +156,58 @@ describe('dcc store transfers, while the list loads', () => {
     answer({ transfers: [t('receiving')] });
     await loading;
     expect(dcc.transfers.map((x) => x.state)).toEqual(['completed']);
+  });
+});
+
+describe('dcc store, clearing transfers (#1133)', () => {
+  const t = (id: number, state = 'completed') =>
+    ({
+      id,
+      network_id: 1,
+      peer_nick: 'bot',
+      filename: `t${id}.mkv`,
+      advertised_size: 10,
+      received_bytes: 10,
+      state,
+      crc_status: null,
+      error: null,
+      created_at: '',
+      updated_at: '',
+      completed_at: null,
+    }) as unknown as DccTransfer;
+
+  it('clears one, and drops it only once the server has', async () => {
+    const dcc = useDccStore();
+    dcc.applyTransfer(t(1));
+    h.api.mockRejectedValueOnce(new Error('cancel the transfer before clearing it'));
+    await expect(dcc.clearTransfer(1)).rejects.toThrow('cancel the transfer before clearing it');
+    expect(dcc.transfers).toHaveLength(1);
+    expect(dcc.actionError[1]).toBe('cancel the transfer before clearing it');
+    h.api.mockResolvedValueOnce({ ids: [1] });
+    await dcc.clearTransfer(1);
+    expect(h.api).toHaveBeenLastCalledWith('/api/dcc/1', { method: 'DELETE' });
+    expect(dcc.transfers).toHaveLength(0);
+    expect(dcc.actionError[1]).toBeUndefined();
+  });
+
+  it('clears what the server cleared, and leaves the rest', async () => {
+    const dcc = useDccStore();
+    for (const id of [1, 2, 3]) dcc.applyTransfer(t(id, id === 2 ? 'receiving' : 'completed'));
+    h.api.mockResolvedValueOnce({ ids: [1, 3] });
+    expect(await dcc.clearFinished()).toBe(2);
+    expect(h.api).toHaveBeenCalledWith('/api/dcc/clear', { method: 'POST' });
+    expect(dcc.transfers.map((x) => x.id)).toEqual([2]);
+    expect(dcc.clearing).toBe(false);
+  });
+
+  it('keeps a clear that landed while the list was on its way', async () => {
+    const dcc = useDccStore();
+    let answer!: (v: unknown) => void;
+    h.api.mockReturnValueOnce(new Promise((r) => (answer = r)));
+    const loading = dcc.load();
+    dcc.dropTransfers([4]); // cleared from another tab meanwhile
+    answer({ transfers: [t(5), t(4)] });
+    await loading;
+    expect(dcc.transfers.map((x) => x.id)).toEqual([5]);
   });
 });

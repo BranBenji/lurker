@@ -18,17 +18,20 @@ export interface DccFileRow {
   size: number;
   origin: DccFileOrigin;
   created_at: string;
+  peer_nick: string | null;
+  network_id: number | null;
 }
 
 /** A file as clients see it: never its path, and for a received one, who it
- *  came from (the receiving transfer's peer and network). */
+ *  came from and on which network. */
 export interface DccFile {
   id: number;
   name: string;
   size: number;
   origin: DccFileOrigin;
   created_at: string;
-  /** The transfer that received it; null for an upload, or once that row is gone. */
+  /** The transfer that received it; null for an upload, or once that row is
+   *  cleared from the list. */
   transfer_id: number | null;
   peer_nick: string | null;
   /** Null for an upload, or once the network was deleted. */
@@ -37,13 +40,13 @@ export interface DccFile {
 
 const VIEW = `
   SELECT f.id, f.name, f.size, f.origin, f.created_at,
-         t.id AS transfer_id, t.peer_nick, t.network_id
+         t.id AS transfer_id, f.peer_nick, f.network_id
   FROM dcc_files f
   LEFT JOIN dcc_transfers t ON t.file_id = f.id AND t.direction = 'recv'
 `;
 
-/** Keep a received transfer's file: the file row, and the transfer pointing at
- *  it. Returns the file. */
+/** Keep a received transfer's file: the file row, with who sent it, and the
+ *  transfer pointing at it. Returns the file. */
 export function keepReceivedDccFile(
   userId: number,
   transferId: number,
@@ -53,9 +56,11 @@ export function keepReceivedDccFile(
     const id = Number(
       db
         .prepare(
-          `INSERT INTO dcc_files (user_id, path, name, size, origin) VALUES (?, ?, ?, ?, 'received')`,
+          `INSERT INTO dcc_files (user_id, path, name, size, origin, peer_nick, network_id)
+           SELECT ?, ?, ?, ?, 'received', peer_nick, network_id
+           FROM dcc_transfers WHERE id = ? AND user_id = ?`,
         )
-        .run(userId, f.path, f.name, f.size).lastInsertRowid,
+        .run(userId, f.path, f.name, f.size, transferId, userId).lastInsertRowid,
     );
     db.prepare('UPDATE dcc_transfers SET file_id = ? WHERE id = ? AND user_id = ?').run(
       id,

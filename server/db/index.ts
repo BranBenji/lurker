@@ -485,6 +485,10 @@ function migrate() {
       size INTEGER NOT NULL,
       origin TEXT NOT NULL,
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      -- Who a received file came from, and on which network. Kept on the file
+      -- so clearing the transfer from the list keeps them.
+      peer_nick TEXT,
+      network_id INTEGER REFERENCES networks(id) ON DELETE SET NULL,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_dcc_files_user ON dcc_files(user_id, id DESC);
@@ -1611,6 +1615,16 @@ ensureColumn('dcc_transfers', 'peer_port', 'INTEGER');
 // When the user deleted the received file from the server (#1125). The row
 // stays as history; its destination_path is cleared.
 ensureColumn('dcc_transfers', 'file_deleted_at', 'TEXT');
+// A dcc_files table made before a file carried its sender (#1133) gets the
+// columns, filled from the transfers that received its files.
+if (!columnExists('dcc_files', 'peer_nick')) {
+  ensureColumn('dcc_files', 'peer_nick', 'TEXT');
+  ensureColumn('dcc_files', 'network_id', 'INTEGER REFERENCES networks(id) ON DELETE SET NULL');
+  db.prepare(
+    `UPDATE dcc_files SET peer_nick = t.peer_nick, network_id = t.network_id
+     FROM dcc_transfers t WHERE t.file_id = dcc_files.id`,
+  ).run();
+}
 
 // Consecutive push-delivery failures (#441): reset to 0 on any success, bumped
 // on a non-permanent error, and used to disable a chronically-failing endpoint
@@ -2882,7 +2896,7 @@ if (schemaVersion < 24) {
   const keep = db.transaction(() => {
     const rows = db
       .prepare(
-        `SELECT id, user_id, destination_path, filename, received_bytes,
+        `SELECT id, user_id, destination_path, filename, received_bytes, peer_nick, network_id,
                 COALESCE(completed_at, updated_at) AS at
          FROM dcc_transfers
          WHERE state = 'completed' AND destination_path IS NOT NULL AND file_id IS NULL
@@ -2894,15 +2908,25 @@ if (schemaVersion < 24) {
       destination_path: string;
       filename: string;
       received_bytes: number;
+      peer_nick: string;
+      network_id: number | null;
       at: string;
     }[];
     const insert = db.prepare(
-      `INSERT INTO dcc_files (user_id, path, name, size, origin, created_at)
-       VALUES (?, ?, ?, ?, 'received', strftime('%Y-%m-%dT%H:%M:%fZ', ?))`,
+      `INSERT INTO dcc_files (user_id, path, name, size, origin, peer_nick, network_id, created_at)
+       VALUES (?, ?, ?, ?, 'received', ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', ?))`,
     );
     const link = db.prepare('UPDATE dcc_transfers SET file_id = ? WHERE id = ?');
     for (const r of rows) {
-      const file = insert.run(r.user_id, r.destination_path, r.filename, r.received_bytes, r.at);
+      const file = insert.run(
+        r.user_id,
+        r.destination_path,
+        r.filename,
+        r.received_bytes,
+        r.peer_nick,
+        r.network_id,
+        r.at,
+      );
       link.run(file.lastInsertRowid, r.id);
     }
     return rows.length;

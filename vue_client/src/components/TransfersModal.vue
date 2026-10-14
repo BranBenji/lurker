@@ -13,12 +13,24 @@
 
   A second tab lists the files the account keeps (#1133), apart from the
   transfers that brought them: GET /api/dcc/files, then `dcc-file` and
-  `dcc-file-deleted` frames. `/dcc files` opens it.
+  `dcc-file-deleted` frames. `/dcc files` opens it. So a finished transfer is
+  only history: its × (and Clear all, and `/dcc clear`) takes it off the list
+  and leaves the file. Deleting a file happens under Files.
 -->
 
 <template>
   <AppModal word="transfers" title="transfers" size="xl" fill-height @close="$emit('close')">
-    <TabStrip v-model="dcc.panelTab" :tabs="TABS" label="DCC" />
+    <div class="tab-bar">
+      <TabStrip v-model="dcc.panelTab" :tabs="TABS" label="DCC" />
+      <button
+        v-if="dcc.panelTab === 'transfers' && dcc.transfers.some(clearsWithAll)"
+        class="link"
+        :disabled="dcc.clearing"
+        @click="onClearAll"
+      >
+        Clear all
+      </button>
+    </div>
 
     <template v-if="dcc.panelTab === 'files'">
       <p v-if="dcc.filesError" class="error">{{ dcc.filesError }}</p>
@@ -92,17 +104,23 @@
               >
                 Cancel
               </button>
-              <template v-else-if="hasFile(t)">
+              <template v-else>
                 <button
-                  v-if="t.state === 'completed'"
+                  v-if="t.state === 'completed' && hasFile(t)"
                   class="link"
                   :disabled="dcc.busy[t.id]"
                   @click="onDownload(t)"
                 >
                   Download
                 </button>
-                <button class="link reject" :disabled="dcc.busy[t.id]" @click="onDelete(t)">
-                  Delete
+                <button
+                  class="link clear"
+                  :disabled="dcc.busy[t.id]"
+                  title="Clear from list"
+                  aria-label="Clear from list"
+                  @click="onClear(t)"
+                >
+                  <i class="fa-solid fa-xmark"></i>
                 </button>
               </template>
             </div>
@@ -290,11 +308,23 @@ function onDownload(t: DccTransfer) {
     /* error surfaced via dcc.actionError */
   });
 }
-function onDelete(t: DccTransfer) {
-  // The file is gone for good once deleted; the row stays as history.
-  if (!confirm(`Delete "${t.filename}" from the server?`)) return;
-  dcc.deleteFile(t.id).catch(() => {
+// A finished row that holds part of a download takes those bytes with it, so
+// it asks first; any other row goes and its file, if any, stays in Files.
+function holdsPartial(t: DccTransfer): boolean {
+  return hasFile(t) && t.state !== 'completed';
+}
+function clearsWithAll(t: DccTransfer): boolean {
+  return !isCancellable(t) && !holdsPartial(t);
+}
+function onClear(t: DccTransfer) {
+  if (holdsPartial(t) && !confirm(`Delete the partial download of "${t.filename}"?`)) return;
+  dcc.clearTransfer(t.id).catch(() => {
     /* error surfaced via dcc.actionError */
+  });
+}
+function onClearAll() {
+  dcc.clearFinished().catch(() => {
+    /* error surfaced via dcc.listError */
   });
 }
 function onCancel(t: DccTransfer) {
@@ -331,6 +361,19 @@ function onCancel(t: DccTransfer) {
 }
 .link.reject:hover:not(:disabled) {
   color: var(--fg);
+}
+.link.clear {
+  color: var(--fg-muted);
+}
+.link.clear:hover:not(:disabled) {
+  color: var(--fg);
+}
+
+.tab-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: var(--space-4);
 }
 
 .error {
