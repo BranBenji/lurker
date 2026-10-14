@@ -1472,7 +1472,11 @@ check before uploading.
 ### DCC — `/api/dcc` (403 unless enabled for the account)
 
 `GET /?limit` list · `POST /:id/accept|reject|cancel`. Live updates via
-`dcc-transfer` frames; file bytes move over IRC, not HTTP.
+`dcc-transfer` frames; a transfer's bytes move over IRC, not HTTP.
+
+`GET /:id/file` downloads a `completed` transfer's file (attachment,
+`application/octet-stream`, HTTP Range). 409 while the transfer is not
+`completed`; 410 when the row is but the file is gone from the server.
 
 `POST /chat` (`{networkId, nick, passive?}`) opens a DCC CHAT; `POST /chat/close`
 (`{networkId, nick}`) ends one. Both return as soon as the offer is away — a DCC

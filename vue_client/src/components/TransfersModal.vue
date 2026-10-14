@@ -6,7 +6,7 @@
 <!--
   Transfers view for the DCC download manager (#270 phase 2). Lists the user's
   inbound DCC transfers and lets them act on each: accept / reject an unsolicited
-  offer, or cancel one in flight. The list seeds from GET /api/dcc on open and
+  offer, cancel one in flight, or download a completed file (#1079). The list seeds from GET /api/dcc on open and
   then updates live as `dcc-transfer` frames arrive over the WS. The same
   operations are available headless via /dcc — this is a view over that core.
 -->
@@ -56,6 +56,11 @@
             >
               Cancel
             </button>
+            <!-- A plain link, like an export's: the session cookie authenticates
+                 it and the browser's own download manager handles Range resume. -->
+            <a v-else-if="t.state === 'completed'" class="link" :href="`/api/dcc/${t.id}/file`">
+              Download
+            </a>
           </div>
         </li>
       </ul>
@@ -220,6 +225,8 @@ function onCancel(t: DccTransfer) {
   cursor: pointer;
   font: inherit;
   padding: var(--space-2) var(--space-4);
+  /* Download is an <a>; the buttons beside it carry no underline. */
+  text-decoration: none;
 }
 .link:hover {
   color: var(--fg);
