@@ -29,8 +29,6 @@ import {
   appendUploadChunk,
   createUploadSession,
   finishUploadSession,
-  startUploadSessionSweeper,
-  stopUploadSessionSweeper,
   sweepUploadSessions,
   UPLOAD_SESSION_DIR,
   UPLOAD_SESSION_IDLE_MS,
@@ -199,14 +197,18 @@ describe('finishing', () => {
     expect(uploadSessionStatus(user.id, id).result?.status).toBe(500);
   });
 
-  it('ends at boot what a stopped process left processing', async () => {
+  // A restart mid-complete, or an answer the DB wouldn't take: nothing is
+  // working on it, and a client polling must not wait forever.
+  it('reads as done with a 500 once processing with nothing working on it', async () => {
     const id = await full();
     db.prepare(`UPDATE upload_sessions SET state = 'processing' WHERE id = ?`).run(id);
-    startUploadSessionSweeper();
-    stopUploadSessionSweeper();
     const status = uploadSessionStatus(user.id, id);
     expect(status.state).toBe('done');
     expect(status.result?.status).toBe(500);
+    await expect(
+      finishUploadSession(user.id, id, async () => ({ status: 200, body: {} })),
+    ).resolves.toMatchObject({ status: 500 });
+    abortUploadSession(user.id, id);
   });
 });
 

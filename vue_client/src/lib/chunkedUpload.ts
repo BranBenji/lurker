@@ -86,14 +86,15 @@ export async function uploadInChunks<T = any>(file: Blob, opts: ChunkedUploadOpt
   const url = `/api/upload-sessions/${session.id}`;
   try {
     await sendChunks(file, url, session, opts, delay);
-    opts.onSent?.();
-    return await finish<T>(url, opts, delay);
   } catch (err) {
-    // Done with it either way. The server refuses while it is still handing
-    // the file on, and sweeps what is left after a day.
+    // Done with it. (The server sweeps what is left after a day anyway.)
     void api(url, { method: 'DELETE' }).catch(() => {});
     throw err;
   }
+  opts.onSent?.();
+  // Never dropped from here on: a complete whose answer we never heard may
+  // have done its work, and the session is where that answer is kept.
+  return finish<T>(url, opts, delay);
 }
 
 async function sendChunks(
@@ -142,6 +143,7 @@ async function finish<T>(
 ): Promise<T> {
   const pollMs = opts.pollMs ?? 2000;
   let failures = 0;
+  let lastError: unknown = null;
   let sendComplete = true;
   for (;;) {
     if (sendComplete) {
@@ -152,8 +154,11 @@ async function finish<T>(
           signal: AbortSignal.timeout(COMPLETE_MS),
         });
       } catch (err) {
-        if (isFinal(err) || ++failures > MAX_RETRIES) throw err;
-        // Lost, timed out, or the server still busy: ask the session.
+        if (isFinal(err)) throw err;
+        // Lost, timed out, or the server still busy. Whether it did the work
+        // is the session's to say, even on the last try.
+        lastError = err;
+        failures++;
       }
     }
     await sleep(failures ? delay(failures) : pollMs);
@@ -173,6 +178,8 @@ async function finish<T>(
       continue;
     }
     if (s.offset < s.size) throw new Error('the server lost part of the file');
+    // Open and whole: complete never arrived. Ask again, within the budget.
+    if (failures > MAX_RETRIES) throw lastError;
     sendComplete = true;
   }
 }

@@ -49,10 +49,6 @@ const deleteStmt = db.prepare('DELETE FROM upload_sessions WHERE id = ?');
 const idleStmt = db.prepare('SELECT id FROM upload_sessions WHERE updated_at < ?');
 const allIdsStmt = db.prepare('SELECT id FROM upload_sessions');
 const openStmt = db.prepare(`SELECT id, size FROM upload_sessions WHERE state = 'open'`);
-const strandedStmt = db.prepare(
-  `UPDATE upload_sessions SET state = 'done', result = ?, updated_at = ${NOW}
-   WHERE state = 'processing'`,
-);
 
 export function insertUploadSession(
   userId: number,
@@ -103,10 +99,4 @@ export function allUploadSessionIds(): Set<string> {
 /** Sessions still taking chunks, every account's: what they will yet write. */
 export function openUploadSessions(): { id: string; size: number }[] {
   return openStmt.all() as { id: string; size: number }[];
-}
-
-/** A session left 'processing' by a process that stopped mid-way ends with
- *  `result`. Returns how many there were. */
-export function endStrandedUploadSessions(result: UploadSessionResult): number {
-  return strandedStmt.run(JSON.stringify(result)).changes;
 }

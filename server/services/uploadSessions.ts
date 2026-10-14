@@ -34,7 +34,6 @@ import { hasFreeSpaceFor } from '../utils/diskSpace.js';
 import {
   allUploadSessionIds,
   deleteUploadSession,
-  endStrandedUploadSessions,
   getUploadSession,
   idleUploadSessionIds,
   insertUploadSession,
@@ -105,18 +104,37 @@ export interface UploadSessionStatus {
   result?: UploadSessionResult;
 }
 
+/** What a session left processing with nothing working on it answers: the
+ *  process that was (stopped, or couldn't record its answer) is gone. */
+const STRANDED: UploadSessionResult = {
+  status: 500,
+  body: { error: 'the server stopped while handling this file; send it again' },
+};
+
+/** Where a session stands. 'processing' only while a request here is working
+ *  on it; otherwise it is over, and STRANDED is its answer. */
+function standing(row: UploadSessionRow): {
+  state: UploadSessionState;
+  result?: UploadSessionResult;
+} {
+  if (row.state === 'processing' && !busy.has(row.id)) return { state: 'done', result: STRANDED };
+  if (row.state === 'done') {
+    return { state: 'done', result: row.result ? JSON.parse(row.result) : STRANDED };
+  }
+  return { state: row.state };
+}
+
 function statusOf(row: UploadSessionRow): UploadSessionStatus {
+  const { state, result } = standing(row);
   return {
     id: row.id,
     purpose: row.purpose,
     size: row.size,
     // A done session's file is gone; it held all of it.
-    offset: row.state === 'open' ? uploadSessionOffset(row.id) : row.size,
+    offset: state === 'open' ? uploadSessionOffset(row.id) : row.size,
     chunkBytes: uploadChunkBytes(),
-    state: row.state,
-    ...(row.state === 'done' && row.result
-      ? { result: JSON.parse(row.result) as UploadSessionResult }
-      : {}),
+    state,
+    ...(result ? { result } : {}),
   };
 }
 
@@ -362,11 +380,12 @@ export async function finishUploadSession(
   use: (row: UploadSessionRow, filePath: string) => Promise<UploadSessionResult>,
 ): Promise<UploadSessionResult> {
   const row = requireUploadSession(userId, id);
-  if (row.state === 'done' && row.result) return JSON.parse(row.result) as UploadSessionResult;
-  if (row.state === 'processing' || busy.has(id)) {
+  const now = standing(row);
+  if (now.state === 'done') return now.result!;
+  if (now.state === 'processing' || busy.has(id)) {
     throw new UploadRequestError(409, 'this upload session is busy with another request', {
-      code: row.state === 'processing' ? 'processing' : 'session_busy',
-      offset: row.state === 'processing' ? row.size : uploadSessionOffset(id),
+      code: now.state === 'processing' ? 'processing' : 'session_busy',
+      offset: now.state === 'processing' ? row.size : uploadSessionOffset(id),
     });
   }
   const offset = uploadSessionOffset(id);
@@ -377,21 +396,27 @@ export async function finishUploadSession(
     });
   }
   busy.add(id);
-  markUploadSessionProcessing(id);
   let result: UploadSessionResult = {
     status: 500,
     body: { error: 'the server failed while handling this file' },
   };
   try {
+    markUploadSessionProcessing(id);
     result = await use(row, uploadSessionPath(id));
     return result;
   } finally {
-    // A throw from `use` keeps the 500 above, so a client asking later hears
-    // the same as the one whose request failed.
-    markUploadSessionDone(id, result);
-    // The local upload driver may have renamed the file away already.
-    fs.promises.unlink(uploadSessionPath(id)).catch(() => {});
-    busy.delete(id);
+    try {
+      // A throw from `use` keeps the 500 above, so a client asking later
+      // hears the same as the one whose request failed.
+      markUploadSessionDone(id, result);
+    } catch (err) {
+      // Left 'processing' with nothing working on it, it reads as STRANDED.
+      console.warn(`[lurker] upload session ${id}: could not record its answer:`, err);
+    } finally {
+      // The local upload driver may have renamed the file away already.
+      fs.promises.unlink(uploadSessionPath(id)).catch(() => {});
+      busy.delete(id);
+    }
   }
 }
 
@@ -407,7 +432,7 @@ function endSession(id: string): void {
  *  takes what is left. */
 export function abortUploadSession(userId: number, id: string): void {
   const row = requireUploadSession(userId, id);
-  if (row.state === 'processing') {
+  if (standing(row).state === 'processing') {
     throw new UploadRequestError(409, 'this upload session is being processed', {
       code: 'processing',
       offset: row.size,
@@ -456,15 +481,9 @@ export async function sweepUploadSessions(now = Date.now()): Promise<number> {
 
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
 
-/** At boot: end what a stopped process left mid-complete, then sweep now and
- *  every hour after. */
+/** Sweep now and every hour after. */
 export function startUploadSessionSweeper(): void {
   if (sweepTimer) return;
-  const stranded = endStrandedUploadSessions({
-    status: 500,
-    body: { error: 'the server restarted while handling this file; send it again' },
-  });
-  if (stranded > 0) console.log(`[lurker] ended ${stranded} upload session(s) cut off mid-way`);
   const run = () =>
     void sweepUploadSessions().catch((err: unknown) => {
       console.warn('[lurker] upload session sweep failed:', (err as Error).message);

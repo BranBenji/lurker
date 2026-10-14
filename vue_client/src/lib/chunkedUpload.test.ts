@@ -156,6 +156,35 @@ describe('uploadInChunks', () => {
     expect(s.deleted).toBe(false);
   });
 
+  // The last try may be the one that worked, its answer lost with the rest.
+  it('asks the session before giving up on complete, and never drops it', async () => {
+    const s = server();
+    const real = h.api.getMockImplementation()!;
+    let attempts = 0;
+    h.api.mockImplementation(async (url, opts) => {
+      if (url === `${SESSION}/complete`) {
+        attempts++;
+        if (attempts === 7) await real(url, opts); // done, but unheard
+        throw new Error('network error');
+      }
+      return real(url, opts);
+    });
+    await expect(send()).resolves.toEqual({ url: 'https://x/stored' });
+    expect(attempts).toBe(7);
+    expect(s.deleted).toBe(false);
+  });
+
+  it('gives up on complete after six lost tries, keeping the session', async () => {
+    const s = server();
+    const real = h.api.getMockImplementation()!;
+    h.api.mockImplementation(async (url, opts) => {
+      if (url === `${SESSION}/complete`) throw new Error('network error');
+      return real(url, opts);
+    });
+    await expect(send()).rejects.toThrow('network error');
+    expect(s.deleted).toBe(false);
+  });
+
   it('throws the stored refusal as the request would have', async () => {
     server({
       lostCompletes: 1,
