@@ -183,6 +183,19 @@ describe('DELETE /api/dcc/:id/file', () => {
     expect((await aliceAgent.delete(`/api/dcc/${id}/file`)).status).toBe(404);
   });
 
+  // Progress is checkpointed every few seconds, so a cancel with no receiver
+  // to ask (the network offline, or a row a restart left behind) records what
+  // is on disk, or the partial would count for less than it takes.
+  it('records the bytes on disk when a transfer is cancelled offline', async () => {
+    const dir = path.join(tmpRoot, 'cancel-bytes');
+    const id = transfer(dir, 'half.mkv', { complete: false }); // 16 bytes on disk, row says 0
+    expect((await getRow(id)).received_bytes).toBe(0);
+    expect((await aliceAgent.post(`/api/dcc/${id}/cancel`)).status).toBe(200);
+    const row = await getRow(id);
+    expect(row.state).toBe('cancelled');
+    expect(row.received_bytes).toBe(BYTES.length);
+  });
+
   it('refuses while the transfer is in flight', async () => {
     const dir = path.join(tmpRoot, 'del-active');
     const id = transfer(dir, 'busy.mkv', { complete: false });

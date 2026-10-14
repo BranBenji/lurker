@@ -109,7 +109,8 @@ onMounted(() => {
   });
 });
 
-function networkName(id: number): string {
+function networkName(id: number | null): string {
+  if (id === null) return 'deleted network';
   return networks.networkById(id)?.name || `net:${id}`;
 }
 

@@ -1488,6 +1488,11 @@ that would take the account over its limit fails at accept, with the reason in
 the row's `error`. A client shows
 chat actions only when `chat` is true, and file actions only when `receive` is.
 
+A transfer row's `network_id` is null once its network was deleted: the row,
+and any file it owns, stay the user's. A row owns a file while its
+`destination_path` is non-null (never show the path itself); a resume moves the
+file to the newer row, and a delete clears it.
+
 `GET /?limit` list · `POST /:id/accept|reject|cancel`. Live updates via
 `dcc-transfer` frames; a transfer's bytes move over IRC, not HTTP.
 

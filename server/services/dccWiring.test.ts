@@ -559,6 +559,11 @@ describe('arm-on-trigger + auto-accept', () => {
     conn.client.say = vi.fn<(target: string, text: string) => void>();
     const resumeReq = vi.fn<(target: string, type: string, ...p: string[]) => void>();
     conn.client.ctcpRequest = resumeReq;
+    const published: Array<{
+      type?: string;
+      transfer?: { id: number; destination_path: unknown };
+    }> = [];
+    conn.onEvent = ((e: (typeof published)[number]) => published.push(e)) as typeof conn.onEvent;
 
     conn.say('bot', 'xdcc send #1');
     // Bot offers the full file; Lurker sees the partial and asks to resume.
@@ -575,6 +580,11 @@ describe('arm-on-trigger + auto-accept', () => {
       String(sender.port),
       String(have),
     );
+    // The resume took over the earlier row's file (#1125): that row let go of
+    // it, and every open view hears so.
+    expect(
+      published.some((e) => e.transfer?.id === priorId && e.transfer.destination_path === null),
+    ).toBe(true);
 
     // Bot accepts the resume → Lurker connects and appends.
     conn.client.emit('ctcp request', {

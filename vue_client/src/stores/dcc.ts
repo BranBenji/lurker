@@ -40,7 +40,8 @@ export type DccCrcStatus = 'ok' | 'mismatch' | 'absent' | 'unverified';
 // extra columns (peer_host/port, token, trigger_text, …) are ignored here.
 export interface DccTransfer {
   id: number;
-  network_id: number;
+  /** Null once the network was deleted: the row and its file stay (#1125). */
+  network_id: number | null;
   peer_nick: string;
   filename: string;
   advertised_size: number;

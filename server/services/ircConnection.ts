@@ -146,7 +146,7 @@ import {
   dccExternalHost,
   dccMaxFileBytes,
 } from './dccConfig.js';
-import { hasFreeSpaceFor, resolveDccDestination } from './dccPaths.js';
+import { dccFileBytes, hasFreeSpaceFor, resolveDccDestination } from './dccPaths.js';
 import { getDccStorageLimit } from '../db/dccStorageLimits.js';
 import { DccChat } from './dccChat.js';
 import { openDccListener, type DccListenHandle } from './dccListener.js';
@@ -160,6 +160,8 @@ import { DccReceiver } from './dccReceiver.js';
 import {
   type DccTransferRow,
   DCC_ACTIVE_STATES,
+  markDccCancelled,
+  dccPathClaimed,
   dccUsageBytes,
   findArmedRequest,
   findResumableTransfer,
@@ -6591,7 +6593,9 @@ export class IrcConnection {
       startOffset = partialSize;
     } else {
       try {
-        destPath = resolveDccDestination(username, offer.filename);
+        destPath = resolveDccDestination(username, offer.filename, (p) =>
+          dccPathClaimed(this.network.user_id, p),
+        );
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         updateDccTransferState(transferId, 'failed', reason);
@@ -6630,7 +6634,7 @@ export class IrcConnection {
       }
     }
     const expectedCrc = parseCrcFromFilename(offer.filename);
-    markDccReceiving(transferId, {
+    const released = markDccReceiving(transferId, {
       filename: offer.filename,
       advertised_size: offer.size,
       destination_path: destPath,
@@ -6640,6 +6644,9 @@ export class IrcConnection {
       received_bytes: startOffset,
     });
     this.publishDcc(transferId);
+    // A resume took over the earlier row's file: that row loses Download and
+    // Delete in every open view, not just after a reload.
+    for (const id of released) this.publishDcc(id);
     if (startOffset > 0) {
       // A partial exists — ask the bot to resume from there and wait for its
       // DCC ACCEPT before connecting (handleDccAccept starts the receiver).
@@ -6824,7 +6831,8 @@ export class IrcConnection {
         // A user-initiated cancel surfaces as a distinct 'cancelled' state, not a
         // failure (cancel() settles with this exact message).
         if (err.message === 'cancelled') {
-          updateDccTransferState(transferId, 'cancelled');
+          // The receiver's own count, not the last checkpoint (#1125).
+          markDccCancelled(transferId, received);
           this.surfaceCtcp(nick, `DCC: cancelled "${offer.filename}"`);
         } else {
           markDccFailed(transferId, received, err.message);
@@ -6921,7 +6929,9 @@ export class IrcConnection {
     this.clearPendingResume(transferId);
     const row = getDccTransfer(this.network.user_id, transferId);
     if (!row || !DCC_ACTIVE_STATES.has(row.state)) return; // don't clobber a terminal row
-    updateDccTransferState(transferId, 'cancelled');
+    // No receiver (a resume still waiting, or a row a restart left behind): the
+    // file on disk is the truth, not the last checkpoint (#1125).
+    markDccCancelled(transferId, dccFileBytes(row.destination_path));
     this.publishDcc(transferId);
   }
 
