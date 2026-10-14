@@ -7,6 +7,7 @@ import { getEdition, isNodeMode } from '../utils/edition.js';
 import { isBouncerEnabled } from '../utils/bouncerConfig.js';
 import { PROTOCOL_VERSION, MIN_PROTOCOL_VERSION } from '../protocol.js';
 import { previewsEnabled } from '../utils/previews.js';
+import { dccMasterEnabled } from '../services/dccConfig.js';
 
 const router = Router();
 
@@ -34,6 +35,9 @@ router.get('/', (_req: Request, res: Response) => {
       // Settings pane that explains how to attach to it. The port it listens on
       // is behind auth (routes/bouncer.ts).
       bouncer: !isNodeMode() && isBouncerEnabled(),
+      // Whether this instance runs DCC at all (LURKER_DCC_ENABLED). Each account
+      // still needs an admin's grant; GET /api/dcc/config says whether it has one.
+      dcc: !isNodeMode() && dccMasterEnabled(),
     },
   });
 });

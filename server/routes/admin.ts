@@ -29,6 +29,12 @@ import ircManager from '../services/ircManager.js';
 import { presenceDiagnostics } from '../services/wsHub.js';
 import { isIdentdEnabled, isOidentdFileEnabled } from '../services/identd.js';
 import { isNodeMode } from '../utils/edition.js';
+import { dccMasterEnabled } from '../services/dccConfig.js';
+import {
+  CAPABILITY_DCC,
+  setUserCapability,
+  userIdsWithCapability,
+} from '../db/userCapabilities.js';
 import {
   clearLoginLockouts,
   listLoginLockouts,
@@ -120,6 +126,7 @@ router.get('/users', (_req: Request, res: Response) => {
   // ident tally above. Per-user lookups here meant an instance with 200 accounts
   // prepared and ran 200 statements on every load of this screen.
   const recoveryExpiries = listRecoveryExpiries();
+  const dccGrants = userIdsWithCapability(CAPABILITY_DCC);
   res.json({
     users: all.map((u) => ({
       id: u.id,
@@ -141,13 +148,45 @@ router.get('/users', (_req: Request, res: Response) => {
       // so re-showing a link is impossible by construction; an admin who lost
       // the URL issues a new one, which invalidates the old.
       recoveryExpiresAt: recoveryExpiries.get(u.id) ?? null,
+      // Granted DCC (#1080). Only takes effect while dccEnabled below is true.
+      dcc: dccGrants.has(u.id),
     })),
     // Whether either ident mode is running. When neither is, the idents above
     // are inert — the UI says so rather than implying networks see them. (The
     // other half of the story, "may these be edited at all", is node edition,
     // which the client already knows from /api/config.)
     identdEnabled: isIdentdEnabled() || isOidentdFileEnabled(),
+    // Whether the instance runs DCC (LURKER_DCC_ENABLED). Without it a grant
+    // does nothing, so the panel hides the per-user switch.
+    dccEnabled: !isNodeMode() && dccMasterEnabled(),
   });
+});
+
+// Grant or revoke DCC for an account (#1080). DCC needs two switches: the
+// operator's LURKER_DCC_ENABLED, then this per-user grant. Revoking stops what
+// would start next: offers are ignored and the /api/dcc routes refuse. A
+// transfer or chat already running is left to finish.
+router.put('/users/:id/dcc', (req: Request, res: Response) => {
+  if (isNodeMode()) {
+    res.status(409).json({ error: 'DCC is not available in node edition' });
+    return;
+  }
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: 'invalid id' });
+    return;
+  }
+  const enabled = req.body?.enabled;
+  if (typeof enabled !== 'boolean') {
+    res.status(400).json({ error: 'enabled must be true or false' });
+    return;
+  }
+  if (!findUserById(id)) {
+    res.status(404).json({ error: 'not found' });
+    return;
+  }
+  setUserCapability(id, CAPABILITY_DCC, enabled);
+  res.json({ ok: true, dcc: enabled });
 });
 
 // Assign (or clear, with null/'') an account's ident — the name a network sees

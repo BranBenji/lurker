@@ -13,14 +13,35 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 
 import { requireAuth } from '../middleware/auth.js';
 import ircManager from '../services/ircManager.js';
-import { dccEnabledForUser } from '../services/dccConfig.js';
-import { sanitizeDccFilename } from '../services/dccPaths.js';
+import { dccAllowPrivateHosts, dccEnabledForUser, dccMaxFileBytes } from '../services/dccConfig.js';
+import { dccUserDir, sanitizeDccFilename } from '../services/dccPaths.js';
 import { getDccTransfer, listDccTransfers } from '../db/dccTransfers.js';
 import { getNetwork } from '../db/networks.js';
 import { isChannelTarget } from '../../shared/channels.js';
 
 const router = Router();
 router.use(requireAuth);
+
+/**
+ * GET /api/dcc/config — whether DCC is on for this account and, if it is, the
+ * limits the operator set (#1080). Mounted ahead of the gate below on purpose:
+ * Settings asks this to say "not turned on for your account" instead of
+ * reading a 403.
+ */
+router.get('/config', (req: Request, res: Response) => {
+  if (!dccEnabledForUser(req.user!.id)) {
+    res.json({ enabled: false });
+    return;
+  }
+  res.json({
+    enabled: true,
+    // Null when LURKER_DCC_DIR is unset, in which case nothing can be received.
+    directory: dccUserDir(req.user!.username),
+    // 0 means no cap.
+    maxFileBytes: dccMaxFileBytes(),
+    allowPrivateHosts: dccAllowPrivateHosts(),
+  });
+});
 
 // The two-tier DCC gate (cell master switch AND per-user capability) guards
 // every DCC entry point — the inbound-CTCP path checks it, so the API must too,

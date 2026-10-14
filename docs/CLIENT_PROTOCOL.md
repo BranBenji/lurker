@@ -57,7 +57,8 @@ Settings whose registry entry names a feature (`requiresFeature`) must be
 **hidden**, not merely disabled, when that flag is false: there is no server
 behind them, and the endpoints aren't mounted, so a toggle would do nothing.
 `linkPreviews` gates `chat.inline_media.enabled`, `chat.link_previews.enabled`,
-and the `/api/link-preview/*` endpoints.
+and the `/api/link-preview/*` endpoints. `dcc` says the instance runs DCC at all;
+each account also needs an admin's grant, which `GET /api/dcc/config` reports.
 
 Node edition disables `/api/api-tokens` and `/uploads/*` static serving;
 standalone has no `/api/node/*`. OAuth (§3.2) and `/mcp` work in both, but in
@@ -1470,6 +1471,10 @@ transport limit is shared between the two, which does mean lowering
 check before uploading.
 
 ### DCC — `/api/dcc` (403 unless enabled for the account)
+
+`GET /config` is the one route that answers without the grant: `{enabled: false}`,
+or `{enabled: true, directory, maxFileBytes, allowPrivateHosts}` (`directory` null
+when the server has no download dir; `maxFileBytes` 0 for no cap).
 
 `GET /?limit` list · `POST /:id/accept|reject|cancel`. Live updates via
 `dcc-transfer` frames; a transfer's bytes move over IRC, not HTTP.

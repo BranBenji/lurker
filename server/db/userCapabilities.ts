@@ -42,6 +42,15 @@ export function setUserCapability(userId: number, capability: string, enabled: b
   upsertStmt.run(userId, capability, enabled ? 1 : 0);
 }
 
+/** Every user holding `capability` — one query for a whole roster (the admin
+ *  Users list) rather than one per row. */
+export function userIdsWithCapability(capability: string): Set<number> {
+  const rows = db
+    .prepare('SELECT user_id FROM user_capabilities WHERE capability = ? AND enabled = 1')
+    .all(capability) as { user_id: number }[];
+  return new Set(rows.map((r) => r.user_id));
+}
+
 /** Every capability row for a user — the read the admin control panel will use. */
 export function listUserCapabilities(userId: number): UserCapabilityRow[] {
   return db

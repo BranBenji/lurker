@@ -94,6 +94,48 @@ afterAll(() => {
   ctx.cleanup();
 });
 
+// Settings asks this to say whether DCC is on for the account, so it answers
+// rather than 403ing like the rest of /api/dcc.
+describe('GET /api/dcc/config', () => {
+  it('reports the limits to an account with DCC', async () => {
+    process.env.LURKER_DCC_DIR = path.join(tmpRoot, 'root');
+    process.env.LURKER_DCC_MAX_FILE_MB = '100';
+    try {
+      const res = await aliceAgent.get('/api/dcc/config');
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        enabled: true,
+        directory: path.join(tmpRoot, 'root', 'dcc-alice'),
+        maxFileBytes: 100 * 1024 * 1024,
+        allowPrivateHosts: false,
+      });
+    } finally {
+      delete process.env.LURKER_DCC_DIR;
+      delete process.env.LURKER_DCC_MAX_FILE_MB;
+    }
+  });
+
+  it('says when no download directory is configured', async () => {
+    const res = await aliceAgent.get('/api/dcc/config');
+    expect(res.body.directory).toBeNull();
+  });
+
+  it('answers enabled:false, not 403, to an account without the grant', async () => {
+    const res = await carolAgent.get('/api/dcc/config');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ enabled: false });
+  });
+
+  it('is off for everyone while the instance switch is off', async () => {
+    delete process.env.LURKER_DCC_ENABLED;
+    try {
+      expect((await aliceAgent.get('/api/dcc/config')).body).toEqual({ enabled: false });
+    } finally {
+      process.env.LURKER_DCC_ENABLED = '1';
+    }
+  });
+});
+
 describe('GET /api/dcc/:id/file', () => {
   it('serves a completed file as an attachment', async () => {
     const id = transfer(path.join(tmpRoot, 'plain'), 'show.mkv');

@@ -37,6 +37,7 @@
           {{ u.username }}
           <span v-if="u.role === 'admin'" class="role-tag">admin</span>
           <span v-if="u.isPaused" class="paused-tag">paused</span>
+          <span v-if="canGrantDcc && u.dcc" class="dcc-tag">dcc</span>
           <span
             v-if="adminStore.identdEnabled && u.effectiveIdent"
             class="ident-tag"
@@ -151,6 +152,19 @@
             {{ u.isPaused ? 'resume' : 'pause' }}
           </button>
           <button
+            v-if="canGrantDcc"
+            class="link"
+            :disabled="adminBusy"
+            :title="
+              u.dcc
+                ? 'turn off DCC — offers are ignored from now on; transfers and chats already running finish'
+                : 'turn on DCC — file transfers and direct chats for this account'
+            "
+            @click="onToggleDcc(u)"
+          >
+            {{ u.dcc ? 'turn off DCC' : 'turn on DCC' }}
+          </button>
+          <button
             v-if="!config.isNode"
             class="link"
             :disabled="adminBusy"
@@ -211,6 +225,10 @@ const users = computed(() => adminStore.users);
 //     but the editor isn't (its route 409s).
 const canAssignIdents = computed(() => adminStore.identdEnabled && !config.isNode);
 
+// DCC needs the operator's LURKER_DCC_ENABLED before a grant means anything, so
+// the switch and the tag only appear on an instance that runs it.
+const canGrantDcc = computed(() => adminStore.dccEnabled && !config.isNode);
+
 const adminError = ref('');
 const adminBusy = ref(false);
 
@@ -259,6 +277,18 @@ onMounted(() => {
     adminError.value = e.message;
   });
 });
+
+async function onToggleDcc(user: AdminUser) {
+  adminError.value = '';
+  adminBusy.value = true;
+  try {
+    await adminStore.setUserDcc(user.id, !user.dcc);
+  } catch (e: any) {
+    adminError.value = e.message || 'failed to change DCC';
+  } finally {
+    adminBusy.value = false;
+  }
+}
 
 async function onIssueRecovery(user: AdminUser) {
   // Reissuing is destructive to a link that may already be in the member's
@@ -364,7 +394,8 @@ async function onResumeUser(user: AdminUser) {
 
 <style src="../settings-panes/panes.css"></style>
 <style scoped>
-.user-row .ident-tag {
+.user-row .ident-tag,
+.user-row .dcc-tag {
   color: var(--fg-muted);
   border: 1px solid var(--border);
   padding: 0 var(--space-2);

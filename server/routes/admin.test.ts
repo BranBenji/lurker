@@ -229,6 +229,61 @@ describe('PUT /api/admin/users/:id/ident', () => {
   });
 });
 
+// DCC needs the operator's LURKER_DCC_ENABLED and then a per-account grant,
+// which before #1080 only SQL could write.
+describe('PUT /api/admin/users/:id/dcc', () => {
+  afterEach(() => {
+    delete process.env.LURKER_DCC_ENABLED;
+  });
+
+  it('grants and revokes, and the list reports both the grant and the instance switch', async () => {
+    process.env.LURKER_DCC_ENABLED = '1';
+    const { createUser } = await import('../db/users.js');
+    const { userHasCapability, CAPABILITY_DCC } = await import('../db/userCapabilities.js');
+    const target = createUser('dcc-grantee');
+    const row = async () => {
+      const res = await adminAgent.get('/api/admin/users');
+      expect(res.body.dccEnabled).toBe(true);
+      return res.body.users.find((u: { id: number }) => u.id === target.id);
+    };
+    expect((await row()).dcc).toBe(false);
+
+    const on = await adminAgent.put(`/api/admin/users/${target.id}/dcc`).send({ enabled: true });
+    expect(on.status).toBe(200);
+    expect(on.body.dcc).toBe(true);
+    expect(userHasCapability(target.id, CAPABILITY_DCC)).toBe(true);
+    expect((await row()).dcc).toBe(true);
+
+    await adminAgent.put(`/api/admin/users/${target.id}/dcc`).send({ enabled: false });
+    expect(userHasCapability(target.id, CAPABILITY_DCC)).toBe(false);
+    expect((await row()).dcc).toBe(false);
+  });
+
+  it('reports the instance switch off when LURKER_DCC_ENABLED is unset', async () => {
+    const res = await adminAgent.get('/api/admin/users');
+    expect(res.body.dccEnabled).toBe(false);
+  });
+
+  it('400s anything but a boolean, 404s an unknown id', async () => {
+    const { createUser } = await import('../db/users.js');
+    const target = createUser('dcc-bad-body');
+    const url = `/api/admin/users/${target.id}/dcc`;
+    expect((await adminAgent.put(url).send({ enabled: 'yes' })).status).toBe(400);
+    expect((await adminAgent.put(url).send({})).status).toBe(400);
+    expect((await adminAgent.put('/api/admin/users/abc/dcc').send({ enabled: true })).status).toBe(
+      400,
+    );
+    expect(
+      (await adminAgent.put('/api/admin/users/999999/dcc').send({ enabled: true })).status,
+    ).toBe(404);
+  });
+
+  it('requires admin — a member cannot grant themselves DCC', async () => {
+    const res = await userAgent.put(`/api/admin/users/${user.id}/dcc`).send({ enabled: true });
+    expect(res.status).toBe(403);
+  });
+});
+
 describe('GET /api/admin/presence', () => {
   it('403 for a non-admin', async () => {
     expect((await userAgent.get('/api/admin/presence')).status).toBe(403);

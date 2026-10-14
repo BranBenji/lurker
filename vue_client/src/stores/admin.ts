@@ -25,6 +25,8 @@ export interface AdminUser {
    * say one exists but can never re-show it.
    */
   recoveryExpiresAt?: string | null;
+  /** Granted DCC (#1080). Only takes effect while the instance runs DCC. */
+  dcc?: boolean;
 }
 
 /** A freshly minted recovery link. The URL is shown once and never again. */
@@ -102,6 +104,9 @@ export const useAdminStore = defineStore('admin', {
     // Whether an ident daemon is actually running (built-in identd or the
     // oidentd file). False makes the per-user idents inert — the pane says so.
     identdEnabled: false,
+    // Whether the instance runs DCC (LURKER_DCC_ENABLED); the per-user switch
+    // hides without it.
+    dccEnabled: false,
     invites: [] as AdminInvite[],
     loginLockouts: [] as AdminLoginLockout[],
     loginLockoutPolicy: null as AdminLoginLockoutPolicy | null,
@@ -149,13 +154,14 @@ export const useAdminStore = defineStore('admin', {
       const seq = ++this.usersFetchSeq;
       this.error = '';
       try {
-        const { users, identdEnabled } = await api('/api/admin/users');
+        const { users, identdEnabled, dccEnabled } = await api('/api/admin/users');
         // A newer fetch or a local mutation superseded this GET while it was in
         // flight — its payload is stale, so drop it rather than clobber the
         // fresher state.
         if (seq !== this.usersFetchSeq) return;
         this.users = users || [];
         this.identdEnabled = !!identdEnabled;
+        this.dccEnabled = !!dccEnabled;
         this.usersLoaded = true;
       } catch (e: any) {
         if (seq !== this.usersFetchSeq) return;
@@ -180,6 +186,12 @@ export const useAdminStore = defineStore('admin', {
       this.usersFetchSeq++;
       const u = this.users.find((x) => x.id === id);
       if (u) u.isPaused = false;
+    },
+    async setUserDcc(id: number, enabled: boolean) {
+      await api(`/api/admin/users/${id}/dcc`, { method: 'PUT', body: { enabled } });
+      this.usersFetchSeq++;
+      const u = this.users.find((x) => x.id === id);
+      if (u) u.dcc = enabled;
     },
     // Pass null (or '') to fall back to deriving the ident from the username.
     // Patches the changed row from the response so the edit lands immediately,
