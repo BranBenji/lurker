@@ -183,6 +183,7 @@ import { api, apiMultipart } from '../../api.js';
 import { resetSession } from '../../composables/useSessionReset.js';
 import { useDataExportStore } from '../../stores/dataExport.js';
 import { useSettingsStore } from '../../stores/settings.js';
+import { formatBytes } from '../../utils/formatBytes.js';
 
 interface ExportPreview {
   settingsOnly: Record<string, number>;
@@ -344,13 +345,6 @@ async function onImport() {
   } finally {
     importing.value = false;
   }
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 // ─── Retention ─────────────────────────────────────────────────────────────

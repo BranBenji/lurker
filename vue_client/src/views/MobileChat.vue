@@ -25,17 +25,7 @@
         <button class="icon" title="Recent uploads" @click="showUploads = true">
           <i class="fa-solid fa-arrow-up-from-bracket"></i>
         </button>
-        <!-- Self-revealing DCC transfers button — see DesktopChat for rationale.
-             Warn-colored while an offer awaits a decision. -->
-        <button
-          v-if="dcc.hasAny || dcc.panelOpen"
-          class="icon dcc-btn"
-          :class="{ pending: dcc.pendingCount > 0 }"
-          :title="dccTitle"
-          @click="dcc.open()"
-        >
-          <i class="fa-solid fa-download"></i>
-        </button>
+        <TransfersButton class="icon" />
         <button class="icon" title="Add network" @click="openAddNetwork">
           <i class="fa-solid fa-plus"></i>
         </button>
@@ -257,6 +247,7 @@ import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
 import TransfersModal from '../components/TransfersModal.vue';
+import TransfersButton from '../components/TransfersButton.vue';
 import SearchModal from '../components/SearchModal.vue';
 import NickNoteModal from '../components/NickNoteModal.vue';
 import ReactModal from '../components/ReactModal.vue';
@@ -315,9 +306,6 @@ const menu = useContextMenu();
 const nickNotes = useNickNotesStore();
 const reactions = useReactionsStore();
 const dcc = useDccStore();
-const dccTitle = computed(() =>
-  dcc.pendingCount > 0 ? `DCC transfers — ${dcc.pendingCount} awaiting approval` : 'DCC transfers',
-);
 const whois = useWhoisStore();
 
 function openSystemConsole() {
@@ -641,11 +629,6 @@ useChatBootstrap({ onJump: onJumpToMessage });
 }
 .icon:disabled:hover {
   color: var(--accent);
-}
-/* Transfers button turns warn-colored while an offer awaits a decision
-   (color-as-signal, no count badge — matches DesktopChat). */
-.icon.dcc-btn.pending {
-  color: var(--warn);
 }
 .icon.back {
   margin-left: -4px;

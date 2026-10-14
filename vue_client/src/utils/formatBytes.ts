@@ -2,11 +2,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 /**
- * Human-readable byte size, four tiers (B / KB / MB / GB). Hoisted so screens
- * stop growing private copies — DataPane, TransfersModal, and
- * RecentUploadsModal each carry one today, and they have already drifted
- * (one caps at MB, one guards zero differently); migrate them here as
- * they're next touched.
+ * Human-readable byte size, four tiers (B / KB / MB / GB). The one copy for
+ * the client: screens that kept their own had drifted (one capped at MB, one
+ * guarded zero differently).
  */
 export function formatBytes(n: number): string {
   if (!Number.isFinite(n) || n < 0) return '0 B';

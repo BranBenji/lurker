@@ -66,19 +66,7 @@
         <button class="link" @click="showUploads = true" title="Recent uploads">
           <i class="fa-solid fa-arrow-up-from-bracket"></i>
         </button>
-        <!-- Self-revealing: DCC is off for almost everyone, so the Transfers
-             button only appears once a transfer exists (or the panel is open).
-             Color-as-signal (house style, no count badge): the glyph turns
-             warn-colored while an unsolicited offer awaits a decision. -->
-        <button
-          v-if="dcc.hasAny || dcc.panelOpen"
-          class="link dcc-btn"
-          :class="{ pending: dcc.pendingCount > 0 }"
-          @click="dcc.open()"
-          :title="dccTitle"
-        >
-          <i class="fa-solid fa-download"></i>
-        </button>
+        <TransfersButton class="link" />
       </div>
     </aside>
 
@@ -343,6 +331,7 @@ import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
 import TransfersModal from '../components/TransfersModal.vue';
+import TransfersButton from '../components/TransfersButton.vue';
 import QuickSwitcher from '../components/QuickSwitcher.vue';
 import SearchModal from '../components/SearchModal.vue';
 import KeyboardHelpModal from '../components/KeyboardHelpModal.vue';
@@ -391,9 +380,6 @@ const nicklistCollapse = useNicklistCollapseStore();
 const nickNotes = useNickNotesStore();
 const reactions = useReactionsStore();
 const dcc = useDccStore();
-const dccTitle = computed(() =>
-  dcc.pendingCount > 0 ? `DCC transfers — ${dcc.pendingCount} awaiting approval` : 'DCC transfers',
-);
 const whois = useWhoisStore();
 
 // Not reactive()-wrapped: the chip's fields stay refs so the template can read
@@ -812,11 +798,6 @@ useChatBootstrap({ onJump: onJumpToMessage });
 }
 .link:disabled:hover {
   color: var(--accent);
-}
-/* Transfers button: while an unsolicited offer awaits a decision the glyph
-   turns warn-colored to draw the eye (color-as-signal, no count badge). */
-.dcc-btn.pending {
-  color: var(--warn);
 }
 /* Expand control at the top of the collapsed rail — the in-list collapse
    button is unmounted with the channel list, so this brings it back up top.

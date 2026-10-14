@@ -246,10 +246,15 @@ export function markDccReceiving(id: number, f: DccReceivingFields): number[] {
 
 /** Checkpoint progress. Called on a throttle by the caller (never per-chunk) so
  *  the single shared SQLite connection isn't hammered. */
-export function updateDccReceivedBytes(id: number, received: number): void {
-  db.prepare(
-    `UPDATE dcc_transfers SET received_bytes = ?, updated_at = datetime('now') WHERE id = ?`,
-  ).run(received, Number(id));
+/** A progress checkpoint. Hands back the row it wrote, so publishing the
+ *  checkpoint needs no second read. */
+export function updateDccReceivedBytes(id: number, received: number): DccTransferRow | undefined {
+  return db
+    .prepare(
+      `UPDATE dcc_transfers SET received_bytes = ?, updated_at = datetime('now') WHERE id = ?
+       RETURNING *`,
+    )
+    .get(received, Number(id)) as DccTransferRow | undefined;
 }
 
 /** Mark a transfer failed, stamping the final byte count (so a throttled
