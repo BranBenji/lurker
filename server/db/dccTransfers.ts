@@ -68,6 +68,8 @@ export interface DccTransferRow {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  /** When the user deleted the received file from the server (#1125). */
+  file_deleted_at: string | null;
 }
 
 export interface InsertDccTransferFields {
@@ -263,4 +265,47 @@ export function markDccCompleted(
            completed_at = datetime('now'), updated_at = datetime('now')
      WHERE id = ?`,
   ).run(received, crcActual, crcStatus, Number(id));
+}
+
+/** Bytes still to land for the user's transfers in flight — what they will add
+ *  to the disk on top of what is already there (#1125). `exclude` leaves out
+ *  rows the caller is accounting for itself. */
+export function dccReservedBytes(userId: number, exclude: number[] = []): number {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(SUM(MAX(0, advertised_size - received_bytes)), 0) AS reserved
+       FROM dcc_transfers
+       WHERE user_id = ? AND state IN ('connecting', 'receiving', 'stalled', 'verifying')
+         AND id NOT IN (SELECT value FROM json_each(?))`,
+    )
+    .get(userId, JSON.stringify(exclude)) as { reserved: number };
+  return row.reserved;
+}
+
+/** Whether a newer row of the user's points at `destPath`. A path is free to
+ *  reuse once its file is gone, so an older row can name a file that now belongs
+ *  to a newer transfer. (Older rows at the same path are the same file: a
+ *  resume continues its earlier row's partial under a new row.) */
+export function newerDccRowAtPath(userId: number, id: number, destPath: string): boolean {
+  return !!db
+    .prepare(
+      'SELECT 1 FROM dcc_transfers WHERE user_id = ? AND id > ? AND destination_path = ? LIMIT 1',
+    )
+    .get(userId, Number(id), destPath);
+}
+
+/** Record that the user deleted the file of row `id`, and of every older row at
+ *  the same path when `andOlder` (the same file, resumed): each stays as
+ *  history, with no path to serve, resume or count. */
+export function markDccFileDeleted(
+  userId: number,
+  id: number,
+  destPath: string,
+  andOlder: boolean,
+): void {
+  db.prepare(
+    `UPDATE dcc_transfers
+       SET destination_path = NULL, file_deleted_at = datetime('now'), updated_at = datetime('now')
+     WHERE user_id = ? AND destination_path = ? AND (id = ? OR (? AND id < ?))`,
+  ).run(userId, destPath, Number(id), andOlder ? 1 : 0, Number(id));
 }

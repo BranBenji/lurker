@@ -54,6 +54,8 @@
             <th scope="col">user</th>
             <th scope="col">chat</th>
             <th scope="col">receive</th>
+            <th scope="col">limit</th>
+            <th scope="col">used</th>
           </tr>
         </thead>
         <tbody>
@@ -70,12 +72,32 @@
                 @change="toggle(u, part, $event)"
               />
             </td>
+            <td>
+              <!-- In GB; blank is no limit. Saved when the field is left. -->
+              <input
+                class="limit"
+                type="number"
+                min="0"
+                step="any"
+                placeholder="none"
+                :value="limitGb(u)"
+                :disabled="busy"
+                :aria-label="`storage limit in GB for ${u.username}`"
+                @change="setLimit(u, $event)"
+              />
+              GB
+            </td>
+            <td>{{ u.usedBytes ? formatBytes(u.usedBytes) : '—' }}</td>
           </tr>
         </tbody>
       </table>
       <p class="muted small">
         Turning one off stops what starts next. Anything already running finishes, and files already
         received stay theirs to download.
+      </p>
+      <p class="muted small">
+        A limit caps what a user's received files take on disk. A transfer that would go over it is
+        refused; nothing is deleted. Users can delete their own files in the Transfers list.
       </p>
     </template>
     <p v-else-if="!error" class="muted small">Loading…</p>
@@ -95,6 +117,9 @@ interface DccUser {
   username: string;
   chat: boolean;
   receive: boolean;
+  /** Null for no limit (#1125). */
+  limitBytes: number | null;
+  usedBytes: number;
 }
 interface DccInfo {
   enabled: boolean;
@@ -116,6 +141,38 @@ onMounted(async () => {
     error.value = e?.message || 'failed to load DCC settings';
   }
 });
+
+const GB = 1024 * 1024 * 1024;
+
+function limitGb(u: DccUser): string {
+  return u.limitBytes === null ? '' : String(Math.round((u.limitBytes / GB) * 100) / 100);
+}
+
+async function setLimit(u: DccUser, event: Event) {
+  const field = event.target as HTMLInputElement;
+  const raw = field.value.trim();
+  const gb = Number(raw);
+  if (raw !== '' && !(Number.isFinite(gb) && gb > 0)) {
+    field.value = limitGb(u);
+    error.value = 'a limit is a number of GB above 0, or blank for none';
+    return;
+  }
+  error.value = '';
+  busy.value = true;
+  try {
+    const next = await api<{ limitBytes: number | null }>(`/api/admin/dcc/users/${u.id}`, {
+      method: 'PUT',
+      body: { limitBytes: raw === '' ? null : Math.max(1, Math.round(gb * GB)) },
+    });
+    u.limitBytes = next.limitBytes;
+  } catch (e: any) {
+    error.value = e?.message || 'failed to set the limit';
+  } finally {
+    // Show what's stored, whichever way it went.
+    field.value = limitGb(u);
+    busy.value = false;
+  }
+}
 
 async function toggle(u: DccUser, part: Part, event: Event) {
   const box = event.target as HTMLInputElement;
@@ -167,5 +224,8 @@ code {
 }
 .warn {
   color: var(--warn);
+}
+.limit {
+  width: 6em;
 }
 </style>

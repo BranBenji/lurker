@@ -26,8 +26,15 @@ import {
   dccReceiveEnabledForUser,
   dccMaxFileBytes,
 } from '../services/dccConfig.js';
-import { sanitizeDccFilename } from '../services/dccPaths.js';
-import { getDccTransfer, listDccTransfers } from '../db/dccTransfers.js';
+import { dccUsedBytes, sanitizeDccFilename } from '../services/dccPaths.js';
+import {
+  DCC_ACTIVE_STATES,
+  getDccTransfer,
+  listDccTransfers,
+  markDccFileDeleted,
+  newerDccRowAtPath,
+} from '../db/dccTransfers.js';
+import { getDccStorageLimit } from '../db/dccStorageLimits.js';
 import { getNetwork } from '../db/networks.js';
 import { isChannelTarget } from '../../shared/channels.js';
 
@@ -53,6 +60,10 @@ router.get('/config', (req: Request, res: Response) => {
     // 0 means no cap.
     maxFileBytes: dccMaxFileBytes(),
     allowPrivateHosts: dccAllowPrivateHosts(),
+    // What this account's received files take on disk, and its limit (null for
+    // none) (#1125).
+    usedBytes: dccUsedBytes(req.user!.username),
+    limitBytes: getDccStorageLimit(req.user!.id),
   });
 });
 
@@ -162,6 +173,38 @@ router.get('/:id/file', (req: Request, res: Response, next: NextFunction) => {
       else next(err);
     },
   );
+});
+
+/**
+ * DELETE /api/dcc/:id/file — remove a transfer's received file from the server
+ * (#1125), so a user with a storage limit can make room. Needs no grant, like
+ * anything else about what an account already received. The row stays as
+ * history, marked deleted. A transfer still in flight is cancelled first.
+ */
+router.delete('/:id/file', (req: Request, res: Response) => {
+  const id = transferId(req);
+  const t = id == null ? undefined : getDccTransfer(req.user!.id, id);
+  if (!t) {
+    res.status(404).json({ error: 'transfer not found' });
+    return;
+  }
+  if (DCC_ACTIVE_STATES.has(t.state)) {
+    res.status(409).json({ error: 'cancel the transfer before deleting its file' });
+    return;
+  }
+  if (!t.destination_path) {
+    // Already deleted, or nothing was ever written.
+    res.status(404).json({ error: 'no file to delete' });
+    return;
+  }
+  // A path is free again once its file is gone, so an older row can name a file
+  // that now belongs to a newer transfer: that file isn't this row's to delete.
+  // Otherwise it is, and older rows at the same path (a resume continues its
+  // earlier row's partial) lose it too.
+  const owned = !newerDccRowAtPath(req.user!.id, t.id, t.destination_path);
+  if (owned) fs.rmSync(t.destination_path, { force: true });
+  markDccFileDeleted(req.user!.id, t.id, t.destination_path, owned);
+  res.json({ transfer: getDccTransfer(req.user!.id, t.id) });
 });
 
 // Acting on a transfer is a write — blocked for paused accounts (the list isn't)

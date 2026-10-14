@@ -51,6 +51,8 @@ export interface DccTransfer {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  /** When the user deleted the received file from the server (#1125). */
+  file_deleted_at?: string | null;
 }
 
 // States that can still change — a transfer in one of these is "active" (drives
@@ -90,6 +92,14 @@ export function isCancellable(t: DccTransfer): boolean {
 export function percentReceived(t: DccTransfer): number {
   if (!t.advertised_size || t.advertised_size <= 0) return 0;
   return Math.max(0, Math.min(100, Math.round((t.received_bytes / t.advertised_size) * 100)));
+}
+
+// Whether a finished transfer left a file on the server to download or delete
+// (#1125): a completed one, or a partial from one that failed or was cancelled,
+// until the user deletes it.
+export function hasFile(t: DccTransfer): boolean {
+  if (ACTIVE_STATES.has(t.state) || t.file_deleted_at) return false;
+  return t.state === 'completed' || t.received_bytes > 0;
 }
 
 // Where a completed transfer's file downloads from (#1079). The modal's link
@@ -219,6 +229,25 @@ export const useDccStore = defineStore('dcc', {
     // saved as a .json file of the error (or, without `download`, navigates the
     // app to it), so a file removed on the box has to be caught here and shown
     // on the row instead.
+    // Remove a finished transfer's file from the server (#1125). The row stays,
+    // marked deleted.
+    async deleteFile(id: number): Promise<DccTransfer> {
+      this.busy[id] = true;
+      delete this.actionError[id];
+      try {
+        const { transfer } = await api<{ transfer: DccTransfer }>(dccFileUrl(id), {
+          method: 'DELETE',
+        });
+        if (transfer) this.applyTransfer(transfer);
+        return transfer;
+      } catch (e: any) {
+        this.actionError[id] = e?.message || 'delete failed';
+        throw e;
+      } finally {
+        delete this.busy[id];
+      }
+    },
+
     async download(id: number): Promise<void> {
       this.busy[id] = true;
       delete this.actionError[id];

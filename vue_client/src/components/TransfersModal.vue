@@ -57,14 +57,19 @@
             >
               Cancel
             </button>
-            <button
-              v-else-if="t.state === 'completed'"
-              class="link"
-              :disabled="dcc.busy[t.id]"
-              @click="onDownload(t)"
-            >
-              Download
-            </button>
+            <template v-else-if="hasFile(t)">
+              <button
+                v-if="t.state === 'completed'"
+                class="link"
+                :disabled="dcc.busy[t.id]"
+                @click="onDownload(t)"
+              >
+                Download
+              </button>
+              <button class="link reject" :disabled="dcc.busy[t.id]" @click="onDelete(t)">
+                Delete
+              </button>
+            </template>
           </div>
         </li>
       </ul>
@@ -82,6 +87,7 @@ import AppModal from './AppModal.vue';
 import {
   useDccStore,
   isCancellable,
+  hasFile,
   percentReceived,
   type DccTransfer,
   type DccState,
@@ -160,6 +166,7 @@ function subLine(t: DccTransfer): string {
     t.peer_nick,
     networkName(t.network_id),
     stateLabel(t.state),
+    t.file_deleted_at ? 'file deleted' : '',
     formatRelative(t.updated_at),
   ]);
 }
@@ -216,6 +223,13 @@ function onReject(t: DccTransfer) {
 }
 function onDownload(t: DccTransfer) {
   dcc.download(t.id).catch(() => {
+    /* error surfaced via dcc.actionError */
+  });
+}
+function onDelete(t: DccTransfer) {
+  // The file is gone for good once deleted; the row stays as history.
+  if (!confirm(`Delete "${t.filename}" from the server?`)) return;
+  dcc.deleteFile(t.id).catch(() => {
     /* error surfaced via dcc.actionError */
   });
 }

@@ -129,8 +129,10 @@ export function resolveDccDestination(username: string, rawFilename: string): st
   return candidate;
 }
 
-/** Free space a transfer must leave on the download dir's disk. */
-export const DCC_FREE_DISK_FLOOR_BYTES = 64 * 1024 * 1024;
+/** Free space a transfer must leave on the download dir's disk. The DCC dir
+ *  usually shares a disk with the database, so this is what keeps a full
+ *  download from leaving SQLite nowhere to write (#1125). */
+export const DCC_FREE_DISK_FLOOR_BYTES = 1024 * 1024 * 1024;
 
 /**
  * Whether `dir`'s filesystem has room for `bytes` plus a safety margin. Used to
@@ -149,4 +151,35 @@ export function hasFreeSpaceFor(
   } catch {
     return true;
   }
+}
+
+/** Bytes under `dir`, counting every file at any depth (a partial included, and
+ *  anything an admin put there by hand). Symlinks count as themselves, never
+ *  their targets. 0 when the dir doesn't exist. */
+export function dccDirBytes(dir: string): number {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  let total = 0;
+  for (const e of entries) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) total += dccDirBytes(p);
+    else {
+      try {
+        total += fs.lstatSync(p).size;
+      } catch {
+        /* removed while we walked */
+      }
+    }
+  }
+  return total;
+}
+
+/** How much `username`'s received files take on disk (#1125). */
+export function dccUsedBytes(username: string): number {
+  const dir = dccUserDir(username);
+  return dir ? dccDirBytes(dir) : 0;
 }

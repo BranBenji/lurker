@@ -118,6 +118,8 @@ describe('GET /api/dcc/config', () => {
         receive: true,
         maxFileBytes: 100 * 1024 * 1024,
         allowPrivateHosts: false,
+        usedBytes: 0,
+        limitBytes: null,
       });
     } finally {
       delete process.env.LURKER_DCC_DIR;
@@ -129,6 +131,22 @@ describe('GET /api/dcc/config', () => {
     const res = await carolAgent.get('/api/dcc/config');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ chat: false, receive: false });
+  });
+
+  it('reports what the account uses, and its limit', async () => {
+    const { setDccStorageLimit } = await import('../db/dccStorageLimits.js');
+    const root = path.join(tmpRoot, 'usage-root');
+    fs.mkdirSync(path.join(root, 'dcc-alice'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'dcc-alice', 'a.bin'), Buffer.alloc(2048));
+    process.env.LURKER_DCC_DIR = root;
+    setDccStorageLimit(alice.id, 10 * 1024 * 1024);
+    try {
+      const res = await aliceAgent.get('/api/dcc/config');
+      expect(res.body).toMatchObject({ usedBytes: 2048, limitBytes: 10 * 1024 * 1024 });
+    } finally {
+      setDccStorageLimit(alice.id, null);
+      delete process.env.LURKER_DCC_DIR;
+    }
   });
 
   it('reports chat alone, with no receiving limits, for a chat-only account', async () => {
@@ -144,6 +162,73 @@ describe('GET /api/dcc/config', () => {
       });
     } finally {
       process.env.LURKER_DCC_ENABLED = '1';
+    }
+  });
+});
+
+// #1125: a user with a storage limit makes room by deleting what they received.
+describe('DELETE /api/dcc/:id/file', () => {
+  const getRow = async (id: number) =>
+    (await import('../db/dccTransfers.js')).getDccTransfer(alice.id, id)!;
+
+  it('removes a finished file and keeps the row, marked deleted', async () => {
+    const dir = path.join(tmpRoot, 'del');
+    const id = transfer(dir, 'gone.mkv');
+    const res = await aliceAgent.delete(`/api/dcc/${id}/file`);
+    expect(res.status).toBe(200);
+    expect(res.body.transfer.file_deleted_at).toBeTruthy();
+    expect(res.body.transfer.state).toBe('completed');
+    expect(fs.existsSync(path.join(dir, 'gone.mkv'))).toBe(false);
+    expect((await aliceAgent.get(`/api/dcc/${id}/file`)).status).toBe(410);
+    expect((await aliceAgent.delete(`/api/dcc/${id}/file`)).status).toBe(404);
+  });
+
+  it('refuses while the transfer is in flight', async () => {
+    const dir = path.join(tmpRoot, 'del-active');
+    const id = transfer(dir, 'busy.mkv', { complete: false });
+    expect((await aliceAgent.delete(`/api/dcc/${id}/file`)).status).toBe(409);
+    expect(fs.existsSync(path.join(dir, 'busy.mkv'))).toBe(true);
+  });
+
+  // The path is free once a file is removed by hand, so an older row can name
+  // a file that now belongs to a newer transfer.
+  it('leaves a newer transfer’s file at the same path alone', async () => {
+    const dir = path.join(tmpRoot, 'del-reused');
+    const older = transfer(dir, 'ep.mkv');
+    const newer = transfer(dir, 'ep.mkv');
+    expect((await aliceAgent.delete(`/api/dcc/${older}/file`)).status).toBe(200);
+    expect(fs.existsSync(path.join(dir, 'ep.mkv'))).toBe(true);
+    expect((await getRow(newer)).file_deleted_at).toBeNull();
+    expect((await getBytes(aliceAgent, `/api/dcc/${newer}/file`)).status).toBe(200);
+  });
+
+  // A resume finishes under a new row at its earlier row's path: one file.
+  it('deletes a resumed file once, for both of its rows', async () => {
+    const { updateDccTransferState } = await import('../db/dccTransfers.js');
+    const dir = path.join(tmpRoot, 'del-resumed');
+    const first = transfer(dir, 'long.mkv', { complete: false });
+    updateDccTransferState(first, 'failed', 'interrupted');
+    const resumed = transfer(dir, 'long.mkv');
+    expect((await aliceAgent.delete(`/api/dcc/${resumed}/file`)).status).toBe(200);
+    expect(fs.existsSync(path.join(dir, 'long.mkv'))).toBe(false);
+    expect((await getRow(first)).file_deleted_at).toBeTruthy();
+    expect((await getRow(first)).destination_path).toBeNull();
+  });
+
+  it('is 404 for another user’s transfer', async () => {
+    const id = transfer(path.join(tmpRoot, 'del-owned'), 'mine.mkv');
+    expect((await bobAgent.delete(`/api/dcc/${id}/file`)).status).toBe(404);
+  });
+
+  // Like reading and downloading, deleting what you received needs no grant.
+  it('works after the receive grant is revoked', async () => {
+    const { setUserCapability, CAPABILITY_DCC_RECEIVE } = await import('../db/userCapabilities.js');
+    const id = transfer(path.join(tmpRoot, 'del-revoked'), 'kept.mkv');
+    setUserCapability(alice.id, CAPABILITY_DCC_RECEIVE, false);
+    try {
+      expect((await aliceAgent.delete(`/api/dcc/${id}/file`)).status).toBe(200);
+    } finally {
+      setUserCapability(alice.id, CAPABILITY_DCC_RECEIVE, true);
     }
   });
 });

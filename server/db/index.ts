@@ -387,14 +387,23 @@ function migrate() {
     -- Per-user feature capabilities, admin-granted. A generic (user_id,
     -- capability) store rather than a one-off column so the forthcoming per-user
     -- admin control panel can manage every gated feature uniformly; DCC's
-    -- 'dcc.chat' and 'dcc.receive' (#1080) are the entries so far. Absence of a row means the
-    -- capability is OFF — capabilities are opt-in, granted by an operator.
+    -- 'dcc.chat' and 'dcc.receive' (#1080) are the entries so far. Absence of
+    -- a row means the capability is OFF — capabilities are opt-in, granted by
+    -- an operator.
     CREATE TABLE IF NOT EXISTS user_capabilities (
       user_id INTEGER NOT NULL,
       capability TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (user_id, capability),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    -- How much a user's received DCC files may take on disk (#1125), set by an
+    -- admin. No row means no limit.
+    CREATE TABLE IF NOT EXISTS dcc_storage_limits (
+      user_id INTEGER PRIMARY KEY,
+      limit_bytes INTEGER NOT NULL,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
@@ -1555,6 +1564,9 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_upload_history_favorites
 // after the bot offered). #270 phase 2.
 ensureColumn('dcc_transfers', 'peer_host', 'TEXT');
 ensureColumn('dcc_transfers', 'peer_port', 'INTEGER');
+// When the user deleted the received file from the server (#1125). The row
+// stays as history; its destination_path is cleared.
+ensureColumn('dcc_transfers', 'file_deleted_at', 'TEXT');
 
 // Consecutive push-delivery failures (#441): reset to 0 on any success, bumped
 // on a non-permanent error, and used to disable a chronically-failing endpoint

@@ -146,7 +146,8 @@ import {
   dccExternalHost,
   dccMaxFileBytes,
 } from './dccConfig.js';
-import { hasFreeSpaceFor, resolveDccDestination } from './dccPaths.js';
+import { dccUsedBytes, hasFreeSpaceFor, resolveDccDestination } from './dccPaths.js';
+import { getDccStorageLimit } from '../db/dccStorageLimits.js';
 import { DccChat } from './dccChat.js';
 import { openDccListener, type DccListenHandle } from './dccListener.js';
 import {
@@ -159,6 +160,7 @@ import { DccReceiver } from './dccReceiver.js';
 import {
   type DccTransferRow,
   DCC_ACTIVE_STATES,
+  dccReservedBytes,
   findArmedRequest,
   findResumableTransfer,
   getDccTransfer,
@@ -6574,6 +6576,7 @@ export class IrcConnection {
     // could otherwise get this bot's bytes appended onto an unrelated prefix.
     let destPath: string;
     let startOffset = 0;
+    const username = findUserById(this.network.user_id)?.username || 'user';
     const prior = findResumableTransfer(this.network.user_id, this.network.id, offer.filename);
     const partialSize =
       prior?.destination_path && fs.existsSync(prior.destination_path)
@@ -6584,7 +6587,6 @@ export class IrcConnection {
       startOffset = partialSize;
     } else {
       try {
-        const username = findUserById(this.network.user_id)?.username || 'user';
         destPath = resolveDccDestination(username, offer.filename);
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
@@ -6602,6 +6604,25 @@ export class IrcConnection {
         `DCC: refusing "${offer.filename}" (${formatBytes(offer.size)}) — not enough free disk space`,
       );
       return;
+    }
+    // The admin's per-user limit (#1125): what is on disk, plus what transfers in
+    // flight will still add, plus what this one needs. A resume's partial is
+    // already on disk, so it needs only the rest; its own earlier row isn't in
+    // flight any more, so it's left out of the reservation.
+    const limit = getDccStorageLimit(this.network.user_id);
+    if (limit !== null) {
+      const used =
+        dccUsedBytes(username) +
+        dccReservedBytes(this.network.user_id, prior ? [transferId, prior.id] : [transferId]);
+      if (used + (offer.size - startOffset) > limit) {
+        const numbers = `${formatBytes(used)} of ${formatBytes(limit)} used`;
+        updateDccTransferState(transferId, 'failed', `over your DCC storage limit (${numbers})`);
+        this.surfaceCtcp(
+          nick,
+          `DCC: refusing "${offer.filename}" (${formatBytes(offer.size)}) — over your storage limit (${numbers})`,
+        );
+        return;
+      }
     }
     const expectedCrc = parseCrcFromFilename(offer.filename);
     markDccReceiving(transferId, {

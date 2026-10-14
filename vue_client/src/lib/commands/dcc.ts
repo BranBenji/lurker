@@ -3,8 +3,9 @@
 
 // Parser for the /dcc command (#270) — the slash-command surface over DCC.
 // `list` opens the Transfers view; accept / reject / cancel act on one transfer
-// by its numeric id (the id shown in the list), and download saves a completed
-// one through the browser; `chat` opens a direct chat with
+// by its numeric id (the id shown in the list), download saves a completed
+// one through the browser, and delete removes its file from the server; `chat`
+// opens a direct chat with
 // a peer and `close` ends one.
 //
 // Pure and dependency-free so it unit-tests outside the Vue SFC, like the other
@@ -22,6 +23,7 @@ export type DccCommand =
   | { kind: 'reject'; id: number }
   | { kind: 'cancel'; id: number }
   | { kind: 'download'; id: number }
+  | { kind: 'delete'; id: number }
   | { kind: 'chat'; nick: string; passive: boolean }
   | { kind: 'chatClose'; nick: string }
   | { kind: 'error'; message: string };
@@ -32,9 +34,10 @@ const CANCEL = new Set(['cancel', 'abort', 'stop']);
 const LIST = new Set(['list', 'ls']);
 // Not `get`: irssi's `/dcc get` accepts an offer, and it does here too.
 const DOWNLOAD = new Set(['download', 'save']);
+const DELETE = new Set(['delete', 'rm']);
 
 const USAGE =
-  'usage: /dcc [list] · /dcc accept|reject|cancel|download <id> · ' +
+  'usage: /dcc [list] · /dcc accept|reject|cancel|download|delete <id> · ' +
   '/dcc chat [-passive] <nick> · ' +
   '/dcc close chat <nick>';
 
@@ -132,8 +135,17 @@ export function parseDccCommand(argLine: string): DccCommand {
   const isReject = REJECT.has(verb);
   const isCancel = CANCEL.has(verb);
   const isDownload = DOWNLOAD.has(verb);
-  if (isAccept || isReject || isCancel || isDownload) {
-    const kind = isAccept ? 'accept' : isReject ? 'reject' : isCancel ? 'cancel' : 'download';
+  const isDelete = DELETE.has(verb);
+  if (isAccept || isReject || isCancel || isDownload || isDelete) {
+    const kind = isAccept
+      ? 'accept'
+      : isReject
+        ? 'reject'
+        : isCancel
+          ? 'cancel'
+          : isDownload
+            ? 'download'
+            : 'delete';
     const id = parseId(parts[1]);
     if (id == null) return { kind: 'error', message: `usage: /dcc ${kind} <id>` };
     return { kind, id };

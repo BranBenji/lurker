@@ -739,6 +739,13 @@ export const EXPORT_TABLES = Object.freeze({
       "the cell's disk (not in the export) and an in-flight transfer can't resume elsewhere",
   },
 
+  dcc_storage_limits: {
+    mode: 'skip',
+    reason:
+      'admin-set per-user DCC storage limit (#1125); instance/operator-owned, like the ' +
+      "capability grants, and set again by the target instance's admin",
+  },
+
   user_capabilities: {
     mode: 'skip',
     reason:

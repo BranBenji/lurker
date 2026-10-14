@@ -48,7 +48,7 @@ describe('/api/admin/dcc', () => {
       directory: '/srv/dcc',
       maxFileBytes: 0,
       allowPrivateHosts: false,
-      freeDiskFloorBytes: 64 * 1024 * 1024,
+      freeDiskFloorBytes: 1024 * 1024 * 1024,
     });
   });
 
@@ -60,7 +60,7 @@ describe('/api/admin/dcc', () => {
 
     const chatOnly = await adminAgent.put(url).send({ chat: true });
     expect(chatOnly.status).toBe(200);
-    expect(chatOnly.body).toEqual({ chat: true, receive: false });
+    expect(chatOnly.body).toEqual({ chat: true, receive: false, limitBytes: null });
     expect(await rowFor(target.id)).toMatchObject({ chat: true, receive: false });
 
     await adminAgent.put(url).send({ receive: true });
@@ -80,6 +80,36 @@ describe('/api/admin/dcc', () => {
     const list = await adminAgent.get('/api/admin/dcc');
     expect(list.body.enabled).toBe(false);
     expect(list.body.users.find((u: Row) => u.id === target.id).chat).toBe(true);
+  });
+
+  // #1125: the admin's per-user space control. A whole number of bytes, or
+  // null for none; the list reports it with what the account uses now.
+  it('sets and clears a storage limit, and reports usage', async () => {
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-admin-dcc-'));
+    process.env.LURKER_DCC_DIR = root;
+    try {
+      const { createUser } = await import('../db/users.js');
+      const target = createUser('dcc-limited');
+      fs.mkdirSync(path.join(root, 'dcc-limited'));
+      fs.writeFileSync(path.join(root, 'dcc-limited', 'a.bin'), Buffer.alloc(1500));
+      const url = `/api/admin/dcc/users/${target.id}`;
+      const set = await adminAgent.put(url).send({ limitBytes: 50 * 1024 ** 3 });
+      expect(set.status).toBe(200);
+      expect(set.body.limitBytes).toBe(50 * 1024 ** 3);
+      const row = (await adminAgent.get('/api/admin/dcc')).body.users.find(
+        (u: { id: number }) => u.id === target.id,
+      );
+      expect(row).toMatchObject({ limitBytes: 50 * 1024 ** 3, usedBytes: 1500 });
+      expect((await adminAgent.put(url).send({ limitBytes: null })).body.limitBytes).toBeNull();
+      for (const bad of [0, -5, 1.5, '10', true]) {
+        expect((await adminAgent.put(url).send({ limitBytes: bad })).status).toBe(400);
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('400s a body with no part or a non-boolean, 404s an unknown id', async () => {
