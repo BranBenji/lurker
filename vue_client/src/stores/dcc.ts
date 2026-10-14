@@ -101,7 +101,8 @@ export function dccFileUrl(id: number): string {
 // Why GET /api/dcc/:id/file refused, by status. The download is checked with a
 // HEAD, which carries no body, so the server's reason has to be restated here.
 const DOWNLOAD_REFUSALS: Record<number, string> = {
-  403: 'DCC is not enabled for this account',
+  // Downloads need only the instance switch, never a grant.
+  403: 'DCC is turned off on this server',
   404: 'transfer not found',
   409: 'transfer is not complete',
   410: 'file is no longer on the server',

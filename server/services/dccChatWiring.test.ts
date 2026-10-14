@@ -503,6 +503,23 @@ describe('outgoing DCC CHAT offer', () => {
     h.conn.closeDccChat('bob');
   });
 
+  // We started it, so a chat grant revoked while the peer was answering
+  // doesn't strand it (#1080).
+  it('still dials when the peer answers our passive offer after a revoke', async () => {
+    enableDcc();
+    allowLoopback();
+    const h = harness();
+    const peer = await startPeer();
+    h.conn.offerDccChat('bob', { passive: true });
+    const token = h.lastOffer()!.split(' ')[4];
+    setUserCapability(1, CAPABILITY_DCC_CHAT, false);
+    offerFrom(h.conn, 'bob', `CHAT chat ${encodeDccAddress('127.0.0.1')} ${peer.port} ${token}`);
+    await peer.socket;
+    await waitFor(() => h.conn.hasDccChat('bob'));
+    expect(h.conn.hasDccChat('bob')).toBe(true);
+    h.conn.closeDccChat('bob');
+  });
+
   it('ignores a reply whose token we never minted', () => {
     enableDcc();
     allowLoopback();

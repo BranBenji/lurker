@@ -18,6 +18,7 @@ import {
   CAPABILITY_DCC_CHAT,
   CAPABILITY_DCC_RECEIVE,
   setUserCapability,
+  userHasCapability,
   userIdsWithCapability,
 } from '../db/userCapabilities.js';
 import { dccAllowPrivateHosts, dccMasterEnabled, dccMaxFileBytes } from '../services/dccConfig.js';
@@ -76,8 +77,8 @@ router.put('/users/:id', (req: Request, res: Response) => {
   if (typeof chat === 'boolean') setUserCapability(id, CAPABILITY_DCC_CHAT, chat);
   if (typeof receive === 'boolean') setUserCapability(id, CAPABILITY_DCC_RECEIVE, receive);
   res.json({
-    chat: userIdsWithCapability(CAPABILITY_DCC_CHAT).has(id),
-    receive: userIdsWithCapability(CAPABILITY_DCC_RECEIVE).has(id),
+    chat: userHasCapability(id, CAPABILITY_DCC_CHAT),
+    receive: userHasCapability(id, CAPABILITY_DCC_RECEIVE),
   });
 });
 

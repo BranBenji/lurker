@@ -104,6 +104,9 @@ describe('dccMaxFileBytes', () => {
   it('keeps a fractional cap rather than flooring it to no cap', () => {
     process.env.LURKER_DCC_MAX_FILE_MB = '0.5';
     expect(dccMaxFileBytes()).toBe(512 * 1024);
+    // Under a byte is still a cap, never "no cap".
+    process.env.LURKER_DCC_MAX_FILE_MB = '1e-7';
+    expect(dccMaxFileBytes()).toBe(1);
   });
 });
 

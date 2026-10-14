@@ -18,7 +18,7 @@ export interface Features {
   linkPreviews: boolean;
   /** Whether this instance runs the IRC bouncer (Settings' Bouncer pane). */
   bouncer: boolean;
-  /** Whether this instance runs DCC at all (Settings' Transfers pane). */
+  /** Whether this instance runs DCC at all (Settings' DCC pane). */
   dcc: boolean;
 }
 

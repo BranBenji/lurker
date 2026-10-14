@@ -67,7 +67,7 @@
                 :checked="u[part]"
                 :disabled="busy || (!info.enabled && !u[part])"
                 :aria-label="`${part} for ${u.username}`"
-                @change="toggle(u, part)"
+                @change="toggle(u, part, $event)"
               />
             </td>
           </tr>
@@ -117,7 +117,8 @@ onMounted(async () => {
   }
 });
 
-async function toggle(u: DccUser, part: Part) {
+async function toggle(u: DccUser, part: Part, event: Event) {
+  const box = event.target as HTMLInputElement;
   error.value = '';
   busy.value = true;
   try {
@@ -128,6 +129,8 @@ async function toggle(u: DccUser, part: Part) {
     u.chat = next.chat;
     u.receive = next.receive;
   } catch (e: any) {
+    // The box flipped itself on click; nothing changed, so flip it back.
+    box.checked = u[part];
     error.value = e?.message || 'failed to change DCC';
   } finally {
     busy.value = false;

@@ -386,8 +386,8 @@ function migrate() {
 
     -- Per-user feature capabilities, admin-granted. A generic (user_id,
     -- capability) store rather than a one-off column so the forthcoming per-user
-    -- admin control panel can manage every gated feature uniformly; 'dcc' (the
-    -- DCC download manager, #270) is the first entry. Absence of a row means the
+    -- admin control panel can manage every gated feature uniformly; DCC's
+    -- 'dcc.chat' and 'dcc.receive' (#1080) are the entries so far. Absence of a row means the
     -- capability is OFF — capabilities are opt-in, granted by an operator.
     CREATE TABLE IF NOT EXISTS user_capabilities (
       user_id INTEGER NOT NULL,

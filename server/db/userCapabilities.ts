@@ -3,9 +3,9 @@
 
 // Per-user feature capabilities — admin-granted gates for features that are off
 // by default. Stored in the generic `user_capabilities` table (not one column
-// per feature) so the forthcoming per-user admin control panel can manage every
-// gate uniformly. `dcc` (the DCC download manager, #270) is the first adopter;
-// add new capability keys here as features take up the pattern.
+// per feature), so a feature can take up the pattern without a migration. DCC
+// is the one user so far, granted in parts (#1080); its grants are managed on
+// the Admin → DCC tab. Add new capability keys here.
 
 import db from './index.js';
 

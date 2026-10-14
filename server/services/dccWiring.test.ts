@@ -361,6 +361,27 @@ describe('arm-on-trigger + auto-accept', () => {
     expect(row.error).toMatch(/no advertised/i);
   });
 
+  // An XDCC request armed before the receive grant was revoked is something
+  // the user already started (#1080): the bot's SEND still lands on the armed
+  // row instead of reading as an unsolicited CTCP and stranding it.
+  it('still matches an armed request whose receive grant was revoked meanwhile', () => {
+    enableDcc();
+    const { conn, ctcpLines } = harness();
+    conn.client.say = vi.fn<(target: string, text: string) => void>();
+    conn.say('bot', 'xdcc send #6');
+    setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
+    conn.client.emit('ctcp request', {
+      nick: 'bot',
+      type: 'DCC',
+      message: 'DCC SEND f.bin 16843009 8080 0', // 1.1.1.1 (public), size 0
+    });
+    // Reached the armed path: refused there for its size, not left 'requested'.
+    const row = listDccTransfers(1)[0];
+    expect(row.state).toBe('failed');
+    expect(row.error).toMatch(/no advertised/i);
+    expect(ctcpLines().at(-1)?.text).not.toBe('bot requested CTCP DCC (no reply)');
+  });
+
   it('does not arm an xdcc trigger mentioned mid-sentence', () => {
     enableDcc();
     const { conn } = harness();

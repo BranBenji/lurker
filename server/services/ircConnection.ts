@@ -137,7 +137,7 @@ import {
   parseDccChatLine,
   PASSIVE_DCC_FAKE_HOST,
 } from './dcc.js';
-import type { DccAccept, DccChat as DccChatOffer, DccSend } from './dcc.js';
+import type { DccAccept, DccChat as DccChatOffer, DccParse, DccSend } from './dcc.js';
 import {
   dccActiveListenAvailable,
   dccAllowPrivateHosts,
@@ -6372,7 +6372,8 @@ export class IrcConnection {
     // own client configured. Sharing the bucket meant a fourth `/dcc chat` in a
     // minute vanished with no trace on either side, which is exactly how it
     // presented in QA.
-    if (type === 'DCC' && this.dccRequestAllowed(nick, args)) {
+    const dcc = type === 'DCC' ? parseDcc(args) : null;
+    if (dcc && this.dccRequestAllowed(nick, dcc)) {
       // Say why, rather than letting it fall through to the generic
       // "requested CTCP DCC (no reply)". Only reached when DCC is otherwise
       // enabled for this user, so nobody who never had DCC sees a new line.
@@ -6394,7 +6395,7 @@ export class IrcConnection {
       // DCC handling (parse + DB writes + socket setup) must never throw out of
       // the CTCP event path and disrupt the connection.
       try {
-        this.handleInboundDccRequest(nick, args, event);
+        this.handleInboundDccRequest(nick, dcc, event);
       } catch (e) {
         // ⚠ Swallowed so a malformed offer can't kill the connection, but say
         // SOMETHING — a bare catch here made a bug in the DCC path look
@@ -6492,10 +6493,9 @@ export class IrcConnection {
   // CTCP per-peer limiter.
   private handleInboundDccRequest(
     nick: string,
-    args: string,
+    parsed: DccParse,
     event: Record<string, unknown>,
   ): void {
-    const parsed = parseDcc(args);
     if (parsed.kind === 'accept') {
       this.handleDccAccept(nick, parsed);
       return;
@@ -6666,22 +6666,24 @@ export class IrcConnection {
     this.client.ctcpRequest(nick, 'DCC', 'RESUME', fn, String(offer.port), String(startOffset));
   }
 
-  // The sender accepted our resume: start receiving (appending) from our partial.
   // Whether an inbound DCC request reaches the DCC handlers, by the grant for
   // what it is (#1080): a chat offer needs the chat grant, a file offer the
   // receive grant. Refused, it falls through to the generic "requested CTCP
-  // DCC" line, as it did before the account had DCC at all. A DCC ACCEPT
-  // answering a resume we asked for is part of a transfer already running, so
-  // it gets past a receive grant revoked since: revoking stops what starts
-  // next, and what is running finishes.
-  private dccRequestAllowed(nick: string, args: string): boolean {
+  // DCC" line, as it did before the account had DCC at all. A reply to
+  // something we started gets past a grant revoked since — the bot's SEND for
+  // an XDCC request we armed, its ACCEPT for a resume we asked for, a peer's
+  // answer to our passive chat offer — because revoking stops what starts
+  // next, and what we already started finishes.
+  private dccRequestAllowed(nick: string, parsed: DccParse): boolean {
     const userId = this.network.user_id;
-    const parsed = parseDcc(args);
     switch (parsed.kind) {
       case 'chat':
-        return dccChatEnabledForUser(userId);
+        return dccChatEnabledForUser(userId) || this.answersOurPassiveChat(nick, parsed);
       case 'send':
-        return dccReceiveEnabledForUser(userId);
+        return (
+          dccReceiveEnabledForUser(userId) ||
+          findArmedRequest(userId, this.network.id, nick) !== undefined
+        );
       case 'accept':
         return (
           dccReceiveEnabledForUser(userId) ||
@@ -6694,6 +6696,7 @@ export class IrcConnection {
     }
   }
 
+  // The sender accepted our resume: start receiving (appending) from our partial.
   private handleDccAccept(nick: string, accept: DccAccept): void {
     const key = this.dccResumeKey(nick, accept.filename);
     const pending = this.dccPendingResume.get(key);
@@ -7043,9 +7046,11 @@ export class IrcConnection {
     return false;
   }
 
-  private dccChatAllowed(nick: string, verb: string): boolean {
+  // `started`: the peer is answering an offer we made, which a grant revoked
+  // since doesn't stop (see dccRequestAllowed).
+  private dccChatAllowed(nick: string, verb: string, started = false): boolean {
     if (this.disposed) return false;
-    if (!dccChatEnabledForUser(this.network.user_id)) return false;
+    if (!started && !dccChatEnabledForUser(this.network.user_id)) return false;
     if (this.dccBlockedByProxy()) {
       this.dccChatNotice(nick, `Can't ${verb} — DCC does not go through this network's proxy.`);
       return false;
@@ -7197,17 +7202,26 @@ export class IrcConnection {
    * Port 0 with no token never reaches this method: parseDcc refuses it, because
    * it is the one shape that turns into a dial to port 0.
    */
+  /** Whether `offer` is `nick` answering a passive chat offer we sent: an
+   *  active reply carrying a token we minted for that same peer. */
+  private answersOurPassiveChat(nick: string, offer: DccChatOffer): boolean {
+    if (offer.passive || offer.token === null) return false;
+    const pending = this.pendingPassiveChats.get(offer.token);
+    return !!pending && pending.nick.toLowerCase() === nick.toLowerCase();
+  }
+
   private handleInboundDccChat(
     nick: string,
     offer: DccChatOffer,
     event: Record<string, unknown>,
   ): void {
-    if (!this.dccChatAllowed(nick, 'accept a DCC chat')) return;
+    const ours = this.answersOurPassiveChat(nick, offer);
+    if (!this.dccChatAllowed(nick, 'accept a DCC chat', ours)) return;
     // Our own passive offer being answered? That we DO proceed with — we
     // initiated it, and the token proves this is the reply to ours.
-    if (!offer.passive && offer.token !== null) {
+    if (ours && offer.token !== null) {
       const pending = this.pendingPassiveChats.get(offer.token);
-      if (pending && pending.nick.toLowerCase() === nick.toLowerCase()) {
+      if (pending) {
         clearTimeout(pending.timer);
         this.pendingPassiveChats.delete(offer.token);
         this.dialDccChat(nick, offer.host, offer.port);

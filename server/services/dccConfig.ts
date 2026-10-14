@@ -3,12 +3,11 @@
 
 // DCC enablement gate (#270). DCC is OFF by default and gated in two tiers:
 //   1. a cell-wide master switch, LURKER_DCC_ENABLED — the operator opt-in. It
-//      stays unset (off) on hosted lurker.chat cells, so the feature is dark
-//      there for now; a self-hoster sets it to turn DCC on for the instance.
-//   2. a per-user capability grant (CAPABILITY_DCC) — so even with the master
-//      switch on, an account only gets DCC if an admin granted it. This is the
-//      first consumer of the per-user capability store the admin control panel
-//      will manage.
+//      is always off in node edition, so the feature is dark on hosted cells; a
+//      self-hoster sets it to turn DCC on for the instance.
+//   2. per-user grants an admin gives in Admin → DCC (#1080), one per part:
+//      CAPABILITY_DCC_CHAT and CAPABILITY_DCC_RECEIVE. With the master switch
+//      on, an account can only use the parts it was granted.
 // BOTH must be true for a user to use DCC. The master-switch parser is pure (and
 // unit-tested); the per-user gate reads the DB.
 
@@ -57,7 +56,8 @@ export function dccReceiveEnabledForUser(userId: number): boolean {
 export function dccMaxFileBytes(): number {
   const mb = Number((process.env.LURKER_DCC_MAX_FILE_MB ?? '').trim());
   // Floor the BYTES, not the MB: 0.5 floored first is 0, which reads as no cap.
-  return Number.isFinite(mb) && mb > 0 ? Math.floor(mb * 1024 * 1024) : 0;
+  // A positive value is always a cap, however small: 0 means none.
+  return Number.isFinite(mb) && mb > 0 ? Math.max(1, Math.floor(mb * 1024 * 1024)) : 0;
 }
 
 /** Whether to allow dialing private/loopback/reserved DCC hosts
