@@ -28,10 +28,12 @@ import {
 import {
   insertDccTransfer,
   listDccTransfers,
+  markDccCompleted,
   markDccReceiving,
   updateDccTransferState,
 } from '../db/dccTransfers.js';
 import { crc32Hex, crc32Update } from './dcc.js';
+import { setDccStorageLimit } from '../db/dccStorageLimits.js';
 import { IrcConnection } from './ircConnection.js';
 
 beforeAll(() => {
@@ -49,6 +51,7 @@ afterEach(() => {
   delete process.env.LURKER_DCC_MAX_FILE_MB;
   setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
   db.prepare('DELETE FROM dcc_transfers').run();
+  setDccStorageLimit(1, null);
   activeSender?.close();
   activeSender = null;
   if (tmpDir) {
@@ -382,6 +385,110 @@ describe('arm-on-trigger + auto-accept', () => {
     expect(ctcpLines().at(-1)?.text).not.toBe('bot requested CTCP DCC (no reply)');
   });
 
+  // #1125: the admin's per-user limit, checked when a transfer is accepted.
+  describe('storage limit', () => {
+    const userDir = () => path.join(tmpDir!, 'dcc-wire-alice');
+    const offer = (conn: IrcConnection, port: number, size: number, name = 'big.bin') => {
+      conn.say('bot', 'xdcc send #9');
+      conn.client.emit('ctcp request', {
+        nick: 'bot',
+        type: 'DCC',
+        message: `DCC SEND ${name} 2130706433 ${port} ${size}`,
+      });
+    };
+    const setup = () => {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-dcc-limit-'));
+      process.env.LURKER_DCC_DIR = tmpDir;
+      process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1';
+      enableDcc();
+      fs.mkdirSync(userDir(), { recursive: true });
+      const { conn } = harness();
+      conn.client.say = vi.fn<(target: string, text: string) => void>();
+      return conn;
+    };
+
+    // A finished file the user still has counts what it received.
+    const received = (name: string, bytes: number) => {
+      const id = insertDccTransfer(1, {
+        network_id: 1,
+        peer_nick: 'other',
+        filename: name,
+        advertised_size: bytes,
+        state: 'pending_approval',
+      });
+      markDccReceiving(id, {
+        filename: name,
+        advertised_size: bytes,
+        destination_path: path.join(userDir(), name),
+        received_bytes: bytes,
+      });
+      markDccCompleted(id, bytes);
+      return id;
+    };
+
+    it('refuses a transfer that would take the account over, and says so live', () => {
+      const conn = setup();
+      const published: Array<Record<string, unknown>> = [];
+      conn.onEvent = ((e: Record<string, unknown>) => published.push(e)) as typeof conn.onEvent;
+      received('old.bin', 3000);
+      setDccStorageLimit(1, 6000);
+      offer(conn, 50612, 5000);
+      const row = listDccTransfers(1)[0];
+      expect(row.state).toBe('failed');
+      expect(row.error).toMatch(/over your DCC storage limit \(2\.9 KB of 5\.9 KB used\)/);
+      // An armed request has no HTTP reply to carry the row: the frame is it.
+      expect(published.at(-1)).toMatchObject({
+        type: 'dcc-transfer',
+        transfer: { id: row.id, state: 'failed' },
+      });
+    });
+
+    it('stops counting a file once it is deleted', () => {
+      const conn = setup();
+      const old = received('old.bin', 3000);
+      db.prepare(
+        "UPDATE dcc_transfers SET destination_path = NULL, file_deleted_at = 'x' WHERE id = ?",
+      ).run(old);
+      setDccStorageLimit(1, 6000);
+      offer(conn, 50612, 5000);
+      expect(listDccTransfers(1)[0].error ?? '').not.toMatch(/storage limit/);
+    });
+
+    // A transfer in flight will still add its remaining bytes.
+    it('counts what transfers in flight will still add', () => {
+      const conn = setup();
+      setDccStorageLimit(1, 6000);
+      const busy = insertDccTransfer(1, {
+        network_id: 1,
+        peer_nick: 'other',
+        filename: 'busy.bin',
+        advertised_size: 4000,
+        state: 'pending_approval',
+      });
+      markDccReceiving(busy, {
+        filename: 'busy.bin',
+        advertised_size: 4000,
+        destination_path: path.join(userDir(), 'busy.bin'),
+        received_bytes: 1000,
+      });
+      fs.writeFileSync(path.join(userDir(), 'busy.bin'), Buffer.alloc(1000));
+      // On disk 1000 + still to come 3000 + this 2500 = 6500 > 6000.
+      offer(conn, 50612, 2500);
+      expect(listDccTransfers(1)[0].error).toMatch(/over your DCC storage limit/);
+    });
+
+    it('lets a transfer that fits run to completion', async () => {
+      const conn = setup();
+      setDccStorageLimit(1, 50_000);
+      const payload = makePayload(40_000);
+      const sender = await startSender(payload);
+      activeSender = sender;
+      offer(conn, sender.port, payload.length, 'fits.bin');
+      await waitFor(() => listDccTransfers(1)[0]?.state === 'completed', 5000);
+      expect(listDccTransfers(1)[0].received_bytes).toBe(payload.length);
+    });
+  });
+
   it('does not arm an xdcc trigger mentioned mid-sentence', () => {
     enableDcc();
     const { conn } = harness();
@@ -452,6 +559,11 @@ describe('arm-on-trigger + auto-accept', () => {
     conn.client.say = vi.fn<(target: string, text: string) => void>();
     const resumeReq = vi.fn<(target: string, type: string, ...p: string[]) => void>();
     conn.client.ctcpRequest = resumeReq;
+    const published: Array<{
+      type?: string;
+      transfer?: { id: number; destination_path: unknown };
+    }> = [];
+    conn.onEvent = ((e: (typeof published)[number]) => published.push(e)) as typeof conn.onEvent;
 
     conn.say('bot', 'xdcc send #1');
     // Bot offers the full file; Lurker sees the partial and asks to resume.
@@ -468,6 +580,11 @@ describe('arm-on-trigger + auto-accept', () => {
       String(sender.port),
       String(have),
     );
+    // The resume took over the earlier row's file (#1125): that row let go of
+    // it, and every open view hears so.
+    expect(
+      published.some((e) => e.transfer?.id === priorId && e.transfer.destination_path === null),
+    ).toBe(true);
 
     // Bot accepts the resume → Lurker connects and appends.
     conn.client.emit('ctcp request', {

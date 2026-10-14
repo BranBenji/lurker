@@ -20,6 +20,7 @@ describe('parseDccCommand', () => {
     expect(parseDccCommand('reject 12')).toEqual({ kind: 'reject', id: 12 });
     expect(parseDccCommand('cancel 3')).toEqual({ kind: 'cancel', id: 3 });
     expect(parseDccCommand('download 4')).toEqual({ kind: 'download', id: 4 });
+    expect(parseDccCommand('delete 5')).toEqual({ kind: 'delete', id: 5 });
   });
 
   it('accepts subcommand aliases', () => {
@@ -31,6 +32,7 @@ describe('parseDccCommand', () => {
     expect(parseDccCommand('abort 1')).toEqual({ kind: 'cancel', id: 1 });
     expect(parseDccCommand('stop 1')).toEqual({ kind: 'cancel', id: 1 });
     expect(parseDccCommand('save 1')).toEqual({ kind: 'download', id: 1 });
+    expect(parseDccCommand('rm 1')).toEqual({ kind: 'delete', id: 1 });
   });
 
   it('is case-insensitive on the verb', () => {
@@ -45,6 +47,7 @@ describe('parseDccCommand', () => {
     expect(parseDccCommand('accept')).toMatchObject({ kind: 'error' });
     expect(parseDccCommand('cancel')).toMatchObject({ kind: 'error' });
     expect(parseDccCommand('download')).toMatchObject({ kind: 'error' });
+    expect(parseDccCommand('delete')).toMatchObject({ kind: 'error' });
   });
 
   it('errors on a non-numeric or non-positive id', () => {

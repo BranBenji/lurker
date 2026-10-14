@@ -23,6 +23,12 @@ import {
 } from '../db/userCapabilities.js';
 import { dccAllowPrivateHosts, dccMasterEnabled, dccMaxFileBytes } from '../services/dccConfig.js';
 import { DCC_FREE_DISK_FLOOR_BYTES, dccRoot } from '../services/dccPaths.js';
+import { listDccStoredBytes } from '../db/dccTransfers.js';
+import {
+  getDccStorageLimit,
+  listDccStorageLimits,
+  setDccStorageLimit,
+} from '../db/dccStorageLimits.js';
 import { isNodeMode } from '../utils/edition.js';
 
 const router = Router();
@@ -39,6 +45,8 @@ router.use((_req: Request, res: Response, next) => {
 router.get('/', (_req: Request, res: Response) => {
   const chat = userIdsWithCapability(CAPABILITY_DCC_CHAT);
   const receive = userIdsWithCapability(CAPABILITY_DCC_RECEIVE);
+  const limits = listDccStorageLimits();
+  const stored = listDccStoredBytes();
   res.json({
     // LURKER_DCC_ENABLED. Off, no grant does anything — but grants still list,
     // so an admin can clear them before turning DCC back on.
@@ -53,21 +61,42 @@ router.get('/', (_req: Request, res: Response) => {
       username: u.username,
       chat: chat.has(u.id),
       receive: receive.has(u.id),
+      // Null for no limit (#1125).
+      limitBytes: limits.get(u.id) ?? null,
+      // What the account's received files take on disk, partials included.
+      usedBytes: stored.get(u.id) ?? 0,
     })),
   });
 });
 
-/** PUT /api/admin/dcc/users/:id — set one or both parts: `{chat?, receive?}`. */
+/** PUT /api/admin/dcc/users/:id — set any of `{chat?, receive?, limitBytes?}`;
+ *  `limitBytes` is a positive whole number of bytes, or null for no limit. */
 router.put('/users/:id', (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) {
     res.status(400).json({ error: 'invalid id' });
     return;
   }
-  const { chat, receive } = (req.body ?? {}) as { chat?: unknown; receive?: unknown };
+  const { chat, receive, limitBytes } = (req.body ?? {}) as {
+    chat?: unknown;
+    receive?: unknown;
+    limitBytes?: unknown;
+  };
   const valid = (v: unknown) => v === undefined || typeof v === 'boolean';
-  if (!valid(chat) || !valid(receive) || (chat === undefined && receive === undefined)) {
-    res.status(400).json({ error: 'send chat and/or receive, each true or false' });
+  const validLimit =
+    limitBytes === undefined ||
+    limitBytes === null ||
+    (Number.isSafeInteger(limitBytes) && (limitBytes as number) > 0);
+  if (
+    !valid(chat) ||
+    !valid(receive) ||
+    !validLimit ||
+    (chat === undefined && receive === undefined && limitBytes === undefined)
+  ) {
+    res.status(400).json({
+      error:
+        'send chat and/or receive (true or false), and/or limitBytes (a positive number, or null)',
+    });
     return;
   }
   if (!findUserById(id)) {
@@ -76,9 +105,11 @@ router.put('/users/:id', (req: Request, res: Response) => {
   }
   if (typeof chat === 'boolean') setUserCapability(id, CAPABILITY_DCC_CHAT, chat);
   if (typeof receive === 'boolean') setUserCapability(id, CAPABILITY_DCC_RECEIVE, receive);
+  if (limitBytes !== undefined) setDccStorageLimit(id, limitBytes as number | null);
   res.json({
     chat: userHasCapability(id, CAPABILITY_DCC_CHAT),
     receive: userHasCapability(id, CAPABILITY_DCC_RECEIVE),
+    limitBytes: getDccStorageLimit(id),
   });
 });
 

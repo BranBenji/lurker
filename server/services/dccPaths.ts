@@ -105,19 +105,27 @@ export function sanitizeDccFilename(raw: string): string {
  * download never overwrites. Throws if no root is configured or — defense in
  * depth — the resolved path would somehow escape the user directory.
  */
-export function resolveDccDestination(username: string, rawFilename: string): string {
+export function resolveDccDestination(
+  username: string,
+  rawFilename: string,
+  // A path a transfer row already owns, whether or not its file exists yet: two
+  // offers of one name accepted before either writes a byte would otherwise
+  // both get the same path (#1125).
+  claimed: (p: string) => boolean = () => false,
+): string {
   const userDir = dccUserDir(username);
   if (!userDir) throw new Error('DCC download directory is not configured (set LURKER_DCC_DIR)');
   fs.mkdirSync(userDir, { recursive: true });
 
+  const taken = (p: string) => fs.existsSync(p) || claimed(p);
   const safeName = sanitizeDccFilename(rawFilename);
   let candidate = path.join(userDir, safeName);
-  if (fs.existsSync(candidate)) {
+  if (taken(candidate)) {
     let n = 1;
     do {
       candidate = path.join(userDir, withSuffix(safeName, ` (${n})`));
       n += 1;
-    } while (fs.existsSync(candidate));
+    } while (taken(candidate));
   }
   // Checked on the name we actually return, de-collided or not.
   const rel = path.relative(userDir, candidate);
@@ -129,8 +137,10 @@ export function resolveDccDestination(username: string, rawFilename: string): st
   return candidate;
 }
 
-/** Free space a transfer must leave on the download dir's disk. */
-export const DCC_FREE_DISK_FLOOR_BYTES = 64 * 1024 * 1024;
+/** Free space a transfer must leave on the download dir's disk. The DCC dir
+ *  usually shares a disk with the database, so this is what keeps a full
+ *  download from leaving SQLite nowhere to write (#1125). */
+export const DCC_FREE_DISK_FLOOR_BYTES = 1024 * 1024 * 1024;
 
 /**
  * Whether `dir`'s filesystem has room for `bytes` plus a safety margin. Used to
@@ -148,5 +158,16 @@ export function hasFreeSpaceFor(
     return st.bavail * st.bsize >= bytes + marginBytes;
   } catch {
     return true;
+  }
+}
+
+/** The size of the file at `p`, or null when there is none (#1125). Symlinks
+ *  count as themselves. */
+export function dccFileBytes(p: string | null): number | null {
+  if (!p) return null;
+  try {
+    return fs.lstatSync(p).size;
+  } catch {
+    return null;
   }
 }

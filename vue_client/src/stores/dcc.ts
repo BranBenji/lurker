@@ -40,7 +40,8 @@ export type DccCrcStatus = 'ok' | 'mismatch' | 'absent' | 'unverified';
 // extra columns (peer_host/port, token, trigger_text, …) are ignored here.
 export interface DccTransfer {
   id: number;
-  network_id: number;
+  /** Null once the network was deleted: the row and its file stay (#1125). */
+  network_id: number | null;
   peer_nick: string;
   filename: string;
   advertised_size: number;
@@ -51,6 +52,11 @@ export interface DccTransfer {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  /** When the user deleted the received file from the server (#1125). */
+  file_deleted_at?: string | null;
+  /** Non-null while this row owns a file on the server. Used only as that
+   *  signal: the path itself is never shown. */
+  destination_path?: string | null;
 }
 
 // States that can still change — a transfer in one of these is "active" (drives
@@ -90,6 +96,14 @@ export function isCancellable(t: DccTransfer): boolean {
 export function percentReceived(t: DccTransfer): number {
   if (!t.advertised_size || t.advertised_size <= 0) return 0;
   return Math.max(0, Math.min(100, Math.round((t.received_bytes / t.advertised_size) * 100)));
+}
+
+// Whether a finished transfer left a file on the server to download or delete
+// (#1125): a completed one, or a partial from one that failed or was cancelled.
+// A row stops owning its file when the user deletes it, or when a newer
+// transfer takes over the path (a resume continuing its partial).
+export function hasFile(t: DccTransfer): boolean {
+  return !ACTIVE_STATES.has(t.state) && !!t.destination_path;
 }
 
 // Where a completed transfer's file downloads from (#1079). The modal's link
@@ -198,16 +212,32 @@ export const useDccStore = defineStore('dcc', {
     // returned authoritative row, and surface a per-row error on failure (a 409
     // when accepting on a disconnected network, a 404 for an unknown id).
     async act(id: number, action: DccAction): Promise<DccTransfer> {
+      return this.changeRow(id, `/api/dcc/${id}/${action}`, 'POST', `${action} failed`);
+    },
+
+    // Remove a finished transfer's file from the server (#1125). The row stays,
+    // marked deleted.
+    async deleteFile(id: number): Promise<DccTransfer> {
+      return this.changeRow(id, dccFileUrl(id), 'DELETE', 'delete failed');
+    },
+
+    // A request that answers with the transfer's authoritative row: the row's
+    // buttons are disabled while it runs, the row is applied, and a refusal
+    // shows on the row.
+    async changeRow(
+      id: number,
+      url: string,
+      method: 'POST' | 'DELETE',
+      fallback: string,
+    ): Promise<DccTransfer> {
       this.busy[id] = true;
       delete this.actionError[id];
       try {
-        const { transfer } = await api<{ transfer: DccTransfer }>(`/api/dcc/${id}/${action}`, {
-          method: 'POST',
-        });
+        const { transfer } = await api<{ transfer: DccTransfer }>(url, { method });
         if (transfer) this.applyTransfer(transfer);
         return transfer;
       } catch (e: any) {
-        this.actionError[id] = e?.message || `${action} failed`;
+        this.actionError[id] = e?.message || fallback;
         throw e;
       } finally {
         delete this.busy[id];

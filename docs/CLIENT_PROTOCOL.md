@@ -1481,9 +1481,17 @@ and stopping (`POST /:id/reject|cancel`, `POST /chat/close`) need no grant,
 because revoking one stops what starts next and what an account received stays
 its own.
 
-`GET /config` answers either way: `{chat, receive}`, plus `maxFileBytes` and
-`allowPrivateHosts` when `receive` is true (`maxFileBytes` 0 for no cap). A client shows
+`GET /config` answers either way: `{chat, receive}`, plus `maxFileBytes`,
+`allowPrivateHosts`, `usedBytes` and `limitBytes` when `receive` is true
+(`maxFileBytes` 0 for no cap; `limitBytes` null for no storage limit). A transfer
+that would take the account over its limit fails at accept, with the reason in
+the row's `error`. A client shows
 chat actions only when `chat` is true, and file actions only when `receive` is.
+
+A transfer row's `network_id` is null once its network was deleted: the row,
+and any file it owns, stay the user's. A row owns a file while its
+`destination_path` is non-null (never show the path itself); a resume moves the
+file to the newer row, and a delete clears it.
 
 `GET /?limit` list · `POST /:id/accept|reject|cancel`. Live updates via
 `dcc-transfer` frames; a transfer's bytes move over IRC, not HTTP.
@@ -1491,6 +1499,11 @@ chat actions only when `chat` is true, and file actions only when `receive` is.
 `GET /:id/file` downloads a `completed` transfer's file (attachment,
 `application/octet-stream`, HTTP Range). 409 while the transfer is not
 `completed`; 410 when the row is but the file is gone from the server.
+
+`DELETE /:id/file` removes a finished transfer's file (a completed file, or a
+failed or cancelled one's partial) from the server and returns `{transfer}`. The
+row stays, with `file_deleted_at` set. 409 while the transfer is still active
+(cancel it first); 404 when there is no file. Needs no grant.
 
 `POST /chat` (`{networkId, nick, passive?}`) opens a DCC CHAT; `POST /chat/close`
 (`{networkId, nick}`) ends one. Both return as soon as the offer is away — a DCC

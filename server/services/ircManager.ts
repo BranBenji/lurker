@@ -23,7 +23,14 @@ import {
   listAutojoinChannels,
 } from '../db/buffers.js';
 import { hasMessageForTarget, replySendMsgid } from '../db/messages.js';
-import { DCC_ACTIVE_STATES, getDccTransfer, updateDccTransferState } from '../db/dccTransfers.js';
+import {
+  DCC_ACTIVE_STATES,
+  getDccTransfer,
+  markDccCancelled,
+  updateDccTransferState,
+  type DccTransferRow,
+} from '../db/dccTransfers.js';
+import { dccFileBytes } from './dccPaths.js';
 import { findUserById } from '../db/users.js';
 import { isNetworkHostAllowed } from './networkPolicy.js';
 import { effectiveSetting } from './settingsService.js';
@@ -728,7 +735,7 @@ class IrcManager extends EventEmitter {
     // acceptPendingDcc, so reject it here and let the route surface a 409 rather
     // than a misleading 200 that looks successful to a stale client.
     if (row.state !== 'pending_approval') return 'not-pending';
-    const conn = this.getConnection(userId, row.network_id);
+    const conn = this.dccConnection(userId, row);
     if (!conn) return 'not-connected';
     conn.acceptPendingDcc(row);
     return 'ok';
@@ -737,7 +744,7 @@ class IrcManager extends EventEmitter {
   rejectDccTransfer(userId: number, transferId: number): boolean {
     const row = getDccTransfer(userId, transferId);
     if (!row) return false;
-    const conn = this.getConnection(userId, row.network_id);
+    const conn = this.dccConnection(userId, row);
     // The connected path applies its own state guard; the disconnected DB-only
     // fallback must mirror it so a late reject can't clobber a terminal row.
     if (conn) conn.rejectDcc(transferId);
@@ -749,10 +756,18 @@ class IrcManager extends EventEmitter {
   cancelDccTransfer(userId: number, transferId: number): boolean {
     const row = getDccTransfer(userId, transferId);
     if (!row) return false;
-    const conn = this.getConnection(userId, row.network_id);
+    const conn = this.dccConnection(userId, row);
     if (conn) conn.cancelDcc(transferId);
-    else if (DCC_ACTIVE_STATES.has(row.state)) updateDccTransferState(transferId, 'cancelled');
+    // No connection, so no receiver: the row's byte count is whatever was last
+    // checkpointed, and the file on disk is the truth (#1125).
+    else if (DCC_ACTIVE_STATES.has(row.state))
+      markDccCancelled(transferId, dccFileBytes(row.destination_path));
     return true;
+  }
+
+  // The connection a transfer rides, if its network still exists and is mapped.
+  private dccConnection(userId: number, row: DccTransferRow): IrcConnection | null {
+    return row.network_id === null ? null : this.getConnection(userId, row.network_id);
   }
 
   // Whatever can reach the DCC chat with `peer` on this network.

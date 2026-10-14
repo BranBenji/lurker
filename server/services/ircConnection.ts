@@ -146,7 +146,8 @@ import {
   dccExternalHost,
   dccMaxFileBytes,
 } from './dccConfig.js';
-import { hasFreeSpaceFor, resolveDccDestination } from './dccPaths.js';
+import { dccFileBytes, hasFreeSpaceFor, resolveDccDestination } from './dccPaths.js';
+import { getDccStorageLimit } from '../db/dccStorageLimits.js';
 import { DccChat } from './dccChat.js';
 import { openDccListener, type DccListenHandle } from './dccListener.js';
 import {
@@ -159,6 +160,9 @@ import { DccReceiver } from './dccReceiver.js';
 import {
   type DccTransferRow,
   DCC_ACTIVE_STATES,
+  markDccCancelled,
+  dccPathClaimed,
+  dccUsageBytes,
   findArmedRequest,
   findResumableTransfer,
   getDccTransfer,
@@ -6538,6 +6542,7 @@ export class IrcConnection {
   private acceptDccOffer(transferId: number, nick: string, offer: DccSend): void {
     if (offer.passive) {
       updateDccTransferState(transferId, 'failed', 'passive DCC not yet supported');
+      this.publishDcc(transferId);
       this.surfaceCtcp(nick, `DCC: passive transfer from ${nick} not yet supported`);
       return;
     }
@@ -6546,6 +6551,7 @@ export class IrcConnection {
     // opt back in for a LAN bot via LURKER_DCC_ALLOW_PRIVATE_HOSTS).
     if (!dccAllowPrivateHosts() && isBlockedDccHost(offer.host)) {
       updateDccTransferState(transferId, 'failed', `blocked address ${offer.host}`);
+      this.publishDcc(transferId);
       this.surfaceCtcp(
         nick,
         `DCC: refusing "${offer.filename}" — sender address ${offer.host} is private/reserved`,
@@ -6556,12 +6562,14 @@ export class IrcConnection {
     // honor an operator per-file cap.
     if (offer.size <= 0) {
       updateDccTransferState(transferId, 'failed', 'offer has no advertised size');
+      this.publishDcc(transferId);
       this.surfaceCtcp(nick, `DCC: refusing "${offer.filename}" — no advertised file size`);
       return;
     }
     const cap = dccMaxFileBytes();
     if (cap > 0 && offer.size > cap) {
       updateDccTransferState(transferId, 'failed', `exceeds ${formatBytes(cap)} limit`);
+      this.publishDcc(transferId);
       this.surfaceCtcp(
         nick,
         `DCC: refusing "${offer.filename}" (${formatBytes(offer.size)}) — over the ${formatBytes(cap)} limit`,
@@ -6574,6 +6582,7 @@ export class IrcConnection {
     // could otherwise get this bot's bytes appended onto an unrelated prefix.
     let destPath: string;
     let startOffset = 0;
+    const username = findUserById(this.network.user_id)?.username || 'user';
     const prior = findResumableTransfer(this.network.user_id, this.network.id, offer.filename);
     const partialSize =
       prior?.destination_path && fs.existsSync(prior.destination_path)
@@ -6584,11 +6593,13 @@ export class IrcConnection {
       startOffset = partialSize;
     } else {
       try {
-        const username = findUserById(this.network.user_id)?.username || 'user';
-        destPath = resolveDccDestination(username, offer.filename);
+        destPath = resolveDccDestination(username, offer.filename, (p) =>
+          dccPathClaimed(this.network.user_id, p),
+        );
       } catch (e) {
         const reason = e instanceof Error ? e.message : String(e);
         updateDccTransferState(transferId, 'failed', reason);
+        this.publishDcc(transferId);
         this.surfaceCtcp(nick, `DCC: cannot start "${offer.filename}" — ${reason}`);
         return;
       }
@@ -6597,14 +6608,33 @@ export class IrcConnection {
     // the receiver also caps writes at the advertised size, so it's the ceiling.
     if (!hasFreeSpaceFor(path.dirname(destPath), offer.size - startOffset)) {
       updateDccTransferState(transferId, 'failed', 'insufficient disk space');
+      this.publishDcc(transferId);
       this.surfaceCtcp(
         nick,
         `DCC: refusing "${offer.filename}" (${formatBytes(offer.size)}) — not enough free disk space`,
       );
       return;
     }
+    // The admin's per-user limit (#1125): what the user's other transfers have
+    // on disk or will still write, plus this whole file. A resume's earlier row
+    // is left out, because its partial is part of this file.
+    const limit = getDccStorageLimit(this.network.user_id);
+    if (limit !== null) {
+      const exclude = startOffset > 0 && prior ? [transferId, prior.id] : [transferId];
+      const used = dccUsageBytes(this.network.user_id, exclude).committed;
+      if (used + offer.size > limit) {
+        const numbers = `${formatBytes(used)} of ${formatBytes(limit)} used`;
+        updateDccTransferState(transferId, 'failed', `over your DCC storage limit (${numbers})`);
+        this.publishDcc(transferId);
+        this.surfaceCtcp(
+          nick,
+          `DCC: refusing "${offer.filename}" (${formatBytes(offer.size)}) — over your storage limit (${numbers})`,
+        );
+        return;
+      }
+    }
     const expectedCrc = parseCrcFromFilename(offer.filename);
-    markDccReceiving(transferId, {
+    const released = markDccReceiving(transferId, {
       filename: offer.filename,
       advertised_size: offer.size,
       destination_path: destPath,
@@ -6614,6 +6644,9 @@ export class IrcConnection {
       received_bytes: startOffset,
     });
     this.publishDcc(transferId);
+    // A resume took over the earlier row's file: that row loses Download and
+    // Delete in every open view, not just after a reload.
+    for (const id of released) this.publishDcc(id);
     if (startOffset > 0) {
       // A partial exists — ask the bot to resume from there and wait for its
       // DCC ACCEPT before connecting (handleDccAccept starts the receiver).
@@ -6798,7 +6831,8 @@ export class IrcConnection {
         // A user-initiated cancel surfaces as a distinct 'cancelled' state, not a
         // failure (cancel() settles with this exact message).
         if (err.message === 'cancelled') {
-          updateDccTransferState(transferId, 'cancelled');
+          // The receiver's own count, not the last checkpoint (#1125).
+          markDccCancelled(transferId, received);
           this.surfaceCtcp(nick, `DCC: cancelled "${offer.filename}"`);
         } else {
           markDccFailed(transferId, received, err.message);
@@ -6895,7 +6929,9 @@ export class IrcConnection {
     this.clearPendingResume(transferId);
     const row = getDccTransfer(this.network.user_id, transferId);
     if (!row || !DCC_ACTIVE_STATES.has(row.state)) return; // don't clobber a terminal row
-    updateDccTransferState(transferId, 'cancelled');
+    // No receiver (a resume still waiting, or a row a restart left behind): the
+    // file on disk is the truth, not the last checkpoint (#1125).
+    markDccCancelled(transferId, dccFileBytes(row.destination_path));
     this.publishDcc(transferId);
   }
 

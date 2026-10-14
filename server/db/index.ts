@@ -387,14 +387,23 @@ function migrate() {
     -- Per-user feature capabilities, admin-granted. A generic (user_id,
     -- capability) store rather than a one-off column so the forthcoming per-user
     -- admin control panel can manage every gated feature uniformly; DCC's
-    -- 'dcc.chat' and 'dcc.receive' (#1080) are the entries so far. Absence of a row means the
-    -- capability is OFF — capabilities are opt-in, granted by an operator.
+    -- 'dcc.chat' and 'dcc.receive' (#1080) are the entries so far. Absence of
+    -- a row means the capability is OFF — capabilities are opt-in, granted by
+    -- an operator.
     CREATE TABLE IF NOT EXISTS user_capabilities (
       user_id INTEGER NOT NULL,
       capability TEXT NOT NULL,
       enabled INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       PRIMARY KEY (user_id, capability),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
+    -- How much a user's received DCC files may take on disk (#1125), set by an
+    -- admin. No row means no limit.
+    CREATE TABLE IF NOT EXISTS dcc_storage_limits (
+      user_id INTEGER PRIMARY KEY,
+      limit_bytes INTEGER NOT NULL,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
@@ -410,7 +419,9 @@ function migrate() {
     CREATE TABLE IF NOT EXISTS dcc_transfers (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id INTEGER NOT NULL,
-      network_id INTEGER NOT NULL,
+      -- NULL once the network is deleted: the files received on it stay the
+      -- user's, to download, delete and count against their limit (#1125).
+      network_id INTEGER,
       peer_nick TEXT NOT NULL COLLATE NOCASE,
       direction TEXT NOT NULL DEFAULT 'recv',
       filename TEXT NOT NULL,
@@ -431,7 +442,7 @@ function migrate() {
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       completed_at TEXT,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE SET NULL
     );
     CREATE INDEX IF NOT EXISTS idx_dcc_transfers_user
       ON dcc_transfers(user_id, id DESC);
@@ -1555,6 +1566,9 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_upload_history_favorites
 // after the bot offered). #270 phase 2.
 ensureColumn('dcc_transfers', 'peer_host', 'TEXT');
 ensureColumn('dcc_transfers', 'peer_port', 'INTEGER');
+// When the user deleted the received file from the server (#1125). The row
+// stays as history; its destination_path is cleared.
+ensureColumn('dcc_transfers', 'file_deleted_at', 'TEXT');
 
 // Consecutive push-delivery failures (#441): reset to 0 on any success, bumped
 // on a non-permanent error, and used to disable a chronically-failing endpoint
@@ -1570,7 +1584,7 @@ ensureColumn('push_subscriptions', 'transport', "TEXT NOT NULL DEFAULT 'webpush'
 // Schema versioning lets us retire one-shot recovery blocks once every
 // production DB has run through them. Bump SCHEMA_VERSION when adding a new
 // recovery block, and delete blocks for versions far enough in the past.
-const SCHEMA_VERSION = 22;
+const SCHEMA_VERSION = 23;
 const schemaVersionRow = db
   .prepare(`SELECT value FROM app_meta WHERE key = 'schema_version'`)
   .get() as { value: string } | undefined;
@@ -2729,6 +2743,87 @@ if (
   // .immediate(): see the v20 block above (lurker#603).
   const split = splitDcc.immediate();
   console.log(`[db] split ${split} DCC grant(s) into chat + receive (#1080)`);
+}
+
+// #1125: received DCC files are counted against a storage limit through the
+// rows that own them, so two things the old schema allowed have to go.
+//   1. Deleting a network cascaded its transfer rows away while the files
+//      stayed on disk: uncounted, and out of the user's reach. The rows now
+//      outlive the network (network_id SET NULL), which takes a table rebuild.
+//   2. A resume continued its earlier row's partial under a new row and both
+//      kept the path, so the file counted twice and deleting the older row
+//      removed the newer row's file. Each path goes to its newest row (the one
+//      that resumed it), as markDccReceiving now keeps it.
+if (schemaVersion < 23) {
+  const old = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'dcc_transfers'`)
+    .get() as { sql: string } | undefined;
+  if (old && /REFERENCES networks\s*\(id\)\s*ON DELETE CASCADE/i.test(old.sql)) {
+    const cols =
+      'id, user_id, network_id, peer_nick, direction, filename, advertised_size, ' +
+      'received_bytes, destination_path, state, passive, token, peer_host, peer_port, ' +
+      'trigger_text, crc_expected, crc_actual, crc_status, error, created_at, updated_at, ' +
+      'completed_at, file_deleted_at';
+    const rebuild = db.transaction(() => {
+      db.exec(`
+        CREATE TABLE dcc_transfers_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          network_id INTEGER,
+          peer_nick TEXT NOT NULL COLLATE NOCASE,
+          direction TEXT NOT NULL DEFAULT 'recv',
+          filename TEXT NOT NULL,
+          advertised_size INTEGER NOT NULL,
+          received_bytes INTEGER NOT NULL DEFAULT 0,
+          destination_path TEXT,
+          state TEXT NOT NULL,
+          passive INTEGER NOT NULL DEFAULT 0,
+          token INTEGER,
+          peer_host TEXT,
+          peer_port INTEGER,
+          trigger_text TEXT,
+          crc_expected TEXT,
+          crc_actual TEXT,
+          crc_status TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          completed_at TEXT,
+          file_deleted_at TEXT,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE SET NULL
+        );
+        INSERT INTO dcc_transfers_new (${cols}) SELECT ${cols} FROM dcc_transfers;
+        DROP TABLE dcc_transfers;
+        ALTER TABLE dcc_transfers_new RENAME TO dcc_transfers;
+        CREATE INDEX IF NOT EXISTS idx_dcc_transfers_user ON dcc_transfers(user_id, id DESC);
+      `);
+    });
+    const prevFk = db.pragma('foreign_keys', { simple: true });
+    db.pragma('foreign_keys = OFF');
+    try {
+      // .immediate(): see the v20 block above (lurker#603).
+      rebuild.immediate();
+    } finally {
+      db.pragma(`foreign_keys = ${prevFk ? 'ON' : 'OFF'}`);
+    }
+    console.log('[db] DCC transfers now outlive their network (#1125)');
+  }
+  const handedOver = db.transaction(
+    () =>
+      db
+        .prepare(
+          `UPDATE dcc_transfers SET destination_path = NULL
+           WHERE destination_path IS NOT NULL AND EXISTS (
+             SELECT 1 FROM dcc_transfers newer
+             WHERE newer.user_id = dcc_transfers.user_id
+               AND newer.destination_path = dcc_transfers.destination_path
+               AND newer.id > dcc_transfers.id)`,
+        )
+        .run().changes,
+  );
+  const released = handedOver.immediate();
+  if (released > 0) console.log(`[db] ${released} older DCC row(s) let go of a resumed file`);
 }
 
 // Issue #510: seed the uploader data model — instance x0/catbox rows +

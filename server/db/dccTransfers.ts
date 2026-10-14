@@ -48,7 +48,8 @@ export const DCC_ACTIVE_STATES: ReadonlySet<DccTransferState> = new Set([
 export interface DccTransferRow {
   id: number;
   user_id: number;
-  network_id: number;
+  /** Null once the network was deleted: the row, and its file, stay (#1125). */
+  network_id: number | null;
   peer_nick: string;
   direction: string;
   filename: string;
@@ -68,6 +69,8 @@ export interface DccTransferRow {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  /** When the user deleted the received file from the server (#1125). */
+  file_deleted_at: string | null;
 }
 
 export interface InsertDccTransferFields {
@@ -205,8 +208,23 @@ export interface DccReceivingFields {
 
 /** Promote a transfer to `receiving` once an offer is accepted, stamping the
  *  real filename/size/destination (and any filename CRC) from the offer, the
- *  starting byte count (non-zero on resume), and clearing any prior error. */
-export function markDccReceiving(id: number, f: DccReceivingFields): void {
+ *  starting byte count (non-zero on resume), and clearing any prior error.
+ *
+ *  A path belongs to one row (#1125). Taking one — a resume continuing an
+ *  earlier row's partial — releases it from every other row, so a file is
+ *  downloaded, deleted and counted against the storage limit through exactly
+ *  one row. Returns the ids of the rows that let go, for the caller to publish. */
+export function markDccReceiving(id: number, f: DccReceivingFields): number[] {
+  const others = db
+    .prepare(
+      `SELECT id FROM dcc_transfers
+       WHERE destination_path = ? AND id != ?
+         AND user_id = (SELECT user_id FROM dcc_transfers WHERE id = ?)`,
+    )
+    .all(f.destination_path, Number(id), Number(id)) as { id: number }[];
+  for (const o of others) {
+    db.prepare('UPDATE dcc_transfers SET destination_path = NULL WHERE id = ?').run(o.id);
+  }
   db.prepare(
     `UPDATE dcc_transfers
        SET state = 'receiving', filename = ?, advertised_size = ?, destination_path = ?,
@@ -223,6 +241,7 @@ export function markDccReceiving(id: number, f: DccReceivingFields): void {
     f.received_bytes ?? 0,
     Number(id),
   );
+  return others.map((o) => o.id);
 }
 
 /** Checkpoint progress. Called on a throttle by the caller (never per-chunk) so
@@ -263,4 +282,66 @@ export function markDccCompleted(
            completed_at = datetime('now'), updated_at = datetime('now')
      WHERE id = ?`,
   ).run(received, crcActual, crcStatus, Number(id));
+}
+
+/** What the user's received DCC files take (#1125), counted from the rows that
+ *  still own a file. `stored` is what is on disk now. `committed` adds what
+ *  transfers in flight will still write: one of those counts its full
+ *  advertised size. `exclude` leaves out rows the caller accounts for itself. */
+export function dccUsageBytes(
+  userId: number,
+  exclude: number[] = [],
+): { stored: number; committed: number } {
+  return db
+    .prepare(
+      `SELECT COALESCE(SUM(received_bytes), 0) AS stored,
+              COALESCE(SUM(CASE WHEN state IN ('connecting', 'receiving', 'stalled', 'verifying')
+                                THEN MAX(advertised_size, received_bytes)
+                                ELSE received_bytes END), 0) AS committed
+       FROM dcc_transfers
+       WHERE user_id = ? AND destination_path IS NOT NULL
+         AND id NOT IN (SELECT value FROM json_each(?))`,
+    )
+    .get(userId, JSON.stringify(exclude)) as { stored: number; committed: number };
+}
+
+/** What each user's received files take on disk — one query for the admin
+ *  roster. Users with none are absent. */
+export function listDccStoredBytes(): Map<number, number> {
+  const rows = db
+    .prepare(
+      `SELECT user_id, SUM(received_bytes) AS stored FROM dcc_transfers
+       WHERE destination_path IS NOT NULL GROUP BY user_id`,
+    )
+    .all() as { user_id: number; stored: number }[];
+  return new Map(rows.map((r) => [r.user_id, r.stored]));
+}
+
+/** Record that the user deleted the row's file: the row stays as history, with
+ *  no path to serve, resume or count. */
+export function markDccFileDeleted(id: number): void {
+  db.prepare(
+    `UPDATE dcc_transfers
+       SET destination_path = NULL, file_deleted_at = datetime('now'), updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(Number(id));
+}
+
+/** Cancel a transfer, recording the bytes it actually wrote (#1125). Progress
+ *  is checkpointed every few seconds, so the row's own count can be well short
+ *  of the partial on disk; null keeps the row's count. */
+export function markDccCancelled(id: number, received: number | null): void {
+  db.prepare(
+    `UPDATE dcc_transfers
+       SET state = 'cancelled', received_bytes = COALESCE(?, received_bytes),
+           updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(received, Number(id));
+}
+
+/** Whether one of the user's rows owns `destPath` (#1125). */
+export function dccPathClaimed(userId: number, destPath: string): boolean {
+  return !!db
+    .prepare('SELECT 1 FROM dcc_transfers WHERE user_id = ? AND destination_path = ? LIMIT 1')
+    .get(userId, destPath);
 }

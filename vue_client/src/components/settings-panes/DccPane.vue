@@ -31,6 +31,16 @@
             </tr>
             <template v-if="config.receive">
               <tr>
+                <th scope="row">Space used</th>
+                <td>
+                  {{ formatBytes(config.usedBytes ?? 0) }}
+                  <template v-if="config.limitBytes != null">
+                    of {{ formatBytes(config.limitBytes) }}
+                  </template>
+                  <span v-else class="muted">— no limit</span>
+                </td>
+              </tr>
+              <tr>
                 <th scope="row">Largest file</th>
                 <td v-if="config.maxFileBytes">
                   {{ formatBytes(config.maxFileBytes) }}
@@ -74,6 +84,8 @@ interface DccConfig {
   receive: boolean;
   maxFileBytes?: number;
   allowPrivateHosts?: boolean;
+  usedBytes?: number;
+  limitBytes?: number | null;
 }
 
 const auth = useAuthStore();
