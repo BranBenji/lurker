@@ -6,9 +6,10 @@
 <!--
   Transfers view for the DCC download manager (#270 phase 2). Lists the user's
   inbound DCC transfers and lets them act on each: accept / reject an unsolicited
-  offer, cancel one in flight, or download a completed file (#1079). The list seeds from GET /api/dcc on open and
-  then updates live as `dcc-transfer` frames arrive over the WS. The same
-  operations are available headless via /dcc — this is a view over that core.
+  offer, cancel one in flight, or download a completed file (#1079). The list
+  seeds from GET /api/dcc on open and then updates live as `dcc-transfer` frames
+  arrive over the WS. Everything but the download is also available headless via
+  /dcc — this is a view over that core.
 -->
 
 <template>
@@ -56,9 +57,16 @@
             >
               Cancel
             </button>
-            <!-- A plain link, like an export's: the session cookie authenticates
-                 it and the browser's own download manager handles Range resume. -->
-            <a v-else-if="t.state === 'completed'" class="link" :href="`/api/dcc/${t.id}/file`">
+            <!-- A link, like an export's: the session cookie authenticates it and
+                 the browser's download manager handles Range resume. `download`
+                 keeps an error reply (410 when the file is gone) in that manager
+                 instead of navigating the app away to a page of JSON. -->
+            <a
+              v-else-if="t.state === 'completed'"
+              class="link"
+              :href="`/api/dcc/${t.id}/file`"
+              download
+            >
               Download
             </a>
           </div>

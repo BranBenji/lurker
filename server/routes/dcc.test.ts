@@ -112,6 +112,14 @@ describe('GET /api/dcc/:id/file', () => {
     expect(res.body).toEqual(BYTES.subarray(4, 10));
   });
 
+  // A browser resuming a file it already has whole asks for bytes past the end.
+  it('answers an unsatisfiable Range with 416, not a server error', async () => {
+    const id = transfer(path.join(tmpRoot, 'range416'), 'whole.bin');
+    const res = await aliceAgent.get(`/api/dcc/${id}/file`).set('Range', 'bytes=100-200');
+    expect(res.status).toBe(416);
+    expect(res.headers['content-range']).toBe(`bytes */${BYTES.length}`);
+  });
+
   // The peer picks the name, so it picks the extension. Nothing it names may
   // render on our origin.
   it('never serves a peer-named type, whatever the extension', async () => {
@@ -120,6 +128,8 @@ describe('GET /api/dcc/:id/file', () => {
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toBe('application/octet-stream');
     expect(res.headers['content-disposition']).toMatch(/^attachment;/);
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['content-security-policy']).toBe("default-src 'none'; sandbox");
   });
 
   // send refuses a dot-component anywhere in a root-less path by default, and
@@ -153,6 +163,16 @@ describe('GET /api/dcc/:id/file', () => {
 
   it('is 410 when the completed file is gone from disk', async () => {
     const id = transfer(path.join(tmpRoot, 'gone'), 'deleted.mkv', { write: false });
+    const res = await aliceAgent.get(`/api/dcc/${id}/file`);
+    expect(res.status).toBe(410);
+  });
+
+  // The path is free once the file is removed, so a later offer of the same
+  // name can be writing there. That file is not this transfer's.
+  it('is 410 when the file at the path is not the one this transfer received', async () => {
+    const dir = path.join(tmpRoot, 'reused');
+    const id = transfer(dir, 'show.mkv');
+    fs.writeFileSync(path.join(dir, 'show.mkv'), BYTES.subarray(0, 5));
     const res = await aliceAgent.get(`/api/dcc/${id}/file`);
     expect(res.status).toBe(410);
   });

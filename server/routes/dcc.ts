@@ -3,8 +3,8 @@
 
 // DCC API (#270). Two surfaces: the download manager (list the user's transfers,
 // act on them — accept a pending offer, reject it, cancel an in-flight one — and
-// fetch a completed file over HTTP), and DCC CHAT (open or close a direct chat with a peer). The transfer list is
-// the Transfers view's initial load; live updates arrive over the WS as
+// fetch a completed file over HTTP), and DCC CHAT (open or close a direct chat
+// with a peer). The transfer list is the Transfers view's initial load; live updates arrive over the WS as
 // `dcc-transfer` frames, and a chat's own output arrives as ordinary messages in
 // its `=nick` buffer. All routes are user-scoped via requireAuth.
 
@@ -48,6 +48,10 @@ router.get('/', (req: Request, res: Response) => {
   res.json({ transfers: listDccTransfers(req.user!.id, { limit }) });
 });
 
+function gone(res: Response): void {
+  res.status(410).json({ error: 'file is no longer on the server' });
+}
+
 /**
  * GET /api/dcc/:id/file — the bytes of a completed transfer (#1079), so a
  * received file can leave the box without shell access. Ownership-checked by
@@ -67,13 +71,20 @@ router.get('/:id/file', (req: Request, res: Response, next: NextFunction) => {
     return;
   }
   const filePath = t.destination_path;
-  if (!filePath || !fs.statSync(filePath, { throwIfNoEntry: false })?.isFile()) {
-    // Row says completed but the file is gone (removed on the box by hand).
-    res.status(410).json({ error: 'file is no longer on the server' });
+  const stat = filePath ? fs.statSync(filePath, { throwIfNoEntry: false }) : undefined;
+  // Gone (removed on the box by hand), or no longer this transfer's file: once
+  // it is removed the path is free again, so a later offer of the same name can
+  // be writing there now.
+  if (!filePath || !stat?.isFile() || stat.size !== t.received_bytes) {
+    gone(res);
     return;
   }
   // The peer chose the filename and so its extension. Attachment plus
-  // octet-stream means nothing it names (.html, .svg) renders on our origin.
+  // octet-stream means nothing it names (.html, .svg) renders on our origin;
+  // nosniff and the sandbox hold that if the attachment is ever lost (the same
+  // pair localUploads sets on untrusted bytes).
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
   // dotfiles 'allow': with no root, send checks EVERY path component, so a
   // LURKER_DCC_DIR under a dot-directory (~/.lurker/dcc) would 404 every file.
   res.download(
@@ -81,12 +92,19 @@ router.get('/:id/file', (req: Request, res: Response, next: NextFunction) => {
     sanitizeDccFilename(t.filename),
     {
       dotfiles: 'allow',
-      cacheControl: false,
       headers: { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'private, no-store' },
     },
     (err) => {
-      // Client aborted or the file vanished mid-send; headers are likely out.
-      if (err && !res.headersSent) next(err);
+      // After the headers there is nothing to answer (usually a client abort).
+      if (!err || res.headersSent) return;
+      // send's own refusals are the client's: an unsatisfiable Range (resuming a
+      // file it already has whole) is a 416, Content-Range already set; a stale
+      // If-Match is a 412. Its 404 is the file going between the stat and the
+      // open.
+      const status = (err as { status?: number }).status;
+      if (status === 404) gone(res);
+      else if (status !== undefined && status >= 400 && status < 500) res.status(status).end();
+      else next(err);
     },
   );
 });
