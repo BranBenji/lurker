@@ -114,3 +114,31 @@ describe('dcc store files, while the list loads', () => {
     expect(h.api).not.toHaveBeenCalledWith('/api/dcc');
   });
 });
+
+describe('dcc store transfers, while the list loads', () => {
+  it('keeps a completion that landed while a refetch was on its way', async () => {
+    const dcc = useDccStore();
+    const t = (state: string) =>
+      ({
+        id: 4,
+        network_id: 1,
+        peer_nick: 'bot',
+        filename: 'a.mkv',
+        advertised_size: 10,
+        received_bytes: 10,
+        state,
+        crc_status: null,
+        error: null,
+        created_at: '',
+        updated_at: '',
+        completed_at: null,
+      }) as unknown as Parameters<typeof dcc.applyTransfer>[0];
+    let answer!: (v: unknown) => void;
+    h.api.mockReturnValueOnce(new Promise((r) => (answer = r)));
+    const loading = dcc.load();
+    dcc.applyTransfer(t('completed'));
+    answer({ transfers: [t('receiving')] });
+    await loading;
+    expect(dcc.transfers.map((x) => x.state)).toEqual(['completed']);
+  });
+});

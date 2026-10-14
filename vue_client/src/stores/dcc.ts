@@ -152,6 +152,10 @@ type DccAction = 'accept' | 'reject' | 'cancel';
 // Held module-local, not in state — same rationale as the toasts store's action
 // handlers and the drafts store's timers (Pinia state stays serializable).
 let inflightLoad: Promise<DccTransfer[]> | null = null;
+// Transfer frames that land while the list loads, applied again on top of it:
+// the response may predate them (a completion arriving as a reconnect refetch
+// is on its way would otherwise rewind the row).
+let transfersMissed: DccTransfer[] = [];
 let inflightFiles: Promise<DccFile[]> | null = null;
 // Frames that land while the files list loads: the response was read before
 // them, so they are applied again on top of it.
@@ -218,10 +222,14 @@ export const useDccStore = defineStore('dcc', {
       if (inflightLoad) return inflightLoad;
       this.loading = true;
       this.listError = '';
+      transfersMissed = [];
       inflightLoad = (async () => {
         try {
           const { transfers } = await api<{ transfers: DccTransfer[] }>('/api/dcc');
           this.transfers = (transfers || []).toSorted((a, b) => b.id - a.id);
+          const missed = transfersMissed;
+          transfersMissed = [];
+          for (const t of missed) this.applyTransfer(t);
           this.loaded = true;
           return this.transfers;
         } catch (e: any) {
@@ -247,6 +255,7 @@ export const useDccStore = defineStore('dcc', {
     // 'cancelled'/'completed' frame already landed). Drop such a regression.
     applyTransfer(t: DccTransfer): void {
       if (!t || typeof t.id !== 'number') return;
+      if (inflightLoad) transfersMissed.push(t);
       const idx = this.transfers.findIndex((x) => x.id === t.id);
       if (idx >= 0) {
         if (TERMINAL_STATES.has(this.transfers[idx].state) && !TERMINAL_STATES.has(t.state)) return;
