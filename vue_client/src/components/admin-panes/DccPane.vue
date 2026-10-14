@@ -80,7 +80,7 @@
             <template v-if="editing?.id === u.id">
               <!-- With DCC off for the instance, a part can be taken away but
                    not given. -->
-              <td>
+              <td class="ctl">
                 <input
                   v-model="editing.chat"
                   type="checkbox"
@@ -89,7 +89,7 @@
                   @keydown.enter.prevent="save(u)"
                 />
               </td>
-              <td>
+              <td class="ctl">
                 <input
                   v-model="editing.receive"
                   type="checkbox"
@@ -98,7 +98,7 @@
                   @keydown.enter.prevent="save(u)"
                 />
               </td>
-              <td>
+              <td class="ctl">
                 <input
                   v-model="editing.limit"
                   class="limit"
@@ -295,12 +295,17 @@ code {
 .users tbody th {
   color: var(--fg);
 }
-/* One height for a row of text and a row of controls, so going into edit
-   doesn't nudge the rows below. */
+/* Every row is as tall as a row of controls, so going into edit moves
+   nothing. An input is its line of text plus 4px padding and a 1px border
+   each side (main.css), so a text cell carries those 5px as padding instead,
+   and a cell holding a control (.ctl) gets the plain padding. */
 .users tbody th,
 .users tbody td {
-  height: 2.25em;
+  padding-block: calc(var(--space-3) + 5px);
   vertical-align: middle;
+}
+.users tbody td.ctl {
+  padding-block: var(--space-3);
 }
 /* Sized for both a column's text and its control, so a row going into edit
    moves nothing: a checkbox or "on", the limit field or "50.00 GB", and
