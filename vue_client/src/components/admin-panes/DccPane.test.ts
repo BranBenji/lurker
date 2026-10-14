@@ -3,8 +3,8 @@
 
 // @vitest-environment happy-dom
 
-// Admin → DCC (#1080, #1125). The table is read-only; "edit" opens one editor
-// under the row with chat, receive and the storage limit, and one save. A field
+// Admin → DCC (#1080, #1125). Rows are text until "edit", which turns that
+// row's cells into controls under their own headers, with one save. A field
 // that saved silently on blur left admins pressing Enter to make sure, so
 // nothing saves until asked, and "saved" says it landed.
 
@@ -49,8 +49,12 @@ async function mountPane(over: Record<string, unknown> = {}, enabled = true): Pr
   return wrapper;
 }
 
-const editButton = (w: VueWrapper) => w.findAll('button').find((b) => b.text() === 'edit')!;
+const button = (w: VueWrapper, label: string) =>
+  w.findAll('table.users button').find((b) => b.text() === label)!;
 const row = (w: VueWrapper) => w.find('table.users tbody tr').text();
+const boxes = (w: VueWrapper) => w.findAll('tr.editing input[type="checkbox"]');
+const limitField = (w: VueWrapper) => w.find('tr.editing input[type="number"]');
+const limitValue = (w: VueWrapper) => (limitField(w).element as HTMLInputElement).value;
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -58,37 +62,51 @@ beforeEach(() => {
 });
 
 describe('Admin → DCC', () => {
-  it('shows each user as read-only text, with no inputs until edit', async () => {
+  it('shows each user as text, with no inputs until edit', async () => {
     const w = await mountPane();
     expect(row(w)).toContain('alice');
     expect(row(w)).toContain('50.00 GB');
     expect(w.find('table.users input').exists()).toBe(false);
   });
 
-  it('saves chat, receive and the limit together, and says so', async () => {
+  it('edits in the row, and saves chat, receive and the limit together', async () => {
     const w = await mountPane();
-    await editButton(w).trigger('click');
-    const boxes = w.findAll('tr.editor input[type="checkbox"]');
-    await boxes[1].setValue(true); // receive
-    await w.find('tr.editor input[type="number"]').setValue('25');
+    await button(w, 'edit').trigger('click');
+    expect(w.findAll('table.users tbody tr')).toHaveLength(1); // no extra row
+    await boxes(w)[1].setValue(true); // receive
+    await limitField(w).setValue('25');
     h.api.mockResolvedValueOnce({ chat: true, receive: true, limitBytes: 25 * GB });
-    await w.find('tr.editor form').trigger('submit');
+    await button(w, 'save').trigger('click');
     await flushPromises();
     expect(h.api).toHaveBeenLastCalledWith('/api/admin/dcc/users/3', {
       method: 'PUT',
       body: { chat: true, receive: true, limitBytes: 25 * GB },
     });
-    expect(w.find('tr.editor').exists()).toBe(false);
+    expect(w.find('tr.editing').exists()).toBe(false);
     expect(row(w)).toContain('25.00 GB');
+    expect(row(w)).toContain('saved');
+  });
+
+  it('saves on Enter in the limit field', async () => {
+    const w = await mountPane();
+    await button(w, 'edit').trigger('click');
+    await limitField(w).setValue('30');
+    h.api.mockResolvedValueOnce({ chat: true, receive: false, limitBytes: 30 * GB });
+    await limitField(w).trigger('keydown', { key: 'Enter' });
+    await flushPromises();
+    expect(h.api).toHaveBeenLastCalledWith('/api/admin/dcc/users/3', {
+      method: 'PUT',
+      body: { chat: true, receive: false, limitBytes: 30 * GB },
+    });
     expect(row(w)).toContain('saved');
   });
 
   it('clears the limit when the field is emptied', async () => {
     const w = await mountPane();
-    await editButton(w).trigger('click');
-    await w.find('tr.editor input[type="number"]').setValue('');
+    await button(w, 'edit').trigger('click');
+    await limitField(w).setValue('');
     h.api.mockResolvedValueOnce({ chat: true, receive: false, limitBytes: null });
-    await w.find('tr.editor form').trigger('submit');
+    await button(w, 'save').trigger('click');
     await flushPromises();
     expect(h.api).toHaveBeenLastCalledWith('/api/admin/dcc/users/3', {
       method: 'PUT',
@@ -99,54 +117,59 @@ describe('Admin → DCC', () => {
 
   it('changes nothing on cancel', async () => {
     const w = await mountPane();
-    await editButton(w).trigger('click');
-    await w.find('tr.editor input[type="number"]').setValue('99');
-    await w
-      .findAll('tr.editor button')
-      .find((b) => b.text() === 'Cancel')!
-      .trigger('click');
-    expect(w.find('tr.editor').exists()).toBe(false);
+    await button(w, 'edit').trigger('click');
+    await limitField(w).setValue('99');
+    await button(w, 'cancel').trigger('click');
+    expect(w.find('tr.editing').exists()).toBe(false);
     expect(h.api).toHaveBeenCalledTimes(1); // just the load
     expect(row(w)).toContain('50.00 GB');
   });
 
-  it('keeps the editor open with what was typed when the save fails', async () => {
+  it('puts the row back on Escape', async () => {
     const w = await mountPane();
-    await editButton(w).trigger('click');
-    await w.find('tr.editor input[type="number"]').setValue('25');
+    await button(w, 'edit').trigger('click');
+    await limitField(w).setValue('99');
+    await limitField(w).trigger('keydown', { key: 'Escape' });
+    expect(w.find('tr.editing').exists()).toBe(false);
+    expect(row(w)).toContain('50.00 GB');
+    expect(h.api).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the row in edit with what was typed when the save fails', async () => {
+    const w = await mountPane();
+    await button(w, 'edit').trigger('click');
+    await limitField(w).setValue('25');
     h.api.mockRejectedValueOnce(new Error('network down'));
-    await w.find('tr.editor form').trigger('submit');
+    await button(w, 'save').trigger('click');
     await flushPromises();
-    expect(w.find('tr.editor').text()).toContain('network down');
-    expect((w.find('tr.editor input[type="number"]').element as HTMLInputElement).value).toBe('25');
+    expect(w.text()).toContain('network down');
+    expect(limitValue(w)).toBe('25');
     expect(row(w)).not.toContain('saved');
   });
 
   it('refuses a limit that is not a positive number, without a request', async () => {
     const w = await mountPane();
-    await editButton(w).trigger('click');
-    await w.find('tr.editor input[type="number"]').setValue('-3');
-    await w.find('tr.editor form').trigger('submit');
+    await button(w, 'edit').trigger('click');
+    await limitField(w).setValue('-3');
+    await button(w, 'save').trigger('click');
     await flushPromises();
     expect(h.api).toHaveBeenCalledTimes(1);
-    expect(w.find('tr.editor').text()).toContain('above 0');
+    expect(w.text()).toContain('above 0');
   });
 
   // A small limit read back as 0 looked like none, or like an invalid one.
   it('shows a small saved limit with the precision it has', async () => {
     const w = await mountPane({ limitBytes: Math.round(0.001 * GB) });
-    await editButton(w).trigger('click');
-    expect((w.find('tr.editor input[type="number"]').element as HTMLInputElement).value).toBe(
-      '0.001',
-    );
+    await button(w, 'edit').trigger('click');
+    expect(limitValue(w)).toBe('0.001');
   });
 
   // With DCC off for the instance a grant can be cleared before it comes back
   // on, but not given.
   it('lets a part be taken away, not given, while DCC is off', async () => {
     const w = await mountPane({}, false);
-    await editButton(w).trigger('click');
-    const [chat, receive] = w.findAll('tr.editor input[type="checkbox"]');
+    await button(w, 'edit').trigger('click');
+    const [chat, receive] = boxes(w);
     expect((chat.element as HTMLInputElement).disabled).toBe(false);
     expect((receive.element as HTMLInputElement).disabled).toBe(true);
   });

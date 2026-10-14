@@ -9,9 +9,9 @@
   LURKER_DCC_ENABLED. With it off the grants still list, so an admin can clear
   them before turning DCC back on.
 
-  The table is read-only. "edit" opens one editor under that row with all three
-  settings and one save, so there is a single way to change anything and a
-  single confirmation that it saved; the table's columns never move.
+  The rows are text until "edit", which turns that row's cells into controls
+  under their own headers, with one save for the row and a "saved" after. The
+  columns are sized for both, so editing moves nothing.
 -->
 
 <template>
@@ -53,6 +53,7 @@
         </tbody>
       </table>
 
+      <p v-if="editError" class="error inline">{{ editError }}</p>
       <table class="users">
         <thead>
           <tr>
@@ -65,87 +66,70 @@
           </tr>
         </thead>
         <tbody>
-          <template v-for="u in info.users" :key="u.id">
-            <tr :class="{ open: editing?.id === u.id }">
-              <th scope="row">{{ u.username }}</th>
+          <!-- "edit" turns the row's own cells into controls, each under its
+               header; nothing saves until "save" (or Enter), and Escape puts
+               the row back. Every column is wide enough for both its text and
+               its control, so editing moves nothing. -->
+          <tr
+            v-for="u in info.users"
+            :key="u.id"
+            :class="{ editing: editing?.id === u.id }"
+            @keydown.esc="cancelEdit"
+          >
+            <th scope="row">{{ u.username }}</th>
+            <template v-if="editing?.id === u.id">
+              <!-- With DCC off for the instance, a part can be taken away but
+                   not given. -->
+              <td>
+                <input
+                  v-model="editing.chat"
+                  type="checkbox"
+                  :aria-label="`chat for ${u.username}`"
+                  :disabled="busy || (!info.enabled && !u.chat)"
+                  @keydown.enter.prevent="save(u)"
+                />
+              </td>
+              <td>
+                <input
+                  v-model="editing.receive"
+                  type="checkbox"
+                  :aria-label="`receive files for ${u.username}`"
+                  :disabled="busy || (!info.enabled && !u.receive)"
+                  @keydown.enter.prevent="save(u)"
+                />
+              </td>
+              <td>
+                <input
+                  v-model="editing.limit"
+                  class="limit"
+                  type="number"
+                  step="any"
+                  placeholder="none"
+                  title="In GB. Blank for no limit."
+                  :aria-label="`storage limit in GB for ${u.username}`"
+                  :disabled="busy"
+                  @keydown.enter.prevent="save(u)"
+                />
+                GB
+              </td>
+              <td>{{ u.usedBytes ? formatBytes(u.usedBytes) : '—' }}</td>
+              <td class="act">
+                <button class="link" :disabled="busy" @click="save(u)">save</button>
+                ·
+                <button class="link" :disabled="busy" @click="cancelEdit">cancel</button>
+              </td>
+            </template>
+            <template v-else>
               <td>{{ u.chat ? 'on' : '—' }}</td>
               <td>{{ u.receive ? 'on' : '—' }}</td>
               <td>{{ u.limitBytes === null ? 'none' : formatBytes(u.limitBytes) }}</td>
               <td>{{ u.usedBytes ? formatBytes(u.usedBytes) : '—' }}</td>
               <td class="act">
                 <span v-if="savedFor === u.id" class="muted" role="status">saved</span>
-                <button
-                  v-else-if="editing?.id !== u.id"
-                  class="link"
-                  :disabled="busy"
-                  @click="startEdit(u)"
-                >
-                  edit
-                </button>
+                <button v-else class="link" :disabled="busy" @click="startEdit(u)">edit</button>
               </td>
-            </tr>
-            <tr v-if="editing?.id === u.id" class="editor">
-              <td colspan="6">
-                <!-- A settings panel on the row's own hover colour, so it reads as
-                     that row opened up. -->
-                <form class="panel" @submit.prevent="save(u)">
-                  <h3>DCC for {{ u.username }}</h3>
-                  <!-- With DCC off for the instance, a part can be taken away
-                       but not given. -->
-                  <label class="check">
-                    <input
-                      v-model="editing.chat"
-                      type="checkbox"
-                      :disabled="busy || (!info.enabled && !u.chat)"
-                    />
-                    <span>
-                      Chat
-                      <span class="hint">Direct chats with people on IRC.</span>
-                    </span>
-                  </label>
-                  <label class="check">
-                    <input
-                      v-model="editing.receive"
-                      type="checkbox"
-                      :disabled="busy || (!info.enabled && !u.receive)"
-                    />
-                    <span>
-                      Receive files
-                      <span class="hint"
-                        >Bots and people on IRC can send files to this server.</span
-                      >
-                    </span>
-                  </label>
-                  <label class="field">
-                    <span>Storage limit</span>
-                    <span class="amount">
-                      <input
-                        v-model="editing.limit"
-                        type="number"
-                        step="any"
-                        placeholder="none"
-                        :disabled="busy"
-                      />
-                      GB
-                    </span>
-                    <span class="hint">Blank for no limit.</span>
-                  </label>
-                  <p v-if="editError" class="error inline">{{ editError }}</p>
-                  <div class="buttons">
-                    <button
-                      type="button"
-                      class="btn-secondary"
-                      :disabled="busy"
-                      @click="editing = null"
-                    >
-                      Cancel
-                    </button>
-                    <button type="submit" class="btn-primary" :disabled="busy">Save</button>
-                  </div>
-                </form>
-              </td>
-            </tr>
-          </template>
+            </template>
+          </tr>
         </tbody>
       </table>
       <p class="muted small">
@@ -216,6 +200,11 @@ function startEdit(u: DccUser) {
   editing.value = { id: u.id, chat: u.chat, receive: u.receive, limit: limitGb(u.limitBytes) };
 }
 
+function cancelEdit() {
+  editing.value = null;
+  editError.value = '';
+}
+
 async function save(u: DccUser) {
   const draft = editing.value;
   if (!draft) return;
@@ -250,7 +239,7 @@ async function save(u: DccUser) {
       if (savedFor.value === u.id) savedFor.value = null;
     }, 2000);
   } catch (e: any) {
-    // The editor stays open with what was typed: nothing changed.
+    // The row stays in edit with what was typed: nothing changed.
     editError.value = e?.message || 'failed to save';
   } finally {
     busy.value = false;
@@ -300,73 +289,47 @@ code {
 .users tbody tr + tr {
   border-top: 1px solid var(--border);
 }
-.users tbody tr:not(.editor):hover {
+.users tbody tr:hover {
   background: var(--bg-soft);
 }
 .users tbody th {
   color: var(--fg);
 }
-/* Wide enough for "edit" or "saved", so swapping them never moves a column;
-   at the right edge, where the Users list keeps its actions. */
+/* One height for a row of text and a row of controls, so going into edit
+   doesn't nudge the rows below. */
+.users tbody th,
+.users tbody td {
+  height: 2.25em;
+  vertical-align: middle;
+}
+/* Sized for both a column's text and its control, so a row going into edit
+   moves nothing: a checkbox or "on", the limit field or "50.00 GB", and
+   "save · cancel" or "edit". */
+.users td:nth-of-type(1),
+.users td:nth-of-type(2) {
+  width: 5em;
+}
+.users td:nth-of-type(3) {
+  width: 10em;
+  white-space: nowrap;
+}
 .users .act {
-  min-width: 4em;
+  width: 8em;
   padding-right: 0;
   text-align: right;
+  white-space: nowrap;
 }
 .users .act .link {
   padding: 0;
 }
-.users tr.open th,
-.users tr.open td {
-  color: var(--accent);
-}
-/* The editor belongs to the row above it: no line between them. */
-.users tbody tr.editor {
-  border-top: none;
-}
-.editor td {
-  padding: 0 0 var(--space-4);
-}
-.panel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-5);
-  background: var(--bg-soft);
-}
-.panel h3 {
+.users input[type='checkbox'] {
   margin: 0;
 }
-.panel label {
-  color: var(--fg);
+.users .limit {
+  width: 6em;
 }
-/* A muted line under its label, at the one font size (<small> would shrink). */
-.panel .hint {
-  display: block;
-  color: var(--fg-muted);
-}
-.panel .check {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-}
-.panel .field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-.panel .amount {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-}
-.panel .amount input {
-  width: 8em;
-}
-.panel .buttons {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-3);
+.users tr.editing {
+  background: var(--bg-soft);
 }
 .warn {
   color: var(--warn);
