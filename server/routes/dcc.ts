@@ -95,8 +95,15 @@ router.get('/:id/file', (req: Request, res: Response, next: NextFunction) => {
       headers: { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'private, no-store' },
     },
     (err) => {
-      // After the headers there is nothing to answer (usually a client abort).
-      if (!err || res.headersSent) return;
+      if (!err) return;
+      // After the headers there is no status left to send. A client abort has
+      // already closed the socket; a read that failed partway (a disk or NAS
+      // error) has not, and send leaves the response open, so the browser would
+      // wait forever for the rest of the advertised length. End it.
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
       // send's own refusals are the client's: an unsatisfiable Range (resuming a
       // file it already has whole) is a 416, Content-Range already set; a stale
       // If-Match is a 412. Its 404 is the file going between the stat and the

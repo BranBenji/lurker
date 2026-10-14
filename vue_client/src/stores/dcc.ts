@@ -92,6 +92,12 @@ export function percentReceived(t: DccTransfer): number {
   return Math.max(0, Math.min(100, Math.round((t.received_bytes / t.advertised_size) * 100)));
 }
 
+// Where a completed transfer's file downloads from (#1079). The modal's link
+// and `/dcc download` both use it.
+export function dccFileUrl(id: number): string {
+  return `/api/dcc/${id}/file`;
+}
+
 type DccAction = 'accept' | 'reject' | 'cancel';
 
 // Dedupe concurrent loads (the `/dcc list` command and the modal's mount both

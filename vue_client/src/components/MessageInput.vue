@@ -193,7 +193,7 @@ import { useInputHistoryStore } from '../stores/inputHistory.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore, onInsertUrl } from '../stores/uploads.js';
-import { useDccStore, percentReceived, type DccTransfer } from '../stores/dcc.js';
+import { useDccStore, percentReceived, dccFileUrl, type DccTransfer } from '../stores/dcc.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
@@ -2630,8 +2630,8 @@ const COMMANDS_LINES = [
   "          [-autosendcmd '<cmds>'] [-channel <#chan>] [-auto|-noauto] <name>",
   '      modify <name> [-flags…]   ·   remove <name>   ·   move <name> <position>',
   '      connect <name>   ·   disconnect <name>   (Lurker folds irssi /server into these)',
-  '  /dcc [list]            — DCC downloads: list, or accept/reject/cancel <id>',
-  '      e.g. /dcc   ·   /dcc accept 3   ·   /dcc reject 3   ·   /dcc cancel 3',
+  '  /dcc [list]            — DCC downloads: list, or accept/reject/cancel/download <id>',
+  '      e.g. /dcc   ·   /dcc accept 3   ·   /dcc cancel 3   ·   /dcc download 3',
   '  /dcc chat <nick>       — open a direct peer-to-peer chat, in a =nick buffer',
   '      also accepts an offer someone made you; /dcc close chat <nick> ends or declines',
   '      e.g. /dcc chat bob   ·   /dcc chat -passive bob   ·   /dcc close chat bob',
@@ -2977,6 +2977,10 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
     }
     return;
   }
+  if (cmd.kind === 'download') {
+    runDccDownload(cmd.id, networkId, target);
+    return;
+  }
   // accept / reject / cancel — the parser guarantees a numeric id here. They all
   // route through the store's shared act() path.
   const verb = cmd.kind;
@@ -2990,6 +2994,23 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
   } catch (e: any) {
     localInfo(networkId, target, `/dcc ${verb}: ${e?.message || 'failed'}`);
   }
+}
+
+// /dcc download <id> — hand the file to the browser's download manager, the
+// same way the Transfers modal's link does. A transfer the store knows is not
+// complete is refused here, where the reason can be said; anything else goes to
+// the server, whose refusal then shows in the download manager.
+function runDccDownload(id: number, networkId: number | null, target: string): void {
+  const t = dcc.transfers.find((x) => x.id === id);
+  if (t && t.state !== 'completed') {
+    localInfo(networkId, target, `/dcc download: #${id} ${t.filename} is ${t.state}`);
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = dccFileUrl(id);
+  a.download = '';
+  a.click();
+  localInfo(networkId, target, `/dcc download: #${id}${t ? ` ${t.filename}` : ''}`);
 }
 
 // One row for the /dcc list output: "#3  movie.mkv  receiving  alice  42%".

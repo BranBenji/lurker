@@ -61,12 +61,7 @@
                  the browser's download manager handles Range resume. `download`
                  keeps an error reply (410 when the file is gone) in that manager
                  instead of navigating the app away to a page of JSON. -->
-            <a
-              v-else-if="t.state === 'completed'"
-              class="link"
-              :href="`/api/dcc/${t.id}/file`"
-              download
-            >
+            <a v-else-if="t.state === 'completed'" class="link" :href="dccFileUrl(t.id)" download>
               Download
             </a>
           </div>
@@ -87,6 +82,7 @@ import {
   useDccStore,
   isCancellable,
   percentReceived,
+  dccFileUrl,
   type DccTransfer,
   type DccState,
 } from '../stores/dcc.js';

@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs';
+import { Readable } from 'stream';
 import os from 'os';
 import path from 'path';
 import type { Express } from 'express';
@@ -175,6 +176,36 @@ describe('GET /api/dcc/:id/file', () => {
     fs.writeFileSync(path.join(dir, 'show.mkv'), BYTES.subarray(0, 5));
     const res = await aliceAgent.get(`/api/dcc/${id}/file`);
     expect(res.status).toBe(410);
+  });
+
+  // send drops a read error that comes after the headers, so without an
+  // explicit end the browser waits forever for the advertised length.
+  it('ends the response when the read fails partway', async () => {
+    const id = transfer(path.join(tmpRoot, 'eio'), 'flaky.mkv');
+    const spy = vi.spyOn(fs, 'createReadStream').mockImplementation(() => {
+      let sent = false;
+      return new Readable({
+        read() {
+          if (sent) {
+            this.destroy(Object.assign(new Error('EIO: i/o error, read'), { code: 'EIO' }));
+            return;
+          }
+          sent = true;
+          this.push(BYTES.subarray(0, 4));
+        },
+      }) as unknown as fs.ReadStream;
+    });
+    try {
+      const outcome = await getBytes(aliceAgent, `/api/dcc/${id}/file`)
+        .timeout(2000)
+        .then(
+          () => 'completed',
+          (err: { timeout?: number }) => (err.timeout ? 'hung' : 'ended'),
+        );
+      expect(outcome).toBe('ended');
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('is 403 for an account without DCC', async () => {
