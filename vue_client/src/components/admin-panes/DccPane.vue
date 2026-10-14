@@ -257,21 +257,45 @@ code {
 .facts td,
 .users th,
 .users td {
-  padding: var(--space-1) var(--space-6) var(--space-1) 0;
   text-align: left;
   font-weight: normal;
   vertical-align: top;
 }
 .facts th,
+.facts td {
+  padding: var(--space-1) var(--space-6) var(--space-1) 0;
+}
+.facts th,
 .users thead th {
   color: var(--fg-muted);
+}
+/* Rows separated like the Users list (panes.css .device): a line between
+   entries, the same padding, the same hover. */
+.users {
+  width: 100%;
+}
+.users th,
+.users td {
+  padding: var(--space-3) var(--space-6) var(--space-3) 0;
+}
+.users thead th {
+  border-bottom: 1px solid var(--border);
+}
+.users tbody tr + tr {
+  border-top: 1px solid var(--border);
+}
+.users tbody tr:not(.editor):hover {
+  background: var(--bg-soft);
 }
 .users tbody th {
   color: var(--fg);
 }
-/* Wide enough for "edit" or "saved", so swapping them never moves a column. */
+/* Wide enough for "edit" or "saved", so swapping them never moves a column;
+   at the right edge, where the Users list keeps its actions. */
 .users .act {
   min-width: 4em;
+  padding-right: 0;
+  text-align: right;
 }
 .users .act .link {
   padding: 0;
@@ -280,8 +304,12 @@ code {
 .users tr.open td {
   color: var(--accent);
 }
+/* The editor belongs to the row above it: no line between them. */
+.users tbody tr.editor {
+  border-top: none;
+}
 .editor td {
-  padding: var(--space-2) 0 var(--space-6) var(--space-6);
+  padding: 0 0 var(--space-4) var(--space-6);
   border-left: 2px solid var(--accent);
 }
 .editor form {
