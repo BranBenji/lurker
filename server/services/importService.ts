@@ -148,7 +148,7 @@ function parseJson<T>(buf: Buffer, code: string, label: string): T {
 // deliberately don't check user_settings because the client auto-syncs
 // system.timezone on every bootstrap, so a fresh account always has at
 // least one row there. Networks is the meaningful signal.
-function accountIsEmpty(userId: number): boolean {
+export function accountIsEmpty(userId: number): boolean {
   const row = db.prepare('SELECT COUNT(*) AS n FROM networks WHERE user_id = ?').get(userId) as {
     n: number;
   };

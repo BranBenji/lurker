@@ -184,13 +184,18 @@ import { resetSession } from '../../composables/useSessionReset.js';
 import { useDataExportStore } from '../../stores/dataExport.js';
 import { useSettingsStore } from '../../stores/settings.js';
 import { formatBytes } from '../../utils/formatBytes.js';
+import { uploadInChunks } from '../../lib/chunkedUpload.js';
 
 interface ExportPreview {
   settingsOnly: Record<string, number>;
   withMessages: { messages: number };
-  // The largest archive this instance can actually receive — the 500 MB limit,
-  // lowered to whatever proxy sits in front of it (#649).
+  // The largest archive this instance can actually receive in one request —
+  // the 500 MB limit, lowered to whatever proxy sits in front of it (#649).
   maxImportBytes?: number;
+  // In chunks no proxy limit applies, so the whole 500 MB; and the chunk size
+  // (#650). Absent on a server without upload sessions.
+  maxChunkedImportBytes?: number;
+  uploadChunkBytes?: number;
 }
 
 const router = useRouter();
@@ -243,14 +248,17 @@ const confirmed = ref(false);
 // which is a graceful degradation rather than a hole: the server enforces the
 // same number and now answers with a real 413 naming it (#649) instead of the
 // edge reset that made this worth pre-flighting in the first place.
+const importCap = computed(
+  () => preview.value?.maxChunkedImportBytes ?? preview.value?.maxImportBytes,
+);
 const tooLarge = computed(() => {
-  const cap = preview.value?.maxImportBytes;
+  const cap = importCap.value;
   return Boolean(cap && chosenFile.value && chosenFile.value.size > cap);
 });
 const tooLargeMessage = computed(() =>
   tooLarge.value
     ? `This archive is ${formatBytes(chosenFile.value!.size)}, but this instance can ` +
-      `only accept ${formatBytes(preview.value!.maxImportBytes!)}. Uploading it would ` +
+      `only accept ${formatBytes(importCap.value!)}. Uploading it would ` +
       `fail partway through.`
     : '',
 );
@@ -321,13 +329,19 @@ async function onImport() {
   importNotice.value = '';
   progress.value = 0;
   try {
-    const fd = new FormData();
-    fd.append('archive', chosenFile.value, chosenFile.value.name);
-    const result = await apiMultipart('/api/imports', fd, {
-      onProgress: (p) => {
-        progress.value = p;
-      },
-    });
+    const file = chosenFile.value;
+    const onProgress = (p: number) => {
+      progress.value = p;
+    };
+    const chunk = preview.value?.uploadChunkBytes;
+    let result;
+    if (chunk && file.size > chunk) {
+      result = await uploadInChunks(file, { purpose: 'import', filename: file.name, onProgress });
+    } else {
+      const fd = new FormData();
+      fd.append('archive', file, file.name);
+      result = await apiMultipart('/api/imports', fd, { onProgress });
+    }
     const counts = result.counts || {};
     const summary = [
       `${counts.networks || 0} network(s)`,

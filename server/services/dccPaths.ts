@@ -17,6 +17,7 @@
 import fs from 'fs';
 import path from 'path';
 import { capUtf8, utf8Bytes } from '../utils/capUtf8.js';
+import { FREE_DISK_FLOOR_BYTES } from '../utils/diskSpace.js';
 
 // ext4 and APFS allow 255 BYTES per name, not 255 characters (#1051): an emoji
 // is four bytes, a CJK character three.
@@ -137,29 +138,11 @@ export function resolveDccDestination(
   return candidate;
 }
 
-/** Free space a transfer must leave on the download dir's disk. The DCC dir
- *  usually shares a disk with the database, so this is what keeps a full
- *  download from leaving SQLite nowhere to write (#1125). */
-export const DCC_FREE_DISK_FLOOR_BYTES = 1024 * 1024 * 1024;
-
-/**
- * Whether `dir`'s filesystem has room for `bytes` plus a safety margin. Used to
- * refuse a transfer that would fill the cell disk (the offer's advertised size is
- * attacker-controlled, but the receiver also caps writes at it). Fails OPEN — if
- * statfs can't be read, we don't block the transfer.
- */
-export function hasFreeSpaceFor(
-  dir: string,
-  bytes: number,
-  marginBytes = DCC_FREE_DISK_FLOOR_BYTES,
-): boolean {
-  try {
-    const st = fs.statfsSync(dir);
-    return st.bavail * st.bsize >= bytes + marginBytes;
-  } catch {
-    return true;
-  }
-}
+/** Free space a transfer must leave on the download dir's disk (#1125): the
+ *  instance floor, shared with upload sessions. A transfer is refused when its
+ *  advertised size wouldn't leave it (the receiver also caps writes at that
+ *  size). */
+export const DCC_FREE_DISK_FLOOR_BYTES = FREE_DISK_FLOOR_BYTES;
 
 /** The size of the file at `p`, or null when there is none (#1125). Symlinks
  *  count as themselves. */

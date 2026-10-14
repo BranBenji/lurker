@@ -46,7 +46,7 @@ let warnedRequestOriginFallback = false;
 
 /** The instance's public base for a local upload's root-relative URL:
  *  PUBLIC_BASE_URL, else the request origin (see utils/publicOrigin). */
-function requestBaseUrl(req: Request): string {
+export function requestBaseUrl(req: Request): string {
   if (!configuredBaseUrl() && !warnedRequestOriginFallback) {
     warnedRequestOriginFallback = true;
     console.warn(

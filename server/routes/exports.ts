@@ -28,7 +28,12 @@ import { getLatestJobForUser, getExportJobForUser, markDownloaded } from '../db/
 import { importFromZipFile, ImportError } from '../services/importService.js';
 import ircManager from '../services/ircManager.js';
 import { listNetworksForUser } from '../db/networks.js';
-import { clampToTransport, formatCapMb } from '../services/uploadLimits.js';
+import {
+  clampToTransport,
+  formatCapMb,
+  MAX_IMPORT_BYTES,
+  uploadChunkBytes,
+} from '../services/uploadLimits.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -51,7 +56,11 @@ router.get('/preview', (req: Request, res: Response, next: NextFunction) => {
       // #649: the import pane already fetches this on mount, so it rides along
       // rather than costing a second request. Distinct from the upload cap on the
       // snapshot — an archive gets its own, much larger, limit.
-      maxImportBytes: clampToTransport(HARD_IMPORT_LIMIT),
+      maxImportBytes: clampToTransport(MAX_IMPORT_BYTES),
+      // #650: an import session sends the archive in chunks, so no proxy
+      // limit applies to it, and chunks of this size.
+      maxChunkedImportBytes: MAX_IMPORT_BYTES,
+      uploadChunkBytes: uploadChunkBytes(),
     });
   } catch (err) {
     next(err);
@@ -123,11 +132,6 @@ router.get('/:id/download', (req: Request, res: Response, next: NextFunction) =>
 const importRouter = Router();
 importRouter.use(requireAuth);
 
-// Cap import zip size. 500 MB is generous for "a single user's logs"; if a
-// user trips this we want to see the report rather than silently accept
-// something unbounded. The upload streams to a temp file (not memory) and the
-// importer reads it from disk, so peak memory stays flat regardless of size.
-const HARD_IMPORT_LIMIT = 500 * 1024 * 1024;
 const IMPORT_TMP_DIR = path.join(os.tmpdir(), 'lurker-imports');
 // Owner-only — an uploaded .lurk holds the source account's decrypted network
 // passwords, so other local users on a shared host mustn't be able to read the
@@ -197,7 +201,7 @@ const importUpload = (req: Request, res: Response, next: NextFunction): void => 
     });
     return;
   }
-  const limit = clampToTransport(HARD_IMPORT_LIMIT);
+  const limit = clampToTransport(MAX_IMPORT_BYTES);
   const handler = multer({
     dest: IMPORT_TMP_DIR,
     // See routes/uploads.ts: busboy's default param charset is latin-1, which mangles
@@ -225,12 +229,31 @@ importRouter.post('/', importUpload, async (req: Request, res: Response, next: N
       res.status(400).json({ error: 'no archive uploaded' });
       return;
     }
-    const result = await importFromZipFile(req.user!.id, req.file.path);
+    const { status, body } = await answerImport(req.user!.id, req.file.path);
+    res.status(status).json(body);
+  } catch (err) {
+    next(err);
+  } finally {
+    // Drop the multer temp upload whether the import succeeded or failed.
+    if (req.file?.path) fs.promises.unlink(req.file.path).catch(() => {});
+  }
+});
+
+/** Restore the archive at `filePath` into the user's account; the answer as
+ *  an HTTP status and body. Shared by the multipart route and an import
+ *  session (#650), which keeps it. Throws only what isn't an ImportError. The
+ *  caller removes the file. */
+export async function answerImport(
+  userId: number,
+  filePath: string,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  try {
+    const result = await importFromZipFile(userId, filePath);
     // The account was empty, so every network it has now came from the archive.
-    for (const network of listNetworksForUser(req.user!.id)) {
-      ircManager.networkChanged(req.user!.id, network.id);
+    for (const network of listNetworksForUser(userId)) {
+      ircManager.networkChanged(userId, network.id);
     }
-    res.json({ ok: true, ...result });
+    return { status: 200, body: { ok: true, ...result } };
   } catch (err) {
     if (err instanceof ImportError) {
       // ImportError.code is assigned in the JS constructor — not in the TS type yet
@@ -255,14 +278,10 @@ importRouter.post('/', importUpload, async (req: Request, res: Response, next: N
                         : e.code === 'bad_bookmarks'
                           ? 400
                           : 500;
-      res.status(status).json({ error: e.message, code: e.code });
-      return;
+      return { status, body: { error: e.message, code: e.code } };
     }
-    next(err);
-  } finally {
-    // Drop the multer temp upload whether the import succeeded or failed.
-    if (req.file?.path) fs.promises.unlink(req.file.path).catch(() => {});
+    throw err;
   }
-});
+}
 
 export { router as exportsRouter, importRouter };

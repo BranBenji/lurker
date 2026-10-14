@@ -27,6 +27,7 @@ import themesRouter from './routes/themes.js';
 import pushRouter from './routes/push.js';
 import adminRouter from './routes/admin.js';
 import uploadsRouter from './routes/uploads.js';
+import uploadSessionsRouter from './routes/uploadSessions.js';
 import filehostRouter from './routes/filehost.js';
 import { isBouncerEnabled } from './utils/bouncerConfig.js';
 import uploadersRouter from './routes/uploaders.js';
@@ -125,6 +126,7 @@ export function buildApp(sessionSecret: string, options: BuildAppOptions = {}): 
   app.use('/api/push', pushRouter);
   app.use('/api/admin', adminRouter);
   app.use('/api/uploads', uploadsRouter);
+  app.use('/api/upload-sessions', uploadSessionsRouter);
   app.use('/api/uploaders', uploadersRouter);
   // Public (no-auth) serving of local-driver files. Off /api by design: the URL
   // is opened by anyone the uploader shares it with, protected only by its

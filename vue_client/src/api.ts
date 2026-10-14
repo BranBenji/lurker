@@ -139,14 +139,51 @@ export function apiMultipart<T = any>(
   formData: FormData,
   { onProgress }: MultipartOptions = {},
 ): Promise<T> {
+  return apiSend<T>('POST', url, formData, {
+    onProgress: (loaded, total) => {
+      if (onProgress && total > 0) onProgress(Math.min(100, Math.round((loaded / total) * 100)));
+    },
+  });
+}
+
+export interface SendOptions {
+  headers?: Record<string, string>;
+  /** Bytes of the body sent so far, of `total`. */
+  onProgress?: (loaded: number, total: number) => void;
+  /** Give up when this long passes with no bytes sent and no answer. A
+   *  connection a network change left half-open never errors by itself. */
+  stallMs?: number;
+}
+
+// A request whose body is a form or raw bytes, sent with XHR for its upload
+// progress (see apiMultipart). A chunk of a chunked upload goes this way (#650).
+export function apiSend<T = any>(
+  method: string,
+  url: string,
+  body: FormData | Blob,
+  { headers, onProgress, stallMs }: SendOptions = {},
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', url, true);
+    xhr.open(method, url, true);
     xhr.withCredentials = true;
     xhr.responseType = 'text';
+    for (const [name, value] of Object.entries(headers ?? {})) xhr.setRequestHeader(name, value);
+    let stalled = false;
+    let stallTimer: ReturnType<typeof setTimeout> | undefined;
+    const armStall = () => {
+      if (!stallMs) return;
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        stalled = true;
+        xhr.abort();
+      }, stallMs);
+    };
+    xhr.addEventListener('loadend', () => clearTimeout(stallTimer));
     xhr.upload.addEventListener('progress', (e) => {
+      armStall();
       if (!onProgress || !e.lengthComputable) return;
-      onProgress(Math.min(100, Math.round((e.loaded / e.total) * 100)));
+      onProgress(e.loaded, e.total);
     });
     xhr.addEventListener('load', () => {
       const text = xhr.responseText || '';
@@ -170,7 +207,10 @@ export function apiMultipart<T = any>(
       }
     });
     xhr.addEventListener('error', () => reject(new Error('network error')));
-    xhr.addEventListener('abort', () => reject(new Error('upload aborted')));
-    xhr.send(formData);
+    xhr.addEventListener('abort', () =>
+      reject(new Error(stalled ? 'network stalled' : 'upload aborted')),
+    );
+    xhr.send(body);
+    armStall();
   });
 }

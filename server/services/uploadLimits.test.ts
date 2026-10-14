@@ -158,6 +158,8 @@ describe('advertisedUploadLimits', () => {
       expect(limits.advertisedUploadLimits(user.id, false)).toEqual({
         maxUploadBytes: 30 * MIB,
         maxStaticImageDimension: 1600,
+        maxChunkedUploadBytes: 30 * MIB,
+        uploadChunkBytes: 16 * MIB,
       });
     } finally {
       const { deleteUserSetting } = await import('../db/settings.js');
@@ -168,6 +170,29 @@ describe('advertisedUploadLimits', () => {
 
   it('answers for a user with no settings row at all (registry default applies)', () => {
     expect(limits.advertisedUploadLimits(fresh.id, true).maxStaticImageDimension).toBe(2048);
+  });
+});
+
+// #650: a chunked upload's proxy ceiling caps the chunk, not the file.
+describe('chunked uploads', () => {
+  afterEach(() => {
+    delete process.env.LURKER_MAX_UPLOAD_MB;
+  });
+
+  it('caps the chunk at 16 MiB, or at the declared proxy limit when that is less', () => {
+    expect(limits.uploadChunkBytes()).toBe(16 * MIB);
+    process.env.LURKER_MAX_UPLOAD_MB = '10';
+    expect(limits.uploadChunkBytes()).toBe(10_000_000 - 64 * 1024);
+    process.env.LURKER_MAX_UPLOAD_MB = '100';
+    expect(limits.uploadChunkBytes()).toBe(16 * MIB);
+  });
+
+  it('leaves the proxy limit out of the file cap, and keeps the hard ceiling', () => {
+    process.env.LURKER_MAX_UPLOAD_MB = '10';
+    const settings = { 'uploads.image.max_upload_mb': 150 };
+    expect(limits.capBytesFor(null, settings)).toBe(10_000_000 - 64 * 1024);
+    expect(limits.chunkedCapBytesFor(null, settings)).toBe(150 * MIB);
+    expect(limits.chunkedCapBytesFor({ maxMb: 500 }, settings)).toBe(limits.MAX_CAP_BYTES);
   });
 });
 

@@ -31,6 +31,12 @@ import { getUserSettings } from '../db/settings.js';
 import { defaultsAsObject, getOption } from './settingsRegistry.js';
 import { resolveUploader, type UploaderPolicy } from './uploadProviders/resolve.js';
 
+/** The largest archive `POST /api/imports` or an import session takes. 500 MB is
+ *  generous for "a single user's logs"; if a user trips this we want to see the
+ *  report rather than silently accept something unbounded. The archive streams
+ *  to a temp file and the importer reads it from disk, so memory stays flat. */
+export const MAX_IMPORT_BYTES = 500 * 1024 * 1024;
+
 /** The registry's own ceiling; a per-user cap can't exceed it, so neither can multer. */
 export const MAX_CAP_MB = 200;
 export const MAX_CAP_BYTES = MAX_CAP_MB * 1024 * 1024;
@@ -124,6 +130,25 @@ export function clampToTransport(ownLimitBytes: number): number {
   return declared == null ? ownLimitBytes : Math.max(1, Math.min(ownLimitBytes, declared));
 }
 
+// A chunked upload (#650) sends the file a piece per request, so no proxy limit
+// caps the file; the transport ceiling caps the CHUNK instead. 16 MiB keeps a
+// dropped connection's loss small, and a GB-sized file to a few dozen requests.
+const UPLOAD_CHUNK_MAX_BYTES = 16 * 1024 * 1024;
+let chunkBytesOverride: number | null = null;
+
+/** The largest chunk a session takes: 16 MiB, or less behind a proxy that
+ *  declared a smaller body limit. */
+export function uploadChunkBytes(): number {
+  const max = chunkBytesOverride ?? UPLOAD_CHUNK_MAX_BYTES;
+  const declared = declaredTransportCapBytes();
+  return Math.max(1, declared == null ? max : Math.min(max, declared));
+}
+
+/** Tests send files of a few bytes in chunks of a few bytes. */
+export function setUploadChunkBytesForTests(bytes: number | null): void {
+  chunkBytesOverride = bytes;
+}
+
 /** Clamp a candidate cap to the instance-wide ceilings. Floors at 1 byte so no
  *  configuration can resolve to a negative or zero cap; a genuinely tiny value is
  *  the operator's own declaration and is reported honestly rather than rounded up
@@ -155,8 +180,18 @@ export function capBytesFor(
   policy: Pick<UploaderPolicy, 'maxMb'> | null,
   settings: Record<string, unknown>,
 ): number {
+  return clampUploadCapBytes(chunkedCapBytesFor(policy, settings));
+}
+
+/** The same cap for a chunked upload (#650), which no transport ceiling
+ *  touches: the policy or the user's setting, under the hard ceiling. */
+export function chunkedCapBytesFor(
+  policy: Pick<UploaderPolicy, 'maxMb'> | null,
+  settings: Record<string, unknown>,
+): number {
   const policyMb = policy?.maxMb;
-  return clampUploadCapBytes(policyMb == null ? userCapBytes(settings) : policyMb * 1024 * 1024);
+  const bytes = policyMb == null ? userCapBytes(settings) : policyMb * 1024 * 1024;
+  return Math.max(1, Math.floor(Math.min(bytes, MAX_CAP_BYTES)));
 }
 
 /**
@@ -204,10 +239,14 @@ export function staticImageMaxDimension(
 export interface AdvertisedUploadLimits {
   maxUploadBytes: number;
   maxStaticImageDimension: number;
+  /** The largest file a chunked upload session takes (#650). */
+  maxChunkedUploadBytes: number;
+  /** The largest chunk a session takes (#650). */
+  uploadChunkBytes: number;
 }
 
 /**
- * Both numbers a client sizes an upload against, resolved for the user's DEFAULT
+ * The numbers a client sizes an upload against, resolved for the user's DEFAULT
  * uploader in one pass — the snapshot and `GET /api/uploads` carry exactly this.
  * Advisory, like the cap alone: a per-upload `uploaderId` override with a
  * different policy is still settled server-side. The two err differently under an
@@ -222,6 +261,8 @@ export function advertisedUploadLimits(userId: number, isAdmin: boolean): Advert
   return {
     maxUploadBytes: capBytesFor(policy, settings),
     maxStaticImageDimension: staticImageMaxDimension(policy, settings),
+    maxChunkedUploadBytes: chunkedCapBytesFor(policy, settings),
+    uploadChunkBytes: uploadChunkBytes(),
   };
 }
 
