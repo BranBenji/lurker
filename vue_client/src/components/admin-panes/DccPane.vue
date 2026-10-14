@@ -86,7 +86,8 @@
             </tr>
             <tr v-if="editing?.id === u.id" class="editor">
               <td colspan="6">
-                <!-- Shaped like the Add a network form on Admin → Networks. -->
+                <!-- A settings panel on the row's own hover colour, so it reads as
+                     that row opened up. -->
                 <form class="panel" @submit.prevent="save(u)">
                   <h3>DCC for {{ u.username }}</h3>
                   <!-- With DCC off for the instance, a part can be taken away
@@ -99,7 +100,7 @@
                     />
                     <span>
                       Chat
-                      <small>Direct chats with people on IRC.</small>
+                      <span class="hint">Direct chats with people on IRC.</span>
                     </span>
                   </label>
                   <label class="check">
@@ -110,7 +111,9 @@
                     />
                     <span>
                       Receive files
-                      <small>Bots and people on IRC can send files to this server.</small>
+                      <span class="hint"
+                        >Bots and people on IRC can send files to this server.</span
+                      >
                     </span>
                   </label>
                   <label class="field">
@@ -125,7 +128,7 @@
                       />
                       GB
                     </span>
-                    <small>Blank for no limit.</small>
+                    <span class="hint">Blank for no limit.</span>
                   </label>
                   <p v-if="editError" class="error inline">{{ editError }}</p>
                   <div class="buttons">
@@ -324,14 +327,12 @@ code {
 .editor td {
   padding: 0 0 var(--space-4);
 }
-/* As .add in admin-panes/NetworksPane.vue. */
 .panel {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
   padding: var(--space-5);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  background: var(--bg-soft);
 }
 .panel h3 {
   margin: 0;
@@ -339,7 +340,8 @@ code {
 .panel label {
   color: var(--fg);
 }
-.panel small {
+/* A muted line under its label, at the one font size (<small> would shrink). */
+.panel .hint {
   display: block;
   color: var(--fg-muted);
 }
