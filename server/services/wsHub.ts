@@ -2191,6 +2191,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       .catch((err) => console.warn('[push] friend-online deliver failed:', err?.message || err));
   }
 
+  // What a connection has for every one of the user's clients that isn't an
+  // IRC event (a DCC transfer row), already shaped as its frame.
+  ircManager.on('user-frame', (userId: number, frame: WsPayload) => fanOut(userId, frame));
+
   ircManager.on('event', (rawEvent) => {
     // EnrichedEvent (from ircConnection) is a strict superset of MessageEvent.
     const event = rawEvent as MessageEvent & { userId: number; state?: string };

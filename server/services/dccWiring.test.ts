@@ -37,13 +37,10 @@ import { setDccStorageLimit } from '../db/dccStorageLimits.js';
 import { IrcConnection } from './ircConnection.js';
 
 // Transfer rows reach the user's clients as `dcc-transfer` frames (#1084).
-const ws = vi.hoisted(() => ({
-  fanOutToUser: vi.fn<(userId: number, payload: Record<string, unknown>) => void>(),
-}));
-vi.mock('./wsHub.js', () => ws);
+const userFrame = vi.fn<(frame: Record<string, unknown>) => void>();
 const frames = () =>
-  ws.fanOutToUser.mock.calls.map(
-    ([, payload]) => payload as { kind: string; transfer: Record<string, unknown> },
+  userFrame.mock.calls.map(
+    ([frame]) => frame as { kind: string; transfer: Record<string, unknown> },
   );
 
 beforeAll(() => {
@@ -102,6 +99,7 @@ function makeConn(networkFields: Record<string, unknown> = {}): IrcConnection {
       ...networkFields,
     },
     onEvent: () => {},
+    onUserFrame: userFrame,
   });
 }
 

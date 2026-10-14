@@ -478,6 +478,7 @@ class IrcManager extends EventEmitter {
     conn = new IrcConnection({
       network,
       onEvent: (event) => this.emit('event', event),
+      onUserFrame: (frame) => this.emit('user-frame', userId, frame),
       // #616: the retry controller asks this before each attempt opens a socket,
       // so a reconnect re-clears the same gates the initial connect did. Read
       // live (not captured), because pause/lockdown can change mid-backoff.

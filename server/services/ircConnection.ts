@@ -157,9 +157,6 @@ import {
   unregisterDccChatHost,
 } from './dccChatSessions.js';
 import { DccReceiver } from './dccReceiver.js';
-// ⚠ wsHub imports ircManager, which imports this module: fanOutToUser is only
-// ever called at run time, never while the modules load, so the cycle is safe.
-import { fanOutToUser } from './wsHub.js';
 import {
   type DccTransferRow,
   DCC_ACTIVE_STATES,
@@ -702,6 +699,9 @@ function burstPayload(line: string): string {
 export class IrcConnection {
   network: Network;
   onEvent: (event: EnrichedEvent) => void;
+  /** A frame for every one of the user's clients that isn't an IRC event (a
+   *  DCC transfer row). ircManager hands it to wsHub's fan-out. */
+  onUserFrame: (frame: Record<string, unknown>) => void;
   client: IrcClient;
   state: string;
   /** Mutate only through setChannel/deleteChannel/forgetJoinedChannels —
@@ -1071,18 +1071,21 @@ export class IrcConnection {
   constructor({
     network,
     onEvent,
+    onUserFrame,
     reconnectGate,
     onTakenOver,
     onNeedsRebuild,
   }: {
     network: Network;
     onEvent: (event: EnrichedEvent) => void;
+    onUserFrame?: (frame: Record<string, unknown>) => void;
     reconnectGate?: ReconnectGate;
     onTakenOver?: () => void;
     onNeedsRebuild?: () => void;
   }) {
     this.network = network;
     this.onEvent = onEvent;
+    this.onUserFrame = onUserFrame ?? (() => {});
     this.reconnectGate = reconnectGate;
     this.onTakenOver = onTakenOver;
     this.onNeedsRebuild = onNeedsRebuild;
@@ -6791,7 +6794,7 @@ export class IrcConnection {
         if (now - lastDbAt >= 3000) {
           lastDbAt = now;
           // Live progress to the Transfers view, from the row the write returns.
-          const row = updateDccReceivedBytes(transferId, received);
+          const row = updateDccReceivedBytes(this.network.user_id, transferId, received);
           if (row) this.publishDccRow(row);
         }
         if (offer.size > 0 && now - lastLineAt >= 8000) {
@@ -6852,14 +6855,13 @@ export class IrcConnection {
   // Push a transfer row to ALL the user's clients (user-scoped, not buffer-scoped)
   // so the Transfers view updates live, as a { kind: 'dcc-transfer' } frame.
   private publishDcc(transferId: number): void {
-    if (this.disposed) return;
     const transfer = getDccTransfer(this.network.user_id, transferId);
     if (transfer) this.publishDccRow(transfer);
   }
 
   private publishDccRow(transfer: DccTransferRow): void {
     if (this.disposed) return;
-    fanOutToUser(this.network.user_id, { kind: 'dcc-transfer', transfer });
+    this.onUserFrame({ kind: 'dcc-transfer', transfer });
   }
 
   // Accept a previously-recorded unsolicited offer (pending_approval): rebuild the

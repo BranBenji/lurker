@@ -17,6 +17,7 @@ import {
   listDccTransfers,
   markDccCompleted,
   markDccReceiving,
+  updateDccReceivedBytes,
   updateDccTransferState,
 } from './dccTransfers.js';
 
@@ -34,6 +35,23 @@ beforeAll(() => {
 });
 
 describe('dccTransfers', () => {
+  // #1084: the checkpoint's row is what gets published, so it is the row as
+  // written, and only ever the caller's own.
+  it('checkpoints progress and hands back the row it wrote, for its owner only', () => {
+    const id = insertDccTransfer(userId, {
+      network_id: networkId,
+      peer_nick: 'bot',
+      filename: 'progress.bin',
+      advertised_size: 100,
+      state: 'receiving',
+    });
+    expect(updateDccReceivedBytes(userId, id, 40)).toEqual(getDccTransfer(userId, id));
+    expect(getDccTransfer(userId, id)!.received_bytes).toBe(40);
+    const mallory = createUser('dcc-mallory').id;
+    expect(updateDccReceivedBytes(mallory, id, 99)).toBeUndefined();
+    expect(getDccTransfer(userId, id)!.received_bytes).toBe(40);
+  });
+
   it('inserts a pending_approval offer and reads it back exactly', () => {
     const id = insertDccTransfer(userId, {
       network_id: networkId,
