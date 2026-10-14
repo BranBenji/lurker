@@ -464,6 +464,8 @@ function migrate() {
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       completed_at TEXT,
+      -- The kept file a completed receive produced (#1133); see dcc_files.
+      file_id INTEGER REFERENCES dcc_files(id) ON DELETE SET NULL,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE SET NULL
     );
@@ -2896,7 +2898,7 @@ if (schemaVersion < 24) {
     }[];
     const insert = db.prepare(
       `INSERT INTO dcc_files (user_id, path, name, size, origin, created_at)
-       VALUES (?, ?, ?, ?, 'received', ?)`,
+       VALUES (?, ?, ?, ?, 'received', strftime('%Y-%m-%dT%H:%M:%fZ', ?))`,
     );
     const link = db.prepare('UPDATE dcc_transfers SET file_id = ? WHERE id = ?');
     for (const r of rows) {
@@ -2909,6 +2911,10 @@ if (schemaVersion < 24) {
   const kept = keep.immediate();
   if (kept > 0) console.log(`[db] ${kept} received DCC file(s) are now kept as files (#1133)`);
 }
+// Every lookup of a file's transfers goes by file_id (the files list's join,
+// deleting a file, the foreign key's own check). Here, not in the base schema:
+// on an older install the column only exists once the block above has run.
+db.exec('CREATE INDEX IF NOT EXISTS idx_dcc_transfers_file ON dcc_transfers(file_id)');
 
 // Issue #510: seed the uploader data model — instance x0/catbox rows +
 // per-user conversion of existing uploads.* settings (self-host), or a single

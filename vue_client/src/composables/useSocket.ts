@@ -821,6 +821,8 @@ function handleMessage(raw: string): void {
     // #650: a file over one chunk is sent in chunks. Absent on an older server.
     useUploadsStore().chunkBytes =
       typeof payload.uploadChunkBytes === 'number' ? payload.uploadChunkBytes : null;
+    // DCC changes while the socket was down sent frames nobody heard.
+    useDccStore().resync();
     // Fresh connect ships channel/DM buffers as empty shells (no message rows),
     // so their ids never advance our cursor. The server hands us the current
     // global max here as our "caught up to now" mark, so the next reconnect's

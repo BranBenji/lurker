@@ -97,9 +97,10 @@ function needs(grant: (userId: number) => boolean, what: string): RequestHandler
 const needsReceive = needs(dccReceiveEnabledForUser, 'receiving');
 const needsChat = needs(dccChatEnabledForUser, 'chat');
 
-// A transfer id is a positive integer row id; reject anything else up front so a
-// non-numeric :id can't reach better-sqlite3 as NaN (which throws → 500).
-function transferId(req: Request): number | null {
+// A transfer or file id is a positive integer row id; reject anything else up
+// front so a non-numeric :id can't reach better-sqlite3 as NaN (which throws →
+// 500).
+function rowId(req: Request): number | null {
   const id = Number(req.params.id);
   return Number.isInteger(id) && id > 0 ? id : null;
 }
@@ -188,7 +189,7 @@ function deleteDccFile(userId: number, file: DccFileRow): void {
  * the user-scoped lookup. Served from the file the transfer produced (#1133).
  */
 router.get('/:id/file', (req: Request, res: Response, next: NextFunction) => {
-  const id = transferId(req);
+  const id = rowId(req);
   const t = id == null ? undefined : getDccTransfer(req.user!.id, id);
   if (!t) {
     res.status(404).json({ error: 'transfer not found' });
@@ -216,7 +217,7 @@ router.get('/:id/file', (req: Request, res: Response, next: NextFunction) => {
  * flight is refused (409): cancel it first.
  */
 router.delete('/:id/file', (req: Request, res: Response) => {
-  const id = transferId(req);
+  const id = rowId(req);
   const t = id == null ? undefined : getDccTransfer(req.user!.id, id);
   if (!t) {
     res.status(404).json({ error: 'transfer not found' });
@@ -247,12 +248,6 @@ router.delete('/:id/file', (req: Request, res: Response) => {
   res.json({ transfer });
 });
 
-// A file id is a positive integer row id, as a transfer's is.
-function fileId(req: Request): number | null {
-  const id = Number(req.params.id);
-  return Number.isInteger(id) && id > 0 ? id : null;
-}
-
 /** GET /api/dcc/files — the files the account keeps (#1133), newest first. */
 router.get('/files', (req: Request, res: Response) => {
   res.json({ files: listDccFiles(req.user!.id) });
@@ -260,7 +255,7 @@ router.get('/files', (req: Request, res: Response) => {
 
 /** GET /api/dcc/files/:id/file — a kept file's bytes, as GET /:id/file. */
 router.get('/files/:id/file', (req: Request, res: Response, next: NextFunction) => {
-  const id = fileId(req);
+  const id = rowId(req);
   const file = id == null ? undefined : getDccFileRow(req.user!.id, id);
   if (!file) {
     res.status(404).json({ error: 'file not found' });
@@ -271,7 +266,7 @@ router.get('/files/:id/file', (req: Request, res: Response, next: NextFunction) 
 
 /** DELETE /api/dcc/files/:id — remove a kept file from the server. */
 router.delete('/files/:id', (req: Request, res: Response) => {
-  const id = fileId(req);
+  const id = rowId(req);
   const file = id == null ? undefined : getDccFileRow(req.user!.id, id);
   if (!file) {
     res.status(404).json({ error: 'file not found' });
@@ -286,7 +281,7 @@ router.delete('/files/:id', (req: Request, res: Response) => {
 
 /** POST /api/dcc/:id/accept — accept a pending offer and start the download. */
 router.post('/:id/accept', needsReceive, (req: Request, res: Response) => {
-  const id = transferId(req);
+  const id = rowId(req);
   if (id == null) {
     res.status(404).json({ error: 'transfer not found' });
     return;
@@ -309,7 +304,7 @@ router.post('/:id/accept', needsReceive, (req: Request, res: Response) => {
 
 /** POST /api/dcc/:id/reject — reject a pending offer (no download). */
 router.post('/:id/reject', (req: Request, res: Response) => {
-  const id = transferId(req);
+  const id = rowId(req);
   if (id == null || !ircManager.rejectDccTransfer(req.user!.id, id)) {
     res.status(404).json({ error: 'transfer not found' });
     return;
@@ -319,7 +314,7 @@ router.post('/:id/reject', (req: Request, res: Response) => {
 
 /** POST /api/dcc/:id/cancel — cancel an in-flight or still-pending transfer. */
 router.post('/:id/cancel', (req: Request, res: Response) => {
-  const id = transferId(req);
+  const id = rowId(req);
   if (id == null || !ircManager.cancelDccTransfer(req.user!.id, id)) {
     res.status(404).json({ error: 'transfer not found' });
     return;

@@ -87,3 +87,30 @@ describe('dcc store files', () => {
     expect(dcc.panelTab).toBe('transfers');
   });
 });
+
+describe('dcc store files, while the list loads', () => {
+  // The response was read before these frames went out.
+  it('keeps a file kept, and a file deleted, while the list was on its way', async () => {
+    const dcc = useDccStore();
+    let answer!: (v: unknown) => void;
+    h.api.mockReturnValueOnce(new Promise((r) => (answer = r)));
+    const loading = dcc.loadFiles();
+    dcc.applyFile(file(9)); // received meanwhile
+    dcc.dropFile(2); // deleted from another tab meanwhile
+    answer({ files: [file(1), file(2)] });
+    await loading;
+    expect(dcc.files.map((f) => f.id)).toEqual([9, 1]);
+  });
+
+  it('fetches a list it shows again after a reconnect, and not one it never loaded', async () => {
+    const dcc = useDccStore();
+    dcc.resync();
+    expect(h.api).not.toHaveBeenCalled();
+    h.api.mockResolvedValue({ files: [file(1)] });
+    await dcc.loadFiles();
+    h.api.mockClear();
+    dcc.resync();
+    expect(h.api).toHaveBeenCalledWith('/api/dcc/files');
+    expect(h.api).not.toHaveBeenCalledWith('/api/dcc');
+  });
+});

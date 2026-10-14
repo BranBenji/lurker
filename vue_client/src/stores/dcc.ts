@@ -153,6 +153,9 @@ type DccAction = 'accept' | 'reject' | 'cancel';
 // handlers and the drafts store's timers (Pinia state stays serializable).
 let inflightLoad: Promise<DccTransfer[]> | null = null;
 let inflightFiles: Promise<DccFile[]> | null = null;
+// Frames that land while the files list loads: the response was read before
+// them, so they are applied again on top of it.
+let filesMissed: Array<DccFile | number> = [];
 
 // Hand a file to the browser's download manager, after a HEAD: a refusal
 // handed to the browser is saved as a .json file of the error (or, without
@@ -324,10 +327,17 @@ export const useDccStore = defineStore('dcc', {
       if (inflightFiles) return inflightFiles;
       this.filesLoading = true;
       this.filesError = '';
+      filesMissed = [];
       inflightFiles = (async () => {
         try {
           const { files } = await api<{ files: DccFile[] }>('/api/dcc/files');
           this.files = (files || []).toSorted((a, b) => b.id - a.id);
+          const missed = filesMissed;
+          filesMissed = [];
+          for (const op of missed) {
+            if (typeof op === 'number') this.dropFile(op);
+            else this.applyFile(op);
+          }
           this.filesLoaded = true;
           return this.files;
         } catch (e: any) {
@@ -344,6 +354,7 @@ export const useDccStore = defineStore('dcc', {
     // A file from a live `dcc-file` frame: new, kept in id-DESC order.
     applyFile(f: DccFile): void {
       if (!f || typeof f.id !== 'number') return;
+      if (inflightFiles) filesMissed.push(f);
       const idx = this.files.findIndex((x) => x.id === f.id);
       if (idx >= 0) {
         this.files[idx] = f;
@@ -356,6 +367,7 @@ export const useDccStore = defineStore('dcc', {
 
     // A file gone, from a `dcc-file-deleted` frame or our own delete.
     dropFile(id: number): void {
+      if (inflightFiles) filesMissed.push(id);
       this.files = this.files.filter((f) => f.id !== id);
       delete this.fileBusy[id];
       delete this.fileError[id];
@@ -417,6 +429,13 @@ export const useDccStore = defineStore('dcc', {
     },
     close(): void {
       this.panelOpen = false;
+    },
+
+    // After the socket reconnects: frames sent while it was down are gone, so
+    // a list already shown is fetched again.
+    resync(): void {
+      if (this.loaded) this.load().catch(() => {});
+      if (this.filesLoaded) this.loadFiles().catch(() => {});
     },
   },
 });

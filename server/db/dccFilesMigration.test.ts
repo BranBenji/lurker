@@ -92,7 +92,8 @@ describe('dcc_files v24 migration (#1133)', () => {
         name: 'done.mkv',
         size: 900,
         origin: 'received',
-        created_at: '2026-10-01 12:00:00',
+        // ISO, like every file kept since, whatever the transfer row held.
+        created_at: '2026-10-01T12:00:00.000Z',
       }),
     ]);
     const t = db.prepare('SELECT file_id, destination_path FROM dcc_transfers WHERE id = 1').get();

@@ -2933,8 +2933,7 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
     return;
   }
   if (cmd.kind === 'files') {
-    dcc.panelOpen = true;
-    dcc.panelTab = 'files';
+    dcc.open('files');
     try {
       const files = await dcc.loadFiles();
       if (!files.length) {
@@ -2951,8 +2950,7 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
     return;
   }
   if (cmd.kind === 'list') {
-    dcc.panelOpen = true;
-    dcc.panelTab = 'transfers';
+    dcc.open('transfers');
     try {
       const rows = await dcc.load();
       if (!rows.length) {

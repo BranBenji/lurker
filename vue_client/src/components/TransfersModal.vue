@@ -18,19 +18,7 @@
 
 <template>
   <AppModal word="transfers" title="transfers" size="xl" fill-height @close="$emit('close')">
-    <div class="tabs" role="tablist" aria-label="DCC">
-      <button
-        v-for="tab in TABS"
-        :key="tab.id"
-        type="button"
-        role="tab"
-        :aria-selected="tab.id === dcc.panelTab"
-        :class="{ active: tab.id === dcc.panelTab }"
-        @click="dcc.panelTab = tab.id"
-      >
-        {{ tab.label }}
-      </button>
-    </div>
+    <TabStrip v-model="dcc.panelTab" :tabs="TABS" label="DCC" />
 
     <template v-if="dcc.panelTab === 'files'">
       <p v-if="dcc.filesError" class="error">{{ dcc.filesError }}</p>
@@ -132,6 +120,7 @@
 <script setup lang="ts">
 import { onMounted } from 'vue';
 import AppModal from './AppModal.vue';
+import TabStrip from './TabStrip.vue';
 import {
   useDccStore,
   isCancellable,
@@ -316,24 +305,6 @@ function onCancel(t: DccTransfer) {
 </script>
 
 <style scoped>
-/* The tabs as ChannelModal draws them. */
-.tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  padding-bottom: var(--space-4);
-}
-.tabs button {
-  background: var(--bg-soft);
-  color: var(--fg-muted);
-  border: 1px solid var(--border);
-  padding: var(--space-2) var(--space-4);
-}
-.tabs button.active {
-  color: var(--fg);
-  border-color: var(--accent);
-  outline: 1px solid var(--accent);
-}
 .link {
   background: none;
   border: none;
