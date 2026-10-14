@@ -404,16 +404,16 @@ export function clearDccTransfer(userId: number, id: number): void {
 
 /** Clear every finished transfer from the list, keeping the files (#1133).
  *  One still holding a partial stays: those are bytes on disk, which only the
- *  user deletes. Returns the ids cleared. */
-export function clearFinishedDccTransfers(userId: number): number[] {
-  return (
-    db
-      .prepare(
-        `DELETE FROM dcc_transfers
-         WHERE user_id = ? AND state IN ('completed', 'failed', 'rejected', 'cancelled')
-           AND (destination_path IS NULL OR file_id IS NOT NULL)
-         RETURNING id`,
-      )
-      .all(userId) as { id: number }[]
-  ).map((r) => r.id);
+ *  user deletes. Returns the rows cleared, with the kept file each received. */
+export function clearFinishedDccTransfers(
+  userId: number,
+): { id: number; file_id: number | null }[] {
+  return db
+    .prepare(
+      `DELETE FROM dcc_transfers
+       WHERE user_id = ? AND state IN ('completed', 'failed', 'rejected', 'cancelled')
+         AND (destination_path IS NULL OR file_id IS NOT NULL)
+       RETURNING id, file_id`,
+    )
+    .all(userId) as { id: number; file_id: number | null }[];
 }

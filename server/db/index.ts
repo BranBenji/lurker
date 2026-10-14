@@ -1615,16 +1615,6 @@ ensureColumn('dcc_transfers', 'peer_port', 'INTEGER');
 // When the user deleted the received file from the server (#1125). The row
 // stays as history; its destination_path is cleared.
 ensureColumn('dcc_transfers', 'file_deleted_at', 'TEXT');
-// A dcc_files table made before a file carried its sender (#1133) gets the
-// columns, filled from the transfers that received its files.
-if (!columnExists('dcc_files', 'peer_nick')) {
-  ensureColumn('dcc_files', 'peer_nick', 'TEXT');
-  ensureColumn('dcc_files', 'network_id', 'INTEGER REFERENCES networks(id) ON DELETE SET NULL');
-  db.prepare(
-    `UPDATE dcc_files SET peer_nick = t.peer_nick, network_id = t.network_id
-     FROM dcc_transfers t WHERE t.file_id = dcc_files.id`,
-  ).run();
-}
 
 // Consecutive push-delivery failures (#441): reset to 0 on any success, bumped
 // on a non-permanent error, and used to disable a chronically-failing endpoint

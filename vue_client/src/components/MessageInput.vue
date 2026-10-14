@@ -194,7 +194,13 @@ import { useInputHistoryStore } from '../stores/inputHistory.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore, onInsertUrl } from '../stores/uploads.js';
-import { useDccStore, percentReceived, type DccFile, type DccTransfer } from '../stores/dcc.js';
+import {
+  useDccStore,
+  holdsPartial,
+  percentReceived,
+  type DccFile,
+  type DccTransfer,
+} from '../stores/dcc.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
@@ -2635,6 +2641,7 @@ const COMMANDS_LINES = [
   '      e.g. /dcc   ·   /dcc accept 3   ·   /dcc download 3   ·   /dcc delete 3',
   '  /dcc files             — the files you keep from DCC, until you delete them',
   '  /dcc clear [<id>]      — take finished transfers off the list; your files stay',
+  '      one holding a partial download needs /dcc delete <id> first',
   '  /dcc chat <nick>       — open a direct peer-to-peer chat, in a =nick buffer',
   '      also accepts an offer someone made you; /dcc close chat <nick> ends or declines',
   '      e.g. /dcc chat bob   ·   /dcc chat -passive bob   ·   /dcc close chat bob',
@@ -3011,6 +3018,17 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
       if (cmd.id == null) {
         const n = await dcc.clearFinished();
         localInfo(networkId, target, `/dcc clear: ${n} finished transfer(s) cleared`);
+        return;
+      }
+      // The panel's × asks before a partial goes; a command can't, so it
+      // takes the explicit /dcc delete first.
+      const row = (dcc.loaded ? dcc.transfers : await dcc.load()).find((t) => t.id === cmd.id);
+      if (row && holdsPartial(row)) {
+        localInfo(
+          networkId,
+          target,
+          `/dcc clear: #${cmd.id} holds a partial download — /dcc delete ${cmd.id} first`,
+        );
         return;
       }
       await dcc.clearTransfer(cmd.id);

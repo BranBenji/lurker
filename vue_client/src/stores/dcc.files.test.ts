@@ -17,7 +17,7 @@ vi.mock('./config.js', () => ({
   useConfigStore: () => ({ fetch: async () => 'standalone', features }),
 }));
 
-import { keptFileUrl, useDccStore, type DccFile, type DccTransfer } from './dcc.js';
+import { holdsPartial, keptFileUrl, useDccStore, type DccFile, type DccTransfer } from './dcc.js';
 
 function file(id: number, over: Partial<DccFile> = {}): DccFile {
   return {
@@ -198,6 +198,24 @@ describe('dcc store, clearing transfers (#1133)', () => {
     expect(h.api).toHaveBeenCalledWith('/api/dcc/clear', { method: 'POST' });
     expect(dcc.transfers.map((x) => x.id)).toEqual([2]);
     expect(dcc.clearing).toBe(false);
+  });
+
+  it('shows a failed clear apart from the list, leaving a load error alone', async () => {
+    const dcc = useDccStore();
+    dcc.listError = 'failed to load transfers';
+    h.api.mockRejectedValueOnce(new Error('server unreachable'));
+    await expect(dcc.clearFinished()).rejects.toThrow('server unreachable');
+    expect(dcc.clearError).toBe('server unreachable');
+    expect(dcc.listError).toBe('failed to load transfers');
+  });
+
+  it('tells a partial download from a kept file', () => {
+    const partial = { ...t(1, 'failed'), destination_path: '/p' };
+    const kept = { ...t(2), destination_path: '/k', file_id: 9 };
+    expect(holdsPartial(partial)).toBe(true);
+    expect(holdsPartial(kept)).toBe(false);
+    expect(holdsPartial(t(3, 'rejected'))).toBe(false);
+    expect(holdsPartial({ ...t(4, 'receiving'), destination_path: '/r' })).toBe(false);
   });
 
   it('keeps a clear that landed while the list was on its way', async () => {

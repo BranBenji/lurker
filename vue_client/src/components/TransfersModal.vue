@@ -62,6 +62,7 @@
 
     <template v-else>
       <p v-if="dcc.listError" class="error">{{ dcc.listError }}</p>
+      <p v-if="dcc.clearError" class="error">{{ dcc.clearError }}</p>
 
       <div class="list-wrap">
         <ul v-if="dcc.transfers.length" class="list">
@@ -143,6 +144,7 @@ import {
   useDccStore,
   isCancellable,
   hasFile,
+  holdsPartial,
   percentReceived,
   type DccFile,
   type DccPanelTab,
@@ -310,9 +312,6 @@ function onDownload(t: DccTransfer) {
 }
 // A finished row that holds part of a download takes those bytes with it, so
 // it asks first; any other row goes and its file, if any, stays in Files.
-function holdsPartial(t: DccTransfer): boolean {
-  return hasFile(t) && t.state !== 'completed';
-}
 function clearsWithAll(t: DccTransfer): boolean {
   return !isCancellable(t) && !holdsPartial(t);
 }
@@ -324,7 +323,7 @@ function onClear(t: DccTransfer) {
 }
 function onClearAll() {
   dcc.clearFinished().catch(() => {
-    /* error surfaced via dcc.listError */
+    /* error surfaced via dcc.clearError */
   });
 }
 function onCancel(t: DccTransfer) {

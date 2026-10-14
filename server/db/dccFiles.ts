@@ -46,22 +46,24 @@ const VIEW = `
 `;
 
 /** Keep a received transfer's file: the file row, with who sent it, and the
- *  transfer pointing at it. Returns the file. */
+ *  transfer pointing at it. Returns the file, or null when the user has no
+ *  such transfer. */
 export function keepReceivedDccFile(
   userId: number,
   transferId: number,
   f: { path: string; name: string; size: number },
-): DccFile {
-  const keep = db.transaction((): number => {
-    const id = Number(
-      db
-        .prepare(
-          `INSERT INTO dcc_files (user_id, path, name, size, origin, peer_nick, network_id)
-           SELECT ?, ?, ?, ?, 'received', peer_nick, network_id
-           FROM dcc_transfers WHERE id = ? AND user_id = ?`,
-        )
-        .run(userId, f.path, f.name, f.size, transferId, userId).lastInsertRowid,
-    );
+): DccFile | null {
+  const keep = db.transaction((): number | null => {
+    const inserted = db
+      .prepare(
+        `INSERT INTO dcc_files (user_id, path, name, size, origin, peer_nick, network_id)
+         SELECT ?, ?, ?, ?, 'received', peer_nick, network_id
+         FROM dcc_transfers WHERE id = ? AND user_id = ?`,
+      )
+      .run(userId, f.path, f.name, f.size, transferId, userId);
+    // With no row selected, lastInsertRowid is some earlier insert's.
+    if (inserted.changes !== 1) return null;
+    const id = Number(inserted.lastInsertRowid);
     db.prepare('UPDATE dcc_transfers SET file_id = ? WHERE id = ? AND user_id = ?').run(
       id,
       transferId,
@@ -69,7 +71,8 @@ export function keepReceivedDccFile(
     );
     return id;
   });
-  return getDccFile(userId, keep())!;
+  const id = keep();
+  return id == null ? null : getDccFile(userId, id)!;
 }
 
 /** The user's files, newest first. */

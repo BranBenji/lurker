@@ -39,7 +39,13 @@ import {
   markDccFileDeleted,
 } from '../db/dccTransfers.js';
 import { getDccStorageLimit } from '../db/dccStorageLimits.js';
-import { forgetDccFile, getDccFileRow, listDccFiles, type DccFileRow } from '../db/dccFiles.js';
+import {
+  forgetDccFile,
+  getDccFile,
+  getDccFileRow,
+  listDccFiles,
+  type DccFileRow,
+} from '../db/dccFiles.js';
 import { getNetwork } from '../db/networks.js';
 import { isChannelTarget } from '../../shared/channels.js';
 
@@ -250,6 +256,16 @@ router.delete('/:id/file', (req: Request, res: Response) => {
   res.json({ transfer });
 });
 
+/** Tell every tab which transfers left the list, and redraw the files they
+ *  received, which no longer name a transfer. */
+function publishCleared(userId: number, cleared: { id: number; file_id: number | null }[]): void {
+  fanOutToUser(userId, { kind: 'dcc-transfers-cleared', ids: cleared.map((t) => t.id) });
+  for (const t of cleared) {
+    const file = t.file_id == null ? undefined : getDccFile(userId, t.file_id);
+    if (file) fanOutToUser(userId, { kind: 'dcc-file', file });
+  }
+}
+
 /**
  * DELETE /api/dcc/:id — clear a finished transfer from the list (#1133). The
  * file it received stays in Files; a partial it still holds is deleted with
@@ -269,7 +285,7 @@ router.delete('/:id', (req: Request, res: Response) => {
   }
   if (t.destination_path && t.file_id == null) fs.rmSync(t.destination_path, { force: true });
   clearDccTransfer(req.user!.id, t.id);
-  fanOutToUser(req.user!.id, { kind: 'dcc-transfers-cleared', ids: [t.id] });
+  publishCleared(req.user!.id, [t]);
   res.json({ ids: [t.id] });
 });
 
@@ -278,9 +294,9 @@ router.delete('/:id', (req: Request, res: Response) => {
  * Files stay, and so does a transfer still holding a partial download.
  */
 router.post('/clear', (req: Request, res: Response) => {
-  const ids = clearFinishedDccTransfers(req.user!.id);
-  if (ids.length) fanOutToUser(req.user!.id, { kind: 'dcc-transfers-cleared', ids });
-  res.json({ ids });
+  const cleared = clearFinishedDccTransfers(req.user!.id);
+  if (cleared.length) publishCleared(req.user!.id, cleared);
+  res.json({ ids: cleared.map((t) => t.id) });
 });
 
 /** GET /api/dcc/files — the files the account keeps (#1133), newest first. */

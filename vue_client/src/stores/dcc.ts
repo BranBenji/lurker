@@ -122,6 +122,13 @@ export function percentReceived(t: DccTransfer): number {
   return Math.max(0, Math.min(100, Math.round((t.received_bytes / t.advertised_size) * 100)));
 }
 
+// Whether a finished transfer holds part of a download (#1133): bytes on disk
+// that are its own, not a kept file. Clearing it from the list deletes them, as
+// the server does for a row with a path and no kept file.
+export function holdsPartial(t: DccTransfer): boolean {
+  return hasFile(t) && t.file_id == null;
+}
+
 // Whether a finished transfer left a file on the server to download or delete
 // (#1125): a completed one, or a partial from one that failed or was cancelled.
 // A row stops owning its file when the user deletes it, or when a newer
@@ -209,8 +216,9 @@ export const useDccStore = defineStore('dcc', {
     busy: {} as Record<number, boolean>,
     // Per-transfer last action error (cleared on the next attempt / success).
     actionError: {} as Record<number, string>,
-    // Clear all is in flight.
+    // Clear all is in flight, and its last error.
     clearing: false,
+    clearError: '',
   }),
   getters: {
     hasAny: (s): boolean => s.transfers.length > 0 || s.files.length > 0,
@@ -316,13 +324,13 @@ export const useDccStore = defineStore('dcc', {
     // stay. Resolves with how many went.
     async clearFinished(): Promise<number> {
       this.clearing = true;
-      this.listError = '';
+      this.clearError = '';
       try {
         const { ids } = await api<{ ids: number[] }>('/api/dcc/clear', { method: 'POST' });
         this.dropTransfers(ids || []);
         return ids?.length ?? 0;
       } catch (e: any) {
-        this.listError = e?.message || 'clear failed';
+        this.clearError = e?.message || 'clear failed';
         throw e;
       } finally {
         this.clearing = false;

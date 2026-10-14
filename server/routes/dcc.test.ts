@@ -550,6 +550,8 @@ describe('clearing transfers', () => {
     expect(fs.existsSync(path.join(dir, 'keep.mkv'))).toBe(true);
     const file = (await files()).find((f) => f.name === 'keep.mkv')!;
     expect(file).toMatchObject({ transfer_id: null, peer_nick: 'bot', network_id: aliceNet.id });
+    // Every tab redraws the file, which names no transfer now.
+    expect(fanOut).toHaveBeenCalledWith(alice.id, { kind: 'dcc-file', file });
     const bytes = await getBytes(aliceAgent, `/api/dcc/files/${file.id}/file`);
     expect(Buffer.compare(bytes.body, BYTES)).toBe(0);
   });
