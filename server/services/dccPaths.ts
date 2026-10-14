@@ -32,6 +32,13 @@ export function dccRoot(): string | null {
   return raw === '' ? null : raw;
 }
 
+/** Where `username`'s received files land: <root>/<username>, the name made
+ *  safe the same way a filename is. Null when no root is configured. */
+export function dccUserDir(username: string): string | null {
+  const root = dccRoot();
+  return root ? path.join(root, sanitizeDccFilename(username)) : null;
+}
+
 // `name` split at its extension, unless that's too long to be one.
 function splitExt(name: string): { base: string; ext: string } {
   const ext = path.extname(name);
@@ -99,9 +106,8 @@ export function sanitizeDccFilename(raw: string): string {
  * depth — the resolved path would somehow escape the user directory.
  */
 export function resolveDccDestination(username: string, rawFilename: string): string {
-  const root = dccRoot();
-  if (!root) throw new Error('DCC download directory is not configured (set LURKER_DCC_DIR)');
-  const userDir = path.join(root, sanitizeDccFilename(username));
+  const userDir = dccUserDir(username);
+  if (!userDir) throw new Error('DCC download directory is not configured (set LURKER_DCC_DIR)');
   fs.mkdirSync(userDir, { recursive: true });
 
   const safeName = sanitizeDccFilename(rawFilename);
@@ -123,6 +129,9 @@ export function resolveDccDestination(username: string, rawFilename: string): st
   return candidate;
 }
 
+/** Free space a transfer must leave on the download dir's disk. */
+export const DCC_FREE_DISK_FLOOR_BYTES = 64 * 1024 * 1024;
+
 /**
  * Whether `dir`'s filesystem has room for `bytes` plus a safety margin. Used to
  * refuse a transfer that would fill the cell disk (the offer's advertised size is
@@ -132,7 +141,7 @@ export function resolveDccDestination(username: string, rawFilename: string): st
 export function hasFreeSpaceFor(
   dir: string,
   bytes: number,
-  marginBytes = 64 * 1024 * 1024,
+  marginBytes = DCC_FREE_DISK_FLOOR_BYTES,
 ): boolean {
   try {
     const st = fs.statfsSync(dir);

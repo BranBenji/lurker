@@ -57,7 +57,8 @@ Settings whose registry entry names a feature (`requiresFeature`) must be
 **hidden**, not merely disabled, when that flag is false: there is no server
 behind them, and the endpoints aren't mounted, so a toggle would do nothing.
 `linkPreviews` gates `chat.inline_media.enabled`, `chat.link_previews.enabled`,
-and the `/api/link-preview/*` endpoints.
+and the `/api/link-preview/*` endpoints. `dcc` says the instance runs DCC at all;
+each account also needs an admin's grant, which `GET /api/dcc/config` reports.
 
 Node edition disables `/api/api-tokens` and `/uploads/*` static serving;
 standalone has no `/api/node/*`. OAuth (§3.2) and `/mcp` work in both, but in
@@ -1469,7 +1470,20 @@ transport limit is shared between the two, which does mean lowering
 `code: "archive_too_large"`; there is no way to compress an archive to fit, so
 check before uploading.
 
-### DCC — `/api/dcc` (403 unless enabled for the account)
+### DCC — `/api/dcc` (self-hosted only)
+
+DCC needs the instance switch (`features.dcc`) and, per account, an admin's
+grant. It is granted in two parts: **chat** and **receive** (files). With the
+instance switch off, every route but `/config` is 403. With it on, a grant is
+needed only to START something: `POST /:id/accept` needs receive, `POST /chat`
+needs chat, and each is 403 without it. Reading (`GET /`, `GET|HEAD /:id/file`)
+and stopping (`POST /:id/reject|cancel`, `POST /chat/close`) need no grant,
+because revoking one stops what starts next and what an account received stays
+its own.
+
+`GET /config` answers either way: `{chat, receive}`, plus `maxFileBytes` and
+`allowPrivateHosts` when `receive` is true (`maxFileBytes` 0 for no cap). A client shows
+chat actions only when `chat` is true, and file actions only when `receive` is.
 
 `GET /?limit` list · `POST /:id/accept|reject|cancel`. Live updates via
 `dcc-transfer` frames; a transfer's bytes move over IRC, not HTTP.

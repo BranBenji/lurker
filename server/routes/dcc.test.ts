@@ -18,6 +18,7 @@ let app: Express;
 let aliceAgent: LurkerTestAgent;
 let bobAgent: LurkerTestAgent;
 let carolAgent: LurkerTestAgent;
+let daveAgent: LurkerTestAgent;
 let alice: User;
 let aliceNet: Network;
 let tmpRoot: string;
@@ -65,7 +66,8 @@ beforeAll(async () => {
   tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-dcc-route-'));
   const { createUser } = await import('../db/users.js');
   const { createNetwork } = await import('../db/networks.js');
-  const { setUserCapability, CAPABILITY_DCC } = await import('../db/userCapabilities.js');
+  const { setUserCapability, CAPABILITY_DCC_CHAT, CAPABILITY_DCC_RECEIVE } =
+    await import('../db/userCapabilities.js');
   ({ insertDccTransfer, markDccReceiving, markDccCompleted } =
     await import('../db/dccTransfers.js'));
   const { default: dccRouter } = await import('./dcc.js');
@@ -73,8 +75,13 @@ beforeAll(async () => {
   alice = createUser('dcc-alice');
   const bob = createUser('dcc-bob');
   const carol = createUser('dcc-carol');
-  setUserCapability(alice.id, CAPABILITY_DCC, true);
-  setUserCapability(bob.id, CAPABILITY_DCC, true);
+  // Chat without files (#1080).
+  const dave = createUser('dcc-dave');
+  for (const u of [alice, bob]) {
+    setUserCapability(u.id, CAPABILITY_DCC_CHAT, true);
+    setUserCapability(u.id, CAPABILITY_DCC_RECEIVE, true);
+  }
+  setUserCapability(dave.id, CAPABILITY_DCC_CHAT, true);
   aliceNet = createNetwork(alice.id, {
     name: 'rizon',
     host: 'irc.rizon.net',
@@ -86,12 +93,59 @@ beforeAll(async () => {
   aliceAgent = await createAuthedAgent(app, alice.id);
   bobAgent = await createAuthedAgent(app, bob.id);
   carolAgent = await createAuthedAgent(app, carol.id);
+  daveAgent = await createAuthedAgent(app, dave.id);
 });
 
 afterAll(() => {
   delete process.env.LURKER_DCC_ENABLED;
   fs.rmSync(tmpRoot, { recursive: true, force: true });
   ctx.cleanup();
+});
+
+// Settings asks this to say whether DCC is on for the account, so it answers
+// rather than 403ing like the rest of /api/dcc.
+describe('GET /api/dcc/config', () => {
+  // The server's paths are the admin's business (Admin → DCC), never a
+  // member's: nothing in the answer names a directory.
+  it('reports the limits, but no path, to an account with DCC', async () => {
+    process.env.LURKER_DCC_DIR = path.join(tmpRoot, 'root');
+    process.env.LURKER_DCC_MAX_FILE_MB = '100';
+    try {
+      const res = await aliceAgent.get('/api/dcc/config');
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        chat: true,
+        receive: true,
+        maxFileBytes: 100 * 1024 * 1024,
+        allowPrivateHosts: false,
+      });
+    } finally {
+      delete process.env.LURKER_DCC_DIR;
+      delete process.env.LURKER_DCC_MAX_FILE_MB;
+    }
+  });
+
+  it('answers, not 403s, an account without a grant', async () => {
+    const res = await carolAgent.get('/api/dcc/config');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ chat: false, receive: false });
+  });
+
+  it('reports chat alone, with no receiving limits, for a chat-only account', async () => {
+    expect((await daveAgent.get('/api/dcc/config')).body).toEqual({ chat: true, receive: false });
+  });
+
+  it('is off for everyone while the instance switch is off', async () => {
+    delete process.env.LURKER_DCC_ENABLED;
+    try {
+      expect((await aliceAgent.get('/api/dcc/config')).body).toEqual({
+        chat: false,
+        receive: false,
+      });
+    } finally {
+      process.env.LURKER_DCC_ENABLED = '1';
+    }
+  });
 });
 
 describe('GET /api/dcc/:id/file', () => {
@@ -219,9 +273,55 @@ describe('GET /api/dcc/:id/file', () => {
     }
   });
 
-  it('is 403 for an account without DCC', async () => {
-    const id = transfer(path.join(tmpRoot, 'gated'), 'gated.mkv');
-    const res = await carolAgent.get(`/api/dcc/${id}/file`);
+  // A revoked grant stops what starts next; what the account already received
+  // stays its own, and stopping things never needs a grant (#1080).
+  it('after the receive grant is revoked: serves files, refuses accept, allows reject', async () => {
+    const { setUserCapability, CAPABILITY_DCC_RECEIVE } = await import('../db/userCapabilities.js');
+    const id = transfer(path.join(tmpRoot, 'revoked'), 'kept.mkv');
+    const offer = insertDccTransfer(alice.id, {
+      network_id: aliceNet.id,
+      peer_nick: 'bot',
+      filename: 'offered.mkv',
+      advertised_size: 10,
+      state: 'pending_approval',
+    });
+    setUserCapability(alice.id, CAPABILITY_DCC_RECEIVE, false);
+    try {
+      expect((await getBytes(aliceAgent, `/api/dcc/${id}/file`)).status).toBe(200);
+      const list = await aliceAgent.get('/api/dcc');
+      expect(list.body.transfers.some((t: { id: number }) => t.id === id)).toBe(true);
+      const accept = await aliceAgent.post(`/api/dcc/${offer}/accept`);
+      expect(accept.status).toBe(403);
+      expect(accept.body.error).toMatch(/receiving/);
+      expect((await aliceAgent.post(`/api/dcc/${offer}/reject`)).status).toBe(200);
+    } finally {
+      setUserCapability(alice.id, CAPABILITY_DCC_RECEIVE, true);
+    }
+  });
+
+  // Chat without files: the chat routes pass the gate (the 400 is the body
+  // check behind it), file actions do not.
+  it('lets a chat-only account offer chats but not accept files', async () => {
+    expect((await daveAgent.post('/api/dcc/chat').send({})).status).toBe(400);
+    const accept = await daveAgent.post('/api/dcc/1/accept');
+    expect(accept.status).toBe(403);
+    expect(accept.body.error).toMatch(/receiving/);
+  });
+
+  it('refuses a chat offer from an account without the chat grant', async () => {
+    const res = await carolAgent.post('/api/dcc/chat').send({ networkId: 1, nick: 'bob' });
     expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/chat/);
+  });
+
+  it('is dark for everyone while the instance switch is off', async () => {
+    const id = transfer(path.join(tmpRoot, 'dark'), 'dark.mkv');
+    delete process.env.LURKER_DCC_ENABLED;
+    try {
+      expect((await aliceAgent.get(`/api/dcc/${id}/file`)).status).toBe(403);
+      expect((await aliceAgent.get('/api/dcc')).status).toBe(403);
+    } finally {
+      process.env.LURKER_DCC_ENABLED = '1';
+    }
   });
 });

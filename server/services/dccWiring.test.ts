@@ -20,7 +20,11 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import db from '../db/index.js';
 import { createNetwork } from '../db/networks.js';
 import { createUser } from '../db/users.js';
-import { CAPABILITY_DCC, setUserCapability } from '../db/userCapabilities.js';
+import {
+  CAPABILITY_DCC_CHAT,
+  CAPABILITY_DCC_RECEIVE,
+  setUserCapability,
+} from '../db/userCapabilities.js';
 import {
   insertDccTransfer,
   listDccTransfers,
@@ -43,7 +47,7 @@ afterEach(() => {
   delete process.env.LURKER_DCC_DIR;
   delete process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS;
   delete process.env.LURKER_DCC_MAX_FILE_MB;
-  setUserCapability(1, CAPABILITY_DCC, false);
+  setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
   db.prepare('DELETE FROM dcc_transfers').run();
   activeSender?.close();
   activeSender = null;
@@ -105,7 +109,7 @@ function harness() {
 // Both tiers of the gate on: cell-wide master switch + per-user grant.
 function enableDcc() {
   process.env.LURKER_DCC_ENABLED = '1';
-  setUserCapability(1, CAPABILITY_DCC, true);
+  setUserCapability(1, CAPABILITY_DCC_RECEIVE, true);
 }
 
 function makePayload(n: number): Buffer {
@@ -220,7 +224,7 @@ describe('inbound DCC SEND — disabled (gate closed)', () => {
   });
 
   it('stays closed when only the per-user grant is on (master off)', () => {
-    setUserCapability(1, CAPABILITY_DCC, true);
+    setUserCapability(1, CAPABILITY_DCC_RECEIVE, true);
     const { conn } = harness();
     conn.client.emit('ctcp request', {
       nick: 'bot',
@@ -228,6 +232,27 @@ describe('inbound DCC SEND — disabled (gate closed)', () => {
       message: 'DCC SEND f.bin 16843009 50612 1024',
     });
     expect(listDccTransfers(1)).toHaveLength(0);
+  });
+
+  // Chat without files (#1080): a file offer to a chat-only account reads as
+  // it would to an account without DCC at all, and arms nothing.
+  it('stays closed to file offers and XDCC triggers for a chat-only account', () => {
+    process.env.LURKER_DCC_ENABLED = '1';
+    setUserCapability(1, CAPABILITY_DCC_CHAT, true);
+    try {
+      const { conn, ctcpLines } = harness();
+      conn.client.say = vi.fn<(target: string, text: string) => void>();
+      conn.say('bot', 'xdcc send #1');
+      conn.client.emit('ctcp request', {
+        nick: 'bot',
+        type: 'DCC',
+        message: 'DCC SEND f.bin 16843009 50612 1024',
+      });
+      expect(listDccTransfers(1)).toHaveLength(0);
+      expect(ctcpLines().at(-1)?.text).toBe('bot requested CTCP DCC (no reply)');
+    } finally {
+      setUserCapability(1, CAPABILITY_DCC_CHAT, false);
+    }
   });
 });
 
@@ -336,6 +361,27 @@ describe('arm-on-trigger + auto-accept', () => {
     expect(row.error).toMatch(/no advertised/i);
   });
 
+  // An XDCC request armed before the receive grant was revoked is something
+  // the user already started (#1080): the bot's SEND still lands on the armed
+  // row instead of reading as an unsolicited CTCP and stranding it.
+  it('still matches an armed request whose receive grant was revoked meanwhile', () => {
+    enableDcc();
+    const { conn, ctcpLines } = harness();
+    conn.client.say = vi.fn<(target: string, text: string) => void>();
+    conn.say('bot', 'xdcc send #6');
+    setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
+    conn.client.emit('ctcp request', {
+      nick: 'bot',
+      type: 'DCC',
+      message: 'DCC SEND f.bin 16843009 8080 0', // 1.1.1.1 (public), size 0
+    });
+    // Reached the armed path: refused there for its size, not left 'requested'.
+    const row = listDccTransfers(1)[0];
+    expect(row.state).toBe('failed');
+    expect(row.error).toMatch(/no advertised/i);
+    expect(ctcpLines().at(-1)?.text).not.toBe('bot requested CTCP DCC (no reply)');
+  });
+
   it('does not arm an xdcc trigger mentioned mid-sentence', () => {
     enableDcc();
     const { conn } = harness();
@@ -424,6 +470,75 @@ describe('arm-on-trigger + auto-accept', () => {
     );
 
     // Bot accepts the resume → Lurker connects and appends.
+    conn.client.emit('ctcp request', {
+      nick: 'bot',
+      type: 'DCC',
+      message: `DCC ACCEPT show.mkv ${sender.port} ${have}`,
+    });
+
+    await waitFor(() => listDccTransfers(1)[0]?.state === 'completed', 5000);
+    const row = listDccTransfers(1)[0];
+    expect(row.received_bytes).toBe(full.length);
+    expect(row.crc_status).toBe('unverified'); // resumed → full-file CRC not rechecked
+    expect(fs.readFileSync(path.join(userDir, 'show.mkv')).equals(full)).toBe(true);
+  });
+
+  // Revoking stops what starts next; a transfer already running finishes (#1080),
+  // and the bot's ACCEPT for our RESUME is part of the running transfer.
+  it('finishes a resume whose grant is revoked before the bot answers', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-dcc-resume-revoked-'));
+    process.env.LURKER_DCC_DIR = tmpDir;
+    process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1';
+    enableDcc();
+
+    const full = makePayload(30_000);
+    const have = 10_000;
+    // Pre-seed a 10k partial AND a tracked prior transfer for it (resume is gated
+    // on our own incomplete row, not a stray same-named file).
+    const userDir = path.join(tmpDir, 'dcc-wire-alice');
+    fs.mkdirSync(userDir, { recursive: true });
+    const partialPath = path.join(userDir, 'show.mkv');
+    fs.writeFileSync(partialPath, full.subarray(0, have));
+    const priorId = insertDccTransfer(1, {
+      network_id: 1,
+      peer_nick: 'bot',
+      filename: 'show.mkv',
+      advertised_size: full.length,
+      state: 'requested',
+    });
+    markDccReceiving(priorId, {
+      filename: 'show.mkv',
+      advertised_size: full.length,
+      destination_path: partialPath,
+      received_bytes: have,
+    });
+    updateDccTransferState(priorId, 'failed', 'interrupted');
+    // The bot resumes from `have`, so it streams only the remaining bytes.
+    const sender = await startSender(full.subarray(have));
+    activeSender = sender;
+
+    const { conn } = harness();
+    conn.client.say = vi.fn<(target: string, text: string) => void>();
+    const resumeReq = vi.fn<(target: string, type: string, ...p: string[]) => void>();
+    conn.client.ctcpRequest = resumeReq;
+
+    conn.say('bot', 'xdcc send #1');
+    // Bot offers the full file; Lurker sees the partial and asks to resume.
+    conn.client.emit('ctcp request', {
+      nick: 'bot',
+      type: 'DCC',
+      message: `DCC SEND show.mkv 2130706433 ${sender.port} ${full.length}`,
+    });
+    expect(resumeReq).toHaveBeenCalledWith(
+      'bot',
+      'DCC',
+      'RESUME',
+      'show.mkv',
+      String(sender.port),
+      String(have),
+    );
+
+    setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
     conn.client.emit('ctcp request', {
       nick: 'bot',
       type: 'DCC',

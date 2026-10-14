@@ -17,7 +17,11 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import db from '../db/index.js';
 import { createNetwork } from '../db/networks.js';
 import { createUser } from '../db/users.js';
-import { CAPABILITY_DCC, setUserCapability } from '../db/userCapabilities.js';
+import {
+  CAPABILITY_DCC_CHAT,
+  CAPABILITY_DCC_RECEIVE,
+  setUserCapability,
+} from '../db/userCapabilities.js';
 import { encodeDccAddress } from './dcc.js';
 import { IrcConnection } from './ircConnection.js';
 import ircManager from './ircManager.js';
@@ -50,7 +54,7 @@ afterEach(() => {
   delete process.env.LURKER_DCC_LISTEN_BIND;
   delete process.env.LURKER_DCC_LISTEN_PORT_MIN;
   delete process.env.LURKER_DCC_LISTEN_PORT_MAX;
-  setUserCapability(1, CAPABILITY_DCC, false);
+  setUserCapability(1, CAPABILITY_DCC_CHAT, false);
   db.prepare('DELETE FROM messages').run();
   resetDccListeners();
   resetDccChatHosts();
@@ -158,7 +162,7 @@ function harness() {
 
 function enableDcc() {
   process.env.LURKER_DCC_ENABLED = '1';
-  setUserCapability(1, CAPABILITY_DCC, true);
+  setUserCapability(1, CAPABILITY_DCC_CHAT, true);
 }
 
 // Allow the SSRF guard to dial loopback, which every local peer here is.
@@ -221,6 +225,25 @@ function waitFor(pred: () => boolean, timeoutMs = 3000): Promise<void> {
 }
 
 describe('inbound DCC CHAT offer', () => {
+  // Files without chat (#1080): a chat offer to an account that may only
+  // receive files reads as it would to an account without DCC at all.
+  it('stays closed to chat offers for a receive-only account', () => {
+    process.env.LURKER_DCC_ENABLED = '1';
+    setUserCapability(1, CAPABILITY_DCC_RECEIVE, true);
+    try {
+      const h = harness();
+      h.conn.client.emit('ctcp request', {
+        nick: 'bob',
+        type: 'DCC',
+        message: `DCC CHAT chat ${encodeDccAddress('127.0.0.1')} 24999`,
+      });
+      expect(h.conn.hasDccChat('bob')).toBe(false);
+      expect(h.ctcpLines().at(-1)).toBe('bob requested CTCP DCC (no reply)');
+    } finally {
+      setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
+    }
+  });
+
   it('dials an active offer and carries lines both ways', async () => {
     enableDcc();
     allowLoopback();
@@ -477,6 +500,23 @@ describe('outgoing DCC CHAT offer', () => {
     await waitFor(() => h.conn.hasDccChat('bob'));
     expect(h.conn.hasDccChat('bob')).toBe(true);
     expect(h.notices().at(-1)).toMatch(/connected/);
+    h.conn.closeDccChat('bob');
+  });
+
+  // We started it, so a chat grant revoked while the peer was answering
+  // doesn't strand it (#1080).
+  it('still dials when the peer answers our passive offer after a revoke', async () => {
+    enableDcc();
+    allowLoopback();
+    const h = harness();
+    const peer = await startPeer();
+    h.conn.offerDccChat('bob', { passive: true });
+    const token = h.lastOffer()!.split(' ')[4];
+    setUserCapability(1, CAPABILITY_DCC_CHAT, false);
+    offerFrom(h.conn, 'bob', `CHAT chat ${encodeDccAddress('127.0.0.1')} ${peer.port} ${token}`);
+    await peer.socket;
+    await waitFor(() => h.conn.hasDccChat('bob'));
+    expect(h.conn.hasDccChat('bob')).toBe(true);
     h.conn.closeDccChat('bob');
   });
 

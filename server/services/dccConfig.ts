@@ -3,19 +3,23 @@
 
 // DCC enablement gate (#270). DCC is OFF by default and gated in two tiers:
 //   1. a cell-wide master switch, LURKER_DCC_ENABLED — the operator opt-in. It
-//      stays unset (off) on hosted lurker.chat cells, so the feature is dark
-//      there for now; a self-hoster sets it to turn DCC on for the instance.
-//   2. a per-user capability grant (CAPABILITY_DCC) — so even with the master
-//      switch on, an account only gets DCC if an admin granted it. This is the
-//      first consumer of the per-user capability store the admin control panel
-//      will manage.
+//      is always off in node edition, so the feature is dark on hosted cells; a
+//      self-hoster sets it to turn DCC on for the instance.
+//   2. per-user grants an admin gives in Admin → DCC (#1080), one per part:
+//      CAPABILITY_DCC_CHAT and CAPABILITY_DCC_RECEIVE. With the master switch
+//      on, an account can only use the parts it was granted.
 // BOTH must be true for a user to use DCC. The master-switch parser is pure (and
 // unit-tested); the per-user gate reads the DB.
 
 import net from 'net';
 
-import { CAPABILITY_DCC, userHasCapability } from '../db/userCapabilities.js';
+import {
+  CAPABILITY_DCC_CHAT,
+  CAPABILITY_DCC_RECEIVE,
+  userHasCapability,
+} from '../db/userCapabilities.js';
 import { parseTruthyEnv } from '../utils/truthyEnv.js';
+import { isNodeMode } from '../utils/edition.js';
 import { encodeDccAddress } from './dcc.js';
 
 /** Parse a raw LURKER_DCC_ENABLED value to a boolean. Pure (no env access) so
@@ -27,22 +31,33 @@ export function parseDccEnabled(raw: string | undefined): boolean {
 }
 
 /** The cell-wide DCC master switch. Read live (not cached) so an operator flip
- *  — and tests — take effect without a process restart. */
+ *  — and tests — take effect without a process restart. Always off in node
+ *  edition: DCC is self-host only, and this is the one place that says so, so
+ *  what /api/config advertises and what every path enforces can't disagree. */
 export function dccMasterEnabled(): boolean {
-  return parseDccEnabled(process.env.LURKER_DCC_ENABLED);
+  return !isNodeMode() && parseDccEnabled(process.env.LURKER_DCC_ENABLED);
 }
 
-/** Whether `userId` may use DCC: the master switch AND a per-user grant. The
- *  single gate every DCC entry point (CTCP wiring, API, commands) checks. */
-export function dccEnabledForUser(userId: number): boolean {
-  return dccMasterEnabled() && userHasCapability(userId, CAPABILITY_DCC);
+/** Whether `userId` may hold DCC chats: the master switch AND the chat grant.
+ *  Every chat entry point (inbound offers, /api/dcc/chat, /dcc chat) checks it. */
+export function dccChatEnabledForUser(userId: number): boolean {
+  return dccMasterEnabled() && userHasCapability(userId, CAPABILITY_DCC_CHAT);
+}
+
+/** Whether `userId` may receive files: the master switch AND the receive grant.
+ *  Every file entry point (inbound SEND offers, XDCC arming, the transfer
+ *  actions) checks it. */
+export function dccReceiveEnabledForUser(userId: number): boolean {
+  return dccMasterEnabled() && userHasCapability(userId, CAPABILITY_DCC_RECEIVE);
 }
 
 /** Operator cap on a single accepted DCC file, in bytes, from
  *  LURKER_DCC_MAX_FILE_MB. 0 (unset / non-positive / unparseable) means no cap. */
 export function dccMaxFileBytes(): number {
   const mb = Number((process.env.LURKER_DCC_MAX_FILE_MB ?? '').trim());
-  return Number.isFinite(mb) && mb > 0 ? Math.floor(mb) * 1024 * 1024 : 0;
+  // Floor the BYTES, not the MB: 0.5 floored first is 0, which reads as no cap.
+  // A positive value is always a cap, however small: 0 means none.
+  return Number.isFinite(mb) && mb > 0 ? Math.max(1, Math.floor(mb * 1024 * 1024)) : 0;
 }
 
 /** Whether to allow dialing private/loopback/reserved DCC hosts

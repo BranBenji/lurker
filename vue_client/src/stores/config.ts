@@ -18,6 +18,8 @@ export interface Features {
   linkPreviews: boolean;
   /** Whether this instance runs the IRC bouncer (Settings' Bouncer pane). */
   bouncer: boolean;
+  /** Whether this instance runs DCC at all (Settings' DCC pane). */
+  dcc: boolean;
 }
 
 // Shared in-flight fetch so concurrent callers — App.vue's boot fetch and the
@@ -32,7 +34,7 @@ export const useConfigStore = defineStore('config', {
     // ⚠ Defaults to OFF, unlike `edition`, which defaults to the fully-featured value. A fetch
     // failure must not conjure a feature the server may not have: guessing "on" here would show
     // the two settings and then have every resolve 404.
-    features: { linkPreviews: false, bouncer: false } as Features,
+    features: { linkPreviews: false, bouncer: false, dcc: false } as Features,
     checked: false,
   }),
   getters: {
@@ -54,6 +56,7 @@ export const useConfigStore = defineStore('config', {
           this.features = {
             linkPreviews: data.features?.linkPreviews === true,
             bouncer: data.features?.bouncer === true,
+            dcc: data.features?.dcc === true,
           };
           // Latch `checked` ONLY on success. A transient failure must not wedge
           // the session on the safe defaults — leaving it false lets the next

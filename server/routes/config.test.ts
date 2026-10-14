@@ -1,6 +1,8 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+// The dcc flag reads services/dccConfig, which reaches the db layer.
+import '../test-utils/isolateDb.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
 // Edition is resolved from LURKER_EDITION the first time getEdition() runs and
@@ -53,6 +55,20 @@ describe('the bouncer flag', () => {
       expect(hosted.features?.bouncer).toBe(false);
     } finally {
       delete process.env.LURKER_BOUNCER_ENABLED;
+    }
+  });
+});
+
+describe('the dcc flag', () => {
+  it('is off in the hosted edition even with LURKER_DCC_ENABLED set', async () => {
+    process.env.LURKER_DCC_ENABLED = '1';
+    try {
+      const hosted = (await createAnonAgent(app).get('/api/config')).body as {
+        features?: { dcc?: boolean };
+      };
+      expect(hosted.features?.dcc).toBe(false);
+    } finally {
+      delete process.env.LURKER_DCC_ENABLED;
     }
   });
 });

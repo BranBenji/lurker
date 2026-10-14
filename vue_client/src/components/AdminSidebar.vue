@@ -32,14 +32,17 @@
 
 <script setup lang="ts">
 import { useRouter } from 'vue-router';
-import { ADMIN_TABS } from '../utils/adminRegistry.js';
+import { computed } from 'vue';
+import { visibleAdminTabs } from '../utils/adminRegistry.js';
+import { useConfigStore } from '../stores/config.js';
 
 defineProps<{
   activeTabId: string;
 }>();
 
 const router = useRouter();
-const tabs = ADMIN_TABS;
+const config = useConfigStore();
+const tabs = computed(() => visibleAdminTabs(config.isNode));
 
 function onPick(tabId: string) {
   router.push({ name: 'admin', params: { tab: tabId } });

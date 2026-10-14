@@ -44,6 +44,14 @@ describe('categoryVisible', () => {
     expect(categoryVisible(cat('bouncer'), { ...node, features: { bouncer: true } })).toBe(false);
   });
 
+  // DCC is the same: it says what DCC does for this account, and an instance
+  // without DCC has nothing to say.
+  it('shows DCC only where the instance runs it, self-hosted', () => {
+    expect(categoryVisible(cat('dcc'), standalone)).toBe(false);
+    expect(categoryVisible(cat('dcc'), { ...standalone, features: { dcc: true } })).toBe(true);
+    expect(categoryVisible(cat('dcc'), { ...node, features: { dcc: true } })).toBe(false);
+  });
+
   it('no longer carries an admin-only category', () => {
     expect(CATEGORIES.some((c) => c.id === 'users')).toBe(false);
   });

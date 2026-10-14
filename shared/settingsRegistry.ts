@@ -138,7 +138,7 @@ export interface StringListOption extends BaseOption {
 export type SettingOption = StringOption | IntOption | BoolOption | EnumOption | StringListOption;
 
 /** An instance feature a settings surface depends on, as advertised by /api/config. */
-export type FeatureFlag = 'linkPreviews' | 'bouncer';
+export type FeatureFlag = 'linkPreviews' | 'bouncer' | 'dcc';
 
 /**
  * A Settings-sidebar category. `registry` categories are auto-rendered from
@@ -2083,6 +2083,16 @@ export const CATEGORIES: readonly SettingCategory[] = Object.freeze([
     kind: 'bespoke',
     selfHostedOnly: true,
     requiresFeature: 'bouncer',
+  },
+  // What DCC does for this account: which parts it has, where received files
+  // land and the limits the operator set. Only where the instance runs DCC; the
+  // pane itself says when this account hasn't been granted any of it.
+  {
+    id: 'dcc',
+    label: 'DCC',
+    kind: 'bespoke',
+    selfHostedOnly: true,
+    requiresFeature: 'dcc',
   },
   { id: 'account', label: 'Account', kind: 'bespoke' },
   // Disabled in node edition: an API token can't be routed through the per-cell

@@ -386,8 +386,8 @@ function migrate() {
 
     -- Per-user feature capabilities, admin-granted. A generic (user_id,
     -- capability) store rather than a one-off column so the forthcoming per-user
-    -- admin control panel can manage every gated feature uniformly; 'dcc' (the
-    -- DCC download manager, #270) is the first entry. Absence of a row means the
+    -- admin control panel can manage every gated feature uniformly; DCC's
+    -- 'dcc.chat' and 'dcc.receive' (#1080) are the entries so far. Absence of a row means the
     -- capability is OFF — capabilities are opt-in, granted by an operator.
     CREATE TABLE IF NOT EXISTS user_capabilities (
       user_id INTEGER NOT NULL,
@@ -1570,7 +1570,7 @@ ensureColumn('push_subscriptions', 'transport', "TEXT NOT NULL DEFAULT 'webpush'
 // Schema versioning lets us retire one-shot recovery blocks once every
 // production DB has run through them. Bump SCHEMA_VERSION when adding a new
 // recovery block, and delete blocks for versions far enough in the past.
-const SCHEMA_VERSION = 21;
+const SCHEMA_VERSION = 22;
 const schemaVersionRow = db
   .prepare(`SELECT value FROM app_meta WHERE key = 'schema_version'`)
   .get() as { value: string } | undefined;
@@ -2707,6 +2707,28 @@ if (schemaVersion < 21 && tableExists('user_away_state')) {
   // .immediate(): see the v20 block above (lurker#603).
   const copied = split.immediate();
   if (copied > 0) console.log(`[db] split away state onto ${copied} network(s) (#994)`);
+}
+
+// #1080: the one 'dcc' grant became two, so an admin can allow chats without
+// letting files land on the box. An account granted DCC before the split could
+// do both, so it keeps both. Gated on an old row existing: fresh installs never
+// write one.
+if (
+  schemaVersion < 22 &&
+  db.prepare(`SELECT 1 FROM user_capabilities WHERE capability = 'dcc' LIMIT 1`).get()
+) {
+  const splitDcc = db.transaction(() => {
+    for (const part of ['dcc.chat', 'dcc.receive']) {
+      db.prepare(
+        `INSERT OR IGNORE INTO user_capabilities (user_id, capability, enabled, updated_at)
+         SELECT user_id, ?, enabled, updated_at FROM user_capabilities WHERE capability = 'dcc'`,
+      ).run(part);
+    }
+    return db.prepare(`DELETE FROM user_capabilities WHERE capability = 'dcc'`).run().changes;
+  });
+  // .immediate(): see the v20 block above (lurker#603).
+  const split = splitDcc.immediate();
+  console.log(`[db] split ${split} DCC grant(s) into chat + receive (#1080)`);
 }
 
 // Issue #510: seed the uploader data model — instance x0/catbox rows +
