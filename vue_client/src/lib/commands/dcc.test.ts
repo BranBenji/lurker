@@ -15,6 +15,11 @@ describe('parseDccCommand', () => {
     expect(parseDccCommand('ls')).toEqual({ kind: 'list' });
   });
 
+  it('parses files (#1133)', () => {
+    expect(parseDccCommand('files')).toEqual({ kind: 'files' });
+    expect(parseDccCommand('FILES')).toEqual({ kind: 'files' });
+  });
+
   it('parses accept/reject/cancel with an id', () => {
     expect(parseDccCommand('accept 7')).toEqual({ kind: 'accept', id: 7 });
     expect(parseDccCommand('reject 12')).toEqual({ kind: 'reject', id: 12 });

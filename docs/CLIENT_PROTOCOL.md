@@ -816,6 +816,8 @@ a v1 client.
 | `chanlist-state` / `chanlist-result`                                                                                             | `/LIST` cache meta / result page                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Channel browser                                                                                                                                                                                                    |
 | `e2eExport` / `e2eImport`                                                                                                        | E2E key material / import result                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Replies, this socket only                                                                                                                                                                                          |
 | `dcc-transfer`                                                                                                                   | full transfer row (snake_case)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | DCC state changes                                                                                                                                                                                                  |
+| `dcc-file`                                                                                                                       | `file` (a DCC file, as `GET /api/dcc/files` lists it)                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | A received file is kept                                                                                                                                                                                            |
+| `dcc-file-deleted`                                                                                                               | `id`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | A kept DCC file was deleted                                                                                                                                                                                        |
 | `upload-progress`                                                                                                                | `token, phase, destination, percent`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | During REST upload (correlate via `progressToken`)                                                                                                                                                                 |
 | `export`                                                                                                                         | `job`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Export job progress                                                                                                                                                                                                |
 | `error`                                                                                                                          | `text`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Non-fatal; also the reply to unknown verbs                                                                                                                                                                         |
@@ -1543,9 +1545,22 @@ the row's `error`. A client shows
 chat actions only when `chat` is true, and file actions only when `receive` is.
 
 A transfer row's `network_id` is null once its network was deleted: the row,
-and any file it owns, stay the user's. A row owns a file while its
-`destination_path` is non-null (never show the path itself); a resume moves the
-file to the newer row, and a delete clears it.
+and any file it owns, stay the user's. A row has a file while its
+`destination_path` is non-null (never show the path itself); a resume moves a
+partial to the newer row, and a delete clears it. A completed transfer's file
+is one of the account's **files** (below), named by the row's `file_id`.
+
+**Files.** A file the account receives is kept on the server, apart from the
+transfer that brought it, until the user deletes it; nothing expires. Files
+count against the storage limit, as does the partial of a transfer that
+hasn't finished. `GET /files` → `{files: [{id, name, size, origin, created_at,
+transfer_id, peer_nick, network_id}]}`, newest first; `origin` is `received`
+(with the transfer, peer and network it came from) or `uploaded`.
+`GET /files/:id/file` downloads one, as `GET /:id/file` does (410 when it is
+gone from disk). `DELETE /files/:id` → `{ok: true}` removes it; the transfer
+that received it stays, its `file_deleted_at` set. Live: a `dcc-file` frame
+(`{file}`) when one is kept, `dcc-file-deleted` (`{id}`) when one goes, from
+any route. Needs no grant.
 
 `GET /?limit` list · `POST /:id/accept|reject|cancel`. Live updates via
 `dcc-transfer` frames; a transfer's bytes move over IRC, not HTTP.
@@ -1554,8 +1569,9 @@ file to the newer row, and a delete clears it.
 `application/octet-stream`, HTTP Range). 409 while the transfer is not
 `completed`; 410 when the row is but the file is gone from the server.
 
-`DELETE /:id/file` removes a finished transfer's file (a completed file, or a
-failed or cancelled one's partial) from the server and returns `{transfer}`. The
+`DELETE /:id/file` removes a finished transfer's file (a completed transfer's
+kept file, or a failed or cancelled one's partial) from the server and returns
+`{transfer}`. The
 row stays, with `file_deleted_at` set. 409 while the transfer is still active
 (cancel it first); 404 when there is no file. Needs no grant.
 

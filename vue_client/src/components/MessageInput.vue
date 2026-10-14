@@ -186,6 +186,7 @@ import { useReactionsStore } from '../stores/reactions.js';
 import { useRepliesStore } from '../stores/replies.js';
 import type { PendingReply } from '../stores/replies.js';
 import { NOT_NICK_CHAR } from '../utils/replyText.js';
+import { formatBytes } from '../utils/formatBytes.js';
 import { MAX_REACTION_GRAPHEMES, isValidReactionValue } from '../../../shared/reactions.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useAuthStore } from '../stores/auth.js';
@@ -193,7 +194,7 @@ import { useInputHistoryStore } from '../stores/inputHistory.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore, onInsertUrl } from '../stores/uploads.js';
-import { useDccStore, percentReceived, type DccTransfer } from '../stores/dcc.js';
+import { useDccStore, percentReceived, type DccFile, type DccTransfer } from '../stores/dcc.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
@@ -2632,6 +2633,7 @@ const COMMANDS_LINES = [
   '      connect <name>   ·   disconnect <name>   (Lurker folds irssi /server into these)',
   '  /dcc [list]            — DCC downloads: list, or accept/reject/cancel/download/delete <id>',
   '      e.g. /dcc   ·   /dcc accept 3   ·   /dcc download 3   ·   /dcc delete 3',
+  '  /dcc files             — the files you keep from DCC, until you delete them',
   '  /dcc chat <nick>       — open a direct peer-to-peer chat, in a =nick buffer',
   '      also accepts an offer someone made you; /dcc close chat <nick> ends or declines',
   '      e.g. /dcc chat bob   ·   /dcc chat -passive bob   ·   /dcc close chat bob',
@@ -2930,8 +2932,27 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
     localInfo(networkId, target, `/dcc: ${cmd.message}`);
     return;
   }
+  if (cmd.kind === 'files') {
+    dcc.panelOpen = true;
+    dcc.panelTab = 'files';
+    try {
+      const files = await dcc.loadFiles();
+      if (!files.length) {
+        localInfo(networkId, target, 'no DCC files.');
+        return;
+      }
+      localInfo(networkId, target, `files (${files.length}):`);
+      for (const line of formatColumns(files.map(dccFileRow))) {
+        localInfo(networkId, target, `  ${line}`);
+      }
+    } catch (e: any) {
+      localInfo(networkId, target, `/dcc: ${e?.message || 'failed to load'}`);
+    }
+    return;
+  }
   if (cmd.kind === 'list') {
     dcc.panelOpen = true;
+    dcc.panelTab = 'transfers';
     try {
       const rows = await dcc.load();
       if (!rows.length) {
@@ -3015,6 +3036,11 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
 function dccListRow(t: DccTransfer): string[] {
   const pct = t.advertised_size > 0 ? `${percentReceived(t)}%` : '';
   return [`#${t.id}`, t.filename, t.state, t.peer_nick, pct];
+}
+
+// A kept file (#1133): its name, size, and who sent it, if anyone did.
+function dccFileRow(f: DccFile): string[] {
+  return [f.name, formatBytes(f.size), f.peer_nick ? `from ${f.peer_nick}` : f.origin];
 }
 
 function runSheep(argLine: string, networkId: number | null, target: string): void {

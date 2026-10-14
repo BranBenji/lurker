@@ -14,6 +14,15 @@ import type { Network } from '../db/networks.js';
 
 const ctx = setupTestDb('routes-dcc');
 
+// What each delete tells the user's other tabs.
+const fanOut = vi.hoisted(() =>
+  vi.fn<(userId: number, payload: Record<string, unknown>) => void>(),
+);
+vi.mock('../services/wsHub.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/wsHub.js')>()),
+  fanOutToUser: fanOut,
+}));
+
 let app: Express;
 let aliceAgent: LurkerTestAgent;
 let bobAgent: LurkerTestAgent;
@@ -206,9 +215,13 @@ describe('DELETE /api/dcc/:id/file', () => {
   // A path belongs to one row. When a newer transfer takes it (the name came
   // free after its file was removed by hand, or a resume continued the older
   // row's partial), the older row lets go: it can't delete the newer file.
+  // A resume continues an earlier transfer's partial under a new row. (A kept
+  // file's path is never taken: a new receive goes elsewhere, #1133.)
   it('leaves a file that a newer transfer took over alone', async () => {
+    const { updateDccTransferState } = await import('../db/dccTransfers.js');
     const dir = path.join(tmpRoot, 'del-reused');
-    const older = transfer(dir, 'ep.mkv');
+    const older = transfer(dir, 'ep.mkv', { complete: false });
+    updateDccTransferState(older, 'failed', 'interrupted');
     const newer = transfer(dir, 'ep.mkv');
     expect((await getRow(older)).destination_path).toBeNull();
     expect((await aliceAgent.delete(`/api/dcc/${older}/file`)).status).toBe(404);
@@ -419,5 +432,96 @@ describe('GET /api/dcc/:id/file', () => {
     } finally {
       process.env.LURKER_DCC_ENABLED = '1';
     }
+  });
+});
+
+// #1133: a received file is the account's, apart from the transfer that
+// received it.
+describe('/api/dcc/files', () => {
+  const fileOf = async (transferId: number) => {
+    const res = await aliceAgent.get('/api/dcc/files');
+    return (res.body.files as { transfer_id: number | null; id: number }[]).find(
+      (f) => f.transfer_id === transferId,
+    )!;
+  };
+
+  it('lists what the account keeps, with where it came from, and never a path', async () => {
+    const id = transfer(path.join(tmpRoot, 'files-list'), 'kept.mkv');
+    const file = await fileOf(id);
+    expect(file).toEqual({
+      id: expect.any(Number),
+      name: 'kept.mkv',
+      size: BYTES.length,
+      origin: 'received',
+      created_at: expect.any(String),
+      transfer_id: id,
+      peer_nick: 'bot',
+      network_id: aliceNet.id,
+    });
+  });
+
+  it('lists nothing for an unfinished transfer: its partial is still its own', async () => {
+    const id = transfer(path.join(tmpRoot, 'files-partial'), 'part.mkv', { complete: false });
+    expect(await fileOf(id)).toBeUndefined();
+  });
+
+  it('serves a kept file by its id, Range and all', async () => {
+    const id = transfer(path.join(tmpRoot, 'files-get'), 'get.mkv');
+    const file = await fileOf(id);
+    const whole = await getBytes(aliceAgent, `/api/dcc/files/${file.id}/file`);
+    expect(whole.status).toBe(200);
+    expect(whole.headers['content-disposition']).toContain('get.mkv');
+    expect(Buffer.compare(whole.body, BYTES)).toBe(0);
+    const part = await getBytes(aliceAgent, `/api/dcc/files/${file.id}/file`, 'bytes=0-1');
+    expect(part.status).toBe(206);
+  });
+
+  it('deletes a kept file, and its transfer stays as history, marked deleted', async () => {
+    const dir = path.join(tmpRoot, 'files-del');
+    const id = transfer(dir, 'del.mkv');
+    const file = await fileOf(id);
+    expect((await aliceAgent.delete(`/api/dcc/files/${file.id}`)).body).toEqual({ ok: true });
+    expect(fs.existsSync(path.join(dir, 'del.mkv'))).toBe(false);
+    // Every tab drops the file, and redraws its transfer as deleted.
+    expect(fanOut).toHaveBeenCalledWith(alice.id, { kind: 'dcc-file-deleted', id: file.id });
+    expect(fanOut).toHaveBeenCalledWith(alice.id, {
+      kind: 'dcc-transfer',
+      transfer: expect.objectContaining({ id, file_deleted_at: expect.any(String) }),
+    });
+    expect(await fileOf(id)).toBeUndefined();
+    const { getDccTransfer } = await import('../db/dccTransfers.js');
+    expect(getDccTransfer(alice.id, id)).toMatchObject({
+      state: 'completed',
+      file_id: null,
+      destination_path: null,
+      file_deleted_at: expect.any(String),
+    });
+    expect((await aliceAgent.get(`/api/dcc/${id}/file`)).status).toBe(410);
+    expect((await aliceAgent.delete(`/api/dcc/files/${file.id}`)).status).toBe(404);
+  });
+
+  it('is the same file when deleted through its transfer', async () => {
+    const id = transfer(path.join(tmpRoot, 'files-del-t'), 'via.mkv');
+    const file = await fileOf(id);
+    expect((await aliceAgent.delete(`/api/dcc/${id}/file`)).status).toBe(200);
+    expect(await fileOf(id)).toBeUndefined();
+    expect(fanOut).toHaveBeenCalledWith(alice.id, { kind: 'dcc-file-deleted', id: file.id });
+    expect((await aliceAgent.get(`/api/dcc/files/${file.id}/file`)).status).toBe(404);
+  });
+
+  it('is 404 for another account’s file', async () => {
+    const id = transfer(path.join(tmpRoot, 'files-owned'), 'mine.mkv');
+    const file = await fileOf(id);
+    expect((await bobAgent.get(`/api/dcc/files/${file.id}/file`)).status).toBe(404);
+    expect((await bobAgent.delete(`/api/dcc/files/${file.id}`)).status).toBe(404);
+    expect(((await bobAgent.get('/api/dcc/files')).body.files as unknown[]).length).toBe(0);
+    expect((await aliceAgent.get(`/api/dcc/files/abc/file`)).status).toBe(404);
+  });
+
+  it('is 410 for a kept file gone from disk', async () => {
+    const dir = path.join(tmpRoot, 'files-gone');
+    const id = transfer(dir, 'gone.mkv');
+    fs.rmSync(path.join(dir, 'gone.mkv'));
+    expect((await aliceAgent.get(`/api/dcc/files/${(await fileOf(id)).id}/file`)).status).toBe(410);
   });
 });

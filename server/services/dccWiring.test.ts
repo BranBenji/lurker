@@ -34,6 +34,7 @@ import {
 } from '../db/dccTransfers.js';
 import { crc32Hex, crc32Update } from './dcc.js';
 import { setDccStorageLimit } from '../db/dccStorageLimits.js';
+import { forgetDccFile } from '../db/dccFiles.js';
 import { IrcConnection } from './ircConnection.js';
 
 // Transfer rows reach the user's clients as `dcc-transfer` frames (#1084).
@@ -58,6 +59,7 @@ afterEach(() => {
   delete process.env.LURKER_DCC_MAX_FILE_MB;
   setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
   db.prepare('DELETE FROM dcc_transfers').run();
+  db.prepare('DELETE FROM dcc_files').run();
   setDccStorageLimit(1, null);
   activeSender?.close();
   activeSender = null;
@@ -331,7 +333,16 @@ describe('arm-on-trigger + auto-accept', () => {
         (f) => f.transfer.state === 'receiving' && Number(f.transfer.received_bytes) > 0,
       ),
     ).toBe(true);
-    expect(frames().at(-1)?.transfer).toMatchObject({ id: row.id, state: 'completed' });
+    const sent = frames();
+    expect(sent.filter((f) => f.kind === 'dcc-transfer').at(-1)?.transfer).toMatchObject({
+      id: row.id,
+      state: 'completed',
+    });
+    // And the file it produced is the account's now (#1133).
+    expect(sent.at(-1)).toMatchObject({
+      kind: 'dcc-file',
+      file: { name: 'payload.bin', size: payload.length, origin: 'received', transfer_id: row.id },
+    });
   });
 
   it('fails an armed passive offer (not yet supported)', () => {
@@ -459,9 +470,10 @@ describe('arm-on-trigger + auto-accept', () => {
     it('stops counting a file once it is deleted', () => {
       const conn = setup();
       const old = received('old.bin', 3000);
-      db.prepare(
-        "UPDATE dcc_transfers SET destination_path = NULL, file_deleted_at = 'x' WHERE id = ?",
-      ).run(old);
+      const { file_id } = db.prepare('SELECT file_id FROM dcc_transfers WHERE id = ?').get(old) as {
+        file_id: number;
+      };
+      forgetDccFile(1, file_id);
       setDccStorageLimit(1, 6000);
       offer(conn, 50612, 5000);
       expect(listDccTransfers(1)[0].error ?? '').not.toMatch(/storage limit/);

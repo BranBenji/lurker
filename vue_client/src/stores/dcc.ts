@@ -57,6 +57,29 @@ export interface DccTransfer {
   /** Non-null while this row owns a file on the server. Used only as that
    *  signal: the path itself is never shown. */
   destination_path?: string | null;
+  /** The kept file a completed receive produced, while it is kept (#1133). */
+  file_id?: number | null;
+}
+
+/** A file the account keeps on the server (#1133): a completed receive, or
+ *  (with #1086) one uploaded to send. */
+export interface DccFile {
+  id: number;
+  name: string;
+  size: number;
+  origin: 'received' | 'uploaded';
+  created_at: string;
+  /** The transfer that received it, and from whom on which network. */
+  transfer_id: number | null;
+  peer_nick: string | null;
+  network_id: number | null;
+}
+
+export type DccPanelTab = 'transfers' | 'files';
+
+// Where a kept file downloads from (#1133).
+export function keptFileUrl(id: number): string {
+  return `/api/dcc/files/${id}/file`;
 }
 
 // States that can still change — a transfer in one of these is "active" (drives
@@ -129,6 +152,30 @@ type DccAction = 'accept' | 'reject' | 'cancel';
 // Held module-local, not in state — same rationale as the toasts store's action
 // handlers and the drafts store's timers (Pinia state stays serializable).
 let inflightLoad: Promise<DccTransfer[]> | null = null;
+let inflightFiles: Promise<DccFile[]> | null = null;
+
+// Hand a file to the browser's download manager, after a HEAD: a refusal
+// handed to the browser is saved as a .json file of the error (or, without
+// `download`, navigates the app to it), so it has to be caught here and shown
+// instead. Throws the refusal, restated, since a HEAD carries no body.
+async function saveThroughBrowser(url: string, refusals: Record<number, string>): Promise<void> {
+  try {
+    await api(url, { method: 'HEAD' });
+  } catch (e: any) {
+    throw new Error(refusals[e?.status] || e?.message || 'download failed', { cause: e });
+  }
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '';
+  a.click();
+}
+
+// Why GET /api/dcc/files/:id/file refused, by status.
+const KEPT_DOWNLOAD_REFUSALS: Record<number, string> = {
+  403: 'DCC is turned off on this server',
+  404: 'file not found',
+  410: 'file is no longer on the server',
+};
 
 export const useDccStore = defineStore('dcc', {
   state: () => ({
@@ -140,13 +187,23 @@ export const useDccStore = defineStore('dcc', {
     // ref) so `/dcc list` can open it from MessageInput, mirroring the
     // composable-backed opens (useMediaViewer, useChannelListModal).
     panelOpen: false,
+    // Which list the panel shows.
+    panelTab: 'transfers' as DccPanelTab,
+    // The files the account keeps (#1133), newest first.
+    files: [] as DccFile[],
+    filesLoaded: false,
+    filesLoading: false,
+    filesError: '',
+    // Per-file action in flight, and its last error, as for transfers.
+    fileBusy: {} as Record<number, boolean>,
+    fileError: {} as Record<number, string>,
     // Per-transfer action in flight (disables that row's buttons).
     busy: {} as Record<number, boolean>,
     // Per-transfer last action error (cleared on the next attempt / success).
     actionError: {} as Record<number, string>,
   }),
   getters: {
-    hasAny: (s): boolean => s.transfers.length > 0,
+    hasAny: (s): boolean => s.transfers.length > 0 || s.files.length > 0,
     // Unsolicited offers awaiting a decision — the urgent, you-must-act count
     // that warn-colors the affordance.
     pendingCount: (s): number => s.transfers.filter((t) => t.state === 'pending_approval').length,
@@ -253,18 +310,84 @@ export const useDccStore = defineStore('dcc', {
       this.busy[id] = true;
       delete this.actionError[id];
       try {
-        await api(dccFileUrl(id), { method: 'HEAD' });
+        await saveThroughBrowser(dccFileUrl(id), DOWNLOAD_REFUSALS);
       } catch (e: any) {
-        const message = DOWNLOAD_REFUSALS[e?.status] || e?.message || 'download failed';
-        this.actionError[id] = message;
-        throw new Error(message, { cause: e });
+        this.actionError[id] = e.message;
+        throw e;
       } finally {
         delete this.busy[id];
       }
-      const a = document.createElement('a');
-      a.href = dccFileUrl(id);
-      a.download = '';
-      a.click();
+    },
+
+    // The files the account keeps (#1133), shared in-flight like load().
+    async loadFiles(): Promise<DccFile[]> {
+      if (inflightFiles) return inflightFiles;
+      this.filesLoading = true;
+      this.filesError = '';
+      inflightFiles = (async () => {
+        try {
+          const { files } = await api<{ files: DccFile[] }>('/api/dcc/files');
+          this.files = (files || []).toSorted((a, b) => b.id - a.id);
+          this.filesLoaded = true;
+          return this.files;
+        } catch (e: any) {
+          this.filesError = e?.message || 'failed to load files';
+          throw e;
+        } finally {
+          this.filesLoading = false;
+          inflightFiles = null;
+        }
+      })();
+      return inflightFiles;
+    },
+
+    // A file from a live `dcc-file` frame: new, kept in id-DESC order.
+    applyFile(f: DccFile): void {
+      if (!f || typeof f.id !== 'number') return;
+      const idx = this.files.findIndex((x) => x.id === f.id);
+      if (idx >= 0) {
+        this.files[idx] = f;
+        return;
+      }
+      const at = this.files.findIndex((x) => x.id < f.id);
+      if (at === -1) this.files.push(f);
+      else this.files.splice(at, 0, f);
+    },
+
+    // A file gone, from a `dcc-file-deleted` frame or our own delete.
+    dropFile(id: number): void {
+      this.files = this.files.filter((f) => f.id !== id);
+      delete this.fileBusy[id];
+      delete this.fileError[id];
+    },
+
+    async downloadKeptFile(id: number): Promise<void> {
+      this.fileBusy[id] = true;
+      delete this.fileError[id];
+      try {
+        await saveThroughBrowser(keptFileUrl(id), KEPT_DOWNLOAD_REFUSALS);
+      } catch (e: any) {
+        this.fileError[id] = e.message;
+        throw e;
+      } finally {
+        delete this.fileBusy[id];
+      }
+    },
+
+    // Remove a kept file from the server. The transfer that received it stays,
+    // marked deleted; its new row arrives as a `dcc-transfer` frame.
+    async deleteKeptFile(id: number): Promise<void> {
+      this.fileBusy[id] = true;
+      delete this.fileError[id];
+      try {
+        await api(`/api/dcc/files/${id}`, { method: 'DELETE' });
+        this.dropFile(id);
+      } catch (e: any) {
+        this.fileError[id] = e?.message || 'delete failed';
+        throw e;
+      } finally {
+        delete this.fileBusy[id];
+      }
     },
 
     // Offer a DCC chat to a peer. Resolves as soon as the offer is away — the
@@ -279,12 +402,17 @@ export const useDccStore = defineStore('dcc', {
       await api('/api/dcc/chat/close', { method: 'POST', body: { networkId, nick } });
     },
 
-    // Open the Transfers modal and (re)load the list. Used by the sidebar button
-    // and `/dcc list`. Load errors surface via listError in the modal.
-    open(): void {
+    // Open the Transfers modal on `tab` and (re)load both lists. Used by the
+    // sidebar button, `/dcc list` and `/dcc files`. Load errors surface in the
+    // modal (listError, filesError).
+    open(tab: DccPanelTab = 'transfers'): void {
       this.panelOpen = true;
+      this.panelTab = tab;
       this.load().catch(() => {
         /* surfaced via listError */
+      });
+      this.loadFiles().catch(() => {
+        /* surfaced via filesError */
       });
     },
     close(): void {

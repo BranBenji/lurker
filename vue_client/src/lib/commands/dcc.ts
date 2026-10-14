@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Parser for the /dcc command (#270) — the slash-command surface over DCC.
-// `list` opens the Transfers view; accept / reject / cancel act on one transfer
+// `list` opens the Transfers view and `files` the files the account keeps
+// (#1133); accept / reject / cancel act on one transfer
 // by its numeric id (the id shown in the list), download saves a completed
 // one through the browser, and delete removes its file from the server; `chat`
 // opens a direct chat with
@@ -19,6 +20,7 @@ import { isChannelTarget } from '../../../../shared/channels.js';
 
 export type DccCommand =
   | { kind: 'list' }
+  | { kind: 'files' }
   | { kind: 'accept'; id: number }
   | { kind: 'reject'; id: number }
   | { kind: 'cancel'; id: number }
@@ -32,6 +34,7 @@ const ACCEPT = new Set(['accept', 'ok', 'yes', 'get']);
 const REJECT = new Set(['reject', 'deny', 'no']);
 const CANCEL = new Set(['cancel', 'abort', 'stop']);
 const LIST = new Set(['list', 'ls']);
+const FILES = new Set(['files']);
 // Not `get`: irssi's `/dcc get` accepts an offer, and it does here too.
 const DOWNLOAD = new Set(['download', 'save']);
 const DELETE = new Set(['delete', 'rm']);
@@ -47,7 +50,7 @@ const BY_ID: ReadonlyArray<
 ];
 
 const USAGE =
-  'usage: /dcc [list] · /dcc accept|reject|cancel|download|delete <id> · ' +
+  'usage: /dcc [list] · /dcc files · /dcc accept|reject|cancel|download|delete <id> · ' +
   '/dcc chat [-passive] <nick> · ' +
   '/dcc close chat <nick>';
 
@@ -82,6 +85,7 @@ export function parseDccCommand(argLine: string): DccCommand {
   const verb = parts[0].toLowerCase();
 
   if (LIST.has(verb)) return { kind: 'list' };
+  if (FILES.has(verb)) return { kind: 'files' };
 
   // The chat verbs follow irssi's syntax exactly, so a habit carried over from
   // irssi does what it did there:

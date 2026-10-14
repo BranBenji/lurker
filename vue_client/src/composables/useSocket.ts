@@ -1098,6 +1098,15 @@ function handleMessage(raw: string): void {
     useDccStore().applyTransfer(payload.transfer);
     return;
   }
+  // A file the account now keeps, or one it no longer does (#1133).
+  if (payload.kind === 'dcc-file') {
+    useDccStore().applyFile(payload.file);
+    return;
+  }
+  if (payload.kind === 'dcc-file-deleted') {
+    useDccStore().dropFile(payload.id);
+    return;
+  }
   if (payload.kind === 'reaction') {
     useReactionsStore().applyFrame(payload);
     return;

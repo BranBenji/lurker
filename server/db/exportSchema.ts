@@ -746,6 +746,13 @@ export const EXPORT_TABLES = Object.freeze({
       'offset, abandoned after a day — nothing to carry anywhere else',
   },
 
+  dcc_files: {
+    mode: 'skip',
+    reason:
+      'the DCC files an account keeps (#1133); like dcc_transfers, rows about files on ' +
+      "this instance's disk, which the export does not carry",
+  },
+
   dcc_storage_limits: {
     mode: 'skip',
     reason:

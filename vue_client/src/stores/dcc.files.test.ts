@@ -1,0 +1,89 @@
+// Copyright (c) 2026 Brad Root
+// SPDX-License-Identifier: MPL-2.0
+
+// The files the account keeps (#1133), in the store: the list, live frames,
+// and the Files tab's actions.
+
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { createPinia, setActivePinia } from 'pinia';
+
+const h = vi.hoisted(() => ({
+  api: vi.fn<(url: string, opts?: { method?: string }) => Promise<unknown>>(),
+}));
+vi.mock('../api.js', () => ({ api: h.api }));
+
+import { keptFileUrl, useDccStore, type DccFile } from './dcc.js';
+
+function file(id: number, over: Partial<DccFile> = {}): DccFile {
+  return {
+    id,
+    name: `f${id}.mkv`,
+    size: 1000,
+    origin: 'received',
+    created_at: '2026-10-14 00:00:00',
+    transfer_id: id * 10,
+    peer_nick: 'bot',
+    network_id: 1,
+    ...over,
+  };
+}
+
+beforeEach(() => {
+  setActivePinia(createPinia());
+  h.api.mockReset();
+});
+
+describe('dcc store files', () => {
+  it('loads newest first, and keeps them in that order as frames arrive', async () => {
+    const dcc = useDccStore();
+    h.api.mockResolvedValueOnce({ files: [file(1), file(3)] });
+    await dcc.loadFiles();
+    expect(h.api).toHaveBeenCalledWith('/api/dcc/files');
+    dcc.applyFile(file(2));
+    dcc.applyFile(file(4));
+    expect(dcc.files.map((f) => f.id)).toEqual([4, 3, 2, 1]);
+    dcc.dropFile(3);
+    expect(dcc.files.map((f) => f.id)).toEqual([4, 2, 1]);
+  });
+
+  it('shows the panel button for files alone', () => {
+    const dcc = useDccStore();
+    expect(dcc.hasAny).toBe(false);
+    dcc.applyFile(file(1));
+    expect(dcc.hasAny).toBe(true);
+  });
+
+  it('deletes a file, and drops it only once the server has', async () => {
+    const dcc = useDccStore();
+    dcc.applyFile(file(5));
+    h.api.mockRejectedValueOnce(new Error('cancel the transfer first'));
+    await expect(dcc.deleteKeptFile(5)).rejects.toThrow('cancel the transfer first');
+    expect(dcc.files).toHaveLength(1);
+    expect(dcc.fileError[5]).toBe('cancel the transfer first');
+    h.api.mockResolvedValueOnce({ ok: true });
+    await dcc.deleteKeptFile(5);
+    expect(h.api).toHaveBeenLastCalledWith('/api/dcc/files/5', { method: 'DELETE' });
+    expect(dcc.files).toHaveLength(0);
+  });
+
+  it('says why a download was refused instead of saving the error', async () => {
+    const dcc = useDccStore();
+    dcc.applyFile(file(6));
+    h.api.mockRejectedValueOnce(Object.assign(new Error(''), { status: 410 }));
+    await expect(dcc.downloadKeptFile(6)).rejects.toThrow('file is no longer on the server');
+    expect(h.api).toHaveBeenCalledWith(keptFileUrl(6), { method: 'HEAD' });
+    expect(dcc.fileError[6]).toBe('file is no longer on the server');
+  });
+
+  it('opens the panel on the tab asked for, loading both lists', () => {
+    const dcc = useDccStore();
+    h.api.mockResolvedValue({ transfers: [], files: [] });
+    dcc.open('files');
+    expect(dcc.panelOpen).toBe(true);
+    expect(dcc.panelTab).toBe('files');
+    expect(h.api).toHaveBeenCalledWith('/api/dcc');
+    expect(h.api).toHaveBeenCalledWith('/api/dcc/files');
+    dcc.open();
+    expect(dcc.panelTab).toBe('transfers');
+  });
+});

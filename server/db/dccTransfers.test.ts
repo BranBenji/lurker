@@ -180,3 +180,45 @@ describe('dccTransfers', () => {
     expect(findResumableTransfer(userId, networkId, 'done.iso')).toBeUndefined();
   });
 });
+
+// #1133: completing a receive keeps its file. The transfer mirrors the path,
+// and the file must count, and claim its path, once.
+describe('a completed receive', () => {
+  it('becomes a kept file, counted once, whose path stays taken', async () => {
+    const { dccUsageBytes, dccPathClaimed } = await import('./dccTransfers.js');
+    const owner = createUser('dcc-kept').id;
+    const id = insertDccTransfer(owner, {
+      network_id: null as unknown as number,
+      peer_nick: 'bot',
+      filename: 'show.mkv',
+      advertised_size: 700,
+      state: 'pending_approval',
+    });
+    markDccReceiving(id, {
+      filename: 'show.mkv',
+      advertised_size: 700,
+      destination_path: '/dcc/kept/show.mkv',
+    });
+    expect(dccUsageBytes(owner).committed).toBe(700);
+    const file = markDccCompleted(id, 700, null, 'absent');
+    expect(file).toMatchObject({
+      name: 'show.mkv',
+      size: 700,
+      origin: 'received',
+      transfer_id: id,
+    });
+    expect(getDccTransfer(owner, id)).toMatchObject({
+      file_id: file!.id,
+      destination_path: '/dcc/kept/show.mkv',
+    });
+    expect(dccUsageBytes(owner)).toEqual({ stored: 700, committed: 700 });
+    expect(dccPathClaimed(owner, '/dcc/kept/show.mkv')).toBe(true);
+    // Completing again keeps no second copy.
+    expect(markDccCompleted(id, 700)).toBeNull();
+    expect(dccUsageBytes(owner).stored).toBe(700);
+    // The file claims its path alone too, as an uploaded one (#1086) will,
+    // with no transfer mirroring it.
+    db.prepare('UPDATE dcc_transfers SET destination_path = NULL WHERE id = ?').run(id);
+    expect(dccPathClaimed(owner, '/dcc/kept/show.mkv')).toBe(true);
+  });
+});

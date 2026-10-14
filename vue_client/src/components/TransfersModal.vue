@@ -10,74 +10,122 @@
   seeds from GET /api/dcc on open and then updates live as `dcc-transfer` frames
   arrive over the WS. Everything but the download is also available headless via
   /dcc — this is a view over that core.
+
+  A second tab lists the files the account keeps (#1133), apart from the
+  transfers that brought them: GET /api/dcc/files, then `dcc-file` and
+  `dcc-file-deleted` frames. `/dcc files` opens it.
 -->
 
 <template>
   <AppModal word="transfers" title="transfers" size="xl" fill-height @close="$emit('close')">
-    <p v-if="dcc.listError" class="error">{{ dcc.listError }}</p>
+    <div class="tabs" role="tablist" aria-label="DCC">
+      <button
+        v-for="tab in TABS"
+        :key="tab.id"
+        type="button"
+        role="tab"
+        :aria-selected="tab.id === dcc.panelTab"
+        :class="{ active: tab.id === dcc.panelTab }"
+        @click="dcc.panelTab = tab.id"
+      >
+        {{ tab.label }}
+      </button>
+    </div>
 
-    <div class="list-wrap">
-      <ul v-if="dcc.transfers.length" class="list">
-        <li v-for="t in dcc.transfers" :key="t.id" class="row">
-          <div class="icon" :class="stateClass(t.state)" :title="stateLabel(t.state)">
-            <i :class="stateIcon(t.state)"></i>
-          </div>
-          <div class="meta">
-            <div class="filename" :title="t.filename">{{ t.filename }}</div>
-            <div class="sub">{{ subLine(t) }}</div>
-            <!-- Progress bar while bytes can still arrive (or after, if partial). -->
-            <div v-if="showProgress(t)" class="progress" :title="progressTitle(t)">
-              <div class="bar">
-                <div class="fill" :style="{ width: percentReceived(t) + '%' }"></div>
-              </div>
-              <span class="progress-text">{{ progressTitle(t) }}</span>
+    <template v-if="dcc.panelTab === 'files'">
+      <p v-if="dcc.filesError" class="error">{{ dcc.filesError }}</p>
+      <div class="list-wrap">
+        <ul v-if="dcc.files.length" class="list">
+          <li v-for="f in dcc.files" :key="f.id" class="row">
+            <div class="icon muted"><i class="fa-regular fa-file"></i></div>
+            <div class="meta">
+              <div class="filename" :title="f.name">{{ f.name }}</div>
+              <div class="sub">{{ fileLine(f) }}</div>
+              <div v-if="dcc.fileError[f.id]" class="err">{{ dcc.fileError[f.id] }}</div>
             </div>
-            <div v-if="crcBadge(t)" class="crc" :class="crcBadge(t)!.cls">
-              <i :class="crcBadge(t)!.icon"></i> {{ crcBadge(t)!.text }}
-            </div>
-            <div v-if="t.error && isErrorState(t.state)" class="err" :title="t.error">
-              {{ t.error }}
-            </div>
-            <div v-if="dcc.actionError[t.id]" class="err">{{ dcc.actionError[t.id] }}</div>
-          </div>
-          <div class="row-actions">
-            <template v-if="t.state === 'pending_approval'">
-              <button class="link accept" :disabled="dcc.busy[t.id]" @click="onAccept(t)">
-                Accept
-              </button>
-              <button class="link reject" :disabled="dcc.busy[t.id]" @click="onReject(t)">
-                Reject
-              </button>
-            </template>
-            <button
-              v-else-if="isCancellable(t)"
-              class="link reject"
-              :disabled="dcc.busy[t.id]"
-              @click="onCancel(t)"
-            >
-              Cancel
-            </button>
-            <template v-else-if="hasFile(t)">
-              <button
-                v-if="t.state === 'completed'"
-                class="link"
-                :disabled="dcc.busy[t.id]"
-                @click="onDownload(t)"
-              >
+            <div class="row-actions">
+              <button class="link" :disabled="dcc.fileBusy[f.id]" @click="onDownloadFile(f)">
                 Download
               </button>
-              <button class="link reject" :disabled="dcc.busy[t.id]" @click="onDelete(t)">
+              <button class="link reject" :disabled="dcc.fileBusy[f.id]" @click="onDeleteFile(f)">
                 Delete
               </button>
-            </template>
-          </div>
-        </li>
-      </ul>
-      <p v-else-if="dcc.loading && !dcc.loaded" class="empty">Loading…</p>
-      <p v-else-if="dcc.loaded" class="empty">
-        No transfers. Inbound DCC downloads appear here when a bot sends you a file.
-      </p>
-    </div>
+            </div>
+          </li>
+        </ul>
+        <p v-else-if="dcc.filesLoading && !dcc.filesLoaded" class="empty">Loading…</p>
+        <p v-else-if="dcc.filesLoaded" class="empty">
+          No files. Files you receive are kept here until you delete them.
+        </p>
+      </div>
+    </template>
+
+    <template v-else>
+      <p v-if="dcc.listError" class="error">{{ dcc.listError }}</p>
+
+      <div class="list-wrap">
+        <ul v-if="dcc.transfers.length" class="list">
+          <li v-for="t in dcc.transfers" :key="t.id" class="row">
+            <div class="icon" :class="stateClass(t.state)" :title="stateLabel(t.state)">
+              <i :class="stateIcon(t.state)"></i>
+            </div>
+            <div class="meta">
+              <div class="filename" :title="t.filename">{{ t.filename }}</div>
+              <div class="sub">{{ subLine(t) }}</div>
+              <!-- Progress bar while bytes can still arrive (or after, if partial). -->
+              <div v-if="showProgress(t)" class="progress" :title="progressTitle(t)">
+                <div class="bar">
+                  <div class="fill" :style="{ width: percentReceived(t) + '%' }"></div>
+                </div>
+                <span class="progress-text">{{ progressTitle(t) }}</span>
+              </div>
+              <div v-if="crcBadge(t)" class="crc" :class="crcBadge(t)!.cls">
+                <i :class="crcBadge(t)!.icon"></i> {{ crcBadge(t)!.text }}
+              </div>
+              <div v-if="t.error && isErrorState(t.state)" class="err" :title="t.error">
+                {{ t.error }}
+              </div>
+              <div v-if="dcc.actionError[t.id]" class="err">{{ dcc.actionError[t.id] }}</div>
+            </div>
+            <div class="row-actions">
+              <template v-if="t.state === 'pending_approval'">
+                <button class="link accept" :disabled="dcc.busy[t.id]" @click="onAccept(t)">
+                  Accept
+                </button>
+                <button class="link reject" :disabled="dcc.busy[t.id]" @click="onReject(t)">
+                  Reject
+                </button>
+              </template>
+              <button
+                v-else-if="isCancellable(t)"
+                class="link reject"
+                :disabled="dcc.busy[t.id]"
+                @click="onCancel(t)"
+              >
+                Cancel
+              </button>
+              <template v-else-if="hasFile(t)">
+                <button
+                  v-if="t.state === 'completed'"
+                  class="link"
+                  :disabled="dcc.busy[t.id]"
+                  @click="onDownload(t)"
+                >
+                  Download
+                </button>
+                <button class="link reject" :disabled="dcc.busy[t.id]" @click="onDelete(t)">
+                  Delete
+                </button>
+              </template>
+            </div>
+          </li>
+        </ul>
+        <p v-else-if="dcc.loading && !dcc.loaded" class="empty">Loading…</p>
+        <p v-else-if="dcc.loaded" class="empty">
+          No transfers. Inbound DCC downloads appear here when a bot sends you a file.
+        </p>
+      </div>
+    </template>
   </AppModal>
 </template>
 
@@ -89,6 +137,8 @@ import {
   isCancellable,
   hasFile,
   percentReceived,
+  type DccFile,
+  type DccPanelTab,
   type DccTransfer,
   type DccState,
 } from '../stores/dcc.js';
@@ -108,7 +158,38 @@ onMounted(() => {
   dcc.load().catch(() => {
     /* surfaced via dcc.listError */
   });
+  dcc.loadFiles().catch(() => {
+    /* surfaced via dcc.filesError */
+  });
 });
+
+const TABS: { id: DccPanelTab; label: string }[] = [
+  { id: 'transfers', label: 'Transfers' },
+  { id: 'files', label: 'Files' },
+];
+
+// "from alice • libera • 4.20 MB • 2d ago", or "uploaded • …"
+function fileLine(f: DccFile): string {
+  return joinMeta([
+    f.peer_nick ? `from ${f.peer_nick}` : f.origin,
+    f.peer_nick ? networkName(f.network_id) : '',
+    formatBytes(f.size),
+    formatRelative(f.created_at),
+  ]);
+}
+
+function onDownloadFile(f: DccFile) {
+  dcc.downloadKeptFile(f.id).catch(() => {
+    /* error surfaced via dcc.fileError */
+  });
+}
+function onDeleteFile(f: DccFile) {
+  // The file is gone for good once deleted; the transfer stays as history.
+  if (!confirm(`Delete "${f.name}" from the server?`)) return;
+  dcc.deleteKeptFile(f.id).catch(() => {
+    /* error surfaced via dcc.fileError */
+  });
+}
 
 function networkName(id: number | null): string {
   if (id === null) return 'deleted network';
@@ -235,6 +316,24 @@ function onCancel(t: DccTransfer) {
 </script>
 
 <style scoped>
+/* The tabs as ChannelModal draws them. */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding-bottom: var(--space-4);
+}
+.tabs button {
+  background: var(--bg-soft);
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  padding: var(--space-2) var(--space-4);
+}
+.tabs button.active {
+  color: var(--fg);
+  border-color: var(--accent);
+  outline: 1px solid var(--accent);
+}
 .link {
   background: none;
   border: none;
