@@ -57,13 +57,14 @@
             >
               Cancel
             </button>
-            <!-- A link, like an export's: the session cookie authenticates it and
-                 the browser's download manager handles Range resume. `download`
-                 keeps an error reply (410 when the file is gone) in that manager
-                 instead of navigating the app away to a page of JSON. -->
-            <a v-else-if="t.state === 'completed'" class="link" :href="dccFileUrl(t.id)" download>
+            <button
+              v-else-if="t.state === 'completed'"
+              class="link"
+              :disabled="dcc.busy[t.id]"
+              @click="onDownload(t)"
+            >
               Download
-            </a>
+            </button>
           </div>
         </li>
       </ul>
@@ -82,7 +83,6 @@ import {
   useDccStore,
   isCancellable,
   percentReceived,
-  dccFileUrl,
   type DccTransfer,
   type DccState,
 } from '../stores/dcc.js';
@@ -214,6 +214,11 @@ function onReject(t: DccTransfer) {
     /* error surfaced via dcc.actionError */
   });
 }
+function onDownload(t: DccTransfer) {
+  dcc.download(t.id).catch(() => {
+    /* error surfaced via dcc.actionError */
+  });
+}
 function onCancel(t: DccTransfer) {
   dcc.cancel(t.id).catch(() => {
     /* error surfaced via dcc.actionError */
@@ -229,8 +234,6 @@ function onCancel(t: DccTransfer) {
   cursor: pointer;
   font: inherit;
   padding: var(--space-2) var(--space-4);
-  /* Download is an <a>; the buttons beside it carry no underline. */
-  text-decoration: none;
 }
 .link:hover {
   color: var(--fg);

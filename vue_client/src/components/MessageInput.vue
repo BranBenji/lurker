@@ -193,7 +193,7 @@ import { useInputHistoryStore } from '../stores/inputHistory.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore, onInsertUrl } from '../stores/uploads.js';
-import { useDccStore, percentReceived, dccFileUrl, type DccTransfer } from '../stores/dcc.js';
+import { useDccStore, percentReceived, type DccTransfer } from '../stores/dcc.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
@@ -2978,7 +2978,13 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
     return;
   }
   if (cmd.kind === 'download') {
-    runDccDownload(cmd.id, networkId, target);
+    const name = dcc.transfers.find((t) => t.id === cmd.id)?.filename;
+    try {
+      await dcc.download(cmd.id);
+      localInfo(networkId, target, `/dcc download: #${cmd.id}${name ? ` ${name}` : ''}`);
+    } catch (e: any) {
+      localInfo(networkId, target, `/dcc download: #${cmd.id} — ${e?.message || 'failed'}`);
+    }
     return;
   }
   // accept / reject / cancel — the parser guarantees a numeric id here. They all
@@ -2994,23 +3000,6 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
   } catch (e: any) {
     localInfo(networkId, target, `/dcc ${verb}: ${e?.message || 'failed'}`);
   }
-}
-
-// /dcc download <id> — hand the file to the browser's download manager, the
-// same way the Transfers modal's link does. A transfer the store knows is not
-// complete is refused here, where the reason can be said; anything else goes to
-// the server, whose refusal then shows in the download manager.
-function runDccDownload(id: number, networkId: number | null, target: string): void {
-  const t = dcc.transfers.find((x) => x.id === id);
-  if (t && t.state !== 'completed') {
-    localInfo(networkId, target, `/dcc download: #${id} ${t.filename} is ${t.state}`);
-    return;
-  }
-  const a = document.createElement('a');
-  a.href = dccFileUrl(id);
-  a.download = '';
-  a.click();
-  localInfo(networkId, target, `/dcc download: #${id}${t ? ` ${t.filename}` : ''}`);
 }
 
 // One row for the /dcc list output: "#3  movie.mkv  receiving  alice  42%".

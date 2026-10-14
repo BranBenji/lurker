@@ -98,6 +98,15 @@ export function dccFileUrl(id: number): string {
   return `/api/dcc/${id}/file`;
 }
 
+// Why GET /api/dcc/:id/file refused, by status. The download is checked with a
+// HEAD, which carries no body, so the server's reason has to be restated here.
+const DOWNLOAD_REFUSALS: Record<number, string> = {
+  403: 'DCC is not enabled for this account',
+  404: 'transfer not found',
+  409: 'transfer is not complete',
+  410: 'file is no longer on the server',
+};
+
 type DccAction = 'accept' | 'reject' | 'cancel';
 
 // Dedupe concurrent loads (the `/dcc list` command and the modal's mount both
@@ -202,6 +211,29 @@ export const useDccStore = defineStore('dcc', {
       } finally {
         delete this.busy[id];
       }
+    },
+
+    // Save a completed transfer's file through the browser's download manager
+    // (#1079). Checked with a HEAD first: a refusal handed to the browser is
+    // saved as a .json file of the error (or, without `download`, navigates the
+    // app to it), so a file removed on the box has to be caught here and shown
+    // on the row instead.
+    async download(id: number): Promise<void> {
+      this.busy[id] = true;
+      delete this.actionError[id];
+      try {
+        await api(dccFileUrl(id), { method: 'HEAD' });
+      } catch (e: any) {
+        const message = DOWNLOAD_REFUSALS[e?.status] || e?.message || 'download failed';
+        this.actionError[id] = message;
+        throw new Error(message, { cause: e });
+      } finally {
+        delete this.busy[id];
+      }
+      const a = document.createElement('a');
+      a.href = dccFileUrl(id);
+      a.download = '';
+      a.click();
     },
 
     // Offer a DCC chat to a peer. Resolves as soon as the offer is away — the

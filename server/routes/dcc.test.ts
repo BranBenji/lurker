@@ -113,6 +113,17 @@ describe('GET /api/dcc/:id/file', () => {
     expect(res.body).toEqual(BYTES.subarray(4, 10));
   });
 
+  // The web client checks with a HEAD before handing the URL to the browser, so
+  // a refusal shows on the row instead of being saved as a file.
+  it('answers HEAD with the same status and no body', async () => {
+    const ok = transfer(path.join(tmpRoot, 'head'), 'head.mkv');
+    const okRes = await aliceAgent.head(`/api/dcc/${ok}/file`);
+    expect(okRes.status).toBe(200);
+    expect(okRes.headers['content-length']).toBe(String(BYTES.length));
+    const gone = transfer(path.join(tmpRoot, 'head-gone'), 'gone.mkv', { write: false });
+    expect((await aliceAgent.head(`/api/dcc/${gone}/file`)).status).toBe(410);
+  });
+
   // A browser resuming a file it already has whole asks for bytes past the end.
   it('answers an unsatisfiable Range with 416, not a server error', async () => {
     const id = transfer(path.join(tmpRoot, 'range416'), 'whole.bin');
