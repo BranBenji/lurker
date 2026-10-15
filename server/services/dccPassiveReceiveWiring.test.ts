@@ -278,6 +278,26 @@ describe('a passive offer', () => {
   });
 });
 
+describe('two passive resumes from one peer with one token', () => {
+  // irssi's tokens are 6 bits, so two of its offers can share one.
+  it('answers the ACCEPT for the file it names', async () => {
+    enable();
+    seedPartial('a.mkv', 10_000);
+    seedPartial('b.mkv', 20_000);
+    const h = harness();
+    h.conn.say('bob', 'xdcc send #1');
+    h.from('bob', `SEND a.mkv 16843009 0 ${DATA.length} 7`);
+    h.conn.say('bob', 'xdcc send #2');
+    h.from('bob', `SEND b.mkv 16843009 0 ${DATA.length} 7`);
+    expect(h.sent()).toEqual([`RESUME a.mkv 0 10000 7`, `RESUME b.mkv 0 20000 7`]);
+    h.from('bob', `ACCEPT b.mkv 0 20000 7`);
+    await waitFor(() => h.sent().length === 3);
+    expect(answeredPort(h.sent()[2], 'b.mkv', DATA.length, 7)).toBeGreaterThan(0);
+    const a = listDccTransfers(1).find((r) => r.filename === 'a.mkv' && r.state !== 'failed');
+    expect(a?.state).toBe('receiving');
+  });
+});
+
 describe('a passive offer that ends early', () => {
   it('says up front when this server has nowhere to listen, and refuses it', () => {
     enable({ listen: false });
@@ -368,6 +388,34 @@ describe('a passive offer that ends early', () => {
     h.conn.acceptPendingDcc(offered);
     await waitFor(() => activeDccListenerCount() === 1 && h.sent().length === 1);
     h.conn.dispose();
+    expect(getDccTransfer(1, offered.id)!.state).toBe('cancelled');
+    expect(activeDccListenerCount()).toBe(0);
+  });
+
+  it('ends a row whose connection is disposed while the port binds', async () => {
+    enable();
+    const h = harness();
+    h.from('bob', `SEND f.bin 16843009 0 ${DATA.length} 5`);
+    const offered = onlyRow();
+    h.conn.acceptPendingDcc(offered);
+    h.conn.dispose();
+    expect(getDccTransfer(1, offered.id)!.state).toBe('cancelled');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(getDccTransfer(1, offered.id)!.state).toBe('cancelled');
+    expect(h.sent()).toEqual([]);
+    expect(activeDccListenerCount()).toBe(0);
+  });
+
+  // A stopped network is unmapped, so a cancel after it never reaches the
+  // connection.
+  it('stops listening on a deliberate disconnect', async () => {
+    enable();
+    const h = harness();
+    h.from('bob', `SEND f.bin 16843009 0 ${DATA.length} 5`);
+    const offered = onlyRow();
+    h.conn.acceptPendingDcc(offered);
+    await waitFor(() => activeDccListenerCount() === 1 && h.sent().length === 1);
+    h.conn.disconnect('bye');
     expect(getDccTransfer(1, offered.id)!.state).toBe('cancelled');
     expect(activeDccListenerCount()).toBe(0);
   });

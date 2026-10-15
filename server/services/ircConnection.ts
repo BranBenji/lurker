@@ -320,12 +320,14 @@ const DCC_FLOOD_WARN_GAP_MS = 5 * 60_000;
 // dcc_timeout (dcc.c:576). Expiring ends the offer, not the file.
 const DCC_SEND_OFFER_TTL_MS = 5 * 60_000;
 // How long we listen for the sender of a passive offer to connect once we've
-// answered it (#1145). Senders stop waiting at different times: KVIrc and
-// HexDroid after 120 s, HexChat 180 s, irssi and halloy 5 min.
-const PASSIVE_DCC_RECEIVE_WAIT_MS = 5 * 60_000;
-// A passive offer older than this is past every sender's wait, and an answer
-// to it reaches irssi and HexDroid as a new offer from us (dcc-get.c:513,
-// IrcViewModel.kt:7506), so it isn't answered.
+// answered it (#1145). A sender still waiting connects as soon as it reads the
+// answer, and one that gave up never will, so this only covers a slow link.
+// Its port is out of a small range meanwhile.
+const PASSIVE_DCC_RECEIVE_WAIT_MS = 2 * 60_000;
+// How long a sender waits for our answer: KVIrc and HexDroid 120 s, HexChat
+// 180 s, irssi and halloy 5 min. Past the longest, an offer isn't answered: it
+// would reach irssi and HexDroid as a new offer from us (dcc-get.c:513,
+// IrcViewModel.kt:7506). Inside it, a sender that gave up sooner gets the same.
 const PASSIVE_DCC_OFFER_MAX_AGE_MS = 5 * 60_000;
 
 // How long a passive offer that ended unanswered is remembered, so a late
@@ -817,11 +819,12 @@ export class IrcConnection {
   // Sends in flight (#1086), and the offers nobody has connected for yet, both
   // keyed by dcc_transfers.id.
   private readonly dccSenders = new Map<number, DccSender>();
-  // Passive offers we answered (#1145), listening for the sender to connect,
-  // keyed by dcc_transfers.id.
+  // Passive offers we're answering (#1145), from binding a port until the
+  // sender connects, keyed by dcc_transfers.id. `handle` is null while the
+  // port binds.
   private readonly dccPassiveListens = new Map<
     number,
-    { handle: DccListenHandle; startOffset: number }
+    { handle: DccListenHandle | null; startOffset: number }
   >();
   private readonly dccSendOffers = new Map<number, DccSendOffer>();
   // Passive offers that ended unanswered (expired, withdrawn, declined, torn
@@ -6658,6 +6661,16 @@ export class IrcConnection {
   // DB progress writes + status lines are throttled so neither the single SQLite
   // connection nor the buffer gets hammered on a fast/large transfer.
   private acceptDccOffer(transferId: number, nick: string, offer: DccSend): void {
+    // The parser refuses these now; a row recorded before it did can remain.
+    if (offer.passive && offer.token === null) {
+      updateDccTransferState(transferId, 'failed', 'passive offer carries no token');
+      this.publishDcc(transferId);
+      this.surfaceCtcp(
+        nick,
+        `DCC: can't take "${offer.filename}" from ${nick}: the offer is malformed`,
+      );
+      return;
+    }
     if (offer.passive && !dccActiveListenAvailable()) {
       updateDccTransferState(transferId, 'failed', 'this server has no listening port configured');
       this.publishDcc(transferId);
@@ -6834,11 +6847,17 @@ export class IrcConnection {
   // nick and name.
   private pendingResumeFor(nick: string, accept: DccAccept) {
     if (accept.token !== null) {
-      for (const [key, p] of this.dccPendingResume) {
-        if (p.offer.passive && p.offer.token === accept.token && this.sameDccPeer(p.nick, nick)) {
-          return { key, pending: p };
-        }
-      }
+      const byToken = [...this.dccPendingResume].filter(
+        ([, p]) =>
+          p.offer.passive && p.offer.token === accept.token && this.sameDccPeer(p.nick, nick),
+      );
+      // Two of one peer's offers can share a token (irssi's are 6 bits), and
+      // then the name decides.
+      const hit =
+        byToken.length === 1
+          ? byToken[0]
+          : byToken.find(([key]) => key === this.dccResumeKey(nick, accept.filename));
+      if (hit) return { key: hit[0], pending: hit[1] };
     }
     const key = this.dccResumeKey(nick, accept.filename);
     const pending = this.dccPendingResume.get(key);
@@ -6968,17 +6987,23 @@ export class IrcConnection {
     destPath: string,
     startOffset: number,
   ): void {
-    const stillWanted = (): boolean =>
-      !this.disposed && getDccTransfer(this.network.user_id, transferId)?.state === 'receiving';
+    // Held from before the port binds, so a cancel or teardown meanwhile finds
+    // it (endPassiveDccListen); whatever ended it removed it.
+    const entry: { handle: DccListenHandle | null; startOffset: number } = {
+      handle: null,
+      startOffset,
+    };
+    this.dccPassiveListens.set(transferId, entry);
+    const ours = (): boolean => this.dccPassiveListens.get(transferId) === entry;
     const fail = (reason: string, line: string): void => {
+      this.dccPassiveListens.delete(transferId);
       markDccFailed(transferId, startOffset, reason);
       this.publishDcc(transferId);
       this.surfaceCtcp(nick, line);
     };
     openDccListener({ timeoutMs: PASSIVE_DCC_RECEIVE_WAIT_MS }).then(
       (handle) => {
-        // Cancelled while the port was binding.
-        if (!stillWanted()) {
+        if (!ours()) {
           handle.close();
           return;
         }
@@ -7003,7 +7028,7 @@ export class IrcConnection {
           fail(reason, `DCC: couldn't answer ${nick}'s offer of "${offer.filename}": ${reason}`);
           return;
         }
-        this.dccPassiveListens.set(transferId, { handle, startOffset });
+        entry.handle = handle;
         this.client.ctcpRequest(nick, 'DCC', body);
         this.surfaceCtcp(
           nick,
@@ -7012,7 +7037,7 @@ export class IrcConnection {
         );
         handle.accepted.then(
           (socket) => {
-            if (this.dccPassiveListens.get(transferId)?.handle !== handle) {
+            if (!ours()) {
               socket.destroy();
               return;
             }
@@ -7029,8 +7054,7 @@ export class IrcConnection {
           },
           () => {
             // Gone already means it was closed on purpose (a cancel, teardown).
-            if (this.dccPassiveListens.get(transferId)?.handle !== handle) return;
-            this.dccPassiveListens.delete(transferId);
+            if (!ours()) return;
             fail(
               `${nick} never connected`,
               `DCC: ${nick} never connected to send "${offer.filename}"; their offer may have expired`,
@@ -7039,7 +7063,7 @@ export class IrcConnection {
         );
       },
       (err: unknown) => {
-        if (!stillWanted()) return;
+        if (!ours()) return;
         const reason = `couldn't open a DCC listening port: ${err instanceof Error ? err.message : err}`;
         fail(reason, `DCC: can't take "${offer.filename}" from ${nick}: ${reason}`);
       },
@@ -7223,14 +7247,7 @@ export class IrcConnection {
       sender.cancel();
       return; // onError → 'cancelled' + publishDcc
     }
-    const listen = this.dccPassiveListens.get(transferId);
-    if (listen) {
-      this.dccPassiveListens.delete(transferId);
-      listen.handle.close();
-      markDccCancelled(transferId, listen.startOffset);
-      this.publishDcc(transferId);
-      return;
-    }
+    if (this.endPassiveDccListen(transferId)) return;
     const offer = this.dccSendOffers.get(transferId);
     if (offer) {
       this.endDccSendOffer(offer, 'cancelled');
@@ -7600,6 +7617,25 @@ export class IrcConnection {
   // A deliberate disconnect or teardown ends sends and the offers nobody took:
   // their RESUME and cancel ride this connection, which stopNetwork drops from
   // the map, so nothing could reach them after.
+  // Stop answering a passive offer, cancelled, while its port binds or once
+  // it listens. False when there was none.
+  private endPassiveDccListen(transferId: number): boolean {
+    const listen = this.dccPassiveListens.get(transferId);
+    if (!listen) return false;
+    this.dccPassiveListens.delete(transferId);
+    listen.handle?.close();
+    markDccCancelled(transferId, listen.startOffset);
+    this.publishDcc(transferId);
+    return true;
+  }
+
+  // On a deliberate disconnect as well as a dispose, because a stopped
+  // network is unmapped: a cancel after it never reaches this connection.
+  private endPassiveDccListens(): void {
+    // Deleting the entry being visited is safe in a Map's iteration.
+    for (const transferId of this.dccPassiveListens.keys()) this.endPassiveDccListen(transferId);
+  }
+
   private endDccSends(): void {
     for (const sender of this.dccSenders.values()) sender.cancel();
     this.dccSenders.clear();
@@ -9428,6 +9464,7 @@ export class IrcConnection {
   disconnect(reason?: string, opts: { announceCancelledRetry?: boolean } = {}): void {
     this.endDccChatHandshakes();
     this.endDccSends();
+    this.endPassiveDccListens();
     // The user/system asked to disconnect — record intent BEFORE quit() so the
     // 'close' handler doesn't fight them by auto-reconnecting, and drop any
     // pending backoff so an earlier drop's retry can't resurrect the connection.
@@ -9638,12 +9675,7 @@ export class IrcConnection {
     // socket, so they'd otherwise outlive this connection) and drop resume timers.
     for (const receiver of this.dccReceivers.values()) receiver.cancel();
     this.dccReceivers.clear();
-    for (const [transferId, listen] of this.dccPassiveListens) {
-      listen.handle.close();
-      markDccCancelled(transferId, listen.startOffset);
-      this.publishDcc(transferId);
-    }
-    this.dccPassiveListens.clear();
+    this.endPassiveDccListens();
     this.disposed = true;
     this.clearReconnectTimer();
     this.stopLagPinger();

@@ -369,9 +369,9 @@ export function buildDccSendPassive(file: string, size: number, token: number): 
 /** A peer's filename sent back to them as they wrote it, quoted when it has a
  *  space. Senders find their offer by it: irssi by nick and name
  *  (dcc-get.c:483), halloy and HexDroid by exact name (manager.rs:166,
- *  IrcViewModel.kt:7486). */
+ *  IrcViewModel.kt:7486). An ASCII space only, the one parseNamed splits on. */
 function echoDccFilename(name: string): string {
-  return /\s/.test(name) ? `"${name}"` : name;
+  return name.includes(' ') ? `"${name}"` : name;
 }
 
 /** Our answer to a peer's passive `DCC SEND` (#1145): where to connect, with

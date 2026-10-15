@@ -249,6 +249,10 @@ describe('DCC SEND builders', () => {
     expect(buildDccSendReply('a\\040b', '203.0.113.5', 30001, 99, 7)).toBe(
       'SEND a\\040b 3405803781 30001 99 7',
     );
+    // Quoted for an ASCII space only, the one the parser splits on.
+    expect(buildDccSendReply('a\u00a0b', '203.0.113.5', 30001, 99, 7)).toBe(
+      'SEND a\u00a0b 3405803781 30001 99 7',
+    );
     expect(buildDccSendReply('f.bin', 'example.com', 30001, 99, 7)).toBeNull();
   });
 
