@@ -385,6 +385,10 @@ describe('/api/upload-sessions', () => {
         `UPDATE upload_sessions SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 hours') WHERE id = ?`,
       ).run(idle.body.id);
       expect((await open({ purpose: 'dcc-send', size: 600, filename: 'b' })).status).toBe(201);
+      // Having let go of its space, the idle one must fit again to carry on.
+      const res = await put(idle.body.id, 0, Buffer.alloc(16));
+      expect(res.status).toBe(413);
+      expect(res.body.code).toBe('dcc_storage_limit');
     });
 
     it('is refused without a DCC folder configured', async () => {

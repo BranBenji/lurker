@@ -245,7 +245,9 @@ function parseNamed(
     }
     return read(filename, fields, false);
   }
-  const words = rest.split(/\s+/).filter(Boolean);
+  // ASCII spaces only: the separator is a space, and a name can hold other
+  // whitespace (a U+00A0 irssi sends as is) that must stay in it.
+  const words = rest.split(/ +/).filter(Boolean);
   if (words.length < 1 + min) {
     return { kind: 'invalid', reason: `expected ${min}-${max} fields after the filename` };
   }

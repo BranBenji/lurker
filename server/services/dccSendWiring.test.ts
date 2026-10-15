@@ -504,9 +504,50 @@ describe('a passive offer', () => {
         .prepare(`SELECT COUNT(*) AS n FROM dcc_transfers WHERE direction = 'recv'`)
         .get() as { n: number };
       expect(offers.n).toBe(0);
-      expect(h.lines().at(-1)).toMatch(/answered the offer of "my file\.bin" after it expired/);
+      expect(h.lines().at(-1)).toMatch(/answered the offer of "my file\.bin" after it ended/);
     } finally {
       setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
+    }
+  });
+
+  // Withdrawn, not just expired: the peer can still answer it.
+  it('knows a late answer to an offer that was withdrawn', () => {
+    enableSend();
+    setUserCapability(1, CAPABILITY_DCC_RECEIVE, true);
+    try {
+      const h = harness();
+      const id = offer(h, { passive: true });
+      const token = /(\d+)$/.exec(h.sent()!)![1];
+      h.conn.cancelDcc(id);
+      h.from(
+        'bob',
+        `SEND my_file.bin ${encodeDccAddress('192.0.2.7')} 5000 ${DATA.length} ${token}`,
+      );
+      const offers = db
+        .prepare(`SELECT COUNT(*) AS n FROM dcc_transfers WHERE direction = 'recv'`)
+        .get() as { n: number };
+      expect(offers.n).toBe(0);
+      // And no new offer takes the token while a late answer can still come.
+      const mint = (h.conn as unknown as { mintDccToken(): number }).mintDccToken.bind(h.conn);
+      for (let i = 0; i < 300; i++) expect(mint()).not.toBe(Number(token));
+    } finally {
+      setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
+    }
+  });
+
+  // The DCC flood bucket is 3 a minute per peer; answers to our own offers
+  // don't spend it.
+  it('answers every RESUME of our offers, however many come at once', () => {
+    enableSend();
+    const h = harness();
+    const tokens: string[] = [];
+    for (let i = 0; i < 5; i++) {
+      offer(h, { passive: true });
+      tokens.push(/(\d+)$/.exec(h.sent()!)![1]);
+    }
+    for (const token of tokens) {
+      h.from('bob', `RESUME my_file.bin 0 10 ${token}`);
+      expect(h.sent()).toBe(`ACCEPT my_file.bin 0 10 ${token}`);
     }
   });
 

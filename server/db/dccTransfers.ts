@@ -406,16 +406,22 @@ const DCC_UPLOAD_STALE_MINUTES = 60;
 /** Bytes every account's uploads to send will still put in the DCC folder:
  *  the free-disk check counts them, when that folder is another disk than
  *  the sessions' own. */
-export function pendingDccUploadBytes(): number {
+export function pendingDccUploadBytes(userId: number | null = null): number {
   return (
     db
       .prepare(
         `SELECT COALESCE(SUM(size), 0) AS n FROM upload_sessions
-         WHERE purpose = 'dcc-send' AND state != 'done'
+         WHERE purpose = 'dcc-send' AND state != 'done' AND (? IS NULL OR user_id = ?)
            AND updated_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${DCC_UPLOAD_STALE_MINUTES} minutes')`,
       )
-      .get() as { n: number }
+      .get(userId, userId) as { n: number }
   ).n;
+}
+
+/** Whether an upload to send has gone idle long enough to stop holding space
+ *  (see DCC_UPLOAD_STALE_MINUTES); taking a chunk again, it must fit again. */
+export function dccUploadIsStale(updatedAt: string): boolean {
+  return Date.parse(updatedAt) < Date.now() - DCC_UPLOAD_STALE_MINUTES * 60_000;
 }
 
 /** What the user's DCC files take (#1125): the files they keep (#1133), and
@@ -444,15 +450,7 @@ export function dccUsageBytes(
          AND id NOT IN (SELECT value FROM json_each(?))`,
     )
     .get(userId, JSON.stringify(exclude)) as { stored: number; committed: number };
-  const uploading = (
-    db
-      .prepare(
-        `SELECT COALESCE(SUM(size), 0) AS n FROM upload_sessions
-         WHERE user_id = ? AND purpose = 'dcc-send' AND state != 'done'
-           AND updated_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${DCC_UPLOAD_STALE_MINUTES} minutes')`,
-      )
-      .get(userId) as { n: number }
-  ).n;
+  const uploading = pendingDccUploadBytes(userId);
   return {
     stored: files + partials.stored,
     committed: files + partials.committed + uploading,

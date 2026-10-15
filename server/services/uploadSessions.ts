@@ -63,7 +63,7 @@ import { accountIsEmpty } from './importService.js';
 import { UploadRequestError } from './uploadService.js';
 import { dccMaxFileBytes, dccSendEnabledForUser } from './dccConfig.js';
 import { dccRoot } from './dccPaths.js';
-import { dccUsageBytes, pendingDccUploadBytes } from '../db/dccTransfers.js';
+import { dccUploadIsStale, dccUsageBytes, pendingDccUploadBytes } from '../db/dccTransfers.js';
 import { getDccStorageLimit } from '../db/dccStorageLimits.js';
 import { formatBytes } from './dcc.js';
 
@@ -192,6 +192,30 @@ function capFor(
   }
 }
 
+/** Refuse a DCC file that would take the account past its limit (#1125):
+ *  what it keeps or will still write, uploads under way included, plus this. */
+function assertDccFits(userId: number, size: number): void {
+  const limit = getDccStorageLimit(userId);
+  if (limit === null) return;
+  const used = dccUsageBytes(userId).committed;
+  if (used + size > limit) {
+    throw new UploadRequestError(
+      413,
+      `over your DCC storage limit (${formatBytes(used)} of ${formatBytes(limit)} used)`,
+      { code: 'dcc_storage_limit' },
+    );
+  }
+}
+
+/** Whether two paths are on one filesystem. Unknown counts as not. */
+function sameDisk(a: string, b: string): boolean {
+  try {
+    return fs.statSync(a).dev === fs.statSync(b).dev;
+  } catch {
+    return false;
+  }
+}
+
 /** Bytes the open sessions will still write, every account's. Free disk is
  *  checked against these too, or ten sessions that each fit alone would
  *  together fill it. */
@@ -254,19 +278,14 @@ export function createUploadSession(
   // checks it: what the account keeps or will still write, sessions like this
   // one included, plus this file.
   if (purpose === 'dcc-send') {
-    const limit = getDccStorageLimit(user.id);
-    const used = limit === null ? 0 : dccUsageBytes(user.id).committed;
-    if (limit !== null && used + size > limit) {
-      throw new UploadRequestError(
-        413,
-        `over your DCC storage limit (${formatBytes(used)} of ${formatBytes(limit)} used)`,
-        { code: 'dcc_storage_limit' },
-      );
-    }
-    // It moves from the session dir to the DCC folder, which can be another
-    // disk, with the other uploads on their way there.
-    if (!hasFreeSpaceFor(dccRoot()!, size + pendingDccUploadBytes())) {
-      throw new UploadRequestError(507, 'not enough free disk space on the server for this file');
+    assertDccFits(user.id, size);
+    // It moves from the session dir to the DCC folder. On another disk, that
+    // one needs room for it and for the other uploads on their way there; on
+    // the same disk, the session-dir check below already holds the bytes.
+    if (!sameDisk(dccRoot()!, UPLOAD_SESSION_DIR)) {
+      if (!hasFreeSpaceFor(dccRoot()!, size + pendingDccUploadBytes())) {
+        throw new UploadRequestError(507, 'not enough free disk space on the server for this file');
+      }
     }
   }
   // The importer refuses an account with data in it. Said now, not after the
@@ -314,6 +333,11 @@ export async function appendUploadChunk(
       code: 'session_closed',
       offset: row.size,
     });
+  }
+  // An upload to send that went idle stopped holding its space (#1086); to
+  // carry on, it must fit again.
+  if (row.purpose === 'dcc-send' && dccUploadIsStale(row.updated_at)) {
+    assertDccFits(userId, row.size);
   }
   const offset = uploadSessionOffset(id);
   const claimed = typeof offsetHeader === 'string' ? Number(offsetHeader) : NaN;

@@ -53,7 +53,7 @@ describe('isSinglePeerTarget', () => {
     for (const t of ['#room', '&local', '+modeless', '!12345safe', '@#room', '%+room', '~&x']) {
       expect(isSinglePeerTarget(t)).toBe(false);
     }
-    for (const t of ['bob,#room', 'bob,carol', 'bob carol', 'bob\r', '']) {
+    for (const t of ['bob,#room', 'bob,carol', 'bob carol', 'bob\r', '', '$$*', '$#*.net']) {
       expect(isSinglePeerTarget(t)).toBe(false);
     }
   });

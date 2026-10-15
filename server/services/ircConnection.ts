@@ -318,9 +318,9 @@ const DCC_FLOOD_WARN_GAP_MS = 5 * 60_000;
 // dcc_timeout (dcc.c:576). Expiring ends the offer, not the file.
 const DCC_SEND_OFFER_TTL_MS = 5 * 60_000;
 
-// How long an expired passive offer is remembered, so a late answer to it is
-// recognised (see expiredPassiveSends).
-const EXPIRED_PASSIVE_SEND_MEMORY_MS = 60 * 60_000;
+// How long a passive offer that ended unanswered is remembered, so a late
+// answer to it is recognised (see endedPassiveSends).
+const ENDED_PASSIVE_SEND_MEMORY_MS = 60 * 60_000;
 
 // A file we've offered and the peer hasn't connected for yet (#1086).
 interface DccSendOffer {
@@ -808,14 +808,12 @@ export class IrcConnection {
   // keyed by dcc_transfers.id.
   private readonly dccSenders = new Map<number, DccSender>();
   private readonly dccSendOffers = new Map<number, DccSendOffer>();
-  // Passive offers that expired, by token, for a while after: WeeChat, HexChat,
-  // KVIrc, HexDroid and halloy never expire an offer they were sent, so the
-  // peer can still answer one. Its reply would otherwise read as the peer
-  // offering us our own file.
-  private readonly expiredPassiveSends = new Map<
-    number,
-    { nick: string; name: string; at: number }
-  >();
+  // Passive offers that ended unanswered (expired, withdrawn, declined, torn
+  // down), for a while after, by folded peer and token: WeeChat, HexChat, KVIrc,
+  // HexDroid and halloy never expire an offer they were sent, so the peer can
+  // still answer one. Its reply would otherwise read as the peer offering us
+  // our own file.
+  private readonly endedPassiveSends = new Map<string, { name: string; at: number }>();
   // Live DCC CHAT sessions, keyed by the peer's lowercased nick. Each is a
   // direct TCP line-chat surfaced as a `=nick` buffer. Process-bound: the socket
   // is independent of the IRC connection (so it survives a reconnect, exactly as
@@ -6454,8 +6452,13 @@ export class IrcConnection {
       }
       // Still bounded — a DCC offer flood is a real nuisance vector — but on its
       // own key, and NEVER silently: a dropped offer the user can't see is
-      // indistinguishable from a broken feature.
-      if (!this.ctcpLimiter.allowIncoming(`dcc:${this.ctcpPeerKey(event)}`)) {
+      // indistinguishable from a broken feature. Not an answer to something we
+      // started (a RESUME, a passive reply, an ACCEPT): those are handshakes
+      // the user asked for, and a few sends to one peer would use up the bucket.
+      if (
+        !this.answersOurDcc(nick, dcc) &&
+        !this.ctcpLimiter.allowIncoming(`dcc:${this.ctcpPeerKey(event)}`)
+      ) {
         this.warnDccFlood(nick, event);
         return;
       }
@@ -6601,7 +6604,7 @@ export class IrcConnection {
       if (late) {
         this.surfaceCtcp(
           nick,
-          `DCC: ${nick} answered the offer of "${late.name}" after it expired — send it again`,
+          `DCC: ${nick} answered the offer of "${late.name}" after it ended — send it again`,
         );
         return;
       }
@@ -6835,6 +6838,28 @@ export class IrcConnection {
           dccReceiveEnabledForUser(userId) ||
           dccSendEnabledForUser(userId)
         );
+    }
+  }
+
+  // Whether a DCC request answers one we made: a RESUME of our offer, the
+  // receiver's reply to our passive offer (or a late one to an ended offer),
+  // the sender's ACCEPT of our RESUME, a peer's reply to our passive chat.
+  private answersOurDcc(nick: string, parsed: DccParse): boolean {
+    switch (parsed.kind) {
+      case 'resume':
+        return this.dccSendOfferForResume(nick, parsed) !== undefined;
+      case 'send':
+        return (
+          !parsed.passive &&
+          (this.passiveDccSendFor(nick, parsed.token) !== undefined ||
+            this.lateDccSendReply(nick, parsed.token) !== undefined)
+        );
+      case 'accept':
+        return this.dccPendingResume.has(this.dccResumeKey(nick, parsed.filename));
+      case 'chat':
+        return this.answersOurPassiveChat(nick, parsed);
+      default:
+        return false;
     }
   }
 
@@ -7263,14 +7288,27 @@ export class IrcConnection {
     return undefined;
   }
 
-  // A passive offer of ours to `nick` with `token` that expired a while ago.
-  private lateDccSendReply(
-    nick: string,
-    token: number | null,
-  ): { nick: string; name: string } | undefined {
-    const e = token === null ? undefined : this.expiredPassiveSends.get(token);
-    if (!e || Date.now() - e.at > EXPIRED_PASSIVE_SEND_MEMORY_MS) return undefined;
-    return this.sameDccPeer(e.nick, nick) ? e : undefined;
+  // A passive offer of ours to `nick` with `token` that ended a while ago.
+  private lateDccSendReply(nick: string, token: number | null): { name: string } | undefined {
+    if (token === null) return undefined;
+    const e = this.endedPassiveSends.get(this.passiveSendKey(nick, token));
+    return e && Date.now() - e.at <= ENDED_PASSIVE_SEND_MEMORY_MS ? e : undefined;
+  }
+
+  private passiveSendKey(nick: string, token: number): string {
+    return `${foldTargetFor(this.network.id, nick)} ${token}`;
+  }
+
+  // Whether a token is held by an ended offer still remembered: a new offer
+  // with it would take a late answer to the old one as its own, and send the
+  // wrong file.
+  private endedPassiveSendHolds(token: number): boolean {
+    const now = Date.now();
+    for (const [key, e] of this.endedPassiveSends) {
+      if (now - e.at > ENDED_PASSIVE_SEND_MEMORY_MS) this.endedPassiveSends.delete(key);
+      else if (key.endsWith(` ${token}`)) return true;
+    }
+    return false;
   }
 
   private ownsPassiveDccSendToken(token: number): boolean {
@@ -7352,13 +7390,6 @@ export class IrcConnection {
     const offer = this.dccSendOffers.get(transferId);
     if (!offer) return;
     this.endDccSendOffer(offer, 'failed', 'not accepted within 5 minutes');
-    if (offer.token !== null) {
-      const now = Date.now();
-      for (const [token, e] of this.expiredPassiveSends) {
-        if (now - e.at > EXPIRED_PASSIVE_SEND_MEMORY_MS) this.expiredPassiveSends.delete(token);
-      }
-      this.expiredPassiveSends.set(offer.token, { nick: offer.nick, name: offer.name, at: now });
-    }
     this.surfaceCtcp(
       offer.nick,
       `DCC: ${offer.nick} didn't accept "${offer.name}" within 5 minutes`,
@@ -7386,6 +7417,12 @@ export class IrcConnection {
     clearTimeout(offer.timer);
     offer.listener?.close();
     offer.dial?.destroy();
+    if (offer.token !== null) {
+      this.endedPassiveSends.set(this.passiveSendKey(offer.nick, offer.token), {
+        name: offer.name,
+        at: Date.now(),
+      });
+    }
     if (state === 'failed') markDccFailed(offer.transferId, 0, error);
     else if (state === 'cancelled') markDccCancelled(offer.transferId, 0);
     else updateDccTransferState(offer.transferId, 'rejected');
@@ -7522,7 +7559,11 @@ export class IrcConnection {
     // naming the wrong peer), and the real reply arrive with nothing to match.
     for (let i = 0; i < 64; i++) {
       const token = 1 + Math.floor(Math.random() * 63);
-      if (!this.pendingPassiveChats.has(token) && !this.ownsPassiveDccSendToken(token)) {
+      if (
+        !this.pendingPassiveChats.has(token) &&
+        !this.ownsPassiveDccSendToken(token) &&
+        !this.endedPassiveSendHolds(token)
+      ) {
         return token;
       }
     }

@@ -72,6 +72,9 @@ export class DccSender {
   private acks = false;
   private confirmed: number;
   private grace: ReturnType<typeof setTimeout> | null = null;
+  // Bytes still in our socket's buffer when the receiver hung up: for one that
+  // never ACKs, the only sign it left before it had everything.
+  private unflushedAtEnd = 0;
   private finishedReading = false;
   private settled = false;
   // The most onProgress has said, so it never goes back: the bytes sent come
@@ -122,6 +125,9 @@ export class DccSender {
       if (this.finishedReading && this.confirmed === size) this.settle(null);
     });
 
+    sock.on('end', () => {
+      this.unflushedAtEnd = sock.writableLength;
+    });
     sock.on('close', () => {
       if (this.settled) return;
       if (!this.finishedReading) {
@@ -130,6 +136,8 @@ export class DccSender {
         this.settle(
           new Error(`receiver closed having confirmed ${this.confirmed} of ${size} bytes`),
         );
+      } else if (!this.acks && this.unflushedAtEnd > 0) {
+        this.settle(new Error('receiver closed before the transfer finished'));
       } else {
         this.settle(null);
       }

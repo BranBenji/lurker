@@ -40,12 +40,15 @@ export function isChannelTarget(target: string | null | undefined): boolean {
 /**
  * Whether `target` names exactly one person: what a DCC offer may go to. Not a channel, not a
  * STATUSMSG channel target (`@#room`, `+#room`), not a list (`bob,#room` reaches every target
- * on a server that takes several), and nothing a line could be split on. A DCC offer to a
+ * on a server that takes several), not a broadcast mask (`$$*`), and nothing a line could be
+ * split on. A DCC offer to a
  * channel hands its file, or its chat, to whoever connects first.
  */
 export function isSinglePeerTarget(target: string): boolean {
   // eslint-disable-next-line no-control-regex
   if (!target || /[,\s\u0000-\u001f]/.test(target)) return false;
+  // A server or host mask (`$$*`, `$#*.net`): an oper's broadcast to everyone.
+  if (target.startsWith('$')) return false;
   // A STATUSMSG prefix can itself be a channel sigil (`+`, `&`), so every way of reading the
   // leading run is tried: `%+room` is the `+room` channel to the halfops.
   for (let t = target; t; t = t.slice(1)) {

@@ -286,6 +286,14 @@ describe('parseDcc — invalid', () => {
       filename: 'my file.txt',
       position: 1024,
     });
+    // A separator is an ASCII space: other whitespace stays in the name.
+    expect(parseDcc('ACCEPT a\u00a012 5000 1024')).toMatchObject({
+      kind: 'accept',
+      filename: 'a\u00a012',
+      port: 5000,
+      position: 1024,
+      token: null,
+    });
     // A number in the name is not an address.
     expect(send('SEND track 12 3232235777 50612 1024')).toMatchObject({
       filename: 'track 12',
