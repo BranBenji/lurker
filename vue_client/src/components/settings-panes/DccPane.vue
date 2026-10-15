@@ -3,7 +3,8 @@
   SPDX-License-Identifier: MPL-2.0
 
   What DCC does for this account (#1080): which parts an admin granted (chat,
-  receiving files), and, for receiving, the limits the operator set. Where files
+  receiving files, sending them (#1086)), and, for files, the limits the
+  operator set. Where files
   land on the server is the admin's business (Admin → DCC), not shown here. The
   category only exists where the instance runs DCC (features.dcc); the grants
   come from GET /api/dcc/config. Read-only.
@@ -13,12 +14,12 @@
   <section id="dcc" class="settings-pane">
     <h2>dcc</h2>
     <p class="section-desc">
-      With DCC, people on IRC can open direct chats with you and send you files. Files are received
-      by this server, and you download them from the Transfers list.
+      With DCC, people on IRC can open direct chats with you and swap files with you. Files are kept
+      on this server, under Files in the Transfers list.
     </p>
 
     <template v-if="config">
-      <template v-if="config.chat || config.receive">
+      <template v-if="config.chat || config.receive || config.send">
         <table class="limits">
           <tbody>
             <tr>
@@ -29,7 +30,17 @@
               <th scope="row">Receiving files</th>
               <td>{{ config.receive ? 'on' : 'off' }}</td>
             </tr>
-            <template v-if="config.receive">
+            <tr>
+              <th scope="row">Sending files</th>
+              <td>
+                {{ config.send ? 'on' : 'off' }}
+                <span v-if="config.send && !config.canListen" class="muted">
+                  — passive only (<code>/dcc send -passive</code>): this server has no public
+                  address set up for DCC
+                </span>
+              </td>
+            </tr>
+            <template v-if="config.receive || config.send">
               <tr>
                 <th scope="row">Space used</th>
                 <td>
@@ -82,6 +93,8 @@ import { formatBytes } from '../../utils/formatBytes.js';
 interface DccConfig {
   chat: boolean;
   receive: boolean;
+  send: boolean;
+  canListen?: boolean;
   maxFileBytes?: number;
   allowPrivateHosts?: boolean;
   usedBytes?: number;

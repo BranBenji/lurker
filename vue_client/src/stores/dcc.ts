@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// Client store for the DCC download manager (#270 phase 2). Mirrors the server's
-// dcc_transfers rows and backs the Transfers view: the initial list comes from
+// Client store for the DCC download manager (#270 phase 2), and for sending
+// (#1086). Mirrors the server's dcc_transfers rows and backs the Transfers view: the initial list comes from
 // GET /api/dcc, then live state changes arrive over the WS as `dcc-transfer`
 // frames (applyTransfer). Acting on a transfer (accept / reject / cancel) goes
 // over POST and the authoritative row echoes back — both through the action's
@@ -16,11 +16,13 @@
 
 import { defineStore } from 'pinia';
 import { api } from '../api.js';
+import { uploadInChunks } from '../lib/chunkedUpload.js';
 import { useConfigStore } from './config.js';
 
 // Mirror of the server DccTransferState union (db/dccTransfers.ts). Two entry
-// states (requested / pending_approval), an active receive path, and terminal
-// states. Kept in sync by hand — the wire is plain JSON.
+// states (requested / pending_approval), an active receive path, a send's
+// offered / sending (#1086), and terminal states. Kept in sync by hand — the
+// wire is plain JSON.
 export type DccState =
   | 'requested'
   | 'pending_approval'
@@ -28,6 +30,8 @@ export type DccState =
   | 'receiving'
   | 'stalled'
   | 'verifying'
+  | 'offered'
+  | 'sending'
   | 'completed'
   | 'failed'
   | 'rejected'
@@ -44,6 +48,9 @@ export interface DccTransfer {
   /** Null once the network was deleted: the row and its file stay (#1125). */
   network_id: number | null;
   peer_nick: string;
+  /** A file received, or one of ours sent (#1086). For a send,
+   *  received_bytes is what the peer has confirmed. */
+  direction: 'recv' | 'send';
   filename: string;
   advertised_size: number;
   received_bytes: number;
@@ -58,12 +65,13 @@ export interface DccTransfer {
   /** Non-null while this row owns a file on the server. Used only as that
    *  signal: the path itself is never shown. */
   destination_path?: string | null;
-  /** The kept file a completed receive produced, while it is kept (#1133). */
+  /** The kept file a completed receive produced, or the one a send sends,
+   *  while it is kept (#1133). */
   file_id?: number | null;
 }
 
 /** A file the account keeps on the server (#1133): a completed receive, or
- *  (with #1086) one uploaded to send. */
+ *  one uploaded to send (#1086). */
 export interface DccFile {
   id: number;
   name: string;
@@ -77,6 +85,33 @@ export interface DccFile {
 }
 
 export type DccPanelTab = 'transfers' | 'files';
+
+/** Who the Files tab is picking a file for: `/dcc send <nick>` with no file
+ *  (#1086). */
+export interface DccSendPick {
+  networkId: number;
+  nick: string;
+  passive: boolean;
+}
+
+/** What GET /api/dcc/config says this account may do. */
+export interface DccAccountConfig {
+  chat: boolean;
+  receive: boolean;
+  send: boolean;
+  /** Whether an offer can be active; without it only `-passive` sends work. */
+  canListen?: boolean;
+}
+
+// The file `/dcc send <nick> <file>` means (#1086): one named exactly that,
+// the newest if several are (two receives of one name are two files), else
+// the id /dcc files shows, with or without its `#`.
+export function findDccFile(files: readonly DccFile[], ref: string): DccFile | null {
+  const named = files.filter((f) => f.name === ref).toSorted((a, b) => b.id - a.id);
+  if (named.length) return named[0];
+  const m = /^#?(\d+)$/.exec(ref);
+  return m ? (files.find((f) => f.id === Number(m[1])) ?? null) : null;
+}
 
 // Where a kept file downloads from (#1133).
 export function keptFileUrl(id: number): string {
@@ -92,6 +127,8 @@ export const ACTIVE_STATES: ReadonlySet<DccState> = new Set([
   'receiving',
   'stalled',
   'verifying',
+  'offered',
+  'sending',
 ]);
 
 // Terminal states a transfer never legitimately leaves (a row id is one-shot).
@@ -224,6 +261,13 @@ export const useDccStore = defineStore('dcc', {
     // Clear all is in flight, and its last error.
     clearing: false,
     clearError: '',
+    // What the account may do, from /api/dcc/config, once asked (#1086).
+    account: null as DccAccountConfig | null,
+    // Set while the Files tab is picking a file to send (#1086).
+    pick: null as DccSendPick | null,
+    // A file going up to be sent, and how far (0–100), or its failure.
+    uploading: null as { name: string; percent: number } | null,
+    uploadError: '',
   }),
   getters: {
     hasAny: (s): boolean => s.transfers.length > 0 || s.files.length > 0,
@@ -474,6 +518,83 @@ export const useDccStore = defineStore('dcc', {
       }
     },
 
+    // What the account may do. Asked once per panel open, so a grant an admin
+    // changed shows the next time.
+    async loadAccount(): Promise<DccAccountConfig | null> {
+      try {
+        this.account = await api<DccAccountConfig>('/api/dcc/config');
+      } catch {
+        // The send controls stay hidden; the actions say why if used anyway.
+      }
+      return this.account;
+    },
+
+    // Offer one of the account's files to a peer (#1086). Resolves with the
+    // transfer, `offered`; it goes on through the live frames.
+    async sendFile(
+      networkId: number,
+      nick: string,
+      fileId: number,
+      passive = false,
+    ): Promise<DccTransfer> {
+      this.fileBusy[fileId] = true;
+      delete this.fileError[fileId];
+      try {
+        const { transfer } = await api<{ transfer: DccTransfer }>('/api/dcc/send', {
+          method: 'POST',
+          body: { networkId, nick, fileId, passive },
+        });
+        this.applyTransfer(transfer);
+        return transfer;
+      } catch (e: any) {
+        this.fileError[fileId] = e?.message || 'send failed';
+        throw e;
+      } finally {
+        delete this.fileBusy[fileId];
+      }
+    },
+
+    // Upload a file to become one of the account's DCC files, in chunks
+    // through an upload session (#650), so no proxy's limit caps it and a
+    // dropped request costs a chunk. Resolves with the kept file.
+    async uploadFile(file: File): Promise<DccFile> {
+      this.uploading = { name: file.name, percent: 0 };
+      this.uploadError = '';
+      try {
+        const { file: kept } = await uploadInChunks<{ file: DccFile }>(file, {
+          purpose: 'dcc-send',
+          filename: file.name,
+          onProgress: (percent) => {
+            if (this.uploading) this.uploading.percent = percent;
+          },
+        });
+        this.applyFile(kept);
+        return kept;
+      } catch (e: any) {
+        this.uploadError = e?.message || 'upload failed';
+        throw e;
+      } finally {
+        this.uploading = null;
+      }
+    },
+
+    // The Files tab's pick: send `fileId` to who it is picking for, and show
+    // the transfer.
+    async sendPicked(fileId: number): Promise<DccTransfer | null> {
+      const pick = this.pick;
+      if (!pick) return null;
+      const transfer = await this.sendFile(pick.networkId, pick.nick, fileId, pick.passive);
+      this.pick = null;
+      this.panelTab = 'transfers';
+      return transfer;
+    },
+
+    // `/dcc send <nick>` with no file: open Files to pick one, or upload one.
+    openToSend(pick: DccSendPick): void {
+      this.open('files');
+      this.pick = pick;
+    },
+
     // Offer a DCC chat to a peer. Resolves as soon as the offer is away — the
     // outcome (connected, refused, timed out) arrives as notices in the `=nick`
     // buffer, which materializes from those notices, so there is nothing useful
@@ -492,6 +613,8 @@ export const useDccStore = defineStore('dcc', {
     open(tab: DccPanelTab = 'transfers'): void {
       this.panelOpen = true;
       this.panelTab = tab;
+      this.pick = null;
+      void this.loadAccount();
       this.load().catch(() => {
         /* surfaced via listError */
       });
@@ -501,6 +624,7 @@ export const useDccStore = defineStore('dcc', {
     },
     close(): void {
       this.panelOpen = false;
+      this.pick = null;
     },
 
     // With every snapshot, on an instance that runs DCC: both lists, so the
