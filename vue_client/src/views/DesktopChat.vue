@@ -64,7 +64,7 @@
           <i class="fa-regular fa-bookmark"></i>
         </button>
         <button class="link" @click="showUploads = true" title="Recent uploads">
-          <i class="fa-solid fa-arrow-up-from-bracket"></i>
+          <i class="fa-solid fa-share-from-square"></i>
         </button>
         <TransfersButton class="link" />
       </div>

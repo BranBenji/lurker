@@ -18,7 +18,7 @@
     :title="title"
     @click="dcc.open()"
   >
-    <i class="fa-solid fa-folder-open"></i>
+    <i class="fa-solid fa-box-archive"></i>
   </button>
 </template>
 

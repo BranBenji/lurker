@@ -23,7 +23,7 @@
           <i class="fa-regular fa-bookmark"></i>
         </button>
         <button class="icon" title="Recent uploads" @click="showUploads = true">
-          <i class="fa-solid fa-arrow-up-from-bracket"></i>
+          <i class="fa-solid fa-share-from-square"></i>
         </button>
         <TransfersButton class="icon" />
         <button class="icon" title="Add network" @click="openAddNetwork">
