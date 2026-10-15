@@ -11,6 +11,8 @@ import {
   createAnonAgent,
 } from '../test-utils/testApp.js';
 import type { User } from '../db/users.js';
+import { setEnv, setEnvAll } from '../test-utils/env.js';
+import { until } from '../test-utils/until.js';
 
 const ctx = setupTestDb('routes-admin');
 
@@ -80,7 +82,14 @@ describe('GET /api/admin/users', () => {
   });
 
   it('reports each account’s ident, derived from the username by default (#643)', async () => {
-    const res = await adminAgent.get('/api/admin/users');
+    // Neither ident mode, whatever the shell running the suite exports.
+    const restore = setEnvAll({ LURKER_IDENTD_ENABLED: '', LURKER_OIDENTD_FILE: '' });
+    let res;
+    try {
+      res = await adminAgent.get('/api/admin/users');
+    } finally {
+      restore();
+    }
     const row = res.body.users.find((u: User) => u.username === 'admin-regular');
     expect(row.ident).toBeNull();
     expect(row.effectiveIdent).toBe('admin-regular');
@@ -507,5 +516,87 @@ describe('invites', () => {
       .set('Origin', 'https://lurker.example.com')
       .send({});
     expect(res.body.invite.url.startsWith('https://lurker.example.com/invite/')).toBe(true);
+  });
+});
+
+// In engine mode the engine holds the sockets and answers ident, and the
+// variables that turn it on belong on the engine — this process can't see
+// them. "Not set here" is then "can't tell", never "off" (#1138).
+describe('identdEnabled in engine mode (#1138)', () => {
+  const SECRET = 'admin-engine-secret';
+  const undo: Array<() => unknown> = [];
+  let EngineLink: typeof import('../services/engineLink.js').EngineLink;
+  let EngineServer: typeof import('../engine/server.js').EngineServer;
+
+  beforeAll(async () => {
+    ({ EngineLink } = await import('../services/engineLink.js'));
+    ({ EngineServer } = await import('../engine/server.js'));
+  });
+
+  // Every case starts with neither ident mode set here, whatever the shell
+  // running the suite exports.
+  beforeEach(() => {
+    undo.push(setEnvAll({ LURKER_IDENTD_ENABLED: '', LURKER_OIDENTD_FILE: '' }));
+  });
+
+  afterEach(async () => {
+    for (let fn = undo.pop(); fn; fn = undo.pop()) await fn();
+  });
+
+  // As server.ts does at boot, against `port` (default: nothing listening —
+  // the link is never started, which is all most cases need).
+  async function engineMode(port = 1, secret = SECRET) {
+    undo.push(
+      setEnvAll({
+        LURKER_ENGINE_URL: `tcp://127.0.0.1:${port}`,
+        LURKER_ENGINE_SECRET: secret,
+        LURKER_ENGINE_RETRY_BASE_MS: '100',
+        LURKER_ENGINE_HEARTBEAT_MS: '600000',
+      }),
+    );
+    await EngineLink.resetForTests();
+    undo.push(() => EngineLink.resetForTests());
+    return EngineLink.shared();
+  }
+
+  async function identdEnabled() {
+    const res = await adminAgent.get('/api/admin/users');
+    expect(res.status).toBe(200);
+    return res.body.identdEnabled as boolean | null;
+  }
+
+  it('says off without an engine when nothing here runs ident', async () => {
+    undo.push(setEnv('LURKER_ENGINE_URL', ''));
+    expect(await identdEnabled()).toBe(false);
+  });
+
+  it("can't tell in engine mode when the variables aren't set here", async () => {
+    await engineMode();
+    expect(await identdEnabled()).toBeNull();
+  });
+
+  // A shared .env (the stock compose) feeds both processes.
+  it('says on in engine mode when this process can see the setting', async () => {
+    undo.push(setEnv('LURKER_OIDENTD_FILE', '/tmp/lurker-admin-test-oidentd.conf'));
+    await engineMode();
+    expect(await identdEnabled()).toBe(true);
+  });
+
+  // A refusal turns engine mode off and this process runs ident itself, so
+  // its own environment is the whole answer again.
+  it("reads this process's setting once the engine has refused it", async () => {
+    const engine = new EngineServer({
+      secret: SECRET,
+      bufferBytes: 64 * 1024,
+      bufferTotalBytes: 1024 * 1024,
+      version: 'test',
+      log: () => {},
+    });
+    const { port } = await engine.listen(0, '127.0.0.1');
+    undo.push(() => engine.shutdown('test done', 500));
+    const link = await engineMode(port, 'the-wrong-secret');
+    link.start();
+    await until(() => link.state === 'refused', 3000, 'link refused');
+    expect(await identdEnabled()).toBe(false);
   });
 });

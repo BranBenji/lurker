@@ -101,7 +101,10 @@ export const useAdminStore = defineStore('admin', {
     users: [] as AdminUser[],
     // Whether an ident daemon is actually running (built-in identd or the
     // oidentd file). False makes the per-user idents inert — the pane says so.
-    identdEnabled: false,
+    // null: the server can't tell (in engine mode ident runs on the engine,
+    // out of its sight), so the pane keeps the editor rather than claiming
+    // ident is off.
+    identdEnabled: false as boolean | null,
     invites: [] as AdminInvite[],
     loginLockouts: [] as AdminLoginLockout[],
     loginLockoutPolicy: null as AdminLoginLockoutPolicy | null,
@@ -155,7 +158,7 @@ export const useAdminStore = defineStore('admin', {
         // fresher state.
         if (seq !== this.usersFetchSeq) return;
         this.users = users || [];
-        this.identdEnabled = !!identdEnabled;
+        this.identdEnabled = identdEnabled === null ? null : !!identdEnabled;
         this.usersLoaded = true;
       } catch (e: any) {
         if (seq !== this.usersFetchSeq) return;

@@ -38,7 +38,7 @@
           <span v-if="u.role === 'admin'" class="role-tag">admin</span>
           <span v-if="u.isPaused" class="paused-tag">paused</span>
           <span
-            v-if="adminStore.identdEnabled && u.effectiveIdent"
+            v-if="adminStore.identdEnabled !== false && u.effectiveIdent"
             class="ident-tag"
             :title="
               u.ident
@@ -49,7 +49,7 @@
             ident {{ u.effectiveIdent }}
           </span>
           <span
-            v-if="adminStore.identdEnabled && u.identConflict"
+            v-if="adminStore.identdEnabled !== false && u.identConflict"
             class="conflict-tag"
             title="another account answers this same ident — until one of them is given its own, a network can't tell these two apart"
           >
@@ -209,7 +209,10 @@ const users = computed(() => adminStore.users);
 //   • may they be ASSIGNED here? — standalone only; a hosted cell answers with
 //     `lu<accountId>` from the control plane, so the tag is worth showing there
 //     but the editor isn't (its route 409s).
-const canAssignIdents = computed(() => adminStore.identdEnabled && !config.isNode);
+// null ("can't tell" — in engine mode ident runs on the engine, out of the
+// server's sight) counts as on: hiding the editor from an operator whose engine
+// does answer is the bug in #1138.
+const canAssignIdents = computed(() => adminStore.identdEnabled !== false && !config.isNode);
 
 const adminError = ref('');
 const adminBusy = ref(false);
