@@ -125,8 +125,10 @@ describe('GET /api/dcc/config', () => {
       expect(res.body).toEqual({
         chat: true,
         receive: true,
+        send: false,
         maxFileBytes: 100 * 1024 * 1024,
         allowPrivateHosts: false,
+        canListen: false,
         usedBytes: expect.any(Number),
         limitBytes: null,
       });
@@ -139,7 +141,7 @@ describe('GET /api/dcc/config', () => {
   it('answers, not 403s, an account without a grant', async () => {
     const res = await carolAgent.get('/api/dcc/config');
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ chat: false, receive: false });
+    expect(res.body).toEqual({ chat: false, receive: false, send: false });
   });
 
   it('reports what the account uses, and its limit', async () => {
@@ -159,7 +161,11 @@ describe('GET /api/dcc/config', () => {
   });
 
   it('reports chat alone, with no receiving limits, for a chat-only account', async () => {
-    expect((await daveAgent.get('/api/dcc/config')).body).toEqual({ chat: true, receive: false });
+    expect((await daveAgent.get('/api/dcc/config')).body).toEqual({
+      chat: true,
+      receive: false,
+      send: false,
+    });
   });
 
   it('is off for everyone while the instance switch is off', async () => {
@@ -168,6 +174,7 @@ describe('GET /api/dcc/config', () => {
       expect((await aliceAgent.get('/api/dcc/config')).body).toEqual({
         chat: false,
         receive: false,
+        send: false,
       });
     } finally {
       process.env.LURKER_DCC_ENABLED = '1';
@@ -612,5 +619,123 @@ describe('clearing transfers', () => {
     fanOut.mockClear();
     expect((await aliceAgent.post('/api/dcc/clear')).body).toEqual({ ids: [] });
     expect(fanOut).not.toHaveBeenCalled();
+  });
+});
+
+// #1086: offering one of the account's files to a peer. The connection's side
+// is dccSendWiring.test.ts; here, the route's gates and what it hands on.
+describe('POST /api/dcc/send', () => {
+  let keepUploadedDccFile: typeof import('../db/dccFiles.js').keepUploadedDccFile;
+  let insertDccSend: typeof import('../db/dccTransfers.js').insertDccSend;
+  let setUserCapability: typeof import('../db/userCapabilities.js').setUserCapability;
+  let CAPABILITY_DCC_SEND: string;
+  let ircManager: typeof import('../services/ircManager.js').default;
+  const offers: Array<{ nick: string; fileId: number; passive?: boolean }> = [];
+
+  beforeAll(async () => {
+    ({ keepUploadedDccFile } = await import('../db/dccFiles.js'));
+    ({ insertDccSend } = await import('../db/dccTransfers.js'));
+    ({ setUserCapability, CAPABILITY_DCC_SEND } = await import('../db/userCapabilities.js'));
+    ircManager = (await import('../services/ircManager.js')).default;
+    setUserCapability(alice.id, CAPABILITY_DCC_SEND, true);
+    // A connection that records the offer as the real one would.
+    const conn = {
+      offerDccSend(
+        f: { id: number; name: string; size: number },
+        nick: string,
+        opts: { passive?: boolean },
+      ) {
+        offers.push({ nick, fileId: f.id, passive: opts.passive });
+        return {
+          transferId: insertDccSend(alice.id, {
+            network_id: aliceNet.id,
+            peer_nick: nick,
+            file_id: f.id,
+            filename: f.name,
+            size: f.size,
+            passive: !!opts.passive,
+            token: null,
+          }),
+        };
+      },
+    };
+    ircManager.byUser.set(alice.id, new Map([[aliceNet.id, conn as never]]));
+  });
+
+  afterAll(() => {
+    ircManager.byUser.delete(alice.id);
+    setUserCapability(alice.id, CAPABILITY_DCC_SEND, false);
+  });
+
+  function kept(name: string): number {
+    const dir = path.join(tmpRoot, 'send');
+    fs.mkdirSync(dir, { recursive: true });
+    const p = path.join(dir, name);
+    fs.writeFileSync(p, BYTES);
+    return keepUploadedDccFile(alice.id, { path: p, name, size: BYTES.length }).id;
+  }
+
+  it('offers the file and answers with the transfer', async () => {
+    const fileId = kept('send-me.bin');
+    const res = await aliceAgent
+      .post('/api/dcc/send')
+      .send({ networkId: aliceNet.id, nick: 'bob', fileId, passive: true });
+    expect(res.status).toBe(200);
+    expect(res.body.transfer).toMatchObject({
+      direction: 'send',
+      state: 'offered',
+      peer_nick: 'bob',
+      file_id: fileId,
+    });
+    expect(offers.at(-1)).toEqual({ nick: 'bob', fileId, passive: true });
+  });
+
+  it('needs the send grant, which receiving does not give', async () => {
+    const fileId = kept('no-grant.bin');
+    const res = await bobAgent
+      .post('/api/dcc/send')
+      .send({ networkId: aliceNet.id, nick: 'carol', fileId });
+    expect(res.status).toBe(403);
+  });
+
+  it('is 404 for a file that is not the account’s, and 400 for a channel', async () => {
+    const fileId = kept('mine.bin');
+    expect(
+      (
+        await aliceAgent
+          .post('/api/dcc/send')
+          .send({ networkId: aliceNet.id, nick: 'bob', fileId: 999999 })
+      ).status,
+    ).toBe(404);
+    const channel = await aliceAgent
+      .post('/api/dcc/send')
+      .send({ networkId: aliceNet.id, nick: '&room', fileId });
+    expect(channel.status).toBe(400);
+    expect(channel.body.error).toMatch(/not a channel/);
+  });
+
+  it('refuses to delete a file while it is offered, until the offer ends', async () => {
+    const fileId = kept('busy.bin');
+    const sent = await aliceAgent
+      .post('/api/dcc/send')
+      .send({ networkId: aliceNet.id, nick: 'bob', fileId });
+    const refused = await aliceAgent.delete(`/api/dcc/files/${fileId}`);
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toMatch(/cancel its sends first/);
+    const { markDccCancelled } = await import('../db/dccTransfers.js');
+    markDccCancelled(sent.body.transfer.id, 0);
+    expect((await aliceAgent.delete(`/api/dcc/files/${fileId}`)).status).toBe(200);
+  });
+
+  it('never deletes the file through a transfer that sent it', async () => {
+    const fileId = kept('history.bin');
+    const sent = await aliceAgent
+      .post('/api/dcc/send')
+      .send({ networkId: aliceNet.id, nick: 'bob', fileId });
+    const { markDccCompleted } = await import('../db/dccTransfers.js');
+    markDccCompleted(sent.body.transfer.id, BYTES.length);
+    const res = await aliceAgent.delete(`/api/dcc/${sent.body.transfer.id}/file`);
+    expect(res.status).toBe(409);
+    expect(fs.existsSync(path.join(tmpRoot, 'send', 'history.bin'))).toBe(true);
   });
 });

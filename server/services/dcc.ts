@@ -8,9 +8,10 @@
 // this module parses — is `SEND <file> ...`). irc-framework gives us only the
 // CTCP plumbing; the DCC grammar is ours.
 //
-// Handles the inbound `SEND` offer (the download manager), `ACCEPT` (the resume
-// confirmation) and `CHAT`; anything else is reported as `unsupported` so the
-// caller can ignore it cleanly.
+// Handles the inbound `SEND` offer (the download manager, and a peer's reply to
+// our passive send), `ACCEPT` (the resume confirmation), `RESUME` (a peer asking
+// to resume a file we offered, #1086) and `CHAT`; anything else is reported as
+// `unsupported` so the caller can ignore it cleanly.
 //
 // References cloned for parity (see ~/Coding/irc-clients): irssi
 // (src/irc/dcc/dcc-get.c — the SEND param parse + IPv4/IPv6 address handling) and
@@ -33,6 +34,7 @@
 import net from 'net';
 import zlib from 'zlib';
 import { isBlockedIpLiteral } from '../utils/ipGuard.js';
+import { sanitizeDccFilename } from './dccPaths.js';
 
 /** A parsed inbound `DCC SEND` offer. `host` is decoded to a dotted-quad (IPv4)
  *  or kept as an IPv6 literal; `filename` is RAW and unsanitised — path-safety is
@@ -60,6 +62,18 @@ export interface DccAccept {
   token: number | null;
 }
 
+/** A parsed inbound `DCC RESUME` — a receiver asking to resume a file we
+ *  offered from `position`. Same fields as ACCEPT: irssi parses both with one
+ *  function (dcc-resume.c:84-112). `port` is our offer's port, or 0 with our
+ *  token for a passive offer. */
+export interface DccResume {
+  kind: 'resume';
+  filename: string;
+  port: number;
+  position: number;
+  token: number | null;
+}
+
 /** A parsed inbound `DCC CHAT` offer — a request to open a direct line-oriented
  *  chat. `host`/`port` are where the offerer is listening (active); `passive`
  *  (port 0) means the offerer is firewalled and wants US to listen, correlated
@@ -80,6 +94,7 @@ export interface DccChat {
 export type DccParse =
   | DccSend
   | DccAccept
+  | DccResume
   | DccChat
   | { kind: 'unsupported'; subtype: string }
   | { kind: 'invalid'; reason: string };
@@ -135,7 +150,8 @@ export function parseDcc(args: string): DccParse {
   const subtype = (sp === -1 ? body : body.slice(0, sp)).toUpperCase();
   const rest = sp === -1 ? '' : body.slice(sp + 1).trim();
   if (subtype === 'SEND') return parseDccSend(rest);
-  if (subtype === 'ACCEPT') return parseDccAccept(rest);
+  if (subtype === 'ACCEPT') return parseDccResumeLike('accept', rest);
+  if (subtype === 'RESUME') return parseDccResumeLike('resume', rest);
   if (subtype === 'CHAT') return parseDccChat(rest);
   return { kind: 'unsupported', subtype };
 }
@@ -176,10 +192,13 @@ function parseDccChat(rest: string): DccParse {
 }
 
 // `DCC ACCEPT <filename> <port> <position> [token]` — the sender's go-ahead for a
-// resume. Same filename grammar as SEND (quoted, else first token), then the port
-// the original offer used and the byte position it will resume from.
-function parseDccAccept(rest: string): DccParse {
-  if (rest === '') return { kind: 'invalid', reason: 'missing DCC ACCEPT parameters' };
+// resume — and `DCC RESUME`, the receiver's request for one, which has the same
+// fields. Same filename grammar as SEND (quoted, else first token), then the
+// port the original offer used and the byte position to resume from.
+function parseDccResumeLike(kind: 'accept' | 'resume', rest: string): DccParse {
+  if (rest === '') {
+    return { kind: 'invalid', reason: `missing DCC ${kind.toUpperCase()} parameters` };
+  }
   let filename: string;
   let remainder: string;
   if (rest.startsWith('"')) {
@@ -209,7 +228,7 @@ function parseDccAccept(rest: string): DccParse {
     token = parseUint(tokenStr);
     if (token === null) return { kind: 'invalid', reason: `bad token: ${tokenStr}` };
   }
-  return { kind: 'accept', filename, port, position, token };
+  return { kind, filename, port, position, token };
 }
 
 function parseDccSend(rest: string): DccParse {
@@ -295,6 +314,60 @@ export function encodeDccAddress(host: string): string | null {
   if (o.some((x) => x > 255)) return null;
   const n = ((o[0] << 24) | (o[1] << 16) | (o[2] << 8) | o[3]) >>> 0;
   return String(n);
+}
+
+/** A file's name as it goes out in a DCC offer (#1086): one path component
+ *  with no control characters, and no `"`, which would end a quoted name early
+ *  (no implementation unescapes one). A name with a space goes quoted, as irssi
+ *  quotes it (dcc-send.c:433, 450). */
+export function dccWireFilename(name: string): string {
+  const clean = sanitizeDccFilename(name).replace(/"/g, "'");
+  return clean.includes(' ') ? `"${clean}"` : clean;
+}
+
+/** The body of an active `DCC SEND` offer — `SEND <file> <addr> <port> <size>`.
+ *  `file` is already in its wire form (dccWireFilename). */
+export function buildDccSend(
+  file: string,
+  host: string,
+  port: number,
+  size: number,
+): string | null {
+  const addr = encodeDccAddress(host);
+  if (addr === null) return null;
+  return `SEND ${file} ${addr} ${port} ${size}`;
+}
+
+/** The body of a passive `DCC SEND` offer — `SEND <file> <addr> 0 <size> <token>`:
+ *  the receiver listens and replies with a SEND carrying its address, its port
+ *  and our token. The address is a placeholder the receiver ignores, the same
+ *  1.1.1.1 irssi sends (dcc-send.c:455-457). */
+export function buildDccSendPassive(file: string, size: number, token: number): string {
+  return `SEND ${file} ${encodeDccAddress(PASSIVE_DCC_FAKE_HOST)} 0 ${size} ${token}`;
+}
+
+/** The body of a `DCC ACCEPT`, our yes to a peer's RESUME: the port the offer
+ *  used, the position, and for a passive offer port 0 and our token, as irssi
+ *  answers (dcc-resume.c:148-157). */
+export function buildDccAccept(
+  file: string,
+  port: number,
+  position: number,
+  token: number | null,
+): string {
+  return token === null
+    ? `ACCEPT ${file} ${port} ${position}`
+    : `ACCEPT ${file} 0 ${position} ${token}`;
+}
+
+/** The `DCC REJECT` a receiver sends back (as a CTCP reply) when it declines a
+ *  file we offered: irssi's `DCC REJECT SEND <file>` (dcc.c:436-438). Returns the
+ *  file as written, or null for anything else. */
+export function parseDccRejectSend(body: string): string | null {
+  const m = /^REJECT\s+SEND\s+(.+)$/i.exec(body.trim());
+  if (!m) return null;
+  const file = m[1].trim();
+  return file.startsWith('"') && file.endsWith('"') && file.length > 1 ? file.slice(1, -1) : file;
 }
 
 /** Build the body of an active `DCC CHAT` offer — `CHAT chat <addr> <port>`. */

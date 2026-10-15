@@ -9,7 +9,8 @@
 //                             complete answered, {status, body}
 //   PUT    /:id               raw chunk, Upload-Offset header → {offset}
 //   POST   /:id/complete      {progressToken?} → what POST /api/uploads or
-//                             POST /api/imports answers; again once done
+//                             POST /api/imports answers, or for 'dcc-send'
+//                             {file}, the DCC file it became; again once done
 //   DELETE /:id               → {ok: true}
 //
 // Every refusal that concerns where the file is carries `offset`, so a client
@@ -29,6 +30,7 @@ import {
 import { processUpload, UploadRequestError } from '../services/uploadService.js';
 import { requestBaseUrl } from './uploads.js';
 import { answerImport } from './exports.js';
+import { answerDccUpload } from './dcc.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -88,6 +90,7 @@ router.post('/:id/complete', async (req: Request, res: Response, next: NextFunct
       String(req.params.id),
       async (row, filePath) => {
         if (row.purpose === 'import') return answerImport(req.user!.id, filePath);
+        if (row.purpose === 'dcc-send') return answerDccUpload(req.user!.id, row, filePath);
         try {
           const uploaded = await processUpload({
             userId: req.user!.id,

@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Admin → DCC (#1080): the instance's DCC settings, and which parts of DCC each
-// account may use. DCC is granted in parts — chat, and receiving files — so an
-// admin can allow direct chats without letting files land on the box. Every
+// account may use. DCC is granted in parts — chat, receiving files, and sending
+// them (#1086) — so an admin can allow direct chats without letting files land
+// on the box, or receiving without opening ports to offer files. Every
 // part also needs the operator's LURKER_DCC_ENABLED. Mounted under
 // routes/admin.ts, so requireAuth + requireAdmin are inherited. Self-host only.
 //
@@ -17,6 +18,7 @@ import { findUserById, listUsers } from '../db/users.js';
 import {
   CAPABILITY_DCC_CHAT,
   CAPABILITY_DCC_RECEIVE,
+  CAPABILITY_DCC_SEND,
   setUserCapability,
   userHasCapability,
   userIdsWithCapability,
@@ -45,6 +47,7 @@ router.use((_req: Request, res: Response, next) => {
 router.get('/', (_req: Request, res: Response) => {
   const chat = userIdsWithCapability(CAPABILITY_DCC_CHAT);
   const receive = userIdsWithCapability(CAPABILITY_DCC_RECEIVE);
+  const send = userIdsWithCapability(CAPABILITY_DCC_SEND);
   const limits = listDccStorageLimits();
   const stored = listDccStoredBytes();
   res.json({
@@ -61,6 +64,7 @@ router.get('/', (_req: Request, res: Response) => {
       username: u.username,
       chat: chat.has(u.id),
       receive: receive.has(u.id),
+      send: send.has(u.id),
       // Null for no limit (#1125).
       limitBytes: limits.get(u.id) ?? null,
       // What the account's received files take on disk, partials included.
@@ -69,7 +73,7 @@ router.get('/', (_req: Request, res: Response) => {
   });
 });
 
-/** PUT /api/admin/dcc/users/:id — set any of `{chat?, receive?, limitBytes?}`;
+/** PUT /api/admin/dcc/users/:id — set any of `{chat?, receive?, send?, limitBytes?}`;
  *  `limitBytes` is a positive whole number of bytes, or null for no limit. */
 router.put('/users/:id', (req: Request, res: Response) => {
   const id = Number(req.params.id);
@@ -77,9 +81,10 @@ router.put('/users/:id', (req: Request, res: Response) => {
     res.status(400).json({ error: 'invalid id' });
     return;
   }
-  const { chat, receive, limitBytes } = (req.body ?? {}) as {
+  const { chat, receive, send, limitBytes } = (req.body ?? {}) as {
     chat?: unknown;
     receive?: unknown;
+    send?: unknown;
     limitBytes?: unknown;
   };
   const valid = (v: unknown) => v === undefined || typeof v === 'boolean';
@@ -90,12 +95,13 @@ router.put('/users/:id', (req: Request, res: Response) => {
   if (
     !valid(chat) ||
     !valid(receive) ||
+    !valid(send) ||
     !validLimit ||
-    (chat === undefined && receive === undefined && limitBytes === undefined)
+    (chat === undefined && receive === undefined && send === undefined && limitBytes === undefined)
   ) {
     res.status(400).json({
       error:
-        'send chat and/or receive (true or false), and/or limitBytes (a positive number, or null)',
+        'send chat, receive and/or send (true or false), and/or limitBytes (a positive number, or null)',
     });
     return;
   }
@@ -105,10 +111,12 @@ router.put('/users/:id', (req: Request, res: Response) => {
   }
   if (typeof chat === 'boolean') setUserCapability(id, CAPABILITY_DCC_CHAT, chat);
   if (typeof receive === 'boolean') setUserCapability(id, CAPABILITY_DCC_RECEIVE, receive);
+  if (typeof send === 'boolean') setUserCapability(id, CAPABILITY_DCC_SEND, send);
   if (limitBytes !== undefined) setDccStorageLimit(id, limitBytes as number | null);
   res.json({
     chat: userHasCapability(id, CAPABILITY_DCC_CHAT),
     receive: userHasCapability(id, CAPABILITY_DCC_RECEIVE),
+    send: userHasCapability(id, CAPABILITY_DCC_SEND),
     limitBytes: getDccStorageLimit(id),
   });
 });
