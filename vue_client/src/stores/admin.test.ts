@@ -315,3 +315,14 @@ describe('admin store — push relay toggle', () => {
     expect(store.push?.relay.enabled).toBe(true);
   });
 });
+
+// identdEnabled is tri-state since #1138: null is the server saying it can't
+// tell (engine mode), and folding it to false would hide the ident editor.
+describe('admin store — identdEnabled', () => {
+  it.each([true, false, null])('keeps the server answer %s as given', async (answer) => {
+    h.api.mockResolvedValueOnce({ users: [], identdEnabled: answer });
+    const store = useAdminStore();
+    await store.fetchUsers();
+    expect(store.identdEnabled).toBe(answer);
+  });
+});
