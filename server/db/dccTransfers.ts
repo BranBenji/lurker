@@ -8,6 +8,7 @@
 // resumed). Nothing here touches the message tables.
 
 import db from './index.js';
+import { dccFileAt, keepReceivedDccFile, type DccFile } from './dccFiles.js';
 
 // The download-manager state machine. Two entry states:
 //   - `requested`: we sent an XDCC trigger and armed acceptance for the bot's
@@ -71,6 +72,9 @@ export interface DccTransferRow {
   completed_at: string | null;
   /** When the user deleted the received file from the server (#1125). */
   file_deleted_at: string | null;
+  /** The kept file a completed receive produced (#1133), while it is kept.
+   *  destination_path mirrors its path. */
+  file_id: number | null;
 }
 
 export interface InsertDccTransferFields {
@@ -278,49 +282,83 @@ export function markDccFailed(id: number, received: number, error: string): void
 export type DccCrcStatus = 'ok' | 'mismatch' | 'absent' | 'unverified';
 
 /** Mark a transfer done, stamping the final byte count, completion time, and the
- *  computed CRC32 + how it verified. */
+ *  computed CRC32 + how it verified, and keep its file (#1133). Returns the
+ *  kept file, or null when there was none to keep. */
 export function markDccCompleted(
   id: number,
   received: number,
   crcActual: string | null = null,
   crcStatus: DccCrcStatus | null = null,
-): void {
-  db.prepare(
-    `UPDATE dcc_transfers
-       SET state = 'completed', received_bytes = ?, crc_actual = ?, crc_status = ?, error = NULL,
-           completed_at = datetime('now'), updated_at = datetime('now')
-     WHERE id = ?`,
-  ).run(received, crcActual, crcStatus, Number(id));
+): DccFile | null {
+  const complete = db.transaction((): DccFile | null => {
+    db.prepare(
+      `UPDATE dcc_transfers
+         SET state = 'completed', received_bytes = ?, crc_actual = ?, crc_status = ?, error = NULL,
+             completed_at = datetime('now'), updated_at = datetime('now')
+       WHERE id = ?`,
+    ).run(received, crcActual, crcStatus, Number(id));
+    // The file is the account's now, apart from this transfer (#1133).
+    const row = db
+      .prepare(
+        'SELECT user_id, destination_path, filename, file_id FROM dcc_transfers WHERE id = ?',
+      )
+      .get(Number(id)) as
+      | {
+          user_id: number;
+          destination_path: string | null;
+          filename: string;
+          file_id: number | null;
+        }
+      | undefined;
+    if (!row?.destination_path || row.file_id != null) return null;
+    return keepReceivedDccFile(row.user_id, Number(id), {
+      path: row.destination_path,
+      name: row.filename,
+      size: received,
+    });
+  });
+  return complete();
 }
 
-/** What the user's received DCC files take (#1125), counted from the rows that
- *  still own a file. `stored` is what is on disk now. `committed` adds what
- *  transfers in flight will still write: one of those counts its full
- *  advertised size. `exclude` leaves out rows the caller accounts for itself. */
+/** What the user's DCC files take (#1125): the files they keep (#1133), and
+ *  the partials of transfers that haven't finished, which still own theirs.
+ *  `stored` is what is on disk now. `committed` adds what transfers in flight
+ *  will still write: one of those counts its full advertised size. `exclude`
+ *  leaves out transfers the caller accounts for itself. */
 export function dccUsageBytes(
   userId: number,
   exclude: number[] = [],
 ): { stored: number; committed: number } {
-  return db
+  const files = (
+    db
+      .prepare('SELECT COALESCE(SUM(size), 0) AS n FROM dcc_files WHERE user_id = ?')
+      .get(userId) as { n: number }
+  ).n;
+  const partials = db
     .prepare(
       `SELECT COALESCE(SUM(received_bytes), 0) AS stored,
               COALESCE(SUM(CASE WHEN state IN ('connecting', 'receiving', 'stalled', 'verifying')
                                 THEN MAX(advertised_size, received_bytes)
                                 ELSE received_bytes END), 0) AS committed
        FROM dcc_transfers
-       WHERE user_id = ? AND destination_path IS NOT NULL
+       WHERE user_id = ? AND destination_path IS NOT NULL AND file_id IS NULL
          AND id NOT IN (SELECT value FROM json_each(?))`,
     )
     .get(userId, JSON.stringify(exclude)) as { stored: number; committed: number };
+  return { stored: files + partials.stored, committed: files + partials.committed };
 }
 
-/** What each user's received files take on disk — one query for the admin
- *  roster. Users with none are absent. */
+/** What each user's DCC files take on disk, as dccUsageBytes counts `stored` —
+ *  one pass for the admin roster. Users with none are absent. */
 export function listDccStoredBytes(): Map<number, number> {
   const rows = db
     .prepare(
-      `SELECT user_id, SUM(received_bytes) AS stored FROM dcc_transfers
-       WHERE destination_path IS NOT NULL GROUP BY user_id`,
+      `SELECT user_id, SUM(n) AS stored FROM (
+         SELECT user_id, size AS n FROM dcc_files
+         UNION ALL
+         SELECT user_id, received_bytes AS n FROM dcc_transfers
+         WHERE destination_path IS NOT NULL AND file_id IS NULL
+       ) GROUP BY user_id`,
     )
     .all() as { user_id: number; stored: number }[];
   return new Map(rows.map((r) => [r.user_id, r.stored]));
@@ -348,9 +386,48 @@ export function markDccCancelled(id: number, received: number | null): void {
   ).run(received, Number(id));
 }
 
-/** Whether one of the user's rows owns `destPath` (#1125). */
+/** Whether one of the user's transfers or files owns `destPath` (#1125, #1133). */
 export function dccPathClaimed(userId: number, destPath: string): boolean {
-  return !!db
-    .prepare('SELECT 1 FROM dcc_transfers WHERE user_id = ? AND destination_path = ? LIMIT 1')
-    .get(userId, destPath);
+  return (
+    !!db
+      .prepare('SELECT 1 FROM dcc_transfers WHERE user_id = ? AND destination_path = ? LIMIT 1')
+      .get(userId, destPath) || dccFileAt(userId, destPath)
+  );
+}
+
+/** Clear one finished transfer from the list (#1133). The file it received is
+ *  the account's and stays. A partial it still owns is the caller's to remove
+ *  first. */
+export function clearDccTransfer(userId: number, id: number): void {
+  db.prepare('DELETE FROM dcc_transfers WHERE user_id = ? AND id = ?').run(userId, Number(id));
+}
+
+/** Whether a transfer holds part of a download (#1133): bytes of its own on
+ *  disk, not a kept file. A path with nothing received is only a reservation
+ *  (the peer never connected). */
+export function holdsDccPartial(
+  t: Pick<DccTransferRow, 'destination_path' | 'file_id' | 'received_bytes'>,
+): boolean {
+  return !!t.destination_path && t.file_id == null && t.received_bytes > 0;
+}
+
+export interface ClearedDccTransfer {
+  id: number;
+  file_id: number | null;
+  destination_path: string | null;
+}
+
+/** Clear every finished transfer from the list, keeping the files (#1133).
+ *  One still holding a partial stays: those are bytes on disk, which only the
+ *  user deletes. Returns the rows cleared, with the kept file each received
+ *  and any path one had reserved, for the caller to remove. */
+export function clearFinishedDccTransfers(userId: number): ClearedDccTransfer[] {
+  return db
+    .prepare(
+      `DELETE FROM dcc_transfers
+       WHERE user_id = ? AND state IN ('completed', 'failed', 'rejected', 'cancelled')
+         AND NOT (destination_path IS NOT NULL AND file_id IS NULL AND received_bytes > 0)
+       RETURNING id, file_id, destination_path`,
+    )
+    .all(userId) as ClearedDccTransfer[];
 }

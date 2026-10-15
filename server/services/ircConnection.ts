@@ -158,6 +158,7 @@ import {
   unregisterDccChatHost,
 } from './dccChatSessions.js';
 import { DccReceiver } from './dccReceiver.js';
+import type { DccFile } from '../db/dccFiles.js';
 import {
   type DccTransferRow,
   DCC_ACTIVE_STATES,
@@ -6819,7 +6820,7 @@ export class IrcConnection {
             : actual === expectedCrc
               ? 'ok'
               : 'mismatch';
-        markDccCompleted(transferId, received, resumed ? null : actual, status);
+        const kept = markDccCompleted(transferId, received, resumed ? null : actual, status);
         const badge =
           status === 'ok'
             ? ' ✓ CRC verified'
@@ -6833,6 +6834,7 @@ export class IrcConnection {
           `DCC: completed "${offer.filename}" (${formatBytes(received)}) → ${destPath}${badge}`,
         );
         this.publishDcc(transferId);
+        if (kept) this.publishDccFile(kept);
       },
       onError: (err, received) => {
         this.dccReceivers.delete(transferId);
@@ -6863,6 +6865,12 @@ export class IrcConnection {
   private publishDccRow(transfer: DccTransferRow): void {
     if (this.disposed) return;
     this.onUserFrame({ kind: 'dcc-transfer', transfer });
+  }
+
+  // A file the account now keeps (#1133), for the Files view.
+  private publishDccFile(file: DccFile): void {
+    if (this.disposed) return;
+    this.onUserFrame({ kind: 'dcc-file', file });
   }
 
   // Accept a previously-recorded unsolicited offer (pending_approval): rebuild the

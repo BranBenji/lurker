@@ -16,19 +16,7 @@
 <template>
   <AppModal :word="target" :title="target" size="lg" fill-height @close="$emit('close')">
     <template v-if="createdLabel" #subtitle>{{ createdLabel }}</template>
-    <div class="tabs" role="tablist" aria-label="Channel settings">
-      <button
-        v-for="tab in tabs"
-        :key="tab.id"
-        type="button"
-        role="tab"
-        :aria-selected="tab.id === activeTab"
-        :class="{ active: tab.id === activeTab }"
-        @click="activeTab = tab.id"
-      >
-        {{ tab.label }}
-      </button>
-    </div>
+    <TabStrip v-model="activeTab" :tabs="tabs" label="Channel settings" />
 
     <form v-if="activeTab === 'settings'" class="modal-form" @submit.prevent="save">
       <div class="body">
@@ -174,6 +162,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import AppModal from './AppModal.vue';
+import TabStrip from './TabStrip.vue';
 import LinkedText from './LinkedText.vue';
 import ChannelModeRow from './ChannelModeRow.vue';
 import { useBuffersStore } from '../stores/buffers.js';
@@ -611,23 +600,6 @@ function entryMeta(entry: ListEntry): string {
 </script>
 
 <style scoped>
-.tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  padding-bottom: var(--space-4);
-}
-.tabs button {
-  background: var(--bg-soft);
-  color: var(--fg-muted);
-  border: 1px solid var(--border);
-  padding: var(--space-2) var(--space-4);
-}
-.tabs button.active {
-  color: var(--fg);
-  border-color: var(--accent);
-  outline: 1px solid var(--accent);
-}
 .list-pane {
   display: flex;
   flex-direction: column;

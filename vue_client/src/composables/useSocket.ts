@@ -821,6 +821,9 @@ function handleMessage(raw: string): void {
     // #650: a file over one chunk is sent in chunks. Absent on an older server.
     useUploadsStore().chunkBytes =
       typeof payload.uploadChunkBytes === 'number' ? payload.uploadChunkBytes : null;
+    // DCC: whether the account has transfers or files to show the button for,
+    // and what changed while the socket was down.
+    void useDccStore().resync();
     // Fresh connect ships channel/DM buffers as empty shells (no message rows),
     // so their ids never advance our cursor. The server hands us the current
     // global max here as our "caught up to now" mark, so the next reconnect's
@@ -1096,6 +1099,20 @@ function handleMessage(raw: string): void {
     // message. Upsert the row into the Transfers store; this also self-reveals
     // the Transfers affordance the first time an offer lands.
     useDccStore().applyTransfer(payload.transfer);
+    return;
+  }
+  // A file the account now keeps, or one it no longer does (#1133).
+  if (payload.kind === 'dcc-file') {
+    useDccStore().applyFile(payload.file);
+    return;
+  }
+  if (payload.kind === 'dcc-file-deleted') {
+    useDccStore().dropFile(payload.id);
+    return;
+  }
+  // Transfers cleared from the list; their files stay (#1133).
+  if (payload.kind === 'dcc-transfers-cleared') {
+    useDccStore().dropTransfers(payload.ids || []);
     return;
   }
   if (payload.kind === 'reaction') {

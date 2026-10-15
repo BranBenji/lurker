@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// DCC API (#270). Two surfaces: the download manager (list the user's transfers,
-// act on them — accept a pending offer, reject it, cancel an in-flight one — and
-// fetch a completed file over HTTP), and DCC CHAT (open or close a direct chat
-// with a peer). The transfer list is the Transfers view's initial load; live updates arrive over the WS as
+// DCC API (#270). Three surfaces: the download manager (list the user's
+// transfers, act on them — accept a pending offer, reject it, cancel an
+// in-flight one — and fetch a completed file over HTTP), the files the account
+// keeps (#1133: list, download, delete), and DCC CHAT (open or close a direct
+// chat with a peer). The transfer list is the Transfers view's initial load; live updates arrive over the WS as
 // `dcc-transfer` frames, and a chat's own output arrives as ordinary messages in
 // its `=nick` buffer. All routes are user-scoped via requireAuth.
 
@@ -30,12 +31,23 @@ import { sanitizeDccFilename } from '../services/dccPaths.js';
 import { fanOutToUser } from '../services/wsHub.js';
 import {
   DCC_ACTIVE_STATES,
+  clearDccTransfer,
+  clearFinishedDccTransfers,
   dccUsageBytes,
+  holdsDccPartial,
+  type ClearedDccTransfer,
   getDccTransfer,
   listDccTransfers,
   markDccFileDeleted,
 } from '../db/dccTransfers.js';
 import { getDccStorageLimit } from '../db/dccStorageLimits.js';
+import {
+  forgetDccFile,
+  getDccFile,
+  getDccFileRow,
+  listDccFiles,
+  type DccFileRow,
+} from '../db/dccFiles.js';
 import { getNetwork } from '../db/networks.js';
 import { isChannelTarget } from '../../shared/channels.js';
 
@@ -95,9 +107,10 @@ function needs(grant: (userId: number) => boolean, what: string): RequestHandler
 const needsReceive = needs(dccReceiveEnabledForUser, 'receiving');
 const needsChat = needs(dccChatEnabledForUser, 'chat');
 
-// A transfer id is a positive integer row id; reject anything else up front so a
-// non-numeric :id can't reach better-sqlite3 as NaN (which throws → 500).
-function transferId(req: Request): number | null {
+// A transfer or file id is a positive integer row id; reject anything else up
+// front so a non-numeric :id can't reach better-sqlite3 as NaN (which throws →
+// 500).
+function rowId(req: Request): number | null {
   const id = Number(req.params.id);
   return Number.isInteger(id) && id > 0 ? id : null;
 }
@@ -113,29 +126,20 @@ function gone(res: Response): void {
 }
 
 /**
- * GET /api/dcc/:id/file — the bytes of a completed transfer (#1079), so a
- * received file can leave the box without shell access. Ownership-checked by
- * the user-scoped lookup; HTTP Range (via res.download → sendFile) lets a
- * multi-GB file resume instead of restarting.
+ * Send a file the account keeps, as an attachment named `name`. `size` is what
+ * the file should be: a file removed on the box by hand, or a path some newer
+ * file took since, is answered 410 rather than served. HTTP Range (via
+ * res.download → sendFile) lets a multi-GB file resume instead of restarting.
  */
-router.get('/:id/file', (req: Request, res: Response, next: NextFunction) => {
-  const id = transferId(req);
-  const t = id == null ? undefined : getDccTransfer(req.user!.id, id);
-  if (!t) {
-    res.status(404).json({ error: 'transfer not found' });
-    return;
-  }
-  // Anything short of completed is a partial, or not a file at all yet.
-  if (t.state !== 'completed') {
-    res.status(409).json({ error: 'transfer is not complete', state: t.state });
-    return;
-  }
-  const filePath = t.destination_path;
+function sendDccFile(
+  res: Response,
+  next: NextFunction,
+  filePath: string | null,
+  size: number,
+  name: string,
+): void {
   const stat = filePath ? fs.statSync(filePath, { throwIfNoEntry: false }) : undefined;
-  // Gone (removed on the box by hand), or no longer this transfer's file: once
-  // it is removed the path is free again, so a later offer of the same name can
-  // be writing there now.
-  if (!filePath || !stat?.isFile() || stat.size !== t.received_bytes) {
+  if (!filePath || !stat?.isFile() || stat.size !== size) {
     gone(res);
     return;
   }
@@ -149,7 +153,7 @@ router.get('/:id/file', (req: Request, res: Response, next: NextFunction) => {
   // LURKER_DCC_DIR under a dot-directory (~/.lurker/dcc) would 404 every file.
   res.download(
     filePath,
-    sanitizeDccFilename(t.filename),
+    sanitizeDccFilename(name),
     {
       dotfiles: 'allow',
       headers: { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'private, no-store' },
@@ -174,17 +178,56 @@ router.get('/:id/file', (req: Request, res: Response, next: NextFunction) => {
       else next(err);
     },
   );
+}
+
+/**
+ * Remove a kept file from disk and forget it (#1133). The transfers that
+ * pointed at it stay as history, marked deleted; every tab hears about both.
+ */
+function deleteDccFile(userId: number, file: DccFileRow): void {
+  fs.rmSync(file.path, { force: true });
+  const touched = forgetDccFile(userId, file.id);
+  for (const id of touched) {
+    fanOutToUser(userId, { kind: 'dcc-transfer', transfer: getDccTransfer(userId, id) });
+  }
+  fanOutToUser(userId, { kind: 'dcc-file-deleted', id: file.id });
+}
+
+/**
+ * GET /api/dcc/:id/file — the bytes of a completed transfer (#1079), so a
+ * received file can leave the box without shell access. Ownership-checked by
+ * the user-scoped lookup. Served from the file the transfer produced (#1133).
+ */
+router.get('/:id/file', (req: Request, res: Response, next: NextFunction) => {
+  const id = rowId(req);
+  const t = id == null ? undefined : getDccTransfer(req.user!.id, id);
+  if (!t) {
+    res.status(404).json({ error: 'transfer not found' });
+    return;
+  }
+  // Anything short of completed is a partial, or not a file at all yet.
+  if (t.state !== 'completed') {
+    res.status(409).json({ error: 'transfer is not complete', state: t.state });
+    return;
+  }
+  const file = t.file_id == null ? undefined : getDccFileRow(req.user!.id, t.file_id);
+  if (!file) {
+    gone(res);
+    return;
+  }
+  sendDccFile(res, next, file.path, file.size, t.filename);
 });
 
 /**
- * DELETE /api/dcc/:id/file — remove a transfer's received file from the server
- * (#1125), so a user with a storage limit can make room. Needs no grant, like
- * anything else about what an account already received. The row stays as
- * history, marked deleted. A transfer still in flight is refused (409): cancel
- * it first.
+ * DELETE /api/dcc/:id/file — remove a transfer's file from the server (#1125),
+ * so a user with a storage limit can make room. Needs no grant, like anything
+ * else about what an account already received. A completed transfer's file is
+ * a kept file (#1133), deleted as one; an unfinished transfer's partial goes
+ * with it. The row stays as history, marked deleted. A transfer still in
+ * flight is refused (409): cancel it first.
  */
 router.delete('/:id/file', (req: Request, res: Response) => {
-  const id = transferId(req);
+  const id = rowId(req);
   const t = id == null ? undefined : getDccTransfer(req.user!.id, id);
   if (!t) {
     res.status(404).json({ error: 'transfer not found' });
@@ -194,13 +237,19 @@ router.delete('/:id/file', (req: Request, res: Response) => {
     res.status(409).json({ error: 'cancel the transfer before deleting its file' });
     return;
   }
+  const file = t.file_id == null ? undefined : getDccFileRow(req.user!.id, t.file_id);
+  if (file) {
+    deleteDccFile(req.user!.id, file);
+    res.json({ transfer: getDccTransfer(req.user!.id, t.id) });
+    return;
+  }
   if (!t.destination_path) {
     // Already deleted, or nothing was ever written.
     res.status(404).json({ error: 'no file to delete' });
     return;
   }
-  // Only one row owns a path (markDccReceiving releases it from the rest), so
-  // this file is this row's.
+  // A partial: only one row owns a path (markDccReceiving releases it from the
+  // rest), so this file is this row's.
   fs.rmSync(t.destination_path, { force: true });
   markDccFileDeleted(t.id);
   const transfer = getDccTransfer(req.user!.id, t.id);
@@ -209,12 +258,92 @@ router.delete('/:id/file', (req: Request, res: Response) => {
   res.json({ transfer });
 });
 
+/** After transfers left the list: remove what they held on disk that was
+ *  theirs rather than a kept file, tell every tab, and redraw the files they
+ *  received, which no longer name a transfer. */
+function afterCleared(userId: number, cleared: ClearedDccTransfer[]): void {
+  for (const t of cleared) {
+    if (t.destination_path && t.file_id == null) fs.rmSync(t.destination_path, { force: true });
+  }
+  fanOutToUser(userId, { kind: 'dcc-transfers-cleared', ids: cleared.map((t) => t.id) });
+  for (const t of cleared) {
+    const file = t.file_id == null ? undefined : getDccFile(userId, t.file_id);
+    if (file) fanOutToUser(userId, { kind: 'dcc-file', file });
+  }
+}
+
+/**
+ * DELETE /api/dcc/:id — clear a finished transfer from the list (#1133). The
+ * file it received stays in Files. A partial it still holds goes with it,
+ * since nothing else would ever reach those bytes, but only with
+ * `?partial=delete`, which a client sends once the user has said so; without
+ * it, 409 with `partial: true`. A transfer still in flight is refused (409):
+ * cancel it first.
+ */
+router.delete('/:id', (req: Request, res: Response) => {
+  const id = rowId(req);
+  const t = id == null ? undefined : getDccTransfer(req.user!.id, id);
+  if (!t) {
+    res.status(404).json({ error: 'transfer not found' });
+    return;
+  }
+  if (DCC_ACTIVE_STATES.has(t.state)) {
+    res.status(409).json({ error: 'cancel the transfer before clearing it' });
+    return;
+  }
+  if (holdsDccPartial(t) && req.query.partial !== 'delete') {
+    res.status(409).json({ error: 'transfer holds a partial download', partial: true });
+    return;
+  }
+  clearDccTransfer(req.user!.id, t.id);
+  afterCleared(req.user!.id, [t]);
+  res.json({ ids: [t.id] });
+});
+
+/**
+ * POST /api/dcc/clear — clear every finished transfer from the list (#1133).
+ * Files stay, and so does a transfer still holding a partial download.
+ */
+router.post('/clear', (req: Request, res: Response) => {
+  const cleared = clearFinishedDccTransfers(req.user!.id);
+  if (cleared.length) afterCleared(req.user!.id, cleared);
+  res.json({ ids: cleared.map((t) => t.id) });
+});
+
+/** GET /api/dcc/files — the files the account keeps (#1133), newest first. */
+router.get('/files', (req: Request, res: Response) => {
+  res.json({ files: listDccFiles(req.user!.id) });
+});
+
+/** GET /api/dcc/files/:id/file — a kept file's bytes, as GET /:id/file. */
+router.get('/files/:id/file', (req: Request, res: Response, next: NextFunction) => {
+  const id = rowId(req);
+  const file = id == null ? undefined : getDccFileRow(req.user!.id, id);
+  if (!file) {
+    res.status(404).json({ error: 'file not found' });
+    return;
+  }
+  sendDccFile(res, next, file.path, file.size, file.name);
+});
+
+/** DELETE /api/dcc/files/:id — remove a kept file from the server. */
+router.delete('/files/:id', (req: Request, res: Response) => {
+  const id = rowId(req);
+  const file = id == null ? undefined : getDccFileRow(req.user!.id, id);
+  if (!file) {
+    res.status(404).json({ error: 'file not found' });
+    return;
+  }
+  deleteDccFile(req.user!.id, file);
+  res.json({ ok: true });
+});
+
 // Acting on a transfer is a write — blocked for paused accounts (the list isn't)
 // by the central requireAuth gate (#573); the GET list above stays available.
 
 /** POST /api/dcc/:id/accept — accept a pending offer and start the download. */
 router.post('/:id/accept', needsReceive, (req: Request, res: Response) => {
-  const id = transferId(req);
+  const id = rowId(req);
   if (id == null) {
     res.status(404).json({ error: 'transfer not found' });
     return;
@@ -237,7 +366,7 @@ router.post('/:id/accept', needsReceive, (req: Request, res: Response) => {
 
 /** POST /api/dcc/:id/reject — reject a pending offer (no download). */
 router.post('/:id/reject', (req: Request, res: Response) => {
-  const id = transferId(req);
+  const id = rowId(req);
   if (id == null || !ircManager.rejectDccTransfer(req.user!.id, id)) {
     res.status(404).json({ error: 'transfer not found' });
     return;
@@ -247,7 +376,7 @@ router.post('/:id/reject', (req: Request, res: Response) => {
 
 /** POST /api/dcc/:id/cancel — cancel an in-flight or still-pending transfer. */
 router.post('/:id/cancel', (req: Request, res: Response) => {
-  const id = transferId(req);
+  const id = rowId(req);
   if (id == null || !ircManager.cancelDccTransfer(req.user!.id, id)) {
     res.status(404).json({ error: 'transfer not found' });
     return;

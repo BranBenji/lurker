@@ -464,11 +464,34 @@ function migrate() {
       created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       completed_at TEXT,
+      -- The kept file a completed receive produced (#1133); see dcc_files.
+      file_id INTEGER REFERENCES dcc_files(id) ON DELETE SET NULL,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
       FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE SET NULL
     );
     CREATE INDEX IF NOT EXISTS idx_dcc_transfers_user
       ON dcc_transfers(user_id, id DESC);
+
+    -- A DCC file the account keeps on the server (#1133): a completed receive,
+    -- or (with #1086) a file uploaded to send. It owns its path. The transfer
+    -- that received it points here (dcc_transfers.file_id) and stays as
+    -- history; a partial still belongs to its transfer, which resumes it.
+    -- Deleting the file is the user's to do, and nothing expires.
+    CREATE TABLE IF NOT EXISTS dcc_files (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      path TEXT NOT NULL,
+      name TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      origin TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      -- Who a received file came from, and on which network. Kept on the file
+      -- so clearing the transfer from the list keeps them.
+      peer_nick TEXT,
+      network_id INTEGER REFERENCES networks(id) ON DELETE SET NULL,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_dcc_files_user ON dcc_files(user_id, id DESC);
 
     -- Per-(network, nick) presence state for DM peers. Single row per peer
     -- holding only the most recent transition event (state) and when it
@@ -1607,7 +1630,7 @@ ensureColumn('push_subscriptions', 'transport', "TEXT NOT NULL DEFAULT 'webpush'
 // Schema versioning lets us retire one-shot recovery blocks once every
 // production DB has run through them. Bump SCHEMA_VERSION when adding a new
 // recovery block, and delete blocks for versions far enough in the past.
-const SCHEMA_VERSION = 23;
+const SCHEMA_VERSION = 24;
 const schemaVersionRow = db
   .prepare(`SELECT value FROM app_meta WHERE key = 'schema_version'`)
   .get() as { value: string } | undefined;
@@ -2852,6 +2875,60 @@ if (schemaVersion < 23) {
   const released = handedOver.immediate();
   if (released > 0) console.log(`[db] ${released} older DCC row(s) let go of a resumed file`);
 }
+
+// #1133: a received file becomes something the account keeps, apart from the
+// transfer that received it. Each completed transfer still holding its file
+// gets a dcc_files row and points at it; its destination_path stays as a
+// mirror for clients that read it. After v23, whose rebuild doesn't know the
+// column. A fresh install runs this too, finding nothing to move.
+if (schemaVersion < 24) {
+  ensureColumn('dcc_transfers', 'file_id', 'INTEGER REFERENCES dcc_files(id) ON DELETE SET NULL');
+  const keep = db.transaction(() => {
+    const rows = db
+      .prepare(
+        `SELECT id, user_id, destination_path, filename, received_bytes, peer_nick, network_id,
+                COALESCE(completed_at, updated_at) AS at
+         FROM dcc_transfers
+         WHERE state = 'completed' AND destination_path IS NOT NULL AND file_id IS NULL
+         ORDER BY id`,
+      )
+      .all() as {
+      id: number;
+      user_id: number;
+      destination_path: string;
+      filename: string;
+      received_bytes: number;
+      peer_nick: string;
+      network_id: number | null;
+      at: string;
+    }[];
+    const insert = db.prepare(
+      `INSERT INTO dcc_files (user_id, path, name, size, origin, peer_nick, network_id, created_at)
+       VALUES (?, ?, ?, ?, 'received', ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', ?))`,
+    );
+    const link = db.prepare('UPDATE dcc_transfers SET file_id = ? WHERE id = ?');
+    for (const r of rows) {
+      const file = insert.run(
+        r.user_id,
+        r.destination_path,
+        r.filename,
+        r.received_bytes,
+        r.peer_nick,
+        r.network_id,
+        r.at,
+      );
+      link.run(file.lastInsertRowid, r.id);
+    }
+    return rows.length;
+  });
+  // .immediate(): see the v20 block above (lurker#603).
+  const kept = keep.immediate();
+  if (kept > 0) console.log(`[db] ${kept} received DCC file(s) are now kept as files (#1133)`);
+}
+// Every lookup of a file's transfers goes by file_id (the files list's join,
+// deleting a file, the foreign key's own check). Here, not in the base schema:
+// on an older install the column only exists once the block above has run.
+db.exec('CREATE INDEX IF NOT EXISTS idx_dcc_transfers_file ON dcc_transfers(file_id)');
 
 // Issue #510: seed the uploader data model — instance x0/catbox rows +
 // per-user conversion of existing uploads.* settings (self-host), or a single
