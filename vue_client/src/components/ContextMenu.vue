@@ -211,7 +211,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
+  width: var(--icon-size);
   flex-shrink: 0;
   color: var(--fg-muted);
 }

@@ -511,8 +511,8 @@ function metaLine(u: UploadRow): string {
   transform: translateY(-50%);
   color: var(--fg-muted);
   pointer-events: none;
-  /* The input's left padding below is derived from this 1em box (the global .lucide
-     size), so the two stay in step. */
+  /* The input's left padding below is derived from --icon-size (the global .lucide
+     box), so the two stay in step. */
 }
 /* The same field as .filter in HighlightsModal / SearchModal — background, border and
    padding all match. Only the LEFT padding differs, because ours has an icon in it. */
@@ -520,7 +520,8 @@ function metaLine(u: UploadRow): string {
   width: 100%;
   /* Left padding is derived, not picked: where the icon starts, plus the icon's own
      width, plus one character of breathing room. */
-  padding: var(--space-4) var(--space-5) var(--space-4) calc(var(--search-icon-inset) + 1em + 1ch);
+  padding: var(--space-4) var(--space-5) var(--space-4)
+    calc(var(--search-icon-inset) + var(--icon-size) + 1ch);
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--fg);
