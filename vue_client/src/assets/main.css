@@ -336,7 +336,7 @@ a {
 }
 @media (prefers-reduced-motion: reduce) {
   .lucide.icon-spin {
-    animation-duration: 3s;
+    animation: none;
   }
 }
 

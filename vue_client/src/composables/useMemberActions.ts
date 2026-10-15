@@ -14,8 +14,8 @@ import {
   StickyNoteIcon,
   UserLockIcon,
   UserMinusIcon,
+  UserPlusIcon,
   UserXIcon,
-  UsersIcon,
 } from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useBuffersStore } from '../stores/buffers.js';
@@ -172,7 +172,7 @@ export function useMemberActions(): MemberActionsAPI {
             }
           : {
               label: 'Add to Friends',
-              icon: UsersIcon,
+              icon: UserPlusIcon,
               // Favoriting requires an OPEN buffer (a closed one is refused —
               // the stale-tab orphan guard), and this member may have no DM
               // yet. open-buffer mints/reopens the row without stealing focus,

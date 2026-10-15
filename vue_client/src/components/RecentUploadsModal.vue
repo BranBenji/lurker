@@ -638,9 +638,8 @@ function metaLine(u: UploadRow): string {
   color: var(--fg-muted);
 }
 /* The file-type glyph standing in for a thumbnail — big enough to read as the tile's art. */
-.art-icon .lucide {
-  width: 2em;
-  height: 2em;
+.art-icon {
+  --icon-size: 2em;
 }
 .tile.removed .art {
   border-style: dashed;

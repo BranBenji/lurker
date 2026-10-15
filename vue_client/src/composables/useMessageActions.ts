@@ -1,7 +1,15 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { BanIcon, BookmarkIcon, CopyIcon, HeartPlusIcon, LinkIcon, ReplyIcon } from '@lucide/vue';
+import {
+  BanIcon,
+  BookmarkCheckIcon,
+  BookmarkIcon,
+  CopyIcon,
+  HeartPlusIcon,
+  LinkIcon,
+  ReplyIcon,
+} from '@lucide/vue';
 import type { LucideIcon } from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
@@ -232,7 +240,7 @@ export function useMessageActions(): MessageActionsAPI {
       actions.push({
         key: 'save',
         label: saved ? 'Remove bookmark' : 'Save message',
-        icon: BookmarkIcon,
+        icon: saved ? BookmarkCheckIcon : BookmarkIcon,
         active: saved,
       });
     }

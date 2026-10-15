@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
-import { BanIcon, BookmarkIcon, ReplyIcon } from '@lucide/vue';
+import { BanIcon, BookmarkCheckIcon, BookmarkIcon, ReplyIcon } from '@lucide/vue';
 import { useMessageActions, type MessageContext, type MessageLike } from './useMessageActions.js';
 import { useContextMenu } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
@@ -166,7 +166,7 @@ describe('useMessageActions', () => {
       expect(actions.find((a) => a.key === 'save')).toBeUndefined();
     });
 
-    it('reflects a saved bookmark in the save label and active flag', () => {
+    it('reflects a saved bookmark in the save label, icon, and active flag', () => {
       // Seeded the way production seeds it: off the `bookmarked` flag riding on
       // a message row, not a connect-burst snapshot.
       useBookmarksStore().noteFromEvents([{ id: 42, bookmarked: true }], 1);
@@ -174,6 +174,7 @@ describe('useMessageActions', () => {
         .buildActions(other())
         .find((a) => a.key === 'save');
       expect(save?.label).toBe('Remove bookmark');
+      expect(save?.icon).toBe(BookmarkCheckIcon);
       expect(save?.active).toBe(true);
     });
 

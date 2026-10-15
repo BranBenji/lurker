@@ -2661,11 +2661,6 @@ watch(
 .row-action.active {
   color: var(--accent);
 }
-/* The lit bookmark is filled as well as accented, so a saved line still reads as
-   saved to someone who can't tell the accent from the muted grey. */
-.row-action.active .lucide {
-  fill: currentColor;
-}
 
 /* Matched highlight (rule fired): warm background tint. Sits above .alt so
    striping doesn't drown it out. DMs are NOT styled here — they get their

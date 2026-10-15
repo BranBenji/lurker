@@ -621,10 +621,14 @@ function onToggleUploadMenu() {
   grid-template-columns: auto auto auto minmax(0, max-content) auto;
   align-items: baseline;
 }
+/* An svg has no text baseline, so baseline alignment would sit the icon's bottom
+   edge on the text's baseline, riding high; centre it on the row instead. */
+.seg.reply .reply-body > .lucide {
+  align-self: center;
+}
 /* Gaps as margins, not spaces: a space at the edge of a grid item is dropped.
-   The one after the icon lives on the label, not the icon — `ch` is measured
-   against the element's own font (see .seg.typing). The compact bar drops the words and keeps
-   the gap. */
+   The one after the icon lives on the label. The compact bar drops the words and
+   keeps the gap. */
 .seg.reply .reply-label {
   margin-left: 1ch;
 }
@@ -679,10 +683,8 @@ function onToggleUploadMenu() {
 .seg.split.bad {
   color: var(--bad);
 }
-/* Keyboard glyph standing in for the old "Typing:" label. The 1ch space off the
-   first nick lives on the nick span, NOT the icon: `ch` is measured against the
-   element's own font, and only the nick span is set in the mono text font, where
-   1ch is a true character, matching the bar's gap/pipe spacing. */
+/* Keyboard glyph standing in for the old "Typing:" label, with a 1ch gap before
+   the first nick to match the bar's gap/pipe spacing. */
 .seg.typing > span:first-of-type {
   margin-left: 1ch;
 }
