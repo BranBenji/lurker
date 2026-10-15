@@ -3,6 +3,13 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  FileIcon,
+  FileImageIcon,
+  FileMusicIcon,
+  FileTextIcon,
+  FileVideoCameraIcon,
+} from '@lucide/vue';
+import {
   ACCEPTED_FILE_TYPES,
   hasUploaderChoice,
   iconForMime,
@@ -31,20 +38,20 @@ describe('hasUploaderChoice', () => {
 
 describe('iconForMime', () => {
   it('distinguishes the types a thumbnail-less row can be', () => {
-    expect(iconForMime('video/mp4')).toBe('fa-file-video');
-    expect(iconForMime('audio/mpeg')).toBe('fa-file-audio');
-    expect(iconForMime('text/plain')).toBe('fa-file-lines');
-    expect(iconForMime('image/png')).toBe('fa-file-image');
-    expect(iconForMime(null)).toBe('fa-file');
+    expect(iconForMime('video/mp4')).toBe(FileVideoCameraIcon);
+    expect(iconForMime('audio/mpeg')).toBe(FileMusicIcon);
+    expect(iconForMime('text/plain')).toBe(FileTextIcon);
+    expect(iconForMime('image/png')).toBe(FileImageIcon);
+    expect(iconForMime(null)).toBe(FileIcon);
   });
 
   // #788. JSON is a text file IANA files under `application/`, so a prefix test drops
   // it onto the generic page glyph this function exists to get away from.
   it('gives the text glyph to every dialect the uploader can produce', () => {
-    expect(iconForMime('text/markdown')).toBe('fa-file-lines');
-    expect(iconForMime('application/json')).toBe('fa-file-lines');
+    expect(iconForMime('text/markdown')).toBe(FileTextIcon);
+    expect(iconForMime('application/json')).toBe(FileTextIcon);
     // Not a blanket application/ pass — that would put the glyph on a PDF.
-    expect(iconForMime('application/pdf')).toBe('fa-file');
+    expect(iconForMime('application/pdf')).toBe(FileIcon);
   });
 });
 

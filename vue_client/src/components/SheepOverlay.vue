@@ -32,6 +32,7 @@ import { describeSheep } from '../lib/sheep/flock.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.js';
 import { useViewport } from '../composables/useViewport.js';
+import { CheckIcon, XIcon } from '@lucide/vue';
 
 // The flock's render layer: one fixed, pointer-transparent sheet over the
 // whole app, with a sprite per pet. The engine (lib/sheep) decides where each
@@ -108,14 +109,14 @@ function onMenu(s: SheepSprite, e: MouseEvent): void {
     { heading: describeSheep(s) },
     {
       label: `Shoo ${s.name || 'this sheep'}`,
-      icon: 'fa-solid fa-xmark',
+      icon: XIcon,
       onClick: () => void sheep.shoo(s.key).catch(() => {}),
     },
     { divider: true },
     { heading: 'Color' },
     ...sheep.colors.map((color) => ({
       label: color,
-      icon: color === s.color ? 'fa-solid fa-check' : undefined,
+      icon: color === s.color ? CheckIcon : undefined,
       disabled: color === s.color,
       onClick: () => void sheep.recolor(s.key, color).catch(() => {}),
     })),

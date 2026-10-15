@@ -30,8 +30,8 @@
             <span class="muted small ignore-detail">{{ describe(entry) }}</span>
           </span>
           <div class="row-actions">
-            <IconButton icon="fa-pen" label="edit" @click="startEdit(entry)" />
-            <IconButton icon="fa-trash" label="remove" danger @click="onRemove(entry)" />
+            <IconButton :icon="PenIcon" label="edit" @click="startEdit(entry)" />
+            <IconButton :icon="TrashIcon" label="remove" danger @click="onRemove(entry)" />
           </div>
         </li>
       </ul>
@@ -201,6 +201,7 @@ import IconButton from '../IconButton.vue';
 import type { IgnoreRule } from '../../utils/ignoreMatch.js';
 import { durationToExpiry, type IgnorePatternKind } from '../../../../shared/parseIgnore.js';
 import { CANONICAL_ORDER } from '../../../../shared/ignoreLevels.js';
+import { PenIcon, TrashIcon } from '@lucide/vue';
 
 // Granular event types for the chip row: every level except the special ALL,
 // the never-surfaced CTCPS, and NOHIGHLIGHT (its own modifier checkbox).

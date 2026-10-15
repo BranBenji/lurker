@@ -16,7 +16,7 @@
         <div class="row">
           <span class="title">{{ t.title }}</span>
           <button class="x" title="dismiss" @click.stop="toasts.dismiss(t.id)">
-            <i class="fa-solid fa-xmark"></i>
+            <XIcon />
           </button>
         </div>
         <div v-if="t.body" class="body">{{ t.body }}</div>
@@ -33,6 +33,7 @@ import { useToastsStore } from '../stores/toasts.js';
 import type { Toast } from '../stores/toasts.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { emitJumpIntent } from '../composables/useJumpIntent.js';
+import { XIcon } from '@lucide/vue';
 
 const toasts = useToastsStore();
 const buffers = useBuffersStore();

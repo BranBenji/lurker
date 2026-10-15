@@ -31,7 +31,7 @@
           aria-label="Remove"
           @click.stop="$emit('remove', message)"
         >
-          <i class="fa-solid fa-xmark"></i>
+          <XIcon />
         </button>
       </div>
     </div>
@@ -68,6 +68,7 @@ import ReplyQuote from './ReplyQuote.vue';
 import { useReplyQuote } from '../composables/useReplyQuote.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import type { ReplyContext } from '../../../shared/replies.js';
+import { XIcon } from '@lucide/vue';
 
 // Shared row shape from search/highlights/bookmarks. All callers pass at
 // minimum { id, networkId, target, nick, time, text }; `self` and

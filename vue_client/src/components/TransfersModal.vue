@@ -37,7 +37,7 @@
       <div class="list-wrap">
         <ul v-if="dcc.files.length" class="list">
           <li v-for="f in dcc.files" :key="f.id" class="row">
-            <div class="icon muted"><i class="fa-regular fa-file"></i></div>
+            <div class="icon muted"><FileIcon /></div>
             <div class="meta">
               <div class="filename" :title="f.name">{{ f.name }}</div>
               <div class="sub">{{ fileLine(f) }}</div>
@@ -68,7 +68,7 @@
         <ul v-if="dcc.transfers.length" class="list">
           <li v-for="t in dcc.transfers" :key="t.id" class="row">
             <div class="icon" :class="stateClass(t.state)" :title="stateLabel(t.state)">
-              <i :class="stateIcon(t.state)"></i>
+              <component :is="stateIcon(t.state)" />
             </div>
             <div class="meta">
               <div class="filename" :title="t.filename">{{ t.filename }}</div>
@@ -81,7 +81,7 @@
                 <span class="progress-text">{{ progressTitle(t) }}</span>
               </div>
               <div v-if="crcBadge(t)" class="crc" :class="crcBadge(t)!.cls">
-                <i :class="crcBadge(t)!.icon"></i> {{ crcBadge(t)!.text }}
+                <component :is="crcBadge(t)!.icon" /> {{ crcBadge(t)!.text }}
               </div>
               <div v-if="t.error && isErrorState(t.state)" class="err" :title="t.error">
                 {{ t.error }}
@@ -121,7 +121,7 @@
                   aria-label="Clear from list"
                   @click="onClear(t)"
                 >
-                  <i class="fa-solid fa-xmark"></i>
+                  <XIcon />
                 </button>
               </template>
             </div>
@@ -155,6 +155,21 @@ import { useNetworksStore } from '../stores/networks.js';
 import { formatRelative } from '../utils/timestamp.js';
 import { joinMeta } from '../utils/metaLine.js';
 import { formatBytes } from '../utils/formatBytes.js';
+import {
+  ArrowDownIcon,
+  BanIcon,
+  CheckIcon,
+  CircleAlertIcon,
+  CircleCheckIcon,
+  CircleQuestionMarkIcon,
+  FileIcon,
+  InfoIcon,
+  PauseIcon,
+  ShieldHalfIcon,
+  TriangleAlertIcon,
+  XIcon,
+} from '@lucide/vue';
+import type { LucideIcon } from '@lucide/vue';
 
 defineEmits<{ close: [] }>();
 
@@ -230,14 +245,14 @@ function stateClass(s: DccState): string {
   return 'accent'; // requested / pending / connecting / receiving / verifying
 }
 
-function stateIcon(s: DccState): string {
-  if (s === 'completed') return 'fa-solid fa-circle-check';
-  if (s === 'failed') return 'fa-solid fa-circle-exclamation';
-  if (s === 'rejected' || s === 'cancelled') return 'fa-solid fa-ban';
-  if (s === 'pending_approval') return 'fa-solid fa-circle-question';
-  if (s === 'stalled') return 'fa-solid fa-pause';
-  if (s === 'verifying') return 'fa-solid fa-shield-halved';
-  return 'fa-solid fa-down-long'; // requested / connecting / receiving
+function stateIcon(s: DccState): LucideIcon {
+  if (s === 'completed') return CircleCheckIcon;
+  if (s === 'failed') return CircleAlertIcon;
+  if (s === 'rejected' || s === 'cancelled') return BanIcon;
+  if (s === 'pending_approval') return CircleQuestionMarkIcon;
+  if (s === 'stalled') return PauseIcon;
+  if (s === 'verifying') return ShieldHalfIcon;
+  return ArrowDownIcon; // requested / connecting / receiving
 }
 
 function isErrorState(s: DccState): boolean {
@@ -274,7 +289,7 @@ function progressTitle(t: DccTransfer): string {
 
 interface CrcBadge {
   cls: string;
-  icon: string;
+  icon: LucideIcon;
   text: string;
 }
 
@@ -284,13 +299,13 @@ interface CrcBadge {
 function crcBadge(t: DccTransfer): CrcBadge | null {
   if (t.state !== 'completed') return null;
   if (t.crc_status === 'ok') {
-    return { cls: 'good', icon: 'fa-solid fa-check', text: 'checksum verified' };
+    return { cls: 'good', icon: CheckIcon, text: 'checksum verified' };
   }
   if (t.crc_status === 'mismatch') {
-    return { cls: 'bad', icon: 'fa-solid fa-triangle-exclamation', text: 'checksum mismatch' };
+    return { cls: 'bad', icon: TriangleAlertIcon, text: 'checksum mismatch' };
   }
   if (t.crc_status === 'unverified') {
-    return { cls: 'muted', icon: 'fa-solid fa-circle-info', text: 'resumed — not verified' };
+    return { cls: 'muted', icon: InfoIcon, text: 'resumed — not verified' };
   }
   return null;
 }

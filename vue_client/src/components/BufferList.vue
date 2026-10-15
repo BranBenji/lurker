@@ -40,7 +40,7 @@
             @click.stop="openAddNetwork"
             @contextmenu.stop.prevent
           >
-            <i class="fa-solid fa-plus"></i>
+            <PlusIcon />
           </button>
           <button
             v-if="showAdminEntry"
@@ -51,7 +51,7 @@
             @click.stop="openAdmin"
             @contextmenu.stop.prevent
           >
-            <i class="fa-solid fa-shield-halved"></i>
+            <ShieldHalfIcon />
           </button>
           <button
             type="button"
@@ -61,7 +61,7 @@
             @click.stop="openSettings"
             @contextmenu.stop.prevent
           >
-            <i class="fa-solid fa-gear"></i>
+            <SettingsIcon />
           </button>
           <button
             type="button"
@@ -71,7 +71,7 @@
             @click.stop="collapseSidebar"
             @contextmenu.stop.prevent
           >
-            <i class="fa-solid fa-angles-left"></i>
+            <ChevronsLeftIcon />
           </button>
         </div>
       </div>
@@ -128,8 +128,8 @@
                   class="badge draft"
                   title="unsent draft"
                   aria-label="unsent draft"
-                  ><i class="fa-solid fa-pencil"></i
-                ></span>
+                  ><PencilIcon
+                /></span>
                 <span
                   v-if="row.buf.highlighted > 0 && showHighlightBadge"
                   class="badge highlight"
@@ -147,7 +147,7 @@
                   @click.stop="onRowActionsClick($event, row.buf)"
                   @contextmenu.stop.prevent
                 >
-                  <i class="fa-solid fa-ellipsis-vertical"></i>
+                  <EllipsisVerticalIcon />
                 </button>
               </li>
             </template>
@@ -187,7 +187,7 @@
                 @click.stop="joinChannelModal.open(net.id)"
                 @contextmenu.stop.prevent
               >
-                <i class="fa-solid fa-plus"></i>
+                <PlusIcon />
               </button>
               <button
                 type="button"
@@ -199,7 +199,7 @@
                 "
                 @contextmenu.stop.prevent
               >
-                <i class="fa-solid fa-ellipsis-vertical"></i>
+                <EllipsisVerticalIcon />
               </button>
             </div>
           </div>
@@ -237,8 +237,8 @@
                   class="badge draft"
                   title="unsent draft"
                   aria-label="unsent draft"
-                  ><i class="fa-solid fa-pencil"></i
-                ></span>
+                  ><PencilIcon
+                /></span>
                 <span
                   v-if="buf.highlighted > 0 && showHighlightBadge"
                   class="badge highlight"
@@ -257,7 +257,7 @@
                   @click.stop="onRowActionsClick($event, buf)"
                   @contextmenu.stop.prevent
                 >
-                  <i class="fa-solid fa-ellipsis-vertical"></i>
+                  <EllipsisVerticalIcon />
                 </button>
               </li>
             </template>
@@ -284,8 +284,8 @@
                 class="badge draft"
                 title="unsent draft"
                 aria-label="unsent draft"
-                ><i class="fa-solid fa-pencil"></i
-              ></span>
+                ><PencilIcon
+              /></span>
               <span
                 v-if="buf.highlighted > 0 && showHighlightBadge"
                 class="badge highlight"
@@ -304,7 +304,7 @@
                 @click.stop="onRowActionsClick($event, buf)"
                 @contextmenu.stop.prevent
               >
-                <i class="fa-solid fa-ellipsis-vertical"></i>
+                <EllipsisVerticalIcon />
               </button>
             </li>
           </ul>
@@ -369,6 +369,14 @@ import {
 } from '../utils/peerPresence.js';
 import { isChannelTarget } from '../../../shared/channels.js';
 import { bufferSortKey } from '../utils/bufferOrder.js';
+import {
+  ChevronsLeftIcon,
+  EllipsisVerticalIcon,
+  PencilIcon,
+  PlusIcon,
+  SettingsIcon,
+  ShieldHalfIcon,
+} from '@lucide/vue';
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();

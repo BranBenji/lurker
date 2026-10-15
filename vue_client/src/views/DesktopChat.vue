@@ -29,7 +29,7 @@
         :aria-label="railToggleTitle"
         @click="toggleChannels"
       >
-        <i class="fa-solid fa-angles-right"></i>
+        <ChevronsRightIcon />
         <span v-if="hlChip.show.value" class="hl-chip" aria-hidden="true">{{
           hlChip.label.value
         }}</span>
@@ -40,7 +40,7 @@
              rail offers them here instead — collapsed-only to avoid duplicating
              the header controls when expanded. -->
         <button v-if="!showChannels" class="link" @click="openSettings" title="Settings">
-          <i class="fa-solid fa-gear"></i>
+          <SettingsIcon />
         </button>
         <button
           v-if="!showChannels && showAdminEntry"
@@ -49,22 +49,22 @@
           title="Admin panel"
           aria-label="Admin panel"
         >
-          <i class="fa-solid fa-shield-halved"></i>
+          <ShieldHalfIcon />
         </button>
         <button v-if="!showChannels" class="link" @click="openAddNetwork" title="Add network">
-          <i class="fa-solid fa-plus"></i>
+          <PlusIcon />
         </button>
         <button class="link" @click="openSearch(false)" title="Search messages">
-          <i class="fa-solid fa-magnifying-glass"></i>
+          <SearchIcon />
         </button>
         <button class="link" @click="openHighlights(false)" title="Activity">
-          <i class="fa-regular fa-bell"></i>
+          <BellIcon />
         </button>
         <button class="link" @click="showBookmarks = true" title="Saved messages">
-          <i class="fa-regular fa-bookmark"></i>
+          <BookmarkIcon />
         </button>
         <button class="link" @click="showUploads = true" title="Recent uploads">
-          <i class="fa-solid fa-share-from-square"></i>
+          <ShareIcon />
         </button>
         <TransfersButton class="link" />
       </div>
@@ -84,7 +84,7 @@
           :disabled="!navHistory.canBack"
           @click="navHistory.back()"
         >
-          <i class="fa-solid fa-angle-left"></i>
+          <ChevronLeftIcon />
         </button>
         <button
           type="button"
@@ -94,7 +94,7 @@
           :disabled="!navHistory.canForward"
           @click="navHistory.forward()"
         >
-          <i class="fa-solid fa-angle-right"></i>
+          <ChevronRightIcon />
         </button>
       </div>
       <div class="topic-meta">
@@ -130,7 +130,7 @@
               aria-label="Channel settings"
               @click="active && channelModal.open(active.networkId, active.target)"
             >
-              <i class="fa-solid fa-sliders"></i>
+              <SlidersHorizontalIcon />
             </button>
             <button
               type="button"
@@ -139,7 +139,7 @@
               aria-label="Search this buffer"
               @click="openSearch(true)"
             >
-              <i class="fa-solid fa-magnifying-glass"></i>
+              <SearchIcon />
             </button>
             <button
               type="button"
@@ -148,7 +148,7 @@
               aria-label="Activity in this buffer"
               @click="openHighlights(true)"
             >
-              <i class="fa-regular fa-bell"></i>
+              <BellIcon />
             </button>
           </template>
           <template v-if="isServerBuffer">
@@ -160,7 +160,7 @@
               :disabled="serverConnectionState !== 'connected'"
               @click="active && joinChannelModal.open(active.networkId)"
             >
-              <i class="fa-solid fa-plus"></i>
+              <PlusIcon />
             </button>
             <button
               type="button"
@@ -169,7 +169,7 @@
               aria-label="Channel list"
               @click="active && channelListModal.open(active.networkId)"
             >
-              <i class="fa-solid fa-hashtag"></i>
+              <HashIcon />
             </button>
             <button
               type="button"
@@ -178,10 +178,10 @@
               :aria-label="serverConnectActionLabel"
               @click="toggleServerConnection"
             >
-              <i :class="serverConnectActionIcon"></i>
+              <component :is="serverConnectActionIcon" />
             </button>
             <button class="link" title="Edit network" @click="editActiveNetwork">
-              <i class="fa-solid fa-gear"></i>
+              <SettingsIcon />
             </button>
           </template>
           <template v-else-if="isDmHeader">
@@ -192,7 +192,7 @@
               aria-label="View profile"
               @click="openDmProfile"
             >
-              <i class="fa-solid fa-id-card"></i>
+              <IdCardIcon />
             </button>
             <button
               type="button"
@@ -201,7 +201,7 @@
               :aria-label="dmNoteLabel"
               @click="openDmNote"
             >
-              <i class="fa-solid fa-note-sticky"></i>
+              <StickyNoteIcon />
             </button>
           </template>
           <template v-else-if="isChannel">
@@ -211,7 +211,7 @@
               :aria-label="showMembers ? 'Hide members' : 'Show members'"
               @click="toggleMembers"
             >
-              <i class="fa-solid fa-users"></i>
+              <UsersIcon />
             </button>
             <span
               v-if="memberCount != null"
@@ -352,6 +352,25 @@ import { useMediaViewer } from '../composables/useMediaViewer.js';
 import { useNetworkEditor } from '../composables/useNetworkEditor.js';
 import { useJumpToMessage } from '../composables/useJumpToMessage.js';
 import { useNavHistoryStore } from '../stores/navHistory.js';
+import {
+  BellIcon,
+  BookmarkIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  ChevronsRightIcon,
+  HashIcon,
+  IdCardIcon,
+  PlugIcon,
+  PlusIcon,
+  SearchIcon,
+  SettingsIcon,
+  ShareIcon,
+  ShieldHalfIcon,
+  SlidersHorizontalIcon,
+  StickyNoteIcon,
+  UnplugIcon,
+  UsersIcon,
+} from '@lucide/vue';
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
@@ -648,7 +667,7 @@ const serverConnectActionLabel = computed(() =>
   serverOffersDisconnect.value ? 'Disconnect' : 'Reconnect',
 );
 const serverConnectActionIcon = computed(() =>
-  serverOffersDisconnect.value ? 'fa-solid fa-plug-circle-xmark' : 'fa-solid fa-plug',
+  serverOffersDisconnect.value ? UnplugIcon : PlugIcon,
 );
 function toggleServerConnection() {
   if (!active.value) return;

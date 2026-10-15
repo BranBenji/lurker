@@ -23,7 +23,7 @@
           @click.stop="onActionsClick($event, m)"
           @contextmenu.stop.prevent
         >
-          <i class="fa-solid fa-ellipsis-vertical"></i>
+          <EllipsisVerticalIcon />
         </button>
       </li>
     </ul>
@@ -51,6 +51,7 @@ import {
   prefixRank,
 } from '../utils/memberPrefix.js';
 import IgnoreModal from './IgnoreModal.vue';
+import { EllipsisVerticalIcon } from '@lucide/vue';
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();

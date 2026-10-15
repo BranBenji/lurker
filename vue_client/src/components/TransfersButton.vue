@@ -18,13 +18,14 @@
     :title="title"
     @click="dcc.open()"
   >
-    <i class="fa-solid fa-box-archive"></i>
+    <ArchiveIcon />
   </button>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useDccStore } from '../stores/dcc.js';
+import { ArchiveIcon } from '@lucide/vue';
 
 const dcc = useDccStore();
 const title = computed(() =>

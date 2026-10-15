@@ -5,6 +5,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
+import { BanIcon, BookmarkIcon, ReplyIcon } from '@lucide/vue';
 import { useMessageActions, type MessageContext, type MessageLike } from './useMessageActions.js';
 import { useContextMenu } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
@@ -165,7 +166,7 @@ describe('useMessageActions', () => {
       expect(actions.find((a) => a.key === 'save')).toBeUndefined();
     });
 
-    it('reflects a saved bookmark in the save label, icon, and active flag', () => {
+    it('reflects a saved bookmark in the save label and active flag', () => {
       // Seeded the way production seeds it: off the `bookmarked` flag riding on
       // a message row, not a connect-burst snapshot.
       useBookmarksStore().noteFromEvents([{ id: 42, bookmarked: true }], 1);
@@ -173,7 +174,6 @@ describe('useMessageActions', () => {
         .buildActions(other())
         .find((a) => a.key === 'save');
       expect(save?.label).toBe('Remove bookmark');
-      expect(save?.icon).toBe('fa-solid fa-bookmark');
       expect(save?.active).toBe(true);
     });
 
@@ -196,7 +196,7 @@ describe('useMessageActions', () => {
       const api = useMessageActions();
       const ctx = makeCtx();
       const m = other();
-      const reply = api.buildItems(m, ctx).find((i) => i.icon?.includes('fa-reply'));
+      const reply = api.buildItems(m, ctx).find((i) => i.icon === ReplyIcon);
       reply?.onClick?.();
       expect(ctx.onReply).toHaveBeenCalledWith(m);
     });
@@ -205,7 +205,7 @@ describe('useMessageActions', () => {
       const api = useMessageActions();
       const ctx = makeCtx();
       const m = other();
-      const ignore = api.buildItems(m, ctx).find((i) => i.icon?.includes('fa-ban'));
+      const ignore = api.buildItems(m, ctx).find((i) => i.icon === BanIcon);
       ignore?.onClick?.();
       expect(ctx.onIgnore).toHaveBeenCalledWith(m);
     });
@@ -214,7 +214,7 @@ describe('useMessageActions', () => {
       const api = useMessageActions();
       const toggle = vi.spyOn(useBookmarksStore(), 'toggle');
       const m = other();
-      const save = api.buildItems(m, makeCtx()).find((i) => i.icon?.includes('fa-bookmark'));
+      const save = api.buildItems(m, makeCtx()).find((i) => i.icon === BookmarkIcon);
       save?.onClick?.();
       expect(toggle).toHaveBeenCalledWith(m);
     });

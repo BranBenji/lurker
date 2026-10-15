@@ -14,20 +14,20 @@
         <span v-if="!connected" class="status off" title="Disconnected">●</span>
         <span class="spacer"></span>
         <button class="icon" title="Search messages" @click="openSearch(false)">
-          <i class="fa-solid fa-magnifying-glass"></i>
+          <SearchIcon />
         </button>
         <button class="icon" title="Activity" @click="openHighlights(false)">
-          <i class="fa-regular fa-bell"></i>
+          <BellIcon />
         </button>
         <button class="icon" title="Saved messages" @click="showBookmarks = true">
-          <i class="fa-regular fa-bookmark"></i>
+          <BookmarkIcon />
         </button>
         <button class="icon" title="Recent uploads" @click="showUploads = true">
-          <i class="fa-solid fa-share-from-square"></i>
+          <ShareIcon />
         </button>
         <TransfersButton class="icon" />
         <button class="icon" title="Add network" @click="openAddNetwork">
-          <i class="fa-solid fa-plus"></i>
+          <PlusIcon />
         </button>
         <RouterLink
           v-if="showAdminEntry"
@@ -36,10 +36,10 @@
           title="Admin panel"
           aria-label="Admin panel"
         >
-          <i class="fa-solid fa-shield-halved"></i>
+          <ShieldHalfIcon />
         </RouterLink>
         <RouterLink class="icon" to="/settings" title="Settings">
-          <i class="fa-solid fa-gear"></i>
+          <SettingsIcon />
         </RouterLink>
       </header>
       <div class="bufferlist-wrap" @click="onBufferListClick">
@@ -56,7 +56,7 @@
              badge: .icon is already a flex row and the bar has the width, so
              "← 3" stays legible where an overlay on a 36px target would not. -->
         <button class="icon back" :title="backTitle" :aria-label="backTitle" @click="goList">
-          <i class="fa-solid fa-arrow-left"></i>
+          <ArrowLeftIcon />
           <span v-if="hlChip.show.value" class="hl-chip" aria-hidden="true">{{
             hlChip.label.value
           }}</span>
@@ -78,7 +78,7 @@
           title="Search this buffer"
           @click="openSearch(true)"
         >
-          <i class="fa-solid fa-magnifying-glass"></i>
+          <SearchIcon />
         </button>
         <button
           v-if="!isVirtual && !isServerBuffer"
@@ -86,7 +86,7 @@
           title="Activity in this buffer"
           @click="openHighlights(true)"
         >
-          <i class="fa-regular fa-bell"></i>
+          <BellIcon />
         </button>
         <template v-if="isServerBuffer">
           <button
@@ -96,7 +96,7 @@
             :disabled="serverConnectionState !== 'connected'"
             @click="active && joinChannelModal.open(active.networkId)"
           >
-            <i class="fa-solid fa-plus"></i>
+            <PlusIcon />
           </button>
           <button
             class="icon"
@@ -104,7 +104,7 @@
             aria-label="Channel list"
             @click="active && channelListModal.open(active.networkId)"
           >
-            <i class="fa-solid fa-hashtag"></i>
+            <HashIcon />
           </button>
         </template>
         <button
@@ -114,7 +114,7 @@
           aria-label="Members"
           @click="goMembers"
         >
-          <i class="fa-solid fa-users"></i>
+          <UsersIcon />
         </button>
         <button
           v-if="active"
@@ -124,7 +124,7 @@
           aria-label="Buffer actions"
           @click="openBufferActions"
         >
-          <i class="fa-solid fa-ellipsis-vertical"></i>
+          <EllipsisVerticalIcon />
         </button>
       </header>
       <MessageList :pending-scroll-id="pendingScrollId" />
@@ -142,7 +142,7 @@
     <section v-else-if="screen === 'members'" class="screen members-screen">
       <header class="bar">
         <button class="icon back" title="Back" @click="goBufferFromMembers">
-          <i class="fa-solid fa-arrow-left"></i>
+          <ArrowLeftIcon />
         </button>
         <span class="title">{{ bufferLabel }} — members</span>
       </header>
@@ -270,6 +270,21 @@ import { useHighlightChip } from '../composables/useHighlightChip.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useAuthStore } from '../stores/auth.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
+import {
+  ArrowLeftIcon,
+  BellIcon,
+  BookmarkIcon,
+  EllipsisVerticalIcon,
+  HashIcon,
+  PlugIcon,
+  PlusIcon,
+  SearchIcon,
+  SettingsIcon,
+  ShareIcon,
+  ShieldHalfIcon,
+  UnplugIcon,
+  UsersIcon,
+} from '@lucide/vue';
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
@@ -397,7 +412,7 @@ function openBufferActions() {
         // 'disconnected', and tap. Same trap as useNetworkActions.buildItems.
         onClick: () => toggleServerConnection(serverOffersDisconnect.value),
       },
-      { label: 'Edit network', icon: 'fa-solid fa-gear', onClick: editActiveNetwork },
+      { label: 'Edit network', icon: SettingsIcon, onClick: editActiveNetwork },
     );
   } else {
     items.push(...bufferActions.buildItems(activeBuf.value as BufferLike));
@@ -430,7 +445,7 @@ const serverConnectActionLabel = computed(() =>
   serverOffersDisconnect.value ? 'Disconnect' : 'Reconnect',
 );
 const serverConnectActionIcon = computed(() =>
-  serverOffersDisconnect.value ? 'fa-solid fa-plug-circle-xmark' : 'fa-solid fa-plug',
+  serverOffersDisconnect.value ? UnplugIcon : PlugIcon,
 );
 function toggleServerConnection(offerDisconnect: boolean) {
   if (!active.value) return;

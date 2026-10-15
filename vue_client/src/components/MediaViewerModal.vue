@@ -36,7 +36,8 @@
           :disabled="loading || failed"
           @click="toggleZoomFromCenter"
         >
-          <i :class="zoomIconClass"></i>
+          <ZoomOutIcon v-if="isZoomed" />
+          <ZoomInIcon v-else />
         </button>
         <!-- Copying the link is what you usually want from something someone posted —
              to reply with it, or to send it on. It was previously only reachable by
@@ -49,7 +50,8 @@
           :aria-label="clipboard.isCopied() ? 'copied' : 'copy link'"
           @click="onCopyLink"
         >
-          <i :class="clipboard.isCopied() ? 'fa-solid fa-check' : 'fa-regular fa-copy'"></i>
+          <CheckIcon v-if="clipboard.isCopied()" />
+          <CopyIcon v-else />
         </button>
         <button
           class="control"
@@ -58,7 +60,7 @@
           aria-label="open in browser"
           @click="openInBrowser"
         >
-          <i class="fa-solid fa-arrow-up-right-from-square"></i>
+          <ExternalLinkIcon />
         </button>
         <button
           class="control"
@@ -67,7 +69,7 @@
           aria-label="close"
           @click="$emit('close')"
         >
-          <i class="fa-solid fa-xmark"></i>
+          <XIcon />
         </button>
       </div>
     </div>
@@ -83,7 +85,7 @@
       aria-label="previous image"
       @click.stop="$emit('prev')"
     >
-      <i class="fa-solid fa-chevron-left"></i>
+      <ChevronLeftIcon />
     </button>
     <button
       v-if="hasNext"
@@ -93,7 +95,7 @@
       aria-label="next image"
       @click.stop="$emit('next')"
     >
-      <i class="fa-solid fa-chevron-right"></i>
+      <ChevronRightIcon />
     </button>
 
     <div ref="stageEl" class="stage" @click.self="$emit('close')">
@@ -104,7 +106,7 @@
         </p>
       </div>
       <p v-else-if="loading" class="loading" aria-label="Loading">
-        <i class="fa-solid fa-circle-notch fa-spin"></i>
+        <LoaderCircleIcon class="icon-spin" />
       </p>
 
       <!-- IMAGE — the only mode with pan/zoom. A photo is the one thing here you want
@@ -190,6 +192,17 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useCopyFeedback } from '../composables/useCopyFeedback.js';
 import { mediaKindForUrl, type MediaKind } from '../utils/uploadHostMatch.js';
+import {
+  CheckIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CopyIcon,
+  ExternalLinkIcon,
+  LoaderCircleIcon,
+  XIcon,
+  ZoomInIcon,
+  ZoomOutIcon,
+} from '@lucide/vue';
 
 const LOAD_TIMEOUT_MS = 20_000;
 // A .txt upload is a pasted chat message, not a novel — but nothing stops someone
@@ -293,10 +306,6 @@ const failureMessage = computed(() => FAILURE_MESSAGES[kind.value]);
 
 const isZoomed = computed(() => scale.value > MIN_ZOOM);
 const zoomControlLabel = computed(() => (isZoomed.value ? 'zoom out' : 'zoom in'));
-const zoomIconClass = computed(() => [
-  'fa-solid',
-  isZoomed.value ? 'fa-magnifying-glass-minus' : 'fa-magnifying-glass-plus',
-]);
 const imageStyle = computed(() => ({
   transform: `translate3d(${panX.value}px, ${panY.value}px, 0) scale(${scale.value})`,
 }));
@@ -874,8 +883,7 @@ onBeforeUnmount(() => {
   color: var(--fg-muted);
   cursor: pointer;
   font: inherit;
-  /* Icon-only button — size the glyph, not text weight (fa-solid is already
-     weight 900). */
+  /* Icon-only button — size the glyph, not text weight. */
   font-size: var(--icon-lg);
   padding: var(--space-2) var(--space-4);
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { reactive } from 'vue';
+import type { LucideIcon } from '@lucide/vue';
 
 // Single global context menu, controlled imperatively by any consumer.
 // State is module-level so every useContextMenu() caller shares the same
@@ -10,14 +11,14 @@ import { reactive } from 'vue';
 //
 // Items shape:
 //   { label, onClick, icon?, disabled?, divider? }
-// `icon` is a Font Awesome class string (e.g. 'fa-solid fa-thumbtack'); the
-// menu renders it as `<i class="…">`. A `divider: true` item is rendered as a
+// `icon` is a Lucide icon component (e.g. PinIcon from '@lucide/vue'); the menu
+// renders it in the row's icon slot. A `divider: true` item is rendered as a
 // separator line; other fields ignored.
 
 export interface ContextMenuItem {
   label?: string;
   onClick?: () => void;
-  icon?: string;
+  icon?: LucideIcon;
   disabled?: boolean;
   divider?: boolean;
   // A non-interactive small-caps group label (e.g. "Notifications" above a radio

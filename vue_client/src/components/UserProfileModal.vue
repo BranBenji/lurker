@@ -44,7 +44,7 @@
             <dd>
               <code>{{ hostmask }}</code>
               <button type="button" class="link inline" title="Copy hostmask" @click="copyHostmask">
-                <i class="fa-solid fa-copy"></i>
+                <CopyIcon />
               </button>
             </dd>
           </template>
@@ -91,7 +91,7 @@
         </dl>
         <div v-if="chips.length" class="chips">
           <span v-for="c in chips" :key="c.label" :class="['chip', c.tone]">
-            <i v-if="c.icon" :class="c.icon"></i> {{ c.label }}
+            <component :is="c.icon" v-if="c.icon" /> {{ c.label }}
           </span>
         </div>
       </section>
@@ -104,7 +104,7 @@
           <p class="meta">
             <span v-if="noteUpdatedAt">Updated {{ formatDateTime(noteUpdatedAt) }}</span>
             <button type="button" class="link inline" @click="openNoteEditor">
-              <i :class="noteText ? 'fa-solid fa-pen' : 'fa-solid fa-plus'"></i>
+              <component :is="noteText ? PenIcon : PlusIcon" />
               {{ noteText ? 'Edit' : 'Add note' }}
             </button>
           </p>
@@ -115,14 +115,10 @@
            the miss has to be said out loud rather than left to the header
            dot (#818). -->
       <section v-if="statusLine === 'not-found'" class="section status">
-        <p class="muted">
-          <i class="fa-solid fa-circle-question"></i> {{ nick }} isn't on this network.
-        </p>
+        <p class="muted"><CircleQuestionMarkIcon /> {{ nick }} isn't on this network.</p>
       </section>
       <section v-else-if="statusLine === 'waiting'" class="section status">
-        <p class="muted">
-          <i class="fa-solid fa-circle-notch fa-spin"></i> Waiting for whois reply…
-        </p>
+        <p class="muted"><LoaderCircleIcon class="icon-spin" /> Waiting for whois reply…</p>
       </section>
     </div>
 
@@ -138,11 +134,11 @@
         title="Send DM"
         @click="onSendDm"
       >
-        <i class="fa-solid fa-envelope"></i> <span class="label">Send DM</span>
+        <MailIcon /> <span class="label">Send DM</span>
       </button>
       <span class="spacer"></span>
       <button type="button" class="btn-secondary" title="More actions" @click="openMoreMenu">
-        <i class="fa-solid fa-ellipsis"></i> <span class="label">More</span>
+        <EllipsisIcon /> <span class="label">More</span>
       </button>
     </footer>
 
@@ -171,6 +167,24 @@ import { socketSend } from '../composables/useSocket.js';
 import { formatDateTime } from '../utils/timestamp.js';
 import { splitChannelToken } from '../utils/memberPrefix.js';
 import { isPeerAway, isPeerOffline, isPeerOnline } from '../utils/peerPresence.js';
+import {
+  BadgeCheckIcon,
+  BanIcon,
+  BotIcon,
+  CircleQuestionMarkIcon,
+  CopyIcon,
+  EllipsisIcon,
+  InfoIcon,
+  LoaderCircleIcon,
+  LockIcon,
+  MailIcon,
+  PenIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  SatelliteDishIcon,
+  ShieldHalfIcon,
+} from '@lucide/vue';
+import type { LucideIcon } from '@lucide/vue';
 
 const props = defineProps<{
   nick: string;
@@ -266,24 +280,21 @@ const actualHost = computed(() => {
 interface Chip {
   label: string;
   tone: 'good' | 'neutral' | 'warn';
-  icon?: string;
+  icon?: LucideIcon;
 }
 const chips = computed<Chip[]>(() => {
   const out: Chip[] = [];
   const w = whois.value;
   if (w) {
-    if (w.secure) out.push({ label: 'TLS', tone: 'good', icon: 'fa-solid fa-lock' });
-    if (w.bot) out.push({ label: 'Bot', tone: 'neutral', icon: 'fa-solid fa-robot' });
-    if (w.operator)
-      out.push({ label: 'IRC operator', tone: 'warn', icon: 'fa-solid fa-shield-halved' });
-    if (w.helpop) out.push({ label: 'Help', tone: 'neutral', icon: 'fa-solid fa-circle-info' });
-    if (w.registered_nick)
-      out.push({ label: 'Registered', tone: 'good', icon: 'fa-solid fa-id-badge' });
+    if (w.secure) out.push({ label: 'TLS', tone: 'good', icon: LockIcon });
+    if (w.bot) out.push({ label: 'Bot', tone: 'neutral', icon: BotIcon });
+    if (w.operator) out.push({ label: 'IRC operator', tone: 'warn', icon: ShieldHalfIcon });
+    if (w.helpop) out.push({ label: 'Help', tone: 'neutral', icon: InfoIcon });
+    if (w.registered_nick) out.push({ label: 'Registered', tone: 'good', icon: BadgeCheckIcon });
   }
   // Relay-bot mark is local user state, not a whois fact, so it shows even when
   // no whois reply is in (e.g. opening the profile of an offline bot).
-  if (isRelay.value)
-    out.push({ label: 'Relay bot', tone: 'neutral', icon: 'fa-solid fa-satellite-dish' });
+  if (isRelay.value) out.push({ label: 'Relay bot', tone: 'neutral', icon: SatelliteDishIcon });
   return out;
 });
 
@@ -417,16 +428,16 @@ function onToggleRelay() {
 function openMoreMenu(e: MouseEvent) {
   const items: ContextMenuItem[] = [];
   if (!isOffline.value && !isSelf.value) {
-    items.push({ label: 'Ignore…', icon: 'fa-solid fa-ban', onClick: onIgnore });
+    items.push({ label: 'Ignore…', icon: BanIcon, onClick: onIgnore });
   }
   if (!isSelf.value) {
     items.push({
       label: isRelay.value ? 'Unmark relay bot' : 'Mark relay bot',
-      icon: 'fa-solid fa-satellite-dish',
+      icon: SatelliteDishIcon,
       onClick: onToggleRelay,
     });
   }
-  items.push({ label: 'Refresh', icon: 'fa-solid fa-arrows-rotate', onClick: onRefresh });
+  items.push({ label: 'Refresh', icon: RefreshCwIcon, onClick: onRefresh });
   const btn = e.currentTarget as Element | null;
   if (btn) {
     const rect = btn.getBoundingClientRect();

@@ -1,6 +1,22 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import {
+  BanIcon,
+  CopyIcon,
+  GavelIcon,
+  IdCardIcon,
+  MailIcon,
+  MicIcon,
+  MicOffIcon,
+  ReplyIcon,
+  ShieldHalfIcon,
+  StickyNoteIcon,
+  UserLockIcon,
+  UserMinusIcon,
+  UserXIcon,
+  UsersIcon,
+} from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useFavoritesStore } from '../stores/favorites.js';
@@ -114,13 +130,13 @@ export function useMemberActions(): MemberActionsAPI {
     if (!isSelf && !privateTarget(ctx.channel)) {
       items.push({
         label: `Reply to ${nick}`,
-        icon: 'fa-solid fa-reply',
+        icon: ReplyIcon,
         onClick: () => addressNick(nick),
       });
     }
     items.push({
       label: 'Copy Nickname',
-      icon: 'fa-regular fa-copy',
+      icon: CopyIcon,
       // Best-effort: writeText rejects without clipboard permission or in an
       // insecure context, and the API can be absent on older browsers.
       onClick: () => {
@@ -130,19 +146,19 @@ export function useMemberActions(): MemberActionsAPI {
     items.push({ divider: true });
     items.push({
       label: 'View Profile…',
-      icon: 'fa-solid fa-id-card',
+      icon: IdCardIcon,
       onClick: () => whois.openViewer(ctx.networkId, nick),
     });
     if (!isSelf) {
       items.push({
         label: 'Send DM',
-        icon: 'fa-solid fa-envelope',
+        icon: MailIcon,
         onClick: () => buffers.activate(ctx.networkId, nick),
       });
     }
     items.push({
       label: hasNote ? 'Edit Note…' : 'Add Note…',
-      icon: 'fa-solid fa-note-sticky',
+      icon: StickyNoteIcon,
       onClick: () => nickNotes.openEditor(ctx.networkId, nick),
     });
     if (!isSelf) {
@@ -151,12 +167,12 @@ export function useMemberActions(): MemberActionsAPI {
         isFriend
           ? {
               label: 'Remove from Friends',
-              icon: 'fa-solid fa-user-minus',
+              icon: UserMinusIcon,
               onClick: () => favorites.unfavorite(ctx.networkId, nick),
             }
           : {
               label: 'Add to Friends',
-              icon: 'fa-solid fa-user-group',
+              icon: UsersIcon,
               // Favoriting requires an OPEN buffer (a closed one is refused —
               // the stale-tab orphan guard), and this member may have no DM
               // yet. open-buffer mints/reopens the row without stealing focus,
@@ -178,7 +194,7 @@ export function useMemberActions(): MemberActionsAPI {
       );
       items.push({
         label: 'Ignore…',
-        icon: 'fa-solid fa-ban',
+        icon: BanIcon,
         onClick: () => ctx.onIgnore(member),
       });
     }
@@ -214,7 +230,7 @@ export function useMemberActions(): MemberActionsAPI {
         const opped = targetModes.includes('o');
         items.push({
           label: opped ? 'Take Op' : 'Give Op',
-          icon: 'fa-solid fa-shield-halved',
+          icon: ShieldHalfIcon,
           onClick: () => send(`MODE ${ch} ${opped ? '-' : '+'}o ${nick}`),
         });
       }
@@ -223,14 +239,14 @@ export function useMemberActions(): MemberActionsAPI {
       if (hasMode('v')) {
         items.push({
           label: voiced ? 'Remove Voice' : 'Give Voice',
-          icon: voiced ? 'fa-solid fa-microphone-slash' : 'fa-solid fa-microphone',
+          icon: voiced ? MicOffIcon : MicIcon,
           onClick: () => send(`MODE ${ch} ${voiced ? '-' : '+'}v ${nick}`),
         });
       }
 
       items.push({
         label: 'Kick…',
-        icon: 'fa-solid fa-user-slash',
+        icon: UserXIcon,
         onClick: () => {
           const reason = promptKickReason();
           if (reason === null) return;
@@ -240,13 +256,13 @@ export function useMemberActions(): MemberActionsAPI {
 
       items.push({
         label: 'Ban',
-        icon: 'fa-solid fa-gavel',
+        icon: GavelIcon,
         onClick: () => send(`MODE ${ch} +b ${maskFor(member)}`),
       });
 
       items.push({
         label: 'Kick + Ban…',
-        icon: 'fa-solid fa-user-lock',
+        icon: UserLockIcon,
         onClick: () => {
           const reason = promptKickReason();
           if (reason === null) return;

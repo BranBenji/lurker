@@ -1,6 +1,19 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import {
+  IdCardIcon,
+  LogInIcon,
+  PinIcon,
+  PinOffIcon,
+  SlidersHorizontalIcon,
+  StarIcon,
+  StarOffIcon,
+  StickyNoteIcon,
+  UserMinusIcon,
+  UserPlusIcon,
+  XIcon,
+} from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNetworksStore } from '../stores/networks.js';
@@ -81,7 +94,7 @@ export function useBufferActions(): BufferActionsAPI {
       items.push(
         {
           label: 'Join Channel',
-          icon: 'fa-solid fa-right-to-bracket',
+          icon: LogInIcon,
           disabled: networks.states[networkId]?.state !== 'connected',
           onClick: () => buffers.joinOrToast(networkId, buf.target),
         },
@@ -98,12 +111,12 @@ export function useBufferActions(): BufferActionsAPI {
         pinned
           ? {
               label: `Unpin ${kind}`,
-              icon: 'fa-solid fa-thumbtack-slash',
+              icon: PinOffIcon,
               onClick: () => pins.unpin(networkId, buf.target),
             }
           : {
               label: `Pin ${kind}`,
-              icon: 'fa-solid fa-thumbtack',
+              icon: PinIcon,
               onClick: () => pins.pin(networkId, buf.target),
             },
       );
@@ -113,12 +126,12 @@ export function useBufferActions(): BufferActionsAPI {
         favorited
           ? {
               label: `Remove from ${favoriteSection}`,
-              icon: isChannel ? 'fa-regular fa-star' : 'fa-solid fa-user-minus',
+              icon: isChannel ? StarOffIcon : UserMinusIcon,
               onClick: () => favorites.unfavorite(networkId, buf.target),
             }
           : {
               label: `Add to ${favoriteSection}`,
-              icon: isChannel ? 'fa-solid fa-star' : 'fa-solid fa-user-group',
+              icon: isChannel ? StarIcon : UserPlusIcon,
               onClick: () => favorites.favorite(networkId, buf.target),
             },
       );
@@ -139,7 +152,7 @@ export function useBufferActions(): BufferActionsAPI {
         { divider: true },
         {
           label: 'Channel Settings…',
-          icon: 'fa-solid fa-sliders',
+          icon: SlidersHorizontalIcon,
           onClick: () => channelModal.open(networkId, buf.target),
         },
       );
@@ -153,12 +166,12 @@ export function useBufferActions(): BufferActionsAPI {
         { divider: true },
         {
           label: 'View Profile…',
-          icon: 'fa-solid fa-id-card',
+          icon: IdCardIcon,
           onClick: () => whois.openViewer(networkId, peerNick),
         },
         {
           label: hasNote ? 'Edit Note…' : 'Add Note…',
-          icon: 'fa-solid fa-note-sticky',
+          icon: StickyNoteIcon,
           onClick: () => nickNotes.openEditor(networkId, peerNick),
         },
       );
@@ -171,7 +184,7 @@ export function useBufferActions(): BufferActionsAPI {
       { divider: true },
       {
         label: `Close ${kind}`,
-        icon: 'fa-solid fa-xmark',
+        icon: XIcon,
         onClick: () =>
           socketSend({ type: 'close-buffer', networkId, target: buf.target, bufferId: buf.id }),
       },
