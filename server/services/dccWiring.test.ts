@@ -345,7 +345,7 @@ describe('arm-on-trigger + auto-accept', () => {
     });
   });
 
-  it('fails an armed passive offer (not yet supported)', () => {
+  it('fails an armed passive offer when this server has nowhere to listen', () => {
     enableDcc();
     const { conn } = harness();
     conn.client.say = vi.fn<(target: string, text: string) => void>();
@@ -357,7 +357,7 @@ describe('arm-on-trigger + auto-accept', () => {
     });
     const row = listDccTransfers(1)[0];
     expect(row.state).toBe('failed');
-    expect(row.error).toMatch(/passive/i);
+    expect(row.error).toBe('this server has no listening port configured');
   });
 
   it('refuses an armed offer pointing at a private/loopback address (SSRF guard)', () => {
@@ -592,14 +592,7 @@ describe('arm-on-trigger + auto-accept', () => {
       type: 'DCC',
       message: `DCC SEND show.mkv 2130706433 ${sender.port} ${full.length}`,
     });
-    expect(resumeReq).toHaveBeenCalledWith(
-      'bot',
-      'DCC',
-      'RESUME',
-      'show.mkv',
-      String(sender.port),
-      String(have),
-    );
+    expect(resumeReq).toHaveBeenCalledWith('bot', 'DCC', `RESUME show.mkv ${sender.port} ${have}`);
     // The resume took over the earlier row's file (#1125): that row let go of
     // it, and every open view hears so.
     expect(
@@ -666,14 +659,7 @@ describe('arm-on-trigger + auto-accept', () => {
       type: 'DCC',
       message: `DCC SEND show.mkv 2130706433 ${sender.port} ${full.length}`,
     });
-    expect(resumeReq).toHaveBeenCalledWith(
-      'bot',
-      'DCC',
-      'RESUME',
-      'show.mkv',
-      String(sender.port),
-      String(have),
-    );
+    expect(resumeReq).toHaveBeenCalledWith('bot', 'DCC', `RESUME show.mkv ${sender.port} ${have}`);
 
     setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
     conn.client.emit('ctcp request', {
