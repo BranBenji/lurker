@@ -28,7 +28,7 @@
           spellcheck="false"
         />
         <button type="button" class="browse" @click="onBrowse">
-          <i class="fa-solid fa-hashtag" aria-hidden="true"></i>
+          <HashIcon />
           Browse Channel List
         </button>
       </div>
@@ -48,6 +48,7 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
 import { ensureChannelPrefix } from '../../../shared/channels.js';
 import { blockImeEnter, useImeSafeInput } from '../composables/useImeSafeInput.js';
+import { HashIcon } from '@lucide/vue';
 
 const props = defineProps<{ networkId: number }>();
 const emit = defineEmits<{ close: [] }>();

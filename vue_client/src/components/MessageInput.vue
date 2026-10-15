@@ -56,7 +56,7 @@
       @mousedown.prevent
       @click="submit"
     >
-      <i class="fa-solid fa-circle-arrow-up"></i>
+      <CircleArrowUpIcon />
     </button>
     <!-- Matches what the server actually accepts (image + text). It only listed
          images, so a .txt — which the upload route has always taken, and which is
@@ -258,6 +258,7 @@ import {
 import { useNickColors } from '../composables/useNickColors.js';
 import type { Buffer } from '../stores/buffers.js';
 import { isImeKey } from '../composables/useImeSafeInput.js';
+import { CircleArrowUpIcon } from '@lucide/vue';
 
 const networks = useNetworksStore();
 const buffers = useBuffersStore();

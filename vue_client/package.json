@@ -11,7 +11,7 @@
     "typecheck": "vue-tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@fortawesome/fontawesome-free": "^7.3.1",
+    "@lucide/vue": "^1.49.0",
     "@simplewebauthn/browser": "^14.0.0",
     "pinia": "^4.0.3",
     "vue": "^3.5.43",

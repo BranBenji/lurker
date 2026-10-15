@@ -1,6 +1,14 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import {
+  FileIcon,
+  FileImageIcon,
+  FileMusicIcon,
+  FileTextIcon,
+  FileVideoCameraIcon,
+} from '@lucide/vue';
+import type { LucideIcon } from '@lucide/vue';
 import { hasTextDialectExtension } from '../../../shared/textDialects.js';
 
 // Shared shapes for the uploader-management UI (#514). The server projects these
@@ -198,18 +206,18 @@ export function isUploadableType(mime: string, filename = ''): boolean {
   return false;
 }
 
-/** A Font Awesome icon for an upload with no thumbnail, from its MIME. The recent-
+/** A Lucide icon for an upload with no thumbnail, from its MIME. The recent-
  *  uploads browser used one generic page glyph for everything, so a PDF, a song and
  *  a video were indistinguishable. */
-export function iconForMime(mime: string | null | undefined): string {
+export function iconForMime(mime: string | null | undefined): LucideIcon {
   const m = mime || '';
-  if (m.startsWith('video/')) return 'fa-file-video';
-  if (m.startsWith('audio/')) return 'fa-file-audio';
-  if (m.startsWith('image/')) return 'fa-file-image';
+  if (m.startsWith('video/')) return FileVideoCameraIcon;
+  if (m.startsWith('audio/')) return FileMusicIcon;
+  if (m.startsWith('image/')) return FileImageIcon;
   // JSON is a text file IANA files under `application/` (#788) — without this it
   // falls to the generic page glyph the rest of this function exists to avoid.
-  if (m.startsWith('text/') || m === 'application/json') return 'fa-file-lines';
-  return 'fa-file';
+  if (m.startsWith('text/') || m === 'application/json') return FileTextIcon;
+  return FileIcon;
 }
 
 /**

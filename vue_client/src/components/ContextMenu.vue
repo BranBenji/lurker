@@ -25,7 +25,7 @@
           :disabled="item.disabled"
           @click="activate(item)"
         >
-          <i v-if="item.icon" :class="['icon', item.icon]" aria-hidden="true"></i>
+          <span v-if="item.icon" class="icon"><component :is="item.icon" /></span>
           <span class="label">{{ item.label }}</span>
         </button>
       </template>
@@ -207,18 +207,13 @@ onBeforeUnmount(() => {
   color: var(--fg-muted);
   cursor: default;
 }
-/* FontAwesome solid glyphs are biased toward the top of their em box (bell,
-   thumbtack, etc. have visual weight near the top), so geometric centering
-   reads as the icon sitting slightly high relative to the label's x-height.
-   A 1px downward nudge optically aligns the icon body with the text. */
 .icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
+  width: var(--icon-size);
   flex-shrink: 0;
   color: var(--fg-muted);
-  transform: translateY(1px);
 }
 .heading {
   /* A muted group label above a radio group (e.g. "Notifications"). Uppercased

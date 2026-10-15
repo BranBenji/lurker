@@ -138,7 +138,7 @@
               :aria-label="`Remove ${entry.mask}`"
               @click="removeEntry(entry.mask)"
             >
-              <i class="fa-solid fa-xmark"></i>
+              <XIcon />
             </button>
           </li>
         </ul>
@@ -183,6 +183,7 @@ import {
 import { patchModeList, type ListEntry, type ModeRowLike } from '../utils/modeListPatch.js';
 import { hasRankAtLeast } from '../../../shared/channelModes.js';
 import type { OutgoingModeChange } from '../../../shared/channelModes.js';
+import { XIcon } from '@lucide/vue';
 
 const props = defineProps<{ networkId: number; target: string }>();
 defineEmits<{ close: [] }>();

@@ -44,7 +44,8 @@
         :aria-label="revealed ? 'Hide key' : 'Show key'"
         @click="$emit('reveal')"
       >
-        <i :class="revealed ? 'fa-solid fa-eye-slash' : 'fa-solid fa-eye'"></i>
+        <EyeOffIcon v-if="revealed" />
+        <EyeIcon v-else />
       </button>
     </span>
   </template>
@@ -54,6 +55,7 @@
 <script setup lang="ts">
 import { blockImeEnter } from '../composables/useImeSafeInput.js';
 import type { DraftRow, ModeRow } from '../utils/channelModeForm.js';
+import { EyeIcon, EyeOffIcon } from '@lucide/vue';
 
 withDefaults(
   defineProps<{

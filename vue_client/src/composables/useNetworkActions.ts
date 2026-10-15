@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import { HashIcon, PlugIcon, PlusIcon, SettingsIcon, UnplugIcon } from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useContextMenu } from './useContextMenu.js';
 import { useChannelListModal } from './useChannelListModal.js';
@@ -44,24 +45,24 @@ export function useNetworkActions() {
       // cache while disconnected, so only Join is gated.
       {
         label: 'Join Channel…',
-        icon: 'fa-solid fa-plus',
+        icon: PlusIcon,
         disabled: !isConnected,
         onClick: () => joinChannelModal.open(net.id),
       },
       {
         label: 'Channel List…',
-        icon: 'fa-solid fa-hashtag',
+        icon: HashIcon,
         onClick: () => channelListModal.open(net.id),
       },
       { divider: true },
       {
         label: 'Edit Network',
-        icon: 'fa-solid fa-gear',
+        icon: SettingsIcon,
         onClick: () => networkEditor.open(net),
       },
       {
         label: offerDisconnect ? 'Disconnect' : 'Reconnect',
-        icon: offerDisconnect ? 'fa-solid fa-plug-circle-xmark' : 'fa-solid fa-plug',
+        icon: offerDisconnect ? UnplugIcon : PlugIcon,
         onClick: () => toggleConnection(net.id, offerDisconnect),
       },
       // Network-wide notification ladder (issue #359): Highlights only (default)

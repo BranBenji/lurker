@@ -18,14 +18,16 @@
     :title="label"
     :aria-label="label"
   >
-    <i :class="['fa-solid', icon]" aria-hidden="true"></i>
+    <component :is="icon" />
   </button>
 </template>
 
 <script setup lang="ts">
+import type { LucideIcon } from '@lucide/vue';
+
 defineProps<{
-  /** Font Awesome glyph class, e.g. 'fa-pen'. */
-  icon: string;
+  /** Lucide icon component, e.g. PenIcon. */
+  icon: LucideIcon;
   /** Accessible name (tooltip + aria-label), e.g. 'edit'. */
   label: string;
   /** Render in the destructive color. */

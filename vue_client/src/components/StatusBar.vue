@@ -51,7 +51,7 @@
         }}</span>
         <span v-if="splitLabel" class="seg split" :class="splitClass">{{ splitLabel }}</span>
         <span v-if="typingSegments.length" class="seg typing"
-          ><i class="fa-regular fa-keyboard" role="img" aria-label="Typing" title="Typing"></i>
+          ><KeyboardIcon role="img" aria-label="Typing"><title>Typing</title></KeyboardIcon>
           <template v-for="(seg, i) in typingSegments" :key="i"
             ><span :style="seg.color ? { color: seg.color } : null">{{ seg.text }}</span></template
           ></span
@@ -65,8 +65,9 @@
           class="seg reply"
           :title="`Replying to ${pendingReply.self ? 'yourself' : pendingReply.nick} — Escape to cancel`"
           ><span class="reply-body"
-            ><i class="fa-solid fa-reply" role="img" aria-label="Replying to"></i
-            ><span class="reply-label">{{ compact ? '' : 'replying to' }}</span
+            ><ReplyIcon role="img" aria-label="Replying to" /><span class="reply-label">{{
+              compact ? '' : 'replying to'
+            }}</span
             ><span v-if="pendingReply.self" class="reply-self">yourself</span
             ><NickRef v-else :nick="pendingReply.nick" /><span class="reply-excerpt">{{
               pendingReplyExcerpt ? `: ${pendingReplyExcerpt}` : ''
@@ -79,7 +80,7 @@
               @mousedown.prevent
               @click="cancelComposerReply"
             >
-              <i class="fa-solid fa-xmark"></i></button></span
+              <XIcon /></button></span
         ></span>
       </div>
       <div class="bar-tools">
@@ -106,7 +107,7 @@
           @mousedown.prevent
           @click="onToggleUploadMenu"
         >
-          <i class="fa-solid fa-paperclip"></i>
+          <PaperclipIcon />
         </button>
         <!-- @mousedown.prevent keeps the composer focused (and the iOS keyboard
              up): this opens the in-app colour picker overlay, not a native
@@ -121,7 +122,7 @@
           @mousedown.prevent
           @click="onToggleColorPicker"
         >
-          <i class="fa-solid fa-palette"></i>
+          <PaletteIcon />
         </button>
       </div>
     </div>
@@ -213,6 +214,7 @@ import { replyExcerpt } from '../utils/replyText.js';
 import NickRef from './NickRef.vue';
 import type { EmojiMatch } from '../utils/emojiData.js';
 import { dccChatPeer, isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
+import { KeyboardIcon, PaletteIcon, PaperclipIcon, ReplyIcon, XIcon } from '@lucide/vue';
 
 withDefaults(
   defineProps<{
@@ -619,10 +621,14 @@ function onToggleUploadMenu() {
   grid-template-columns: auto auto auto minmax(0, max-content) auto;
   align-items: baseline;
 }
+/* An svg has no text baseline, so baseline alignment would sit the icon's bottom
+   edge on the text's baseline, riding high; centre it on the row instead. */
+.seg.reply .reply-body > .lucide {
+  align-self: center;
+}
 /* Gaps as margins, not spaces: a space at the edge of a grid item is dropped.
-   The one after the icon lives on the label, not the <i> — `ch` on the icon
-   font is ~0.5em (see .seg.typing). The compact bar drops the words and keeps
-   the gap. */
+   The one after the icon lives on the label. The compact bar drops the words and
+   keeps the gap. */
 .seg.reply .reply-label {
   margin-left: 1ch;
 }
@@ -677,11 +683,8 @@ function onToggleUploadMenu() {
 .seg.split.bad {
   color: var(--bad);
 }
-/* Keyboard glyph standing in for the old "Typing:" label. The 1ch space off the
-   first nick lives on the nick span, NOT the icon: `ch` is measured against the
-   element's own font, and the FontAwesome `<i>` has no '0' glyph, so its `ch`
-   falls back to ~0.5em — half the intended gap. The nick span inherits the mono
-   text font, where 1ch is a true character, matching the bar's gap/pipe spacing. */
+/* Keyboard glyph standing in for the old "Typing:" label, with a 1ch gap before
+   the first nick to match the bar's gap/pipe spacing. */
 .seg.typing > span:first-of-type {
   margin-left: 1ch;
 }

@@ -40,7 +40,7 @@
       aria-label="React / see who reacted"
       @click.stop="reactions.openPicker(message)"
     >
-      <i class="fa-solid fa-heart-circle-plus" aria-hidden="true"></i>
+      <HeartPlusIcon />
     </button>
   </div>
 </template>
@@ -49,6 +49,7 @@
 import { computed, nextTick, watch } from 'vue';
 import { useReactionsStore } from '../stores/reactions.js';
 import { useNetworksStore } from '../stores/networks.js';
+import { HeartPlusIcon } from '@lucide/vue';
 
 const props = withDefaults(
   defineProps<{

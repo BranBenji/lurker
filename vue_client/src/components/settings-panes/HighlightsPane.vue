@@ -47,21 +47,19 @@
               aria-label="toggle highlight rule"
               @click="toggleEnabled(entry, !entry.enabled)"
             >
-              <i
-                :class="['fa-solid', entry.enabled ? 'fa-toggle-on' : 'fa-toggle-off']"
-                aria-hidden="true"
-              ></i>
+              <ToggleRightIcon v-if="entry.enabled" />
+              <ToggleLeftIcon v-else />
             </button>
             <!-- Auto-managed (network nick) rules are fully system-managed, so the
                  toggle (above) and edit/remove are all disabled. -->
             <IconButton
-              icon="fa-pen"
+              :icon="PenIcon"
               label="edit"
               :disabled="entry.auto_managed"
               @click="startEdit(entry)"
             />
             <IconButton
-              icon="fa-trash"
+              :icon="TrashIcon"
               label="remove"
               danger
               :disabled="entry.auto_managed"
@@ -194,6 +192,7 @@ import { parseChannelList } from '../../../../shared/channels.js';
 import { highlightRuleDetailParts } from '../../utils/highlightFormat.js';
 import { joinMeta } from '../../utils/metaLine.js';
 import { imeSafeValue } from '../../composables/useImeSafeInput.js';
+import { PenIcon, ToggleLeftIcon, ToggleRightIcon, TrashIcon } from '@lucide/vue';
 
 type RuleKind = 'substr' | 'full' | 'glob' | 'regex';
 

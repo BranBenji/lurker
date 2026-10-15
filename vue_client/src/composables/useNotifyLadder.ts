@@ -17,6 +17,7 @@
 // flag. The rungs are mutually exclusive, so no conflicting state can be created
 // from the menu; if a hand-typed /ignore contradicts, the ignore veto wins.
 
+import { CircleDotIcon, CircleIcon } from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useChannelNotifyStore } from '../stores/channelNotify.js';
@@ -51,7 +52,7 @@ export function useNotifyLadder() {
   const channelNotify = useChannelNotifyStore();
 
   function rungItem(label: string, active: boolean, onClick: () => void): ContextMenuItem {
-    return { label, icon: active ? 'fa-solid fa-circle-dot' : 'fa-regular fa-circle', onClick };
+    return { label, icon: active ? CircleDotIcon : CircleIcon, onClick };
   }
 
   // Reconcile the per-buffer (or, when channels is null, per-network) mute rule

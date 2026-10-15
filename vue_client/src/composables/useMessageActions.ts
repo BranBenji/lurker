@@ -1,6 +1,16 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import {
+  BanIcon,
+  BookmarkCheckIcon,
+  BookmarkIcon,
+  CopyIcon,
+  HeartPlusIcon,
+  LinkIcon,
+  ReplyIcon,
+} from '@lucide/vue';
+import type { LucideIcon } from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useReactionsStore } from '../stores/reactions.js';
@@ -85,8 +95,8 @@ export interface MessageAction {
   key: MessageActionKey;
   // Tooltip + accessible label for the icon button.
   label: string;
-  // Font Awesome classes for the button glyph.
-  icon: string;
+  // Lucide icon component for the button glyph.
+  icon: LucideIcon;
   // Toggles the "lit" treatment — currently only the bookmark when saved.
   active?: boolean;
 }
@@ -183,10 +193,10 @@ export function useMessageActions(): MessageActionsAPI {
     // offered only where one would go out.
     const unaddressed = !!message.self || privateTarget(message.target);
     if (addressable && !unaddressed) {
-      actions.push({ key: 'reply', label: `Reply to ${message.nick}`, icon: 'fa-solid fa-reply' });
+      actions.push({ key: 'reply', label: `Reply to ${message.nick}`, icon: ReplyIcon });
     } else if (unaddressed && message.nick && replyable(message) && tagsGoOut) {
       const label = message.self ? 'Reply to yourself' : `Reply to ${message.nick}`;
-      actions.push({ key: 'reply', label, icon: 'fa-solid fa-reply' });
+      actions.push({ key: 'reply', label, icon: ReplyIcon });
     }
 
     // A reaction replies to the line's msgid, so it needs a line a reply could
@@ -199,17 +209,17 @@ export function useMessageActions(): MessageActionsAPI {
       message.type !== 'notice' &&
       reactionsGoOut(message.networkId ?? message.network_id)
     ) {
-      actions.push({ key: 'react', label: 'React', icon: 'fa-solid fa-heart-circle-plus' });
+      actions.push({ key: 'react', label: 'React', icon: HeartPlusIcon });
     }
 
     if (message.text) {
-      actions.push({ key: 'copy', label: 'Copy text', icon: 'fa-regular fa-copy' });
+      actions.push({ key: 'copy', label: 'Copy text', icon: CopyIcon });
     }
 
     // Sits next to Copy text because it's the other "take this away with you"
     // action: a permalink to bookmark, or to open in a new window.
     if (linkBufferId(message) != null) {
-      actions.push({ key: 'link', label: 'Copy link to message', icon: 'fa-solid fa-link' });
+      actions.push({ key: 'link', label: 'Copy link to message', icon: LinkIcon });
     }
 
     // Bookmarks need a stable server id AND an owning network.
@@ -230,13 +240,13 @@ export function useMessageActions(): MessageActionsAPI {
       actions.push({
         key: 'save',
         label: saved ? 'Remove bookmark' : 'Save message',
-        icon: saved ? 'fa-solid fa-bookmark' : 'fa-regular fa-bookmark',
+        icon: saved ? BookmarkCheckIcon : BookmarkIcon,
         active: saved,
       });
     }
 
     if (addressable) {
-      actions.push({ key: 'ignore', label: `Ignore ${message.nick}…`, icon: 'fa-solid fa-ban' });
+      actions.push({ key: 'ignore', label: `Ignore ${message.nick}…`, icon: BanIcon });
     }
 
     return actions;

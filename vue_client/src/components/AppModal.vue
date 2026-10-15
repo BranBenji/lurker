@@ -49,7 +49,7 @@
               :title="closeTitle"
               @click="$emit('close')"
             >
-              <i class="fa-solid fa-xmark"></i>
+              <XIcon />
             </button>
           </div>
         </header>
@@ -64,6 +64,7 @@ import { computed, onMounted, ref } from 'vue';
 import WordBackdrop from './WordBackdrop.vue';
 import { useSettingsStore } from '../stores/settings.js';
 import { useViewport } from '../composables/useViewport.js';
+import { XIcon } from '@lucide/vue';
 
 const props = withDefaults(
   defineProps<{
@@ -273,8 +274,7 @@ onMounted(() => {
   color: var(--fg-muted);
   cursor: pointer;
   font: inherit;
-  /* Icon-only button — size the glyph, not text weight (fa-solid is already
-     weight 900). */
+  /* Icon-only button — size the glyph, not text weight. */
   font-size: var(--icon-lg);
   padding: var(--space-2) var(--space-4);
 }

@@ -19,7 +19,8 @@
         :title="soundEnabled ? 'mute highlight sound' : 'unmute highlight sound'"
         @click="toggleSound"
       >
-        <i :class="soundEnabled ? 'fa-solid fa-volume-high' : 'fa-solid fa-volume-xmark'"></i>
+        <Volume2Icon v-if="soundEnabled" />
+        <VolumeXIcon v-else />
       </button>
     </template>
 
@@ -61,6 +62,7 @@ import { useHighlightsStore } from '../stores/highlights.js';
 import type { ActivityItem } from '../stores/highlights.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useImeSafeInput } from '../composables/useImeSafeInput.js';
+import { Volume2Icon, VolumeXIcon } from '@lucide/vue';
 
 const emit = defineEmits<{
   close: [];
@@ -187,8 +189,7 @@ function onJump(m: HistoryMessage): void {
   cursor: default;
 }
 .sound-toggle {
-  /* Icon-only button — size the glyph (fa-solid is already weight 900, so
-     font-weight here would be a no-op). */
+  /* Icon-only button — size the glyph. */
   font-size: var(--icon-md);
 }
 

@@ -31,7 +31,7 @@
       <template #item="{ element: net }">
         <li class="network" :class="{ blocked: net.blocked }">
           <span class="grip" aria-hidden="true">
-            <i class="fa-solid fa-grip-vertical"></i>
+            <GripVerticalIcon />
           </span>
           <span class="name">{{ net.name }}</span>
           <span class="host">{{ net.host }}</span>
@@ -55,6 +55,7 @@ import { ref, watch } from 'vue';
 import draggable from 'vuedraggable';
 import { useNetworksStore } from '../../stores/networks.js';
 import type { Network } from '../../stores/networks.js';
+import { GripVerticalIcon } from '@lucide/vue';
 
 const networks = useNetworksStore();
 

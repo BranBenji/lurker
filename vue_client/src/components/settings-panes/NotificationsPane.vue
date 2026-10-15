@@ -37,7 +37,7 @@
           >last seen {{ formatRelative(sub.last_seen_at) }}</span
         >
         <IconButton
-          icon="fa-trash"
+          :icon="TrashIcon"
           label="remove"
           danger
           :disabled="pushBusy"
@@ -158,7 +158,7 @@
         <span class="ua">{{ entry.networkName }} · {{ entry.target }}</span>
         <div class="row-actions">
           <IconButton
-            icon="fa-trash"
+            :icon="TrashIcon"
             label="stop"
             danger
             @click="removeAlwaysNotify(entry.networkId, entry.target)"
@@ -253,6 +253,7 @@ import {
   disable as disablePush,
   getCurrentEndpoint,
 } from '../../composables/usePush.js';
+import { TrashIcon } from '@lucide/vue';
 
 // The push subscriptions store's PushSubscription covers the core fields; the
 // server also returns `id`, `user_agent`, and `last_seen_at`. Extend here so

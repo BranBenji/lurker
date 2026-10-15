@@ -164,7 +164,7 @@
                    soju's `certfp fingerprint` does. -->
               <p class="cert-actions">
                 <button type="button" class="btn-secondary" @click="downloadCertificate">
-                  <i class="fa-solid fa-download" aria-hidden="true"></i>
+                  <DownloadIcon />
                   Download
                 </button>
               </p>
@@ -326,6 +326,7 @@ import {
   suggestedChannels,
   type NetworkPreset,
 } from '../utils/builtinNetworks.js';
+import { DownloadIcon } from '@lucide/vue';
 
 const props = withDefaults(
   defineProps<{

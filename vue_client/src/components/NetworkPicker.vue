@@ -35,7 +35,7 @@
         :title="active ? `Filtering by ${active}` : 'Filter by tag'"
         @click="showFilters = !showFilters"
       >
-        <i class="fa-solid fa-filter"></i>
+        <FunnelIcon />
       </button>
     </div>
 
@@ -74,14 +74,14 @@
                 class="stat"
                 :title="`~${net.users.toLocaleString()} users (netsplit.de average)`"
               >
-                <i class="fa-solid fa-users"></i> {{ formatCount(net.users) }}
+                <UsersIcon /> {{ formatCount(net.users) }}
               </span>
               <span
                 v-if="net.channels != null"
                 class="stat"
                 :title="`~${net.channels.toLocaleString()} channels (netsplit.de average)`"
               >
-                <i class="fa-solid fa-hashtag"></i> {{ formatCount(net.channels) }}
+                <HashIcon /> {{ formatCount(net.channels) }}
               </span>
             </span>
             <span v-if="hasLurker(net)" class="net-lurker">#lurker available</span>
@@ -111,6 +111,7 @@ import {
 } from '../utils/builtinNetworks.js';
 import { useNetworkPresetsStore } from '../stores/networkPresets.js';
 import { useImeSafeInput } from '../composables/useImeSafeInput.js';
+import { FunnelIcon, HashIcon, UsersIcon } from '@lucide/vue';
 
 defineEmits<{ select: [net: NetworkPreset]; manual: [] }>();
 
@@ -324,7 +325,7 @@ const filtered = computed<NetworkPreset[]>(() => {
   text-align: right;
   white-space: nowrap;
 }
-.stat i {
+.stat .lucide {
   opacity: 0.75;
 }
 .none {

@@ -352,7 +352,7 @@
             @click.stop="runAction(a.key, row.m)"
             @contextmenu.stop.prevent
           >
-            <i :class="a.icon"></i>
+            <component :is="a.icon" />
           </button>
         </div>
       </div>
@@ -438,6 +438,7 @@ import ReactionRow from './ReactionRow.vue';
 import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
 import { useRepliesStore } from '../stores/replies.js';
 import { emitJumpIntent } from '../composables/useJumpIntent.js';
+import { CopyIcon, IdCardIcon, ReplyIcon, SatelliteDishIcon } from '@lucide/vue';
 
 // Extended BufferMessage fields accessed in the template and script
 // (beyond the core BufferMessage definition which uses [key: string]: unknown).
@@ -981,10 +982,10 @@ function openRelayNickMenu(
 ): void {
   const marked = relayBots.isRelay(networkId, nick);
   const items: ContextMenuItem[] = [
-    { label: `Reply to ${nick}`, icon: 'fa-solid fa-reply', onClick: () => addressNick(nick) },
+    { label: `Reply to ${nick}`, icon: ReplyIcon, onClick: () => addressNick(nick) },
     {
       label: 'Copy Nickname',
-      icon: 'fa-regular fa-copy',
+      icon: CopyIcon,
       onClick: () => {
         navigator.clipboard?.writeText(nick).catch(() => {});
       },
@@ -1005,12 +1006,12 @@ function openRelayNickMenu(
       // set with `/relay add <nick> <pattern>`. Same wording and shape as the
       // profile modal's toggle, which is the other way to reach this.
       label: marked ? 'Unmark relay bot' : 'Mark relay bot',
-      icon: 'fa-solid fa-satellite-dish',
+      icon: SatelliteDishIcon,
       onClick: () => relayBots.setRelay(networkId, nick, !marked),
     },
     {
       label: 'View Profile…',
-      icon: 'fa-solid fa-id-card',
+      icon: IdCardIcon,
       onClick: () => whois.openViewer(networkId, bot),
     },
   ];

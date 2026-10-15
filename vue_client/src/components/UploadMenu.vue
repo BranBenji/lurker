@@ -60,7 +60,7 @@
         @keydown.enter.prevent="emit('close')"
         @keydown.space.prevent="emit('close')"
       >
-        <i class="fa-solid fa-xmark"></i>
+        <XIcon />
       </div>
     </div>
 
@@ -95,7 +95,7 @@
         >
           <img v-if="u.thumbnail_url" :src="u.thumbnail_url" class="art" alt="" loading="lazy" />
           <div v-else class="art art-icon">
-            <i class="fa-solid" :class="iconForMime(u.mime)"></i>
+            <component :is="iconForMime(u.mime)" />
           </div>
         </div>
       </div>
@@ -115,13 +115,13 @@
          above silently does nothing. -->
     <div class="actions">
       <button type="button" class="action" @mousedown.stop @click="onUploadFile">
-        <i class="fa-solid fa-folder-open"></i> Upload file
+        <FolderOpenIcon /> Upload file
       </button>
       <!-- Touch only. `capture` is ignored by desktop browsers, so the button
            would just be a second, worse "Upload file" there. `canHover` is the
            same signal the build's hover gating uses, so CSS and behaviour agree. -->
       <button v-if="!canHover" type="button" class="action" @mousedown.stop @click="onOpenCamera">
-        <i class="fa-solid fa-camera"></i> Camera
+        <CameraIcon /> Camera
       </button>
     </div>
   </div>
@@ -134,6 +134,7 @@ import type { UploadItem, UploadMenuMode } from '../stores/uploads.js';
 import { useViewport } from '../composables/useViewport.js';
 import { pickComposerFile, pickComposerCamera } from '../composables/useComposerOverlay.js';
 import { iconForMime } from '../utils/uploaders.js';
+import { CameraIcon, FolderOpenIcon, XIcon } from '@lucide/vue';
 
 const props = withDefaults(
   defineProps<{

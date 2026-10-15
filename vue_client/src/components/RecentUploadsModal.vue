@@ -27,7 +27,7 @@
            toggle rides in the space that field gives up instead. -->
       <div class="search-row">
         <div class="search">
-          <i class="fa-solid fa-magnifying-glass search-icon"></i>
+          <SearchIcon class="search-icon" />
           <input
             ref="searchEl"
             :value="query"
@@ -51,7 +51,7 @@
           aria-label="Show only starred uploads"
           @click="onToggleFavoritesFilter"
         >
-          <i class="fa-solid fa-star"></i><span class="label">Starred</span>
+          <StarIcon /><span class="label">Starred</span>
         </button>
       </div>
       <div class="kinds" role="group" aria-label="Filter by type">
@@ -77,7 +77,7 @@
           <!-- Moderated-away upload: the object is gone, so show a tombstone
                instead of a link to a dead URL. -->
           <div v-if="u.removed" class="art art-icon" title="removed by moderation">
-            <i class="fa-solid fa-gavel fa-2x"></i>
+            <GavelIcon />
           </div>
           <!-- Still an <a href>, even though a left click opens the lightbox: that
                keeps middle-click and ⌘/ctrl-click opening the file in a new tab, which
@@ -94,7 +94,7 @@
           >
             <img v-if="u.thumbnail_url" :src="u.thumbnail_url" class="art" alt="" loading="lazy" />
             <div v-else class="art art-icon">
-              <i class="fa-solid fa-2x" :class="iconForMime(u.mime)"></i>
+              <component :is="iconForMime(u.mime)" />
             </div>
           </a>
 
@@ -120,7 +120,7 @@
               :aria-pressed="!!u.favorite"
               @click="onToggleStar(u)"
             >
-              <i :class="u.favorite ? 'fa-solid fa-star' : 'fa-regular fa-star'"></i>
+              <StarIcon :class="{ 'icon-filled': u.favorite }" />
             </button>
           </div>
 
@@ -144,9 +144,8 @@
               title="delete file"
               aria-label="delete file"
             >
-              <i
-                :class="deletingId === u.id ? 'fa-solid fa-spinner fa-spin' : 'fa-solid fa-trash'"
-              ></i>
+              <LoaderCircleIcon v-if="deletingId === u.id" class="icon-spin" />
+              <TrashIcon v-else />
             </button>
             <!-- Put it in the message being composed. The modal closes on the way
                  out — you asked for this file, so the browse is over; leaving it up
@@ -164,7 +163,7 @@
               title="add to message"
               aria-label="add to message"
             >
-              <i class="fa-solid fa-arrow-turn-down"></i>
+              <CornerRightDownIcon />
             </button>
             <!-- A removed upload's URL is dead, so there's nothing to copy. -->
             <button
@@ -175,7 +174,8 @@
               :title="clipboard.isCopied(u.id) ? 'copied' : 'copy link'"
               :aria-label="clipboard.isCopied(u.id) ? 'copied' : 'copy link'"
             >
-              <i :class="clipboard.isCopied(u.id) ? 'fa-solid fa-check' : 'fa-regular fa-copy'"></i>
+              <CheckIcon v-if="clipboard.isCopied(u.id)" />
+              <CopyIcon v-else />
             </button>
           </div>
         </li>
@@ -214,6 +214,16 @@ import { formatBytes } from '../utils/formatBytes.js';
 import { iconForMime } from '../utils/uploaders.js';
 import { mediaKindForUrl } from '../utils/uploadHostMatch.js';
 import { useImeSafeInput } from '../composables/useImeSafeInput.js';
+import {
+  CheckIcon,
+  CopyIcon,
+  CornerRightDownIcon,
+  GavelIcon,
+  LoaderCircleIcon,
+  SearchIcon,
+  StarIcon,
+  TrashIcon,
+} from '@lucide/vue';
 
 // The server response can include extra metadata fields not tracked in the
 // store's base UploadItem shape (they come from the GET /api/uploads list).
@@ -501,10 +511,8 @@ function metaLine(u: UploadRow): string {
   transform: translateY(-50%);
   color: var(--fg-muted);
   pointer-events: none;
-  /* Pin the glyph to a known box. Font Awesome glyph widths vary per icon, so without
-     this the input's padding below would be guessing at where the icon ends. */
-  width: 1em;
-  text-align: center;
+  /* The input's left padding below is derived from --icon-size (the global .lucide
+     box), so the two stay in step. */
 }
 /* The same field as .filter in HighlightsModal / SearchModal — background, border and
    padding all match. Only the LEFT padding differs, because ours has an icon in it. */
@@ -512,7 +520,8 @@ function metaLine(u: UploadRow): string {
   width: 100%;
   /* Left padding is derived, not picked: where the icon starts, plus the icon's own
      width, plus one character of breathing room. */
-  padding: var(--space-4) var(--space-5) var(--space-4) calc(var(--search-icon-inset) + 1em + 1ch);
+  padding: var(--space-4) var(--space-5) var(--space-4)
+    calc(var(--search-icon-inset) + var(--icon-size) + 1ch);
   background: var(--bg);
   border: 1px solid var(--border);
   color: var(--fg);
@@ -558,8 +567,9 @@ function metaLine(u: UploadRow): string {
   flex: none;
   padding-block: var(--space-4);
 }
-.chip.starred.active i {
+.chip.starred.active .lucide {
   color: var(--warn);
+  fill: currentColor;
 }
 /* At phone width the five kind chips already fill the row, so the word tips this
    one onto a line of its own — a whole row of chrome spent on one control. The
@@ -626,6 +636,10 @@ function metaLine(u: UploadRow): string {
   align-items: center;
   justify-content: center;
   color: var(--fg-muted);
+}
+/* The file-type glyph standing in for a thumbnail — big enough to read as the tile's art. */
+.art-icon {
+  --icon-size: 2em;
 }
 .tile.removed .art {
   border-style: dashed;

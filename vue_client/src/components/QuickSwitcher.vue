@@ -19,7 +19,7 @@
           @keydown="onKeydown"
         />
         <button class="link" @click="$emit('close')" title="close">
-          <i class="fa-solid fa-xmark"></i>
+          <XIcon />
         </button>
       </header>
       <ul v-if="rows.length" ref="listEl" class="list">
@@ -53,6 +53,7 @@ import { flattenBufferOrder, bufferSortKey } from '../utils/bufferOrder.js';
 import { smartSortRows } from '../utils/switcherSort.js';
 import { isChannelTarget } from '../../../shared/channels.js';
 import { isImeKey, useImeSafeInput } from '../composables/useImeSafeInput.js';
+import { XIcon } from '@lucide/vue';
 
 interface Row {
   networkId: string | number;

@@ -92,6 +92,10 @@
      a glyph needs more presence than body text. */
   --icon-md: 1.1em;
   --icon-lg: 1.2em;
+  /* The box every Lucide icon draws in (.lucide below). Lucide leaves about two of
+     its 24 grid units empty on each side, so a 1em box draws an icon visibly
+     smaller than the text beside it. 1.1em was picked by eye over 1em and 1.2em. */
+  --icon-size: 1.1em;
 
   /* The raised panel a link-preview card sits on, so it reads as a distinct object
      rather than as more chat text (Discord's treatment).
@@ -303,6 +307,37 @@ a {
    message text stays copyable. */
 .msg-nick {
   cursor: pointer;
+}
+
+/* Icons (@lucide/vue). Each renders an <svg class="lucide"> at 24px by default;
+   an em-based --icon-size instead makes an icon track the font-size of whatever
+   holds it, so the one-size rule's text and the --icon-md/--icon-lg tokens on
+   icon-only controls size it. The vertical-align centres an inline icon on the
+   text's x-height (flex rows ignore it). Lucide draws outlines in currentColor, so
+   `color` tints an icon as it would text. */
+.lucide {
+  width: var(--icon-size);
+  height: var(--icon-size);
+  flex-shrink: 0;
+  vertical-align: calc(0.35em - var(--icon-size) / 2);
+}
+/* An on state drawn as a filled glyph (a starred upload). */
+.lucide.icon-filled {
+  fill: currentColor;
+}
+/* A progress spinner (LoaderCircleIcon). */
+.lucide.icon-spin {
+  animation: icon-spin 1s linear infinite;
+}
+@keyframes icon-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lucide.icon-spin {
+    animation: none;
+  }
 }
 
 /* Button language (#355): accent = actionable, gray = disabled. Buttons carry
