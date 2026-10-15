@@ -20,9 +20,13 @@ import net from 'net';
 import { crc32Update } from './dcc.js';
 
 export interface DccReceiveOptions {
-  /** Decoded host from the offer (dotted-quad IPv4 or IPv6 literal). */
+  /** Decoded host from the offer (dotted-quad IPv4 or IPv6 literal). Unused
+   *  when `socket` is set. */
   host: string;
   port: number;
+  /** A connection the sender already made to us, for a passive offer (#1145):
+   *  we listened, they connected. Used instead of dialing host:port. */
+  socket?: net.Socket;
   /** Advertised total size in bytes; 0 means unknown (finish on clean close). */
   size: number;
   /** Absolute path to write to (already resolved + de-collided by the caller). */
@@ -60,10 +64,11 @@ export class DccReceiver {
 
   start(): void {
     const { host, port, idleTimeoutMs = 60_000 } = this.opts;
-    const sock = net.connect({ host, port });
+    const provided = this.opts.socket ?? null;
+    const sock = provided ?? net.connect({ host, port });
     this.socket = sock;
     sock.setTimeout(idleTimeoutMs);
-    sock.on('connect', () => {
+    const onConnected = (): void => {
       // Open the file only once connected, so a failed connect (refused/timeout)
       // never leaves an empty file behind. 'wx' for a fresh transfer fails safe
       // if the path raced into existence since the caller resolved it (a
@@ -88,7 +93,10 @@ export class DccReceiver {
       this.out.on('open', () => {
         if (!this.settled) sock.resume();
       });
-    });
+    };
+    // A socket handed to us is connected already.
+    if (provided) onConnected();
+    else sock.on('connect', onConnected);
     // We never setEncoding, so chunk is always a Buffer at runtime; the event
     // type is widened to string|Buffer, so coerce defensively.
     sock.on('data', (chunk) => this.onData(typeof chunk === 'string' ? Buffer.from(chunk) : chunk));

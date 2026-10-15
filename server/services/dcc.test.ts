@@ -5,11 +5,13 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildDccAccept,
+  buildDccResume,
   buildDccChat,
   buildDccChatPassive,
   buildDccChatReverse,
   buildDccSend,
   buildDccSendPassive,
+  buildDccSendReply,
   crc32Hex,
   crc32Update,
   decodeDccAddress,
@@ -135,6 +137,14 @@ describe('parseDcc — SEND (passive/reverse)', () => {
     expect(r.passive).toBe(true);
     expect(r.token).toBe(7);
   });
+
+  it('takes token 0, which irssi and halloy can pick', () => {
+    expect(send('SEND f.bin 16843009 0 99 0').token).toBe(0);
+  });
+
+  it('refuses port 0 with no token, which nobody could answer', () => {
+    expect(parseDcc('SEND f.bin 16843009 0 99').kind).toBe('invalid');
+  });
 });
 
 describe('parseDcc — non-SEND subtypes', () => {
@@ -225,6 +235,26 @@ describe('DCC SEND builders', () => {
     expect(buildDccSendPassive('a_b.mkv', 5_000_000_000, 7)).toBe(
       'SEND a_b.mkv 16843009 0 5000000000 7',
     );
+  });
+
+  // #1145: our answer to a peer's passive offer, and our RESUME of one.
+  it('answers a passive offer with our address and port, and their name, size and token', () => {
+    expect(buildDccSendReply('f.bin', '203.0.113.5', 30001, 99, 0)).toBe(
+      'SEND f.bin 3405803781 30001 99 0',
+    );
+    expect(buildDccSendReply('my file.bin', '203.0.113.5', 30001, 99, 7)).toBe(
+      'SEND "my file.bin" 3405803781 30001 99 7',
+    );
+    // KVIrc's escaped space goes back as it came.
+    expect(buildDccSendReply('a\\040b', '203.0.113.5', 30001, 99, 7)).toBe(
+      'SEND a\\040b 3405803781 30001 99 7',
+    );
+    expect(buildDccSendReply('f.bin', 'example.com', 30001, 99, 7)).toBeNull();
+  });
+
+  it('asks to resume an offer, with the token for a passive one', () => {
+    expect(buildDccResume('f.bin', 50000, 1024, null)).toBe('RESUME f.bin 50000 1024');
+    expect(buildDccResume('my f.bin', 0, 1024, 0)).toBe('RESUME "my f.bin" 0 1024 0');
   });
 
   it('answers a resume with ACCEPT, on the port it asked with', () => {

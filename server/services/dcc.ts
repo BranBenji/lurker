@@ -284,6 +284,11 @@ function parseDccSend(rest: string): DccParse {
       token = parseUint(tokenStr);
       if (token === null) return { kind: 'invalid', reason: `bad token: ${tokenStr}` };
     }
+    // As for chat: port 0 with nothing to answer it by is not an offer anyone
+    // can take. HexDroid drops it too (IrcCore.kt:4678).
+    if (port === 0 && token === null) {
+      return { kind: 'invalid', reason: 'passive DCC SEND offer carries no token' };
+    }
     return { kind: 'send', filename, host, port, size, token, passive: port === 0 };
   });
 }
@@ -359,6 +364,44 @@ export function buildDccSend(
  *  1.1.1.1 irssi sends (dcc-send.c:455-457). */
 export function buildDccSendPassive(file: string, size: number, token: number): string {
   return `SEND ${file} ${encodeDccAddress(PASSIVE_DCC_FAKE_HOST)} 0 ${size} ${token}`;
+}
+
+/** A peer's filename sent back to them as they wrote it, quoted when it has a
+ *  space. Senders find their offer by it: irssi by nick and name
+ *  (dcc-get.c:483), halloy and HexDroid by exact name (manager.rs:166,
+ *  IrcViewModel.kt:7486). */
+function echoDccFilename(name: string): string {
+  return /\s/.test(name) ? `"${name}"` : name;
+}
+
+/** Our answer to a peer's passive `DCC SEND` (#1145): where to connect, with
+ *  their name, size and token as they sent them. A wrong token makes irssi
+ *  drop its send (dcc-get.c:505-511), HexDroid wants the same size, and
+ *  HexChat refuses a size of 0. */
+export function buildDccSendReply(
+  file: string,
+  host: string,
+  port: number,
+  size: number,
+  token: number,
+): string | null {
+  const addr = encodeDccAddress(host);
+  if (addr === null) return null;
+  return `SEND ${echoDccFilename(file)} ${addr} ${port} ${size} ${token}`;
+}
+
+/** The body of a `DCC RESUME` for a peer's offer: its name, its port (0 for a
+ *  passive offer) and, for a passive one, its token. irssi finds the offer by
+ *  port and then checks the token (dcc-resume.c:103-110); HexChat and KVIrc go
+ *  by the token. */
+export function buildDccResume(
+  file: string,
+  port: number,
+  position: number,
+  token: number | null,
+): string {
+  const head = `RESUME ${echoDccFilename(file)} ${port} ${position}`;
+  return token === null ? head : `${head} ${token}`;
 }
 
 /** The body of a `DCC ACCEPT`, our yes to a peer's RESUME: the port and

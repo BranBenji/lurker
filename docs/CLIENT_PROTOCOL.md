@@ -1545,7 +1545,7 @@ its own.
 `allowPrivateHosts`, `canListen`, `usedBytes` and `limitBytes` when `receive` or
 `send` is true (`maxFileBytes` 0 for no cap; `limitBytes` null for no storage
 limit; `canListen` false when the server has no public address and port range,
-so only passive sends work). A transfer that would take the account over its
+so only passive sends work, and a peer's passive offer fails at accept). A transfer that would take the account over its
 limit fails at accept, with the reason in the row's `error`. A client shows chat
 actions only when `chat` is true, receiving actions only when `receive` is, and
 sending only when `send` is.
