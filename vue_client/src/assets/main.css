@@ -94,8 +94,8 @@
   --icon-lg: 1.2em;
   /* The box every Lucide icon draws in (.lucide below). Lucide leaves about two of
      its 24 grid units empty on each side, so a 1em box draws an icon visibly
-     smaller than the text beside it; 1.2em brings the drawing back to about 1em. */
-  --icon-size: 1.2em;
+     smaller than the text beside it. 1.1em was picked by eye over 1em and 1.2em. */
+  --icon-size: 1.1em;
 
   /* The raised panel a link-preview card sits on, so it reads as a distinct object
      rather than as more chat text (Discord's treatment).
