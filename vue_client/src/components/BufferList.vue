@@ -51,7 +51,7 @@
             @click.stop="openAdmin"
             @contextmenu.stop.prevent
           >
-            <ShieldHalfIcon />
+            <ShieldCogIcon />
           </button>
           <button
             type="button"
@@ -375,7 +375,7 @@ import {
   PencilIcon,
   PlusIcon,
   SettingsIcon,
-  ShieldHalfIcon,
+  ShieldCogIcon,
 } from '@lucide/vue';
 
 const networks = useNetworksStore();

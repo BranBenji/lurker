@@ -36,7 +36,7 @@
           title="Admin panel"
           aria-label="Admin panel"
         >
-          <ShieldHalfIcon />
+          <ShieldCogIcon />
         </RouterLink>
         <RouterLink class="icon" to="/settings" title="Settings">
           <SettingsIcon />
@@ -281,7 +281,7 @@ import {
   SearchIcon,
   SettingsIcon,
   ShareIcon,
-  ShieldHalfIcon,
+  ShieldCogIcon,
   UnplugIcon,
   UsersIcon,
 } from '@lucide/vue';

@@ -49,7 +49,7 @@
           title="Admin panel"
           aria-label="Admin panel"
         >
-          <ShieldHalfIcon />
+          <ShieldCogIcon />
         </button>
         <button v-if="!showChannels" class="link" @click="openAddNetwork" title="Add network">
           <PlusIcon />
@@ -365,7 +365,7 @@ import {
   SearchIcon,
   SettingsIcon,
   ShareIcon,
-  ShieldHalfIcon,
+  ShieldCogIcon,
   SlidersHorizontalIcon,
   StickyNoteIcon,
   UnplugIcon,
