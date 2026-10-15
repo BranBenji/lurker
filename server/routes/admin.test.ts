@@ -82,8 +82,13 @@ describe('GET /api/admin/users', () => {
   });
 
   it('reports each account’s ident, derived from the username by default (#643)', async () => {
-    // Neither ident mode, whatever the shell running the suite exports.
-    const restore = setEnvAll({ LURKER_IDENTD_ENABLED: '', LURKER_OIDENTD_FILE: '' });
+    // No engine and neither ident mode, whatever the shell running the suite
+    // exports.
+    const restore = setEnvAll({
+      LURKER_ENGINE_URL: '',
+      LURKER_IDENTD_ENABLED: '',
+      LURKER_OIDENTD_FILE: '',
+    });
     let res;
     try {
       res = await adminAgent.get('/api/admin/users');

@@ -29,6 +29,12 @@
       <code>LURKER_IDENTD_ENABLED</code> (or <code>LURKER_OIDENTD_FILE</code>) to run an ident
       daemon, and each account gets an ident you can assign here.
     </p>
+    <!-- In engine mode ident runs on the engine, where this server can't look
+         (#1138). Keep the editor, but don't present it as confirmed. -->
+    <p v-if="canAssignIdents && adminStore.identdEnabled === null" class="muted small">
+      Ident runs on the engine, which this server can't check — the engine's
+      <code>[engine] ident:</code> startup line says whether it's on.
+    </p>
     <p v-if="adminError" class="error inline">{{ adminError }}</p>
 
     <ul v-if="users.length" class="device-list">
