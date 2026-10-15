@@ -199,13 +199,14 @@ describe('parseDcc — RESUME', () => {
 });
 
 describe('DCC SEND builders', () => {
-  it('puts a name with a space in quotes, as irssi does', () => {
-    expect(dccWireFilename('my file.mkv')).toBe('"my file.mkv"');
+  // Quassel, bouncedcc and the irssi/halloy passive reply all break on one.
+  it('sends a space as _, as WeeChat and KVIrc do', () => {
+    expect(dccWireFilename('my file.mkv')).toBe('my_file.mkv');
     expect(dccWireFilename('file.mkv')).toBe('file.mkv');
   });
 
   it('swaps a double quote for a single one, which nothing unescapes', () => {
-    expect(dccWireFilename('say "hi".txt')).toBe(`"say 'hi'.txt"`);
+    expect(dccWireFilename('say "hi".txt')).toBe(`say_'hi'.txt`);
   });
 
   it('never sends a path or a control character', () => {
@@ -221,14 +222,16 @@ describe('DCC SEND builders', () => {
   });
 
   it('builds a passive offer: placeholder address, port 0, the token', () => {
-    expect(buildDccSendPassive('"a b.mkv"', 5_000_000_000, 7)).toBe(
-      'SEND "a b.mkv" 16843009 0 5000000000 7',
+    expect(buildDccSendPassive('a_b.mkv', 5_000_000_000, 7)).toBe(
+      'SEND a_b.mkv 16843009 0 5000000000 7',
     );
   });
 
-  it('answers a resume with ACCEPT, port 0 and the token when passive', () => {
+  it('answers a resume with ACCEPT, on the port it asked with', () => {
     expect(buildDccAccept('file.mkv', 50000, 1024, null)).toBe('ACCEPT file.mkv 50000 1024');
     expect(buildDccAccept('file.mkv', 0, 1024, 7)).toBe('ACCEPT file.mkv 0 1024 7');
+    // WeeChat's passive RESUME names its own port.
+    expect(buildDccAccept('file.mkv', 41234, 1024, 7)).toBe('ACCEPT file.mkv 41234 1024 7');
   });
 
   it("reads a receiver's REJECT of a file we offered", () => {
@@ -262,6 +265,32 @@ describe('parseDcc — invalid', () => {
   it('rejects too few or too many fields', () => {
     expect(parseDcc('SEND f 16843009 50612').kind).toBe('invalid'); // missing size
     expect(parseDcc('SEND f 16843009 50612 1024 42 99').kind).toBe('invalid'); // extra
+  });
+
+  // irssi's reply to a passive offer never quotes the name (dcc-get.c:364-366),
+  // nor does halloy's (dcc.rs:128-133). Read from the right, as irssi does.
+  it('reads an unquoted name with spaces from the right', () => {
+    expect(send('SEND my file.txt 3232235777 50612 1024 7')).toMatchObject({
+      filename: 'my file.txt',
+      host: '192.168.1.1',
+      port: 50612,
+      size: 1024,
+      token: 7,
+    });
+    expect(send('SEND a b c.mkv 3232235777 50612 1024')).toMatchObject({
+      filename: 'a b c.mkv',
+      token: null,
+    });
+    expect(parseDcc('RESUME my file.txt 50612 1024')).toMatchObject({
+      kind: 'resume',
+      filename: 'my file.txt',
+      position: 1024,
+    });
+    // A number in the name is not an address.
+    expect(send('SEND track 12 3232235777 50612 1024')).toMatchObject({
+      filename: 'track 12',
+      token: null,
+    });
   });
 
   it('rejects an unterminated quoted filename', () => {

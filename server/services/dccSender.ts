@@ -19,7 +19,17 @@
 //   - a receiver that never ACKs at all is done once everything is sent and it
 //     closes cleanly, since there is nothing else to judge by.
 // ACKs count from the start of the file, including what a resume skipped
-// (irssi dcc-resume.c:127 sets transfd = skipped = the resume position).
+// (irssi dcc-resume.c:127 sets transfd = skipped = the resume position), and
+// every receiver that ACKs does it that way (HexChat, WeeChat, KVIrc, HexDroid,
+// halloy). An ACK is credited only up to what we have sent, so one claiming
+// the whole file early completes nothing.
+//
+// When to close: irssi, HexChat and KVIrc senders wait for the final ACK, and
+// so do we, for a while, before our FIN. irssi and KVIrc receivers only close
+// on EOF; through znc's bouncedcc, a FIN of ours tears down the user's side
+// before their last ACK is relayed. A receiver that has never ACKed gets the
+// FIN after a short wait, since it may be waiting for it: short, not none,
+// because a small file is read to its end before the first ACK can arrive.
 
 import fs from 'fs';
 import net from 'net';
@@ -37,6 +47,12 @@ export interface DccSendOptions {
   startOffset?: number;
   /** Abort if the socket makes no progress this long. */
   idleTimeoutMs?: number;
+  /** With everything sent, how long to wait for a receiver that ACKs to
+   *  confirm it all before we close our side. */
+  finalAckGraceMs?: number;
+  /** With everything sent and no ACK yet, how long to wait for one before
+   *  taking the receiver for one that never ACKs. */
+  firstAckWaitMs?: number;
   /** Bytes the receiver has confirmed, or, from a receiver that never ACKs, the
    *  bytes sent. The caller throttles DB/UI writes. */
   onProgress?: (confirmed: number) => void;
@@ -51,10 +67,11 @@ export class DccSender {
   private readonly socket: net.Socket;
   private stream: fs.ReadStream | null = null;
   private sent: number;
-  // The last ACK as the receiver sent it (a uint32), and what it means in
-  // bytes from the start of the file. Null until the first one.
-  private lastAck: number | null = null;
+  // Whether the receiver ACKs at all, and the most of the file it has
+  // confirmed, in bytes from its start.
+  private acks = false;
   private confirmed: number;
+  private grace: ReturnType<typeof setTimeout> | null = null;
   private finishedReading = false;
   private settled = false;
   // The most onProgress has said, so it never goes back: the bytes sent come
@@ -70,11 +87,18 @@ export class DccSender {
 
   /** What the receiver has confirmed so far (see onProgress). */
   get bytesConfirmed(): number {
-    return this.lastAck === null ? this.sent : this.confirmed;
+    return this.acks ? this.confirmed : this.sent;
   }
 
   start(): void {
-    const { filePath, size, startOffset = 0, idleTimeoutMs = 120_000 } = this.opts;
+    const {
+      filePath,
+      size,
+      startOffset = 0,
+      idleTimeoutMs = 120_000,
+      finalAckGraceMs = 30_000,
+      firstAckWaitMs = 5_000,
+    } = this.opts;
     const sock = this.socket;
     // ⚠ Never switched off, not even while waiting for 'drain'. #528 disabled it
     // there, so a receiver that stopped reading (but kept its socket open) held
@@ -95,14 +119,14 @@ export class DccSender {
         this.noteAck(ackBuf.readUInt32BE(0));
         ackBuf = ackBuf.subarray(4);
       }
-      if (this.finishedReading && this.lastAck === size % ACK_MODULUS) this.settle(null);
+      if (this.finishedReading && this.confirmed === size) this.settle(null);
     });
 
     sock.on('close', () => {
       if (this.settled) return;
       if (!this.finishedReading) {
         this.settle(new Error('receiver closed before the transfer finished'));
-      } else if (this.lastAck !== null && this.lastAck !== size % ACK_MODULUS) {
+      } else if (this.acks && this.confirmed !== size) {
         this.settle(
           new Error(`receiver closed having confirmed ${this.confirmed} of ${size} bytes`),
         );
@@ -125,7 +149,7 @@ export class DccSender {
       if (this.settled) return;
       const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
       this.sent += buf.length;
-      if (this.lastAck === null) this.report(this.sent);
+      if (!this.acks) this.report(this.sent);
       // Backpressure: pause the file read while the socket buffer drains.
       if (!sock.write(buf)) {
         this.stream?.pause();
@@ -142,15 +166,27 @@ export class DccSender {
         this.settle(new Error(`the file ended at ${this.sent} of ${size} bytes`));
         return;
       }
-      // Our FIN after the last byte. A receiver that never ACKs may be waiting
-      // for it; one that ACKs can still send its last ACK into the half-open
-      // socket, and the data handler above completes on it.
-      sock.end();
+      // The final ACK can beat the end of our read.
+      if (this.confirmed === size) {
+        this.settle(null);
+        return;
+      }
+      // A receiver that ACKs: its last one completes the send in the data
+      // handler above, and the FIN waits for it (see the header). One that
+      // never ACKs may be waiting for the FIN.
+      const fin = (): void => {
+        if (!this.settled) sock.end();
+      };
+      const firstWait = Math.min(firstAckWaitMs, finalAckGraceMs);
+      this.grace = setTimeout(() => {
+        if (!this.acks) fin();
+        else this.grace = setTimeout(fin, finalAckGraceMs - firstWait);
+      }, firstWait);
     });
   }
 
   private noteAck(ack: number): void {
-    this.lastAck = ack;
+    this.acks = true;
     // The ACK is the low 32 bits of a count that can pass 4 GiB. The count it
     // stands for is the largest one at or below what we've sent with those low
     // bits; never below the resume point or backwards.
@@ -176,6 +212,7 @@ export class DccSender {
   private settle(err: Error | null): void {
     if (this.settled) return;
     this.settled = true;
+    if (this.grace) clearTimeout(this.grace);
     try {
       this.stream?.destroy();
     } catch {

@@ -199,80 +199,91 @@ function parseDccResumeLike(kind: 'accept' | 'resume', rest: string): DccParse {
   if (rest === '') {
     return { kind: 'invalid', reason: `missing DCC ${kind.toUpperCase()} parameters` };
   }
-  let filename: string;
-  let remainder: string;
+  return parseNamed(rest, 2, 3, (filename, fields) => {
+    const [portStr, posStr, tokenStr] = fields;
+    const port = parseUint(portStr);
+    if (port === null || port > 65535) return { kind: 'invalid', reason: `bad port: ${portStr}` };
+    const position = parseUint(posStr);
+    if (position === null) return { kind: 'invalid', reason: `bad position: ${posStr}` };
+    let token: number | null = null;
+    if (tokenStr !== undefined) {
+      token = parseUint(tokenStr);
+      if (token === null) return { kind: 'invalid', reason: `bad token: ${tokenStr}` };
+    }
+    return { kind, filename, port, position, token };
+  });
+}
+
+/**
+ * Split `<file> <fields…>` and hand the fields to `read`, which takes between
+ * `min` and `max` of them. A quoted name is the conventional way to carry
+ * spaces. Unquoted, the name is the first token — XDCC bots use space-free
+ * names, and WeeChat (irc-ctcp.c) reads it that way — but not everyone quotes:
+ * irssi's reply to a passive offer never does (dcc-get.c:364-366), nor does
+ * halloy's (dcc.rs:128-133). So when the first-token read fails, the fields are
+ * taken from the right instead, the longest set first, as irssi counts them
+ * (dcc-get.c:383-405), and the name is everything before them.
+ */
+function parseNamed(
+  rest: string,
+  min: number,
+  max: number,
+  read: (filename: string, fields: string[], fromRight: boolean) => DccParse,
+): DccParse {
   if (rest.startsWith('"')) {
     const end = rest.indexOf('"', 1);
     if (end === -1) return { kind: 'invalid', reason: 'unterminated quoted filename' };
-    filename = rest.slice(1, end);
-    remainder = rest.slice(end + 1).trim();
-  } else {
-    const fsp = rest.indexOf(' ');
-    if (fsp === -1) return { kind: 'invalid', reason: 'missing port/position' };
-    filename = rest.slice(0, fsp);
-    remainder = rest.slice(fsp + 1).trim();
+    const filename = rest.slice(1, end);
+    if (filename === '') return { kind: 'invalid', reason: 'empty filename' };
+    const fields = rest
+      .slice(end + 1)
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+    if (fields.length < min || fields.length > max) {
+      return { kind: 'invalid', reason: `expected ${min}-${max} fields after the filename` };
+    }
+    return read(filename, fields, false);
   }
-  if (filename === '') return { kind: 'invalid', reason: 'empty filename' };
-
-  const fields = remainder.split(/\s+/).filter(Boolean);
-  if (fields.length < 2 || fields.length > 3) {
-    return { kind: 'invalid', reason: 'expected <port> <position> [token]' };
+  const words = rest.split(/\s+/).filter(Boolean);
+  if (words.length < 1 + min) {
+    return { kind: 'invalid', reason: `expected ${min}-${max} fields after the filename` };
   }
-  const [portStr, posStr, tokenStr] = fields;
-  const port = parseUint(portStr);
-  if (port === null || port > 65535) return { kind: 'invalid', reason: `bad port: ${portStr}` };
-  const position = parseUint(posStr);
-  if (position === null) return { kind: 'invalid', reason: `bad position: ${posStr}` };
-  let token: number | null = null;
-  if (tokenStr !== undefined) {
-    token = parseUint(tokenStr);
-    if (token === null) return { kind: 'invalid', reason: `bad token: ${tokenStr}` };
+  let first: DccParse | null = null;
+  if (words.length - 1 <= max) {
+    first = read(words[0], words.slice(1), false);
+    if (first.kind !== 'invalid') return first;
   }
-  return { kind, filename, port, position, token };
+  for (let n = max; n >= min; n--) {
+    if (words.length - n < 2) continue; // one word of name is the read above
+    const parsed = read(words.slice(0, -n).join(' '), words.slice(-n), true);
+    if (parsed.kind !== 'invalid') return parsed;
+  }
+  return first ?? { kind: 'invalid', reason: `expected ${min}-${max} fields after the filename` };
 }
 
 function parseDccSend(rest: string): DccParse {
   if (rest === '') return { kind: 'invalid', reason: 'missing DCC SEND parameters' };
-
-  let filename: string;
-  let remainder: string;
-  if (rest.startsWith('"')) {
-    // Quoted filename — the only spec-conformant way to carry spaces.
-    const end = rest.indexOf('"', 1);
-    if (end === -1) return { kind: 'invalid', reason: 'unterminated quoted filename' };
-    filename = rest.slice(1, end);
-    remainder = rest.slice(end + 1).trim();
-  } else {
-    // Unquoted: the filename is the first whitespace token. A name with spaces
-    // MUST be quoted per the DCC convention; XDCC bots use space-free names
-    // (underscores), so first-token is correct for real traffic and keeps the
-    // address/port/size fields unambiguous (WeeChat irc-ctcp.c does the same).
-    const fsp = rest.indexOf(' ');
-    if (fsp === -1) return { kind: 'invalid', reason: 'missing address/port/size' };
-    filename = rest.slice(0, fsp);
-    remainder = rest.slice(fsp + 1).trim();
-  }
-  if (filename === '') return { kind: 'invalid', reason: 'empty filename' };
-
-  const fields = remainder.split(/\s+/).filter(Boolean);
-  if (fields.length < 3 || fields.length > 4) {
-    return { kind: 'invalid', reason: 'expected <ip> <port> <size> [token]' };
-  }
-  const [hostStr, portStr, sizeStr, tokenStr] = fields;
-
-  const host = decodeDccAddress(hostStr);
-  if (host === null) return { kind: 'invalid', reason: `bad address: ${hostStr}` };
-  const port = parseUint(portStr);
-  if (port === null || port > 65535) return { kind: 'invalid', reason: `bad port: ${portStr}` };
-  const size = parseUint(sizeStr);
-  if (size === null) return { kind: 'invalid', reason: `bad size: ${sizeStr}` };
-  let token: number | null = null;
-  if (tokenStr !== undefined) {
-    token = parseUint(tokenStr);
-    if (token === null) return { kind: 'invalid', reason: `bad token: ${tokenStr}` };
-  }
-
-  return { kind: 'send', filename, host, port, size, token, passive: port === 0 };
+  return parseNamed(rest, 3, 4, (filename, fields, fromRight) => {
+    const [hostStr, portStr, sizeStr, tokenStr] = fields;
+    const host = decodeDccAddress(hostStr);
+    if (host === null) return { kind: 'invalid', reason: `bad address: ${hostStr}` };
+    // Read from the right, a number in the name lands in the address field
+    // (`track 12 …` reads 12 as 0.0.0.12). No peer is in 0.0.0.0/8.
+    if (fromRight && host.startsWith('0.')) {
+      return { kind: 'invalid', reason: `bad address: ${hostStr}` };
+    }
+    const port = parseUint(portStr);
+    if (port === null || port > 65535) return { kind: 'invalid', reason: `bad port: ${portStr}` };
+    const size = parseUint(sizeStr);
+    if (size === null) return { kind: 'invalid', reason: `bad size: ${sizeStr}` };
+    let token: number | null = null;
+    if (tokenStr !== undefined) {
+      token = parseUint(tokenStr);
+      if (token === null) return { kind: 'invalid', reason: `bad token: ${tokenStr}` };
+    }
+    return { kind: 'send', filename, host, port, size, token, passive: port === 0 };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -317,12 +328,14 @@ export function encodeDccAddress(host: string): string | null {
 }
 
 /** A file's name as it goes out in a DCC offer (#1086): one path component
- *  with no control characters, and no `"`, which would end a quoted name early
- *  (no implementation unescapes one). A name with a space goes quoted, as irssi
- *  quotes it (dcc-send.c:433, 450). */
+ *  with no control characters, and a space as `_`. Quoting a name with spaces
+ *  is the convention, but not every receiver reads it: Quassel splits on spaces
+ *  (coresessioneventprocessor.cpp:1595-1603), znc's bouncedcc finds the port of
+ *  a RESUME by word count (bouncedcc.cpp:204), and irssi and halloy answer a
+ *  passive offer with the name unquoted. WeeChat (convert_spaces) and KVIrc send
+ *  `_` by default for the same reasons. No `"` either, for whoever does quote. */
 export function dccWireFilename(name: string): string {
-  const clean = sanitizeDccFilename(name).replace(/"/g, "'");
-  return clean.includes(' ') ? `"${clean}"` : clean;
+  return sanitizeDccFilename(name).replace(/"/g, "'").replace(/\s/g, '_');
 }
 
 /** The body of an active `DCC SEND` offer — `SEND <file> <addr> <port> <size>`.
@@ -346,9 +359,12 @@ export function buildDccSendPassive(file: string, size: number, token: number): 
   return `SEND ${file} ${encodeDccAddress(PASSIVE_DCC_FAKE_HOST)} 0 ${size} ${token}`;
 }
 
-/** The body of a `DCC ACCEPT`, our yes to a peer's RESUME: the port the offer
- *  used, the position, and for a passive offer port 0 and our token, as irssi
- *  answers (dcc-resume.c:148-157). */
+/** The body of a `DCC ACCEPT`, our yes to a peer's RESUME: the port and
+ *  position it asked with, and for a passive offer our token. ⚠ The port is the
+ *  RESUME's own, not 0: irssi, HexChat and KVIrc send 0 there, but WeeChat sends
+ *  the port it is listening on and matches our ACCEPT against it
+ *  (irc-server.c:6364-6378, xfer.c:262-282). An active ACCEPT carries no token,
+ *  which WeeChat would read as passive. */
 export function buildDccAccept(
   file: string,
   port: number,
@@ -357,7 +373,7 @@ export function buildDccAccept(
 ): string {
   return token === null
     ? `ACCEPT ${file} ${port} ${position}`
-    : `ACCEPT ${file} 0 ${position} ${token}`;
+    : `ACCEPT ${file} ${port} ${position} ${token}`;
 }
 
 /** The `DCC REJECT` a receiver sends back (as a CTCP reply) when it declines a

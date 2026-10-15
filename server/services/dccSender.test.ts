@@ -111,7 +111,9 @@ describe('DccSender', () => {
     const filePath = writeFile('noack.bin', data);
     const { sender, client } = await socketPair();
     const received = collect(client, { ack: false });
-    expect(await run({ socket: sender, filePath, size: data.length })).toBe(data.length);
+    expect(await run({ socket: sender, filePath, size: data.length, firstAckWaitMs: 50 })).toBe(
+      data.length,
+    );
     expect((await received).length).toBe(data.length);
   });
 
@@ -130,6 +132,45 @@ describe('DccSender', () => {
     await expect(run({ socket: sender, filePath, size: data.length })).rejects.toThrow(
       /confirmed 99999 of 100000/,
     );
+  });
+
+  // An ACK is credited only up to what we've sent (Codex, on the branch).
+  it('takes no early ACK of the whole file as done', async () => {
+    const data = Buffer.alloc(50_000, 8);
+    const filePath = writeFile('early.bin', data);
+    const { sender, client } = await socketPair();
+    client.on('error', () => {});
+    const early = Buffer.alloc(4);
+    early.writeUInt32BE(data.length, 0);
+    client.write(early);
+    let got = 0;
+    client.on('data', (d: Buffer) => {
+      got += d.length;
+      if (got >= data.length) client.end();
+    });
+    await expect(run({ socket: sender, filePath, size: data.length })).rejects.toThrow(
+      /confirmed 0 of 50000/,
+    );
+  });
+
+  // irssi and KVIrc close only on EOF, so the FIN can't wait forever.
+  it('closes, after a grace, on a receiver that ACKs but never confirms it all', async () => {
+    const data = Buffer.alloc(20_000, 9);
+    const filePath = writeFile('grace.bin', data);
+    const { sender, client } = await socketPair();
+    // ACKs one short, and closes only on our FIN.
+    collect(client, { ackOf: (n) => n - 1 });
+    const started = Date.now();
+    await expect(
+      run({
+        socket: sender,
+        filePath,
+        size: data.length,
+        finalAckGraceMs: 150,
+        firstAckWaitMs: 50,
+      }),
+    ).rejects.toThrow(/confirmed 19999 of 20000/);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(140);
   });
 
   it('errors when the receiver closes before the transfer completes', async () => {

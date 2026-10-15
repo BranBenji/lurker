@@ -318,6 +318,10 @@ const DCC_FLOOD_WARN_GAP_MS = 5 * 60_000;
 // dcc_timeout (dcc.c:576). Expiring ends the offer, not the file.
 const DCC_SEND_OFFER_TTL_MS = 5 * 60_000;
 
+// How long an expired passive offer is remembered, so a late answer to it is
+// recognised (see expiredPassiveSends).
+const EXPIRED_PASSIVE_SEND_MEMORY_MS = 60 * 60_000;
+
 // A file we've offered and the peer hasn't connected for yet (#1086).
 interface DccSendOffer {
   transferId: number;
@@ -325,7 +329,7 @@ interface DccSendOffer {
   filePath: string;
   /** The file's name, for status lines. */
   name: string;
-  /** The name as the offer carried it (dccWireFilename), quoted if it has a space. */
+  /** The name as the offer carried it (dccWireFilename). */
   wireName: string;
   size: number;
   /** Set for a passive offer: the token the receiver's reply carries. */
@@ -804,6 +808,14 @@ export class IrcConnection {
   // keyed by dcc_transfers.id.
   private readonly dccSenders = new Map<number, DccSender>();
   private readonly dccSendOffers = new Map<number, DccSendOffer>();
+  // Passive offers that expired, by token, for a while after: WeeChat, HexChat,
+  // KVIrc, HexDroid and halloy never expire an offer they were sent, so the
+  // peer can still answer one. Its reply would otherwise read as the peer
+  // offering us our own file.
+  private readonly expiredPassiveSends = new Map<
+    number,
+    { nick: string; name: string; at: number }
+  >();
   // Live DCC CHAT sessions, keyed by the peer's lowercased nick. Each is a
   // direct TCP line-chat surfaced as a `=nick` buffer. Process-bound: the socket
   // is independent of the IRC connection (so it survives a reconnect, exactly as
@@ -6585,6 +6597,14 @@ export class IrcConnection {
         this.dialDccSend(ours, offer.host, offer.port);
         return;
       }
+      const late = offer.passive ? undefined : this.lateDccSendReply(nick, offer.token);
+      if (late) {
+        this.surfaceCtcp(
+          nick,
+          `DCC: ${nick} answered the offer of "${late.name}" after it expired — send it again`,
+        );
+        return;
+      }
     }
     const armed = findArmedRequest(this.network.user_id, this.network.id, nick);
     if (armed) {
@@ -6789,7 +6809,9 @@ export class IrcConnection {
         return (
           dccReceiveEnabledForUser(userId) ||
           findArmedRequest(userId, this.network.id, nick) !== undefined ||
-          (!parsed.passive && this.passiveDccSendFor(nick, parsed.token) !== undefined)
+          (!parsed.passive &&
+            (this.passiveDccSendFor(nick, parsed.token) !== undefined ||
+              this.lateDccSendReply(nick, parsed.token) !== undefined))
         );
       case 'resume':
         // A reply to an offer we made gets past a revoked grant; anything else
@@ -7090,6 +7112,8 @@ export class IrcConnection {
       };
     }
     // As the download route judges it: a file removed or replaced by hand.
+    // HexChat refuses an offer of size 0 (dcc.c:2649), and Quassel fails on one.
+    if (file.size === 0) return { status: 400, error: 'an empty file cannot be sent over DCC' };
     const stat = fs.statSync(file.path, { throwIfNoEntry: false });
     if (!stat?.isFile() || stat.size !== file.size) {
       return { status: 410, error: 'file is no longer on the server' };
@@ -7103,7 +7127,7 @@ export class IrcConnection {
       network_id: this.network.id,
       peer_nick: nick,
       file_id: file.id,
-      filename: wireName.replace(/^"(.*)"$/, '$1'),
+      filename: file.name,
       size: file.size,
       passive,
       token,
@@ -7195,16 +7219,15 @@ export class IrcConnection {
   }
 
   // The offer of ours this RESUME is about. irssi matches by port, not name
-  // (dcc-resume.c:103), and so do we: a passive offer by port 0 and its token.
-  // Not once the peer is connecting, when there is nothing left to resume.
+  // (dcc-resume.c:103), and so do we; a passive offer by its token, whatever
+  // the port: irssi, HexChat and KVIrc send 0 there, WeeChat the port it is
+  // listening on (irc-server.c:6364-6378). Names are no use: KVIrc escapes a
+  // space, WeeChat converts it. Not once the peer is connecting, when there is
+  // nothing left to resume.
   private dccSendOfferForResume(nick: string, r: DccResume): DccSendOffer | undefined {
     for (const o of this.dccSendOffers.values()) {
       if (!this.sameDccPeer(o.nick, nick) || o.dial) continue;
-      if (
-        r.port === 0 ? o.token !== null && o.token === r.token : o.port !== 0 && o.port === r.port
-      ) {
-        return o;
-      }
+      if (r.token !== null ? o.token === r.token : o.port !== 0 && o.port === r.port) return o;
     }
     return undefined;
   }
@@ -7227,7 +7250,7 @@ export class IrcConnection {
     this.client.ctcpRequest(
       offer.nick,
       'DCC',
-      buildDccAccept(offer.wireName, offer.port, r.position, r.port === 0 ? offer.token : null),
+      buildDccAccept(offer.wireName, r.port, r.position, r.token !== null ? offer.token : null),
     );
   }
 
@@ -7238,6 +7261,16 @@ export class IrcConnection {
       if (o.token === token && !o.dial && this.sameDccPeer(o.nick, nick)) return o;
     }
     return undefined;
+  }
+
+  // A passive offer of ours to `nick` with `token` that expired a while ago.
+  private lateDccSendReply(
+    nick: string,
+    token: number | null,
+  ): { nick: string; name: string } | undefined {
+    const e = token === null ? undefined : this.expiredPassiveSends.get(token);
+    if (!e || Date.now() - e.at > EXPIRED_PASSIVE_SEND_MEMORY_MS) return undefined;
+    return this.sameDccPeer(e.nick, nick) ? e : undefined;
   }
 
   private ownsPassiveDccSendToken(token: number): boolean {
@@ -7307,9 +7340,7 @@ export class IrcConnection {
     const file = parseDccRejectSend(parseCtcp(String(event.message ?? '')).args);
     if (file === null) return false;
     for (const o of this.dccSendOffers.values()) {
-      if (!this.sameDccPeer(o.nick, nick) || o.wireName.replace(/^"(.*)"$/, '$1') !== file) {
-        continue;
-      }
+      if (!this.sameDccPeer(o.nick, nick) || o.wireName !== file) continue;
       this.endDccSendOffer(o, 'rejected');
       this.surfaceCtcp(o.nick, `DCC: ${o.nick} declined "${o.name}"`);
       return true;
@@ -7321,6 +7352,13 @@ export class IrcConnection {
     const offer = this.dccSendOffers.get(transferId);
     if (!offer) return;
     this.endDccSendOffer(offer, 'failed', 'not accepted within 5 minutes');
+    if (offer.token !== null) {
+      const now = Date.now();
+      for (const [token, e] of this.expiredPassiveSends) {
+        if (now - e.at > EXPIRED_PASSIVE_SEND_MEMORY_MS) this.expiredPassiveSends.delete(token);
+      }
+      this.expiredPassiveSends.set(offer.token, { nick: offer.nick, name: offer.name, at: now });
+    }
     this.surfaceCtcp(
       offer.nick,
       `DCC: ${offer.nick} didn't accept "${offer.name}" within 5 minutes`,
@@ -7475,13 +7513,15 @@ export class IrcConnection {
   // A token correlating a passive offer with its reverse reply. irssi and
   // repartee both mint `rand() % 64` (dcc-chat.c:527, handlers_dcc.rs:204), and
   // staying in that range keeps us inside what every implementation round-trips.
+  // ⚠ Never 0: HexChat and ZoiteChat drop an offer with token 0 as malformed,
+  // without a word (dcc.c:2534 for CHAT, 2648-2650 for SEND).
   private mintDccToken(): number {
     // ⚠ Only 6 bits, so two outstanding passive offers collide about 1 time in
     // 64. Skip a token already in flight: reusing one would have the displaced
     // offer's timer fire against the NEW entry (timing out the wrong chat, and
     // naming the wrong peer), and the real reply arrive with nothing to match.
     for (let i = 0; i < 64; i++) {
-      const token = Math.floor(Math.random() * 64);
+      const token = 1 + Math.floor(Math.random() * 63);
       if (!this.pendingPassiveChats.has(token) && !this.ownsPassiveDccSendToken(token)) {
         return token;
       }

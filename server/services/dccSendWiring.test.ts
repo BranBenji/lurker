@@ -194,7 +194,7 @@ function receive(sock: net.Socket, size: number, base = 0): Promise<Buffer> {
 
 // The port an active offer advertised: `SEND "<name>" <addr> <port> <size>`.
 function offeredPort(body: string): number {
-  const m = /^SEND "my file\.bin" (\d+) (\d+) (\d+)$/.exec(body);
+  const m = /^SEND my_file\.bin (\d+) (\d+) (\d+)$/.exec(body);
   if (!m) throw new Error(`not an active offer: ${body}`);
   expect(m[1]).toBe(encodeDccAddress('203.0.113.5'));
   expect(Number(m[3])).toBe(DATA.length);
@@ -249,7 +249,7 @@ describe('offering a file', () => {
 
     // The receiver names the file its own way; irssi matches by port.
     h.from('bob', `RESUME file.bin ${port} 100000`);
-    expect(h.sent()).toBe(`ACCEPT "my file.bin" ${port} 100000`);
+    expect(h.sent()).toBe(`ACCEPT my_file.bin ${port} 100000`);
 
     const got = await receive(dial(port), DATA.length, 100_000);
     expect(got.equals(DATA.subarray(100_000))).toBe(true);
@@ -264,7 +264,7 @@ describe('offering a file', () => {
     await waitFor(() => h.sent() !== null);
     const port = offeredPort(h.sent()!);
     h.from('bob', `RESUME file.bin ${port} ${DATA.length}`);
-    expect(h.ctcpResponse).toHaveBeenCalledWith('bob', 'DCC', 'REJECT SEND "my file.bin"');
+    expect(h.ctcpResponse).toHaveBeenCalledWith('bob', 'DCC', 'REJECT SEND my_file.bin');
     expect(row(id)).toMatchObject({ state: 'failed' });
     expect(activeDccListenerCount()).toBe(0);
   });
@@ -292,7 +292,8 @@ describe('offering a file', () => {
     h.conn.client.emit('ctcp response', {
       nick: 'bob',
       type: 'DCC',
-      message: 'DCC REJECT SEND "my file.bin"',
+      // irssi sends back the name it was offered (dcc.c:436-438).
+      message: 'DCC REJECT SEND my_file.bin',
     });
     expect(row(id).state).toBe('rejected');
     expect(activeDccListenerCount()).toBe(0);
@@ -401,7 +402,7 @@ describe('offering a file', () => {
       await waitFor(() => h.sent() !== null);
       const port = offeredPort(h.sent()!);
       h.from('bob{m}', `RESUME file.bin ${port} 10`);
-      expect(h.sent()).toBe(`ACCEPT "my file.bin" ${port} 10`);
+      expect(h.sent()).toBe(`ACCEPT my_file.bin ${port} 10`);
     } finally {
       db.prepare(`UPDATE networks SET casemapping = NULL WHERE id = 1`).run();
       invalidateCasemappingCache(1);
@@ -415,7 +416,7 @@ describe('a passive offer', () => {
     process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1';
     const h = harness();
     const id = offer(h, { passive: true });
-    const m = /^SEND "my file\.bin" 16843009 0 (\d+) (\d+)$/.exec(h.sent()!);
+    const m = /^SEND my_file\.bin 16843009 0 (\d+) (\d+)$/.exec(h.sent()!);
     expect(m).not.toBeNull();
     expect(Number(m![1])).toBe(DATA.length);
     const token = m![2];
@@ -443,7 +444,78 @@ describe('a passive offer', () => {
     offer(h, { passive: true });
     const token = /(\d+)$/.exec(h.sent()!)![1];
     h.from('bob', `RESUME "my file.bin" 0 5000 ${token}`);
-    expect(h.sent()).toBe(`ACCEPT "my file.bin" 0 5000 ${token}`);
+    expect(h.sent()).toBe(`ACCEPT my_file.bin 0 5000 ${token}`);
+  });
+
+  // WeeChat names the port it listens on, and matches our ACCEPT against it
+  // (irc-server.c:6364-6378, xfer.c:262-282).
+  it("answers WeeChat's passive RESUME, which carries its own port, on that port", () => {
+    enableSend();
+    const h = harness();
+    offer(h, { passive: true });
+    const token = /(\d+)$/.exec(h.sent()!)![1];
+    h.from('bob', `RESUME my_file.bin 41234 5000 ${token}`);
+    expect(h.sent()).toBe(`ACCEPT my_file.bin 41234 5000 ${token}`);
+  });
+
+  // irssi's reply never quotes the name (dcc-get.c:364-366).
+  it("connects on irssi's reply, whose name is unquoted", async () => {
+    enableSend();
+    process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1';
+    const h = harness();
+    const id = offer(h, { passive: true });
+    const token = /(\d+)$/.exec(h.sent()!)![1];
+    let got!: Promise<Buffer>;
+    const listening = net.createServer((sock) => {
+      got = receive(sock, DATA.length);
+    });
+    peers.push(listening);
+    await new Promise<void>((r) => listening.listen(0, '127.0.0.1', r));
+    const port = (listening.address() as net.AddressInfo).port;
+    h.from(
+      'bob',
+      `SEND my file.bin ${encodeDccAddress('127.0.0.1')} ${port} ${DATA.length} ${token}`,
+    );
+    await waitFor(() => row(id).state === 'completed');
+    expect((await got).length).toBe(DATA.length);
+  });
+
+  // HexChat drops an offer with token 0 without a word (dcc.c:2648-2650).
+  it('never mints token 0', () => {
+    const h = harness();
+    const mint = (h.conn as unknown as { mintDccToken(): number }).mintDccToken.bind(h.conn);
+    for (let i = 0; i < 500; i++) expect(mint()).toBeGreaterThan(0);
+  });
+
+  // Most receivers never expire an offer, so an answer can come after ours did.
+  it('says so when the peer answers an expired passive offer, rather than recording an offer', () => {
+    enableSend();
+    setUserCapability(1, CAPABILITY_DCC_RECEIVE, true);
+    try {
+      const h = harness();
+      const id = offer(h, { passive: true });
+      const token = /(\d+)$/.exec(h.sent()!)![1];
+      (h.conn as unknown as { expireDccSend(id: number): void }).expireDccSend(id);
+      h.from(
+        'bob',
+        `SEND my_file.bin ${encodeDccAddress('192.0.2.7')} 5000 ${DATA.length} ${token}`,
+      );
+      const offers = db
+        .prepare(`SELECT COUNT(*) AS n FROM dcc_transfers WHERE direction = 'recv'`)
+        .get() as { n: number };
+      expect(offers.n).toBe(0);
+      expect(h.lines().at(-1)).toMatch(/answered the offer of "my file\.bin" after it expired/);
+    } finally {
+      setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
+    }
+  });
+
+  it('refuses an empty file, which HexChat would drop', () => {
+    enableSend();
+    const h = harness();
+    expect(h.conn.offerDccSend({ ...file, size: 0 }, 'bob', { passive: true })).toMatchObject({
+      status: 400,
+    });
   });
 
   it('refuses to connect to a private address without the opt-in', () => {
