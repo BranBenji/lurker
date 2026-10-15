@@ -786,6 +786,21 @@ class IrcManager extends EventEmitter {
     );
   }
 
+  /** Offer one of the user's DCC files to a peer (#1086). The connection
+   *  answers why it can't; with no connection at all, the network isn't
+   *  connected. */
+  dccSendFile(
+    userId: number,
+    networkId: number,
+    nick: string,
+    file: { id: number; path: string; name: string; size: number },
+    opts: { passive?: boolean } = {},
+  ): { transferId: number } | { status: number; error: string } {
+    const conn = this.getConnection(userId, networkId);
+    if (!conn) return { status: 409, error: 'network not connected' };
+    return conn.offerDccSend(file, nick, opts);
+  }
+
   /** Offer a DCC chat to a peer. False when the network has no connection object
    *  at all; a connection that merely isn't registered still reports its own
    *  failure into the `=nick` buffer, which is more useful than a bare false. */

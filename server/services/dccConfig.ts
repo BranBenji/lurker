@@ -6,7 +6,8 @@
 //      is always off in node edition, so the feature is dark on hosted cells; a
 //      self-hoster sets it to turn DCC on for the instance.
 //   2. per-user grants an admin gives in Admin → DCC (#1080), one per part:
-//      CAPABILITY_DCC_CHAT and CAPABILITY_DCC_RECEIVE. With the master switch
+//      CAPABILITY_DCC_CHAT, CAPABILITY_DCC_RECEIVE and CAPABILITY_DCC_SEND
+//      (#1086). With the master switch
 //      on, an account can only use the parts it was granted.
 // BOTH must be true for a user to use DCC. The master-switch parser is pure (and
 // unit-tested); the per-user gate reads the DB.
@@ -16,6 +17,7 @@ import net from 'net';
 import {
   CAPABILITY_DCC_CHAT,
   CAPABILITY_DCC_RECEIVE,
+  CAPABILITY_DCC_SEND,
   userHasCapability,
 } from '../db/userCapabilities.js';
 import { parseTruthyEnv } from '../utils/truthyEnv.js';
@@ -51,7 +53,13 @@ export function dccReceiveEnabledForUser(userId: number): boolean {
   return dccMasterEnabled() && userHasCapability(userId, CAPABILITY_DCC_RECEIVE);
 }
 
-/** Operator cap on a single accepted DCC file, in bytes, from
+/** Whether `userId` may send files (#1086): the master switch AND the send
+ *  grant. Offering a file, and uploading one to send, check it. */
+export function dccSendEnabledForUser(userId: number): boolean {
+  return dccMasterEnabled() && userHasCapability(userId, CAPABILITY_DCC_SEND);
+}
+
+/** Operator cap on a single DCC file, received or uploaded to send, in bytes, from
  *  LURKER_DCC_MAX_FILE_MB. 0 (unset / non-positive / unparseable) means no cap. */
 export function dccMaxFileBytes(): number {
   const mb = Number((process.env.LURKER_DCC_MAX_FILE_MB ?? '').trim());

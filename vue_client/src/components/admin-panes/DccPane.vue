@@ -3,9 +3,9 @@
   SPDX-License-Identifier: MPL-2.0
 
   Admin panel → DCC (#1080, #1125). The instance's DCC settings, and per user:
-  which parts of DCC they may use (chat, and receiving files, granted separately
-  so an admin can allow direct chats without letting files land on the box), a
-  storage limit, and what their received files take now. Every part also needs
+  which parts of DCC they may use (chat, receiving files and sending them
+  (#1086), granted separately so an admin can allow direct chats without letting
+  files land on the box), a storage limit, and what their files take now. Every part also needs
   LURKER_DCC_ENABLED. With it off the grants still list, so an admin can clear
   them before turning DCC back on.
 
@@ -18,7 +18,7 @@
   <section id="admin-dcc" class="settings-pane">
     <h2>dcc</h2>
     <p class="section-desc">
-      Direct connections between people on IRC: chats, and files sent to this server.
+      Direct connections between people on IRC: chats, and files sent to and from this server.
     </p>
     <p v-if="loadError" class="error inline">{{ loadError }}</p>
 
@@ -60,6 +60,7 @@
             <th scope="col">user</th>
             <th scope="col">chat</th>
             <th scope="col">receive</th>
+            <th scope="col">send</th>
             <th scope="col">limit</th>
             <th scope="col">used</th>
             <th></th>
@@ -100,6 +101,15 @@
               </td>
               <td class="ctl">
                 <input
+                  v-model="editing.send"
+                  type="checkbox"
+                  :aria-label="`send files for ${u.username}`"
+                  :disabled="busy || (!info.enabled && !u.send)"
+                  @keydown.enter.prevent="save(u)"
+                />
+              </td>
+              <td class="ctl">
+                <input
                   v-model="editing.limit"
                   class="limit"
                   type="number"
@@ -122,6 +132,7 @@
             <template v-else>
               <td>{{ u.chat ? 'on' : '—' }}</td>
               <td>{{ u.receive ? 'on' : '—' }}</td>
+              <td>{{ u.send ? 'on' : '—' }}</td>
               <td>{{ u.limitBytes === null ? 'none' : formatBytes(u.limitBytes) }}</td>
               <td>{{ u.usedBytes ? formatBytes(u.usedBytes) : '—' }}</td>
               <td class="act">
@@ -137,7 +148,8 @@
         already received stay theirs to download.
       </p>
       <p class="muted small">
-        Users delete their own received files in the Transfers list to make room under a limit.
+        Users delete their own files under Files to make room under a limit. Files they upload to
+        send count against it too.
       </p>
     </template>
     <p v-else-if="!loadError" class="muted small">Loading…</p>
@@ -154,6 +166,7 @@ interface DccUser {
   username: string;
   chat: boolean;
   receive: boolean;
+  send: boolean;
   /** Null for no limit (#1125). */
   limitBytes: number | null;
   usedBytes: number;
@@ -174,7 +187,13 @@ const loadError = ref('');
 const busy = ref(false);
 // The one row being edited, and what its editor holds. `limit` is in GB, ''
 // for none.
-const editing = ref<{ id: number; chat: boolean; receive: boolean; limit: string } | null>(null);
+const editing = ref<{
+  id: number;
+  chat: boolean;
+  receive: boolean;
+  send: boolean;
+  limit: string;
+} | null>(null);
 const editError = ref('');
 // The row that just saved, for a moment of "saved".
 const savedFor = ref<number | null>(null);
@@ -197,7 +216,13 @@ function limitGb(bytes: number | null): string {
 function startEdit(u: DccUser) {
   editError.value = '';
   savedFor.value = null;
-  editing.value = { id: u.id, chat: u.chat, receive: u.receive, limit: limitGb(u.limitBytes) };
+  editing.value = {
+    id: u.id,
+    chat: u.chat,
+    receive: u.receive,
+    send: u.send,
+    limit: limitGb(u.limitBytes),
+  };
 }
 
 function cancelEdit() {
@@ -218,19 +243,23 @@ async function save(u: DccUser) {
   editError.value = '';
   busy.value = true;
   try {
-    const next = await api<{ chat: boolean; receive: boolean; limitBytes: number | null }>(
-      `/api/admin/dcc/users/${u.id}`,
-      {
-        method: 'PUT',
-        body: {
-          chat: draft.chat,
-          receive: draft.receive,
-          limitBytes: raw === '' ? null : Math.max(1, Math.round(gb * GB)),
-        },
+    const next = await api<{
+      chat: boolean;
+      receive: boolean;
+      send: boolean;
+      limitBytes: number | null;
+    }>(`/api/admin/dcc/users/${u.id}`, {
+      method: 'PUT',
+      body: {
+        chat: draft.chat,
+        receive: draft.receive,
+        send: draft.send,
+        limitBytes: raw === '' ? null : Math.max(1, Math.round(gb * GB)),
       },
-    );
+    });
     u.chat = next.chat;
     u.receive = next.receive;
+    u.send = next.send;
     u.limitBytes = next.limitBytes;
     editing.value = null;
     savedFor.value = u.id;

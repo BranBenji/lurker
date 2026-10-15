@@ -7,16 +7,17 @@
 // by its numeric id (the id shown in the list), download saves a completed
 // one through the browser, and delete removes its file from the server; `clear`
 // takes one finished transfer off the list, or every one, keeping the files;
-// `chat` opens a direct chat with a peer and `close` ends one.
+// `send` offers one of the files to a peer (#1086); `chat` opens a direct chat
+// with a peer and `close` ends one.
 //
 // Pure and dependency-free so it unit-tests outside the Vue SFC, like the other
 // command parsers.
 //
-// ⚠ The transfer verbs are user-wide, but chat is per-network — it rides that
-// network's connection — so the SFC has to refuse a chat verb issued from the
-// network-agnostic system buffer rather than routing it with a null networkId.
+// ⚠ The transfer verbs are user-wide, but chat and send are per-network — they
+// ride that network's connection — so the SFC has to refuse them from the
+// network-agnostic system buffer rather than routing with a null networkId.
 
-import { isChannelTarget } from '../../../../shared/channels.js';
+import { isSinglePeerTarget } from '../../../../shared/channels.js';
 
 export type DccCommand =
   | { kind: 'list' }
@@ -28,6 +29,8 @@ export type DccCommand =
   | { kind: 'delete'; id: number }
   /** One transfer by id, or null for every finished one. */
   | { kind: 'clear'; id: number | null }
+  /** `file` is a name, or an id as /dcc files shows it; null to pick one. */
+  | { kind: 'send'; nick: string; passive: boolean; file: string | null }
   | { kind: 'chat'; nick: string; passive: boolean }
   | { kind: 'chatClose'; nick: string }
   | { kind: 'error'; message: string };
@@ -54,6 +57,7 @@ const BY_ID: ReadonlyArray<
 const USAGE =
   'usage: /dcc [list] · /dcc files · /dcc accept|reject|cancel|download|delete <id> · ' +
   '/dcc clear [<id>] · ' +
+  '/dcc send [-passive] <nick> [<file>] · ' +
   '/dcc chat [-passive] <nick> · ' +
   '/dcc close chat <nick>';
 
@@ -64,10 +68,11 @@ const USAGE =
 //
 // ⚠ A channel is refused too: `/dcc chat #room` would broadcast the offer to
 // the whole channel. All four sigils — a `#`-only test is this codebase's most
-// repeated bug.
+// repeated bug — and a list or STATUSMSG target (`bob,#room`, `@#room`), which
+// reaches one as well.
 function parseNick(raw: string | undefined): string | null {
   const n = (raw || '').trim();
-  if (!n || n.startsWith('=') || isChannelTarget(n)) return null;
+  if (!n || n.startsWith('=') || !isSinglePeerTarget(n)) return null;
   return n;
 }
 
@@ -135,6 +140,27 @@ export function parseDccCommand(argLine: string): DccCommand {
     const nick = parseNick(rest[0]);
     if (!nick) return { kind: 'error', message: 'usage: /dcc chat [-passive] <nick>' };
     return { kind: 'chat', nick, passive: flags.length > 0 };
+  }
+  // irssi's `DCC SEND [-passive] <nick> <file>` (dcc-send.c:164), with the
+  // file optional: without one, the Files tab opens to pick or upload it. The
+  // file is the rest of the line, so a name with spaces needs no quotes.
+  if (verb === 'send') {
+    const usage = 'usage: /dcc send [-passive] <nick> [<file>]';
+    let rest = trimmed.slice(parts[0].length).trim();
+    let passive = false;
+    while (rest.startsWith('-')) {
+      const flag = rest.split(/\s+/, 1)[0];
+      if (flag.toLowerCase() !== '-passive') {
+        return { kind: 'error', message: `unknown option "${flag}". ${usage}` };
+      }
+      passive = true;
+      rest = rest.slice(flag.length).trim();
+    }
+    const nickRaw = rest.split(/\s+/, 1)[0];
+    const nick = parseNick(nickRaw);
+    if (!nick) return { kind: 'error', message: usage };
+    const file = rest.slice(nickRaw.length).trim();
+    return { kind: 'send', nick, passive, file: file || null };
   }
   if (verb === 'close') {
     const type = (parts[1] || '').toLowerCase();

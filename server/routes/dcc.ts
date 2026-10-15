@@ -1,15 +1,16 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// DCC API (#270). Three surfaces: the download manager (list the user's
+// DCC API (#270). Four surfaces: the download manager (list the user's
 // transfers, act on them — accept a pending offer, reject it, cancel an
 // in-flight one — and fetch a completed file over HTTP), the files the account
-// keeps (#1133: list, download, delete), and DCC CHAT (open or close a direct
-// chat with a peer). The transfer list is the Transfers view's initial load; live updates arrive over the WS as
+// keeps (#1133: list, download, delete), sending one of them to a peer (#1086),
+// and DCC CHAT (open or close a direct chat with a peer). The transfer list is the Transfers view's initial load; live updates arrive over the WS as
 // `dcc-transfer` frames, and a chat's own output arrives as ordinary messages in
 // its `=nick` buffer. All routes are user-scoped via requireAuth.
 
 import fs from 'fs';
+import path from 'path';
 import {
   Router,
   type NextFunction,
@@ -21,18 +22,23 @@ import {
 import { requireAuth } from '../middleware/auth.js';
 import ircManager from '../services/ircManager.js';
 import {
+  dccActiveListenAvailable,
   dccAllowPrivateHosts,
   dccChatEnabledForUser,
   dccMasterEnabled,
   dccReceiveEnabledForUser,
+  dccSendEnabledForUser,
   dccMaxFileBytes,
 } from '../services/dccConfig.js';
-import { sanitizeDccFilename } from '../services/dccPaths.js';
+import { resolveDccDestination, sanitizeDccFilename } from '../services/dccPaths.js';
+import { hasFreeSpaceFor } from '../utils/diskSpace.js';
 import { fanOutToUser } from '../services/wsHub.js';
 import {
   DCC_ACTIVE_STATES,
   clearDccTransfer,
   clearFinishedDccTransfers,
+  dccFileSending,
+  dccPathClaimed,
   dccUsageBytes,
   holdsDccPartial,
   type ClearedDccTransfer,
@@ -45,11 +51,14 @@ import {
   forgetDccFile,
   getDccFile,
   getDccFileRow,
+  keepUploadedDccFile,
   listDccFiles,
   type DccFileRow,
 } from '../db/dccFiles.js';
 import { getNetwork } from '../db/networks.js';
-import { isChannelTarget } from '../../shared/channels.js';
+import { findUserById } from '../db/users.js';
+import type { UploadSessionResult, UploadSessionRow } from '../db/uploadSessions.js';
+import { isChannelTarget, isSinglePeerTarget } from '../../shared/channels.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -63,18 +72,23 @@ router.use(requireAuth);
 router.get('/config', (req: Request, res: Response) => {
   const chat = dccChatEnabledForUser(req.user!.id);
   const receive = dccReceiveEnabledForUser(req.user!.id);
-  if (!receive) {
-    res.json({ chat, receive });
+  const send = dccSendEnabledForUser(req.user!.id);
+  if (!receive && !send) {
+    res.json({ chat, receive, send });
     return;
   }
   res.json({
     chat,
     receive,
-    // 0 means no cap.
+    send,
+    // 0 means no cap. A file uploaded to send has it too (#1086).
     maxFileBytes: dccMaxFileBytes(),
     allowPrivateHosts: dccAllowPrivateHosts(),
-    // What this account's received files take on disk, and its limit (null for
-    // none) (#1125).
+    // Whether an offer can be active (#1086). Without a public address and a
+    // port range, only `-passive` sends work.
+    canListen: dccActiveListenAvailable(),
+    // What this account's files take on disk, and its limit (null for none)
+    // (#1125).
     usedBytes: dccUsageBytes(req.user!.id).stored,
     limitBytes: getDccStorageLimit(req.user!.id),
   });
@@ -106,6 +120,7 @@ function needs(grant: (userId: number) => boolean, what: string): RequestHandler
 }
 const needsReceive = needs(dccReceiveEnabledForUser, 'receiving');
 const needsChat = needs(dccChatEnabledForUser, 'chat');
+const needsSend = needs(dccSendEnabledForUser, 'sending');
 
 // A transfer or file id is a positive integer row id; reject anything else up
 // front so a non-numeric :id can't reach better-sqlite3 as NaN (which throws →
@@ -180,6 +195,10 @@ function sendDccFile(
   );
 }
 
+function sending(res: Response): void {
+  res.status(409).json({ error: 'the file is being sent; cancel its sends first' });
+}
+
 /**
  * Remove a kept file from disk and forget it (#1133). The transfers that
  * pointed at it stay as history, marked deleted; every tab hears about both.
@@ -237,8 +256,18 @@ router.delete('/:id/file', (req: Request, res: Response) => {
     res.status(409).json({ error: 'cancel the transfer before deleting its file' });
     return;
   }
+  // A send's file is one of the account's files, which may have gone to others
+  // too; it is deleted under Files, not through one transfer that sent it.
+  if (t.direction === 'send') {
+    res.status(409).json({ error: 'a sent file is deleted from your files' });
+    return;
+  }
   const file = t.file_id == null ? undefined : getDccFileRow(req.user!.id, t.file_id);
   if (file) {
+    if (dccFileSending(req.user!.id, file.id)) {
+      sending(res);
+      return;
+    }
     deleteDccFile(req.user!.id, file);
     res.json({ transfer: getDccTransfer(req.user!.id, t.id) });
     return;
@@ -326,12 +355,17 @@ router.get('/files/:id/file', (req: Request, res: Response, next: NextFunction) 
   sendDccFile(res, next, file.path, file.size, file.name);
 });
 
-/** DELETE /api/dcc/files/:id — remove a kept file from the server. */
+/** DELETE /api/dcc/files/:id — remove a kept file from the server. Refused
+ *  (409) while it is offered to someone or being sent (#1086). */
 router.delete('/files/:id', (req: Request, res: Response) => {
   const id = rowId(req);
   const file = id == null ? undefined : getDccFileRow(req.user!.id, id);
   if (!file) {
     res.status(404).json({ error: 'file not found' });
+    return;
+  }
+  if (dccFileSending(req.user!.id, file.id)) {
+    sending(res);
     return;
   }
   deleteDccFile(req.user!.id, file);
@@ -384,9 +418,13 @@ router.post('/:id/cancel', (req: Request, res: Response) => {
   res.json({ transfer: getDccTransfer(req.user!.id, id) });
 });
 
-// {networkId, nick}, ownership-checked. Shared by both chat routes so neither
-// can act on a network the caller doesn't own.
-function chatTarget(req: Request, res: Response): { networkId: number; nick: string } | null {
+// {networkId, nick}, ownership-checked. Shared by the chat routes and send so
+// none can act on a network the caller doesn't own.
+function peerTarget(
+  req: Request,
+  res: Response,
+  channelRefusal = 'a DCC chat is with a person, not a channel',
+): { networkId: number; nick: string } | null {
   const networkId = Number(req.body?.networkId);
   const nick = typeof req.body?.nick === 'string' ? req.body.nick.trim() : '';
   if (!Number.isInteger(networkId) || networkId <= 0 || !nick) {
@@ -407,7 +445,13 @@ function chatTarget(req: Request, res: Response): { networkId: number; nick: str
   // whole channel (ircConnection.offerDccChat refuses it too — this is the
   // early, explained refusal).
   if (isChannelTarget(nick)) {
-    res.status(400).json({ error: 'a DCC chat is with a person, not a channel' });
+    res.status(400).json({ error: channelRefusal });
+    return null;
+  }
+  // A list or a STATUSMSG target would reach a channel too (`bob,#room`,
+  // `@#room`).
+  if (!isSinglePeerTarget(nick)) {
+    res.status(400).json({ error: 'not a single nick' });
     return null;
   }
   if (!getNetwork(networkId, req.user!.id)) {
@@ -424,7 +468,7 @@ function chatTarget(req: Request, res: Response): { networkId: number; nick: str
  * take as long as the peer takes to answer.
  */
 router.post('/chat', needsChat, (req: Request, res: Response) => {
-  const t = chatTarget(req, res);
+  const t = peerTarget(req, res);
   if (!t) return;
   const passive = req.body?.passive === true;
   if (!ircManager.dccChatOpen(req.user!.id, t.networkId, t.nick, { passive })) {
@@ -434,9 +478,34 @@ router.post('/chat', needsChat, (req: Request, res: Response) => {
   res.json({ ok: true, target: `=${t.nick}` });
 });
 
+/**
+ * POST /api/dcc/send — offer one of the account's files to a peer (#1086).
+ * Body: {networkId, nick, fileId, passive?}. Answers with the transfer as soon
+ * as the offer is out; it moves through offered → sending → completed (or ends
+ * failed, rejected, cancelled) over the WS like any other.
+ */
+router.post('/send', needsSend, (req: Request, res: Response) => {
+  const t = peerTarget(req, res, 'a DCC file goes to a person, not a channel');
+  if (!t) return;
+  const fileId = Number(req.body?.fileId);
+  const file = Number.isInteger(fileId) && fileId > 0 ? getDccFileRow(req.user!.id, fileId) : null;
+  if (!file) {
+    res.status(404).json({ error: 'file not found' });
+    return;
+  }
+  const result = ircManager.dccSendFile(req.user!.id, t.networkId, t.nick, file, {
+    passive: req.body?.passive === true,
+  });
+  if ('error' in result) {
+    res.status(result.status).json({ error: result.error });
+    return;
+  }
+  res.json({ transfer: getDccTransfer(req.user!.id, result.transferId) });
+});
+
 /** POST /api/dcc/chat/close — close a live DCC chat. Body: {networkId, nick}. */
 router.post('/chat/close', (req: Request, res: Response) => {
-  const t = chatTarget(req, res);
+  const t = peerTarget(req, res);
   if (!t) return;
   if (!ircManager.dccChatClose(req.user!.id, t.networkId, t.nick)) {
     res.status(404).json({ error: 'no live DCC chat with that peer' });
@@ -446,3 +515,63 @@ router.post('/chat/close', (req: Request, res: Response) => {
 });
 
 export default router;
+
+/**
+ * Complete an upload session for purpose 'dcc-send' (#1086): the uploaded file
+ * becomes one of the account's DCC files, kept under its DCC folder like a
+ * received one and counted against its storage limit. The session's checks
+ * (grant, size cap, limit, free disk) ran before the first byte.
+ */
+export async function answerDccUpload(
+  userId: number,
+  row: UploadSessionRow,
+  sessionPath: string,
+): Promise<UploadSessionResult> {
+  const username = findUserById(userId)?.username || 'user';
+  // ⚠ Sync, from resolving the name to the rename that takes it, so no other
+  // write can take the name in between.
+  const place = (from: string): string => {
+    const dest = resolveDccDestination(username, row.filename, (p) => dccPathClaimed(userId, p));
+    fs.renameSync(from, dest);
+    return dest;
+  };
+  let dest: string;
+  try {
+    dest = place(sessionPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') {
+      return { status: 503, body: { error: (err as Error).message } };
+    }
+    // The DCC folder is another disk than the data dir. Copy beside where it
+    // goes, under a name no file has, then take a name for it: the copy is
+    // slow, and a name chosen before it could be taken meanwhile.
+    const dir = path.dirname(resolveDccDestination(username, row.filename));
+    if (!hasFreeSpaceFor(dir, row.size)) {
+      return {
+        status: 507,
+        body: { error: 'not enough free disk space on the server for this file' },
+      };
+    }
+    const part = path.join(dir, `.lurker-upload-${row.id}`);
+    try {
+      await fs.promises.copyFile(sessionPath, part);
+      dest = place(part);
+    } catch (copyErr) {
+      fs.rmSync(part, { force: true });
+      throw copyErr;
+    }
+  }
+  try {
+    // Session files are owner-only; a kept file is as readable as a received one.
+    fs.chmodSync(dest, 0o644);
+  } catch {
+    // A filesystem without POSIX modes.
+  }
+  const file = keepUploadedDccFile(userId, {
+    path: dest,
+    name: path.basename(dest),
+    size: row.size,
+  });
+  fanOutToUser(userId, { kind: 'dcc-file', file });
+  return { status: 200, body: { file } };
+}

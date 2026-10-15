@@ -29,6 +29,34 @@ describe('parseDccCommand', () => {
     });
   });
 
+  // irssi's form, with the file optional (#1086).
+  it('parses send: options first, then the nick, then the rest of the line as the file', () => {
+    expect(parseDccCommand('send bob')).toEqual({
+      kind: 'send',
+      nick: 'bob',
+      passive: false,
+      file: null,
+    });
+    expect(parseDccCommand('send -passive bob my holiday.mkv')).toEqual({
+      kind: 'send',
+      nick: 'bob',
+      passive: true,
+      file: 'my holiday.mkv',
+    });
+    expect(parseDccCommand('SEND bob 12')).toMatchObject({ nick: 'bob', file: '12' });
+  });
+
+  it('refuses a send with no nick, an unknown option, or a channel', () => {
+    expect(parseDccCommand('send')).toMatchObject({ kind: 'error' });
+    expect(parseDccCommand('send -turbo bob x')).toMatchObject({
+      kind: 'error',
+      message: expect.stringContaining('unknown option "-turbo"'),
+    });
+    for (const target of ['#room', '&local', '+modeless', '!12345safe', '=bob']) {
+      expect(parseDccCommand(`send ${target} file.txt`)).toMatchObject({ kind: 'error' });
+    }
+  });
+
   it('parses accept/reject/cancel with an id', () => {
     expect(parseDccCommand('accept 7')).toEqual({ kind: 'accept', id: 7 });
     expect(parseDccCommand('reject 12')).toEqual({ kind: 'reject', id: 12 });

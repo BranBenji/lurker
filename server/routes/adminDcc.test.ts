@@ -60,7 +60,7 @@ describe('/api/admin/dcc', () => {
 
     const chatOnly = await adminAgent.put(url).send({ chat: true });
     expect(chatOnly.status).toBe(200);
-    expect(chatOnly.body).toEqual({ chat: true, receive: false, limitBytes: null });
+    expect(chatOnly.body).toEqual({ chat: true, receive: false, send: false, limitBytes: null });
     expect(await rowFor(target.id)).toMatchObject({ chat: true, receive: false });
 
     await adminAgent.put(url).send({ receive: true });
@@ -68,6 +68,17 @@ describe('/api/admin/dcc', () => {
 
     await adminAgent.put(url).send({ chat: false, receive: false });
     expect(await rowFor(target.id)).toMatchObject({ chat: false, receive: false });
+  });
+
+  // #1086: sending opens a port to a peer, so it is a grant of its own.
+  it('grants sending apart from receiving', async () => {
+    const { createUser } = await import('../db/users.js');
+    const target = createUser('dcc-sender');
+    const url = `/api/admin/dcc/users/${target.id}`;
+    const res = await adminAgent.put(url).send({ send: true });
+    expect(res.body).toMatchObject({ chat: false, receive: false, send: true });
+    expect(await rowFor(target.id)).toMatchObject({ receive: false, send: true });
+    expect((await adminAgent.put(url).send({ send: 'yes' })).status).toBe(400);
   });
 
   // With the instance switch off a grant does nothing, but it still lists, so

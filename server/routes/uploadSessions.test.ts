@@ -5,7 +5,7 @@
 // uploader. Chunks are a few bytes here (setUploadChunkBytesForTests), so the
 // cost of these doesn't grow with the 16 MiB a real chunk is.
 
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
 import { vi } from 'vitest';
 import fs from 'node:fs';
 import type { Express } from 'express';
@@ -288,6 +288,112 @@ describe('/api/upload-sessions', () => {
       expect(res.body.code).toBe('not_a_zip');
       const after = await alice.get(`/api/upload-sessions/${id}`);
       expect(after.body.result).toEqual({ status: 400, body: res.body });
+    });
+  });
+
+  // #1086: a file uploaded to send over DCC becomes one of the account's DCC
+  // files, under DCC's caps rather than the uploader's.
+  describe('a DCC file to send', () => {
+    let dccDir: string;
+    let caps: typeof import('../db/userCapabilities.js');
+    let storage: typeof import('../db/dccStorageLimits.js');
+
+    beforeAll(async () => {
+      caps = await import('../db/userCapabilities.js');
+      storage = await import('../db/dccStorageLimits.js');
+      const os = await import('node:os');
+      const path = await import('node:path');
+      dccDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sess-dcc-'));
+    });
+
+    afterAll(() => fs.rmSync(dccDir, { recursive: true, force: true }));
+
+    beforeEach(() => {
+      process.env.LURKER_DCC_ENABLED = '1';
+      process.env.LURKER_DCC_DIR = dccDir;
+      caps.setUserCapability(aliceId, caps.CAPABILITY_DCC_SEND, true);
+    });
+
+    afterEach(() => {
+      delete process.env.LURKER_DCC_ENABLED;
+      delete process.env.LURKER_DCC_DIR;
+      delete process.env.LURKER_DCC_MAX_FILE_MB;
+      caps.setUserCapability(aliceId, caps.CAPABILITY_DCC_SEND, false);
+      storage.setDccStorageLimit(aliceId, null);
+    });
+
+    it('keeps the file in the account’s DCC folder', async () => {
+      const bytes = text(3);
+      const { id } = (await open({ purpose: 'dcc-send', size: bytes.length, filename: 'a b.txt' }))
+        .body;
+      await sendAll(id, bytes);
+      const res = await alice.post(`/api/upload-sessions/${id}/complete`).send({});
+      expect(res.status).toBe(200);
+      expect(res.body.file).toMatchObject({
+        name: 'a b.txt',
+        size: bytes.length,
+        origin: 'uploaded',
+        peer_nick: null,
+      });
+      const kept = `${dccDir}/sess-alice/a b.txt`;
+      expect(fs.readFileSync(kept).equals(bytes)).toBe(true);
+      expect(fs.existsSync(sessions.uploadSessionPath(id))).toBe(false);
+      // A second file of the same name doesn't overwrite the first.
+      const again = (await open({ purpose: 'dcc-send', size: bytes.length, filename: 'a b.txt' }))
+        .body.id;
+      await sendAll(again, bytes);
+      const second = await alice.post(`/api/upload-sessions/${again}/complete`).send({});
+      expect(second.body.file.name).toBe('a b (1).txt');
+    });
+
+    it('needs the send grant', async () => {
+      const res = await open({ purpose: 'dcc-send', size: 10, filename: 'x' }, bob);
+      expect(res.status).toBe(403);
+    });
+
+    it('is capped by LURKER_DCC_MAX_FILE_MB, not the upload cap', async () => {
+      // Over the uploader's 200 MB ceiling, and only declared: no bytes sent.
+      const big = await open({ purpose: 'dcc-send', size: 300 * 1024 * 1024, filename: 'big' });
+      expect(big.status).toBe(201);
+      await alice.delete(`/api/upload-sessions/${big.body.id}`);
+      process.env.LURKER_DCC_MAX_FILE_MB = '1';
+      const over = await open({ purpose: 'dcc-send', size: 1024 * 1024 + 1, filename: 'big' });
+      expect(over.status).toBe(413);
+    });
+
+    // Two uploads that each fit alone must not together pass the limit.
+    it('counts uploads still under way against the storage limit', async () => {
+      storage.setDccStorageLimit(aliceId, 1000);
+      const first = await open({ purpose: 'dcc-send', size: 600, filename: 'one' });
+      expect(first.status).toBe(201);
+      const second = await open({ purpose: 'dcc-send', size: 600, filename: 'two' });
+      expect(second.status).toBe(413);
+      expect(second.body.code).toBe('dcc_storage_limit');
+      await alice.delete(`/api/upload-sessions/${first.body.id}`);
+      expect((await open({ purpose: 'dcc-send', size: 600, filename: 'two' })).status).toBe(201);
+    });
+
+    // A closed tab leaves its session for the day-long sweep; it stops holding
+    // space once it has gone an hour without a chunk.
+    it('stops counting an upload that has gone idle', async () => {
+      storage.setDccStorageLimit(aliceId, 1000);
+      const { default: db } = await import('../db/index.js');
+      db.prepare(`DELETE FROM upload_sessions WHERE purpose = 'dcc-send'`).run();
+      const idle = await open({ purpose: 'dcc-send', size: 600, filename: 'idle' });
+      expect((await open({ purpose: 'dcc-send', size: 600, filename: 'b' })).status).toBe(413);
+      db.prepare(
+        `UPDATE upload_sessions SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 hours') WHERE id = ?`,
+      ).run(idle.body.id);
+      expect((await open({ purpose: 'dcc-send', size: 600, filename: 'b' })).status).toBe(201);
+      // Having let go of its space, the idle one must fit again to carry on.
+      const res = await put(idle.body.id, 0, Buffer.alloc(16));
+      expect(res.status).toBe(413);
+      expect(res.body.code).toBe('dcc_storage_limit');
+    });
+
+    it('is refused without a DCC folder configured', async () => {
+      delete process.env.LURKER_DCC_DIR;
+      expect((await open({ purpose: 'dcc-send', size: 10, filename: 'x' })).status).toBe(503);
     });
   });
 });

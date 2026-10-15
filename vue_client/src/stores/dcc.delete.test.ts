@@ -16,6 +16,7 @@ function row(state: DccState, over: Partial<DccTransfer> = {}): DccTransfer {
     id: 7,
     network_id: 1,
     peer_nick: 'bot',
+    direction: 'recv',
     filename: 'f.bin',
     advertised_size: 1000,
     received_bytes: 0,

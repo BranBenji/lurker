@@ -7,7 +7,9 @@
 
 import db from './index.js';
 
-export type UploadPurpose = 'upload' | 'import';
+/** 'dcc-send' is a file uploaded to become one of the account's DCC files,
+ *  to send (#1086). */
+export type UploadPurpose = 'upload' | 'import' | 'dcc-send';
 export type UploadSessionState = 'open' | 'processing' | 'done';
 
 /** What complete answered: the HTTP status and JSON body. */

@@ -194,7 +194,13 @@ import { useInputHistoryStore } from '../stores/inputHistory.js';
 import { useDraftStore } from '../stores/drafts.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore, onInsertUrl } from '../stores/uploads.js';
-import { useDccStore, percentReceived, type DccFile, type DccTransfer } from '../stores/dcc.js';
+import {
+  useDccStore,
+  findDccFile,
+  percentReceived,
+  type DccFile,
+  type DccTransfer,
+} from '../stores/dcc.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { useIgnoresStore, type IgnoreEntry } from '../stores/ignores.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
@@ -2635,6 +2641,9 @@ const COMMANDS_LINES = [
   '  /dcc [list]            — DCC downloads: list, or accept/reject/cancel/download/delete <id>',
   '      e.g. /dcc   ·   /dcc accept 3   ·   /dcc download 3   ·   /dcc delete 3',
   '  /dcc files             — the files you keep from DCC, until you delete them',
+  '  /dcc send <nick> [<file>] — send one of your files; with no file, pick or upload one',
+  '      the file is its name or its id from /dcc files; -passive asks them to listen',
+  '      e.g. /dcc send bob   ·   /dcc send bob holiday.mkv   ·   /dcc send -passive bob 12',
   '  /dcc clear [<id>]      — take finished transfers off the list; your files stay',
   '      one holding a partial download needs /dcc delete <id> first',
   '  /dcc chat <nick>       — open a direct peer-to-peer chat, in a =nick buffer',
@@ -2969,6 +2978,40 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
     }
     return;
   }
+  // Send rides a network's connection, like chat below (#1086).
+  if (cmd.kind === 'send') {
+    if (networkId == null) {
+      localInfo(networkId, target, '/dcc send: run this from a network buffer');
+      return;
+    }
+    // Said before a file is picked or uploaded, not after: an active offer
+    // needs the server to listen, and passive is never chosen for you.
+    if (!cmd.passive && (await dcc.loadAccount())?.canListen === false) {
+      localInfo(
+        networkId,
+        target,
+        "/dcc send: this server can't listen for DCC; /dcc send -passive asks them to listen",
+      );
+      return;
+    }
+    if (cmd.file === null) {
+      dcc.openToSend({ networkId, nick: cmd.nick, passive: cmd.passive });
+      localInfo(networkId, target, `/dcc send: pick a file to send to ${cmd.nick}, or upload one`);
+      return;
+    }
+    try {
+      const f = findDccFile(await dcc.loadFiles(), cmd.file);
+      if (!f) {
+        localInfo(networkId, target, `/dcc send: no file "${cmd.file}" — see /dcc files`);
+        return;
+      }
+      await dcc.sendFile(networkId, cmd.nick, f.id, cmd.passive);
+      localInfo(networkId, target, `/dcc send: offered "${f.name}" to ${cmd.nick}`);
+    } catch (e: any) {
+      localInfo(networkId, target, `/dcc send: ${e?.message || 'failed'}`);
+    }
+    return;
+  }
   // ⚠ chat verbs ride a specific network's connection, so they cannot run from
   // the network-agnostic system buffer the way the transfer verbs can. Refuse
   // with a hint rather than POSTing a null networkId.
@@ -3061,12 +3104,14 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
 // One row for the /dcc list output: "#3  movie.mkv  receiving  alice  42%".
 function dccListRow(t: DccTransfer): string[] {
   const pct = t.advertised_size > 0 ? `${percentReceived(t)}%` : '';
-  return [`#${t.id}`, t.filename, t.state, t.peer_nick, pct];
+  const peer = t.direction === 'send' ? `to ${t.peer_nick}` : `from ${t.peer_nick}`;
+  return [`#${t.id}`, t.filename, t.state, peer, pct];
 }
 
-// A kept file (#1133): its name, size, and who sent it, if anyone did.
+// A kept file (#1133): its id (what /dcc send takes), name, size, and who sent
+// it, if anyone did.
 function dccFileRow(f: DccFile): string[] {
-  return [f.name, formatBytes(f.size), f.peer_nick ? `from ${f.peer_nick}` : f.origin];
+  return [`#${f.id}`, f.name, formatBytes(f.size), f.peer_nick ? `from ${f.peer_nick}` : f.origin];
 }
 
 function runSheep(argLine: string, networkId: number | null, target: string): void {

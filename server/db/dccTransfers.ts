@@ -1,11 +1,13 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// Persistence for the DCC download manager (#270) — one row per inbound DCC
-// transfer. The IRC connection lives on the cell, so received bytes land on disk
-// at destination_path while this row tracks the transfer's lifecycle for the
-// download-manager UI and survives a cell restart (so a stalled transfer can be
-// resumed). Nothing here touches the message tables.
+// Persistence for the DCC download manager (#270) — one row per DCC transfer,
+// either way. The IRC connection lives on the cell, so received bytes land on
+// disk at destination_path while this row tracks the transfer's lifecycle for
+// the download-manager UI and survives a cell restart (so a stalled transfer can
+// be resumed). A send (#1086) is a row with direction 'send' and the file it
+// sends in file_id; its received_bytes is what the peer has confirmed. Nothing
+// here touches the message tables.
 
 import db from './index.js';
 import { dccFileAt, keepReceivedDccFile, type DccFile } from './dccFiles.js';
@@ -18,9 +20,10 @@ import { dccFileAt, keepReceivedDccFile, type DccFile } from './dccFiles.js';
 //     exist yet and nothing may auto-land.
 // From an accepted offer the flow is connecting → receiving → (stalled, on a
 // dropped connection or restart) → verifying → completed; or it ends
-// failed / rejected / cancelled. Kept as a TS union + a TEXT column (matching the
-// repo's other enum columns, e.g. peer_presence_state.state) rather than a DB
-// CHECK, so the allowed values live in one documented place.
+// failed / rejected / cancelled. A send (#1086) is `offered` until the peer
+// connects, then `sending`, and ends the same ways. Kept as a TS union + a TEXT
+// column (matching the repo's other enum columns, e.g. peer_presence_state.state)
+// rather than a DB CHECK, so the allowed values live in one documented place.
 export type DccTransferState =
   | 'requested'
   | 'pending_approval'
@@ -28,6 +31,8 @@ export type DccTransferState =
   | 'receiving'
   | 'stalled'
   | 'verifying'
+  | 'offered'
+  | 'sending'
   | 'completed'
   | 'failed'
   | 'rejected'
@@ -44,7 +49,12 @@ export const DCC_ACTIVE_STATES: ReadonlySet<DccTransferState> = new Set([
   'receiving',
   'stalled',
   'verifying',
+  'offered',
+  'sending',
 ]);
+
+/** Which way a transfer goes: a file we receive, or one of ours we send. */
+export type DccDirection = 'recv' | 'send';
 
 export interface DccTransferRow {
   id: number;
@@ -52,7 +62,7 @@ export interface DccTransferRow {
   /** Null once the network was deleted: the row, and its file, stay (#1125). */
   network_id: number | null;
   peer_nick: string;
-  direction: string;
+  direction: DccDirection;
   filename: string;
   advertised_size: number;
   received_bytes: number;
@@ -72,8 +82,9 @@ export interface DccTransferRow {
   completed_at: string | null;
   /** When the user deleted the received file from the server (#1125). */
   file_deleted_at: string | null;
-  /** The kept file a completed receive produced (#1133), while it is kept.
-   *  destination_path mirrors its path. */
+  /** The kept file a completed receive produced (#1133), or the one a send
+   *  sends (#1086), while it is kept. For a receive, destination_path mirrors
+   *  its path; a send has none. */
   file_id: number | null;
 }
 
@@ -119,6 +130,72 @@ export function insertDccTransfer(userId: number, f: InsertDccTransferFields): n
     f.crc_expected ?? null,
   );
   return Number(info.lastInsertRowid);
+}
+
+export interface InsertDccSendFields {
+  network_id: number;
+  peer_nick: string;
+  file_id: number;
+  /** The name as offered on the wire. */
+  filename: string;
+  size: number;
+  passive: boolean;
+  token: number | null;
+}
+
+/** Record a send we are about to offer (#1086), as `offered`. */
+export function insertDccSend(userId: number, f: InsertDccSendFields): number {
+  const info = db
+    .prepare(
+      `INSERT INTO dcc_transfers
+         (user_id, network_id, peer_nick, direction, filename, advertised_size, state,
+          passive, token, file_id)
+       VALUES (?, ?, ?, 'send', ?, ?, 'offered', ?, ?, ?)`,
+    )
+    .run(
+      userId,
+      f.network_id,
+      f.peer_nick,
+      f.filename,
+      f.size,
+      f.passive ? 1 : 0,
+      f.token,
+      f.file_id,
+    );
+  return Number(info.lastInsertRowid);
+}
+
+/** The peer connected to a send: it is `sending`, from `offset` (non-zero
+ *  when the peer asked to resume). */
+export function markDccSending(id: number, offset: number): void {
+  db.prepare(
+    `UPDATE dcc_transfers
+       SET state = 'sending', received_bytes = ?, error = NULL, updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(offset, Number(id));
+}
+
+/** Whether any of the user's sends of a file is still offered or sending. */
+export function dccFileSending(userId: number, fileId: number): boolean {
+  return !!db
+    .prepare(
+      `SELECT 1 FROM dcc_transfers
+       WHERE user_id = ? AND file_id = ? AND direction = 'send'
+         AND state IN ('offered', 'sending') LIMIT 1`,
+    )
+    .get(userId, Number(fileId));
+}
+
+/** At boot: a send offered or in flight when the process stopped is over. Its
+ *  listener and socket died with the process, and the peer gave up on it. */
+export function failInterruptedDccSends(): number {
+  return db
+    .prepare(
+      `UPDATE dcc_transfers
+         SET state = 'failed', error = 'the server restarted', updated_at = datetime('now')
+       WHERE direction = 'send' AND state IN ('offered', 'sending')`,
+    )
+    .run().changes;
 }
 
 /** A single transfer, scoped to its owner (every read path is user-scoped — a
@@ -320,11 +397,39 @@ export function markDccCompleted(
   return complete();
 }
 
+// An upload to send that has taken no chunk for this long has been given up
+// (a closed tab, or a server that stopped mid-complete): it stops holding
+// space against the limit, though the sweep only removes it after a day. A
+// client retries a failed chunk for about a minute.
+const DCC_UPLOAD_STALE_MINUTES = 60;
+
+/** Bytes every account's uploads to send will still put in the DCC folder:
+ *  the free-disk check counts them, when that folder is another disk than
+ *  the sessions' own. */
+export function pendingDccUploadBytes(userId: number | null = null): number {
+  return (
+    db
+      .prepare(
+        `SELECT COALESCE(SUM(size), 0) AS n FROM upload_sessions
+         WHERE purpose = 'dcc-send' AND state != 'done' AND (? IS NULL OR user_id = ?)
+           AND updated_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${DCC_UPLOAD_STALE_MINUTES} minutes')`,
+      )
+      .get(userId, userId) as { n: number }
+  ).n;
+}
+
+/** Whether an upload to send has gone idle long enough to stop holding space
+ *  (see DCC_UPLOAD_STALE_MINUTES); taking a chunk again, it must fit again. */
+export function dccUploadIsStale(updatedAt: string): boolean {
+  return Date.parse(updatedAt) < Date.now() - DCC_UPLOAD_STALE_MINUTES * 60_000;
+}
+
 /** What the user's DCC files take (#1125): the files they keep (#1133), and
  *  the partials of transfers that haven't finished, which still own theirs.
  *  `stored` is what is on disk now. `committed` adds what transfers in flight
- *  will still write: one of those counts its full advertised size. `exclude`
- *  leaves out transfers the caller accounts for itself. */
+ *  will still write: one of those counts its full advertised size, and so does
+ *  a file still uploading to be sent (#1086), until it goes an hour idle. `exclude` leaves out transfers the
+ *  caller accounts for itself. */
 export function dccUsageBytes(
   userId: number,
   exclude: number[] = [],
@@ -345,7 +450,11 @@ export function dccUsageBytes(
          AND id NOT IN (SELECT value FROM json_each(?))`,
     )
     .get(userId, JSON.stringify(exclude)) as { stored: number; committed: number };
-  return { stored: files + partials.stored, committed: files + partials.committed };
+  const uploading = pendingDccUploadBytes(userId);
+  return {
+    stored: files + partials.stored,
+    committed: files + partials.committed + uploading,
+  };
 }
 
 /** What each user's DCC files take on disk, as dccUsageBytes counts `stored` —

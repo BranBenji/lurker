@@ -14,7 +14,8 @@
 //   status   tells a client that lost track where to carry on, or, once the
 //            session is done, what complete answered
 //   complete hands the assembled file to what a single request would have
-//            (the upload pipeline, the importer) and keeps the answer
+//            (the upload pipeline, the importer), or keeps it as a DCC file to
+//            send (#1086), and keeps the answer
 //
 // The file's size IS the offset, so a chunk cut off halfway leaves a prefix
 // of what was sent, and the client carries on from there. Complete can outlast
@@ -60,6 +61,11 @@ import {
 } from './uploadProviders/resolve.js';
 import { accountIsEmpty } from './importService.js';
 import { UploadRequestError } from './uploadService.js';
+import { dccMaxFileBytes, dccSendEnabledForUser } from './dccConfig.js';
+import { dccRoot } from './dccPaths.js';
+import { dccUploadIsStale, dccUsageBytes, pendingDccUploadBytes } from '../db/dccTransfers.js';
+import { getDccStorageLimit } from '../db/dccStorageLimits.js';
+import { formatBytes } from './dcc.js';
 
 /** Where sessions keep their bytes. Owner-only, files 0600: an import is an
  *  archive with the source account's network passwords in it. */
@@ -167,6 +173,9 @@ function capFor(
   uploaderId: number | null,
 ): number {
   if (purpose === 'import') return MAX_IMPORT_BYTES;
+  // A file to send over DCC isn't an upload: no uploader, and not the upload
+  // cap. It is a DCC file, under DCC's own cap (0 is none).
+  if (purpose === 'dcc-send') return dccMaxFileBytes() || Number.MAX_SAFE_INTEGER;
   try {
     const { policy } = resolveUploader({
       userId: user.id,
@@ -180,6 +189,30 @@ function capFor(
     if (err instanceof UploaderNotConfiguredError) throw new UploadRequestError(503, err.message);
     if (err instanceof UploaderUnavailableError) throw new UploadRequestError(400, err.message);
     throw err;
+  }
+}
+
+/** Refuse a DCC file that would take the account past its limit (#1125):
+ *  what it keeps or will still write, uploads under way included, plus this. */
+function assertDccFits(userId: number, size: number): void {
+  const limit = getDccStorageLimit(userId);
+  if (limit === null) return;
+  const used = dccUsageBytes(userId).committed;
+  if (used + size > limit) {
+    throw new UploadRequestError(
+      413,
+      `over your DCC storage limit (${formatBytes(used)} of ${formatBytes(limit)} used)`,
+      { code: 'dcc_storage_limit' },
+    );
+  }
+}
+
+/** Whether two paths are on one filesystem. Unknown counts as not. */
+function sameDisk(a: string, b: string): boolean {
+  try {
+    return fs.statSync(a).dev === fs.statSync(b).dev;
+  } catch {
+    return false;
   }
 }
 
@@ -197,8 +230,19 @@ export function createUploadSession(
   body: Record<string, unknown>,
 ): UploadSessionStatus {
   const purpose = body.purpose;
-  if (purpose !== 'upload' && purpose !== 'import') {
-    throw new UploadRequestError(400, "purpose must be 'upload' or 'import'");
+  if (purpose !== 'upload' && purpose !== 'import' && purpose !== 'dcc-send') {
+    throw new UploadRequestError(400, "purpose must be 'upload', 'import' or 'dcc-send'");
+  }
+  if (purpose === 'dcc-send') {
+    if (!dccSendEnabledForUser(user.id)) {
+      throw new UploadRequestError(403, 'DCC sending is not enabled for this account');
+    }
+    if (!dccRoot()) {
+      throw new UploadRequestError(
+        503,
+        'DCC download directory is not configured (set LURKER_DCC_DIR)',
+      );
+    }
   }
   const size = body.size;
   if (typeof size !== 'number' || !Number.isSafeInteger(size) || size <= 0) {
@@ -229,6 +273,20 @@ export function createUploadSession(
         : `file exceeds ${formatCapMb(cap)} MB`,
       purpose === 'import' ? { code: 'archive_too_large' } : {},
     );
+  }
+  // The admin's per-user DCC limit (#1125), as accepting a received file
+  // checks it: what the account keeps or will still write, sessions like this
+  // one included, plus this file.
+  if (purpose === 'dcc-send') {
+    assertDccFits(user.id, size);
+    // It moves from the session dir to the DCC folder. On another disk, that
+    // one needs room for it and for the other uploads on their way there; on
+    // the same disk, the session-dir check below already holds the bytes.
+    if (!sameDisk(dccRoot()!, UPLOAD_SESSION_DIR)) {
+      if (!hasFreeSpaceFor(dccRoot()!, size + pendingDccUploadBytes())) {
+        throw new UploadRequestError(507, 'not enough free disk space on the server for this file');
+      }
+    }
   }
   // The importer refuses an account with data in it. Said now, not after the
   // archive has crossed the network.
@@ -275,6 +333,11 @@ export async function appendUploadChunk(
       code: 'session_closed',
       offset: row.size,
     });
+  }
+  // An upload to send that went idle stopped holding its space (#1086); to
+  // carry on, it must fit again.
+  if (row.purpose === 'dcc-send' && dccUploadIsStale(row.updated_at)) {
+    assertDccFits(userId, row.size);
   }
   const offset = uploadSessionOffset(id);
   const claimed = typeof offsetHeader === 'string' ? Number(offsetHeader) : NaN;

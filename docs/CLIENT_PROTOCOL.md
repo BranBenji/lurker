@@ -1483,15 +1483,17 @@ between the client and Lurker (Cloudflare passes 100 MB), and one that drops nea
 the end starts again. An upload session takes the file a chunk per request
 instead, and a client that loses its connection asks where the server got to and
 carries on from there. Uploads and imports both go this way; what happens to the
-finished file is the same as for the single request.
+finished file is the same as for the single request. A third purpose,
+`dcc-send`, uploads a file to become one of the account's DCC files, to send
+(§DCC).
 
-| Endpoint             | Notes                                                                                                                                                                                                                                                                                                                                           |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /`             | `{purpose: 'upload'\|'import', size, filename, mime?, uploaderId?}` → `201` with the session (as `GET`). The size is checked here, before any bytes: `413` over the cap, `409 account_not_empty` for an import, `507` when the server's disk can't take it alongside what other sessions will still write. `uploaderId` is an upload's override |
-| `PUT /:id`           | One chunk as the raw body (`application/octet-stream`), with an `Upload-Offset` header → `{offset}`. At most `chunkBytes`, and never past `size`                                                                                                                                                                                                |
-| `GET /:id`           | → `{id, purpose, size, offset, chunkBytes, state, result?}`. `state` is `open` (taking chunks), `processing` (complete is handing the file on) or `done`, with `result: {status, body}`: what complete answered                                                                                                                                 |
-| `POST /:id/complete` | `{progressToken?}` → exactly what `POST /api/uploads` or `POST /api/imports` answers, with the same status and errors. Asked again once done, it answers the same again                                                                                                                                                                         |
-| `DELETE /:id`        | → `{ok:true}`. Drops the session and its bytes. `409` while a request is working on it                                                                                                                                                                                                                                                          |
+| Endpoint             | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /`             | `{purpose: 'upload'\|'import'\|'dcc-send', size, filename, mime?, uploaderId?}` → `201` with the session (as `GET`). The size is checked here, before any bytes: `413` over the cap, `409 account_not_empty` for an import, `507` when the server's disk can't take it alongside what other sessions will still write. `uploaderId` is an upload's override. A `dcc-send` needs the DCC send grant (`403`) and is capped by `maxFileBytes` and the storage limit (`413`, `code: "dcc_storage_limit"`), not the upload cap |
+| `PUT /:id`           | One chunk as the raw body (`application/octet-stream`), with an `Upload-Offset` header → `{offset}`. At most `chunkBytes`, and never past `size`                                                                                                                                                                                                                                                                                                                                                                          |
+| `GET /:id`           | → `{id, purpose, size, offset, chunkBytes, state, result?}`. `state` is `open` (taking chunks), `processing` (complete is handing the file on) or `done`, with `result: {status, body}`: what complete answered                                                                                                                                                                                                                                                                                                           |
+| `POST /:id/complete` | `{progressToken?}` → exactly what `POST /api/uploads` or `POST /api/imports` answers, with the same status and errors; for `dcc-send`, `{file}`, the DCC file it became. Asked again once done, it answers the same again                                                                                                                                                                                                                                                                                                 |
+| `DELETE /:id`        | → `{ok:true}`. Drops the session and its bytes. `409` while a request is working on it                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 **The offset is the server's.** A chunk is taken only at the session's current
 offset, which is how many bytes it holds. Anything else is a `409` with
@@ -1530,20 +1532,30 @@ removed, bytes and all.
 ### DCC — `/api/dcc` (self-hosted only)
 
 DCC needs the instance switch (`features.dcc`) and, per account, an admin's
-grant. It is granted in two parts: **chat** and **receive** (files). With the
-instance switch off, every route but `/config` is 403. With it on, a grant is
-needed only to START something: `POST /:id/accept` needs receive, `POST /chat`
-needs chat, and each is 403 without it. Reading (`GET /`, `GET|HEAD /:id/file`)
+grant. It is granted in three parts: **chat**, **receive** (files) and **send**
+(files). With the instance switch off, every route but `/config` is 403. With it
+on, a grant is needed only to START something: `POST /:id/accept` needs receive,
+`POST /chat` needs chat, `POST /send` and a `dcc-send` upload session need send,
+and each is 403 without it. Reading (`GET /`, `GET|HEAD /:id/file`)
 and stopping (`POST /:id/reject|cancel`, `POST /chat/close`) need no grant,
 because revoking one stops what starts next and what an account received stays
 its own.
 
-`GET /config` answers either way: `{chat, receive}`, plus `maxFileBytes`,
-`allowPrivateHosts`, `usedBytes` and `limitBytes` when `receive` is true
-(`maxFileBytes` 0 for no cap; `limitBytes` null for no storage limit). A transfer
-that would take the account over its limit fails at accept, with the reason in
-the row's `error`. A client shows
-chat actions only when `chat` is true, and file actions only when `receive` is.
+`GET /config` answers either way: `{chat, receive, send}`, plus `maxFileBytes`,
+`allowPrivateHosts`, `canListen`, `usedBytes` and `limitBytes` when `receive` or
+`send` is true (`maxFileBytes` 0 for no cap; `limitBytes` null for no storage
+limit; `canListen` false when the server has no public address and port range,
+so only passive sends work). A transfer that would take the account over its
+limit fails at accept, with the reason in the row's `error`. A client shows chat
+actions only when `chat` is true, receiving actions only when `receive` is, and
+sending only when `send` is.
+
+A transfer row's `direction` is `recv` or `send`. A send's states are `offered`
+(waiting for the peer) and `sending`, then `completed`, `failed` (its `error`
+says why, among them an offer not accepted within 5 minutes), `rejected` (the
+peer declined) or `cancelled`; a client that doesn't know a state shows it as
+it is. A send's `file_id` is the file it sends and its `received_bytes` what the
+peer has confirmed; it never has a `destination_path`.
 
 A transfer row's `network_id` is null once its network was deleted: the row,
 and any file it owns, stay the user's. A row has a file while its
@@ -1557,9 +1569,10 @@ count against the storage limit, as does the partial of a transfer that
 hasn't finished. `GET /files` → `{files: [{id, name, size, origin, created_at,
 transfer_id, peer_nick, network_id}]}`, newest first; `origin` is `received`
 (with the peer and network it came from, and the transfer while that is still
-on the list) or `uploaded`.
+on the list) or `uploaded` (through a `dcc-send` upload session).
 `GET /files/:id/file` downloads one, as `GET /:id/file` does (410 when it is
-gone from disk). `DELETE /files/:id` → `{ok: true}` removes it; the transfer
+gone from disk). `DELETE /files/:id` → `{ok: true}` removes it, except while it
+is offered to someone or being sent (409); the transfer
 that received it stays, its `file_deleted_at` set. Live: a `dcc-file` frame
 (`{file}`) when one is kept or changes (its transfer cleared from the list),
 `dcc-file-deleted` (`{id}`) when one goes, from any route. Needs no grant.
@@ -1584,7 +1597,18 @@ transfer went. Need no grant.
 kept file, or a failed or cancelled one's partial) from the server and returns
 `{transfer}`. The
 row stays, with `file_deleted_at` set. 409 while the transfer is still active
-(cancel it first); 404 when there is no file. Needs no grant.
+(cancel it first), and for a send, whose file is deleted under Files; 404 when
+there is no file. Needs no grant.
+
+`POST /send` (`{networkId, nick, fileId, passive?}`) offers one of the account's
+files to a peer and returns `{transfer}`, `offered`. The rest arrives as
+`dcc-transfer` frames, and as status lines in the peer's buffer. Active by
+default: the server listens on a port and the peer connects. `passive: true`
+asks the peer to listen and the server connects to them instead; it is never
+chosen for the client. 400 for a channel, 404 for a file that isn't the
+account's, 409 when the network isn't connected, goes through a proxy, or (not
+passive) the server can't listen, and 410 when the file is gone from disk. A
+peer's RESUME is answered and the send starts where it asked.
 
 `POST /chat` (`{networkId, nick, passive?}`) opens a DCC CHAT; `POST /chat/close`
 (`{networkId, nick}`) ends one. Both return as soon as the offer is away — a DCC

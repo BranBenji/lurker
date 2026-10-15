@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// The DCC files an account keeps (#1133): every completed receive, and (with
-// #1086) every file uploaded to send. A file owns its path; the transfer that
+// The DCC files an account keeps (#1133): every completed receive, and every
+// file uploaded to send (#1086). A file owns its path; the transfer that
 // received it points here (dcc_transfers.file_id) and stays as history. The
 // user deletes a file; nothing expires.
 
@@ -73,6 +73,19 @@ export function keepReceivedDccFile(
   });
   const id = keep();
   return id == null ? null : getDccFile(userId, id)!;
+}
+
+/** Keep a file the user uploaded to send (#1086). */
+export function keepUploadedDccFile(
+  userId: number,
+  f: { path: string; name: string; size: number },
+): DccFile {
+  const inserted = db
+    .prepare(
+      `INSERT INTO dcc_files (user_id, path, name, size, origin) VALUES (?, ?, ?, ?, 'uploaded')`,
+    )
+    .run(userId, f.path, f.name, f.size);
+  return getDccFile(userId, Number(inserted.lastInsertRowid))!;
 }
 
 /** The user's files, newest first. */

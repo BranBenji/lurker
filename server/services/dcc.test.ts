@@ -4,9 +4,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildDccAccept,
   buildDccChat,
   buildDccChatPassive,
   buildDccChatReverse,
+  buildDccSend,
+  buildDccSendPassive,
   crc32Hex,
   crc32Update,
   decodeDccAddress,
@@ -19,6 +22,8 @@ import {
   parseCrcFromFilename,
   parseDcc,
   parseDccChatLine,
+  parseDccRejectSend,
+  dccWireFilename,
   PASSIVE_DCC_FAKE_HOST,
 } from './dcc.js';
 
@@ -133,13 +138,6 @@ describe('parseDcc — SEND (passive/reverse)', () => {
 });
 
 describe('parseDcc — non-SEND subtypes', () => {
-  it('reports RESUME as unsupported (we send RESUME, never receive it)', () => {
-    expect(parseDcc('RESUME file.mkv 50612 1024')).toEqual({
-      kind: 'unsupported',
-      subtype: 'RESUME',
-    });
-  });
-
   it('reports an unknown subtype as unsupported, not invalid', () => {
     expect(parseDcc('FROBNICATE 1 2 3')).toEqual({ kind: 'unsupported', subtype: 'FROBNICATE' });
   });
@@ -172,6 +170,78 @@ describe('parseDcc — ACCEPT (resume confirmation)', () => {
   });
 });
 
+// A receiver asking to resume a file we offered (#1086). Same fields as ACCEPT.
+describe('parseDcc — RESUME', () => {
+  it('parses an active resume', () => {
+    expect(parseDcc('RESUME file.mkv 50612 1024')).toEqual({
+      kind: 'resume',
+      filename: 'file.mkv',
+      port: 50612,
+      position: 1024,
+      token: null,
+    });
+  });
+
+  it('parses a passive resume: port 0 and our token', () => {
+    expect(parseDcc('RESUME "my file.bin" 0 2048 7')).toEqual({
+      kind: 'resume',
+      filename: 'my file.bin',
+      port: 0,
+      position: 2048,
+      token: 7,
+    });
+  });
+
+  it('rejects a malformed RESUME', () => {
+    expect(parseDcc('RESUME file.mkv 50612').kind).toBe('invalid');
+    expect(parseDcc('RESUME').kind).toBe('invalid');
+  });
+});
+
+describe('DCC SEND builders', () => {
+  // Quassel, bouncedcc and the irssi/halloy passive reply all break on one.
+  it('sends a space as _, as WeeChat and KVIrc do', () => {
+    expect(dccWireFilename('my file.mkv')).toBe('my_file.mkv');
+    expect(dccWireFilename('file.mkv')).toBe('file.mkv');
+  });
+
+  it('swaps a double quote for a single one, which nothing unescapes', () => {
+    expect(dccWireFilename('say "hi".txt')).toBe(`say_'hi'.txt`);
+  });
+
+  it('never sends a path or a control character', () => {
+    expect(dccWireFilename('../../etc/passwd')).toBe('passwd');
+    expect(dccWireFilename('a\u0001b.txt')).toBe('ab.txt');
+  });
+
+  it('builds an active offer with the address as a uint32', () => {
+    expect(buildDccSend('file.mkv', '192.168.1.1', 50000, 1024)).toBe(
+      'SEND file.mkv 3232235777 50000 1024',
+    );
+    expect(buildDccSend('file.mkv', 'example.com', 50000, 1024)).toBeNull();
+  });
+
+  it('builds a passive offer: placeholder address, port 0, the token', () => {
+    expect(buildDccSendPassive('a_b.mkv', 5_000_000_000, 7)).toBe(
+      'SEND a_b.mkv 16843009 0 5000000000 7',
+    );
+  });
+
+  it('answers a resume with ACCEPT, on the port it asked with', () => {
+    expect(buildDccAccept('file.mkv', 50000, 1024, null)).toBe('ACCEPT file.mkv 50000 1024');
+    expect(buildDccAccept('file.mkv', 0, 1024, 7)).toBe('ACCEPT file.mkv 0 1024 7');
+    // WeeChat's passive RESUME names its own port.
+    expect(buildDccAccept('file.mkv', 41234, 1024, 7)).toBe('ACCEPT file.mkv 41234 1024 7');
+  });
+
+  it("reads a receiver's REJECT of a file we offered", () => {
+    expect(parseDccRejectSend('REJECT SEND file.mkv')).toBe('file.mkv');
+    expect(parseDccRejectSend('REJECT SEND "my file.mkv"')).toBe('my file.mkv');
+    expect(parseDccRejectSend('REJECT CHAT chat')).toBeNull();
+    expect(parseDccRejectSend('SEND file.mkv 1 2 3')).toBeNull();
+  });
+});
+
 describe('parseDcc — invalid', () => {
   it('rejects an empty body', () => {
     expect(parseDcc('')).toEqual({ kind: 'invalid', reason: 'empty DCC body' });
@@ -195,6 +265,40 @@ describe('parseDcc — invalid', () => {
   it('rejects too few or too many fields', () => {
     expect(parseDcc('SEND f 16843009 50612').kind).toBe('invalid'); // missing size
     expect(parseDcc('SEND f 16843009 50612 1024 42 99').kind).toBe('invalid'); // extra
+  });
+
+  // irssi's reply to a passive offer never quotes the name (dcc-get.c:364-366),
+  // nor does halloy's (dcc.rs:128-133). Read from the right, as irssi does.
+  it('reads an unquoted name with spaces from the right', () => {
+    expect(send('SEND my file.txt 3232235777 50612 1024 7')).toMatchObject({
+      filename: 'my file.txt',
+      host: '192.168.1.1',
+      port: 50612,
+      size: 1024,
+      token: 7,
+    });
+    expect(send('SEND a b c.mkv 3232235777 50612 1024')).toMatchObject({
+      filename: 'a b c.mkv',
+      token: null,
+    });
+    expect(parseDcc('RESUME my file.txt 50612 1024')).toMatchObject({
+      kind: 'resume',
+      filename: 'my file.txt',
+      position: 1024,
+    });
+    // A separator is an ASCII space: other whitespace stays in the name.
+    expect(parseDcc('ACCEPT a\u00a012 5000 1024')).toMatchObject({
+      kind: 'accept',
+      filename: 'a\u00a012',
+      port: 5000,
+      position: 1024,
+      token: null,
+    });
+    // A number in the name is not an address.
+    expect(send('SEND track 12 3232235777 50612 1024')).toMatchObject({
+      filename: 'track 12',
+      token: null,
+    });
   });
 
   it('rejects an unterminated quoted filename', () => {

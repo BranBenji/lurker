@@ -14,6 +14,9 @@ import db from './index.js';
  *  An admin can allow direct chats without letting files land on the box. */
 export const CAPABILITY_DCC_CHAT = 'dcc.chat';
 export const CAPABILITY_DCC_RECEIVE = 'dcc.receive';
+/** Sending opens a port to a peer and offers the account's files (#1086), so
+ *  it doesn't come bundled with receiving. */
+export const CAPABILITY_DCC_SEND = 'dcc.send';
 
 export interface UserCapabilityRow {
   capability: string;

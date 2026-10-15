@@ -65,6 +65,7 @@ import {
 import { startIgnoreSweeper, stopIgnoreSweeper } from './services/ignoreSweeper.js';
 import { sweepTempUploads } from './routes/uploads.js';
 import { startUploadSessionSweeper } from './services/uploadSessions.js';
+import { failInterruptedDccSends } from './db/dccTransfers.js';
 import { startEventLoopMonitor, stopEventLoopMonitor } from './services/eventLoopMonitor.js';
 import restoreGate from './services/restoreGate.js';
 import * as systemMessages from './db/systemMessages.js';
@@ -295,6 +296,12 @@ void sweepTempUploads().catch((err: unknown) => {
 // Chunked upload sessions (#650) outlive a restart; an abandoned one goes after
 // a day idle.
 startUploadSessionSweeper();
+// A DCC send's listener and socket die with the process (#1086). Before listen,
+// so no offer made by this process can be swept with them.
+{
+  const failed = failInterruptedDccSends();
+  if (failed > 0) console.log(`[lurker] ${failed} DCC send(s) ended by the restart`);
+}
 
 server.listen(PORT, HOST, () => {
   console.log(`[lurker] listening on http://${HOST || '0.0.0.0'}:${PORT}`);
