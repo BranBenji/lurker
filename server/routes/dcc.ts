@@ -31,6 +31,7 @@ import {
   dccMaxFileBytes,
 } from '../services/dccConfig.js';
 import { resolveDccDestination, sanitizeDccFilename } from '../services/dccPaths.js';
+import { hasFreeSpaceFor } from '../utils/diskSpace.js';
 import { fanOutToUser } from '../services/wsHub.js';
 import {
   DCC_ACTIVE_STATES,
@@ -57,7 +58,7 @@ import {
 import { getNetwork } from '../db/networks.js';
 import { findUserById } from '../db/users.js';
 import type { UploadSessionResult, UploadSessionRow } from '../db/uploadSessions.js';
-import { isChannelTarget } from '../../shared/channels.js';
+import { isChannelTarget, isSinglePeerTarget } from '../../shared/channels.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -447,6 +448,12 @@ function peerTarget(
     res.status(400).json({ error: channelRefusal });
     return null;
   }
+  // A list or a STATUSMSG target would reach a channel too (`bob,#room`,
+  // `@#room`).
+  if (!isSinglePeerTarget(nick)) {
+    res.status(400).json({ error: 'not a single nick' });
+    return null;
+  }
   if (!getNetwork(networkId, req.user!.id)) {
     res.status(404).json({ error: 'network not found' });
     return null;
@@ -521,21 +528,38 @@ export async function answerDccUpload(
   sessionPath: string,
 ): Promise<UploadSessionResult> {
   const username = findUserById(userId)?.username || 'user';
+  // ⚠ Sync, from resolving the name to the rename that takes it, so no other
+  // write can take the name in between.
+  const place = (from: string): string => {
+    const dest = resolveDccDestination(username, row.filename, (p) => dccPathClaimed(userId, p));
+    fs.renameSync(from, dest);
+    return dest;
+  };
   let dest: string;
   try {
-    dest = resolveDccDestination(username, row.filename, (p) => dccPathClaimed(userId, p));
+    dest = place(sessionPath);
   } catch (err) {
-    return { status: 503, body: { error: (err as Error).message } };
-  }
-  try {
-    // ⚠ Sync, from the resolve to the rename, so no other write can take the
-    // name in between.
-    fs.renameSync(sessionPath, dest);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') throw err;
-    // The DCC folder is on another disk than the data dir: copy, and the
-    // session's cleanup removes the original.
-    await fs.promises.copyFile(sessionPath, dest, fs.constants.COPYFILE_EXCL);
+    if ((err as NodeJS.ErrnoException).code !== 'EXDEV') {
+      return { status: 503, body: { error: (err as Error).message } };
+    }
+    // The DCC folder is another disk than the data dir. Copy beside where it
+    // goes, under a name no file has, then take a name for it: the copy is
+    // slow, and a name chosen before it could be taken meanwhile.
+    const dir = path.dirname(resolveDccDestination(username, row.filename));
+    if (!hasFreeSpaceFor(dir, row.size)) {
+      return {
+        status: 507,
+        body: { error: 'not enough free disk space on the server for this file' },
+      };
+    }
+    const part = path.join(dir, `.lurker-upload-${row.id}`);
+    try {
+      await fs.promises.copyFile(sessionPath, part);
+      dest = place(part);
+    } catch (copyErr) {
+      fs.rmSync(part, { force: true });
+      throw copyErr;
+    }
   }
   try {
     // Session files are owner-only; a kept file is as readable as a received one.

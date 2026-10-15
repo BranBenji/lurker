@@ -27,6 +27,7 @@ import {
 import { keepUploadedDccFile, type DccFile } from '../db/dccFiles.js';
 import { getDccTransfer, failInterruptedDccSends } from '../db/dccTransfers.js';
 import { encodeDccAddress } from './dcc.js';
+import { invalidateCasemappingCache } from '../db/buffers.js';
 import { IrcConnection } from './ircConnection.js';
 import { activeDccListenerCount, resetDccListeners } from './dccListener.js';
 
@@ -130,8 +131,8 @@ function harness(networkFields: Record<string, unknown> = {}) {
     return call ? call.slice(2).join(' ') : null;
   };
   const lines = () => ephemeral.filter((e) => e.type === 'ctcp').map((e) => String(e.text ?? ''));
-  const from = (nick: string, body: string) =>
-    conn.client.emit('ctcp request', { nick, type: 'DCC', message: `DCC ${body}` });
+  const from = (nick: string, body: string, target = 'alice') =>
+    conn.client.emit('ctcp request', { nick, target, type: 'DCC', message: `DCC ${body}` });
   return { conn, ctcpRequest, ctcpResponse, sent, lines, frames, from };
 }
 
@@ -336,15 +337,75 @@ describe('offering a file', () => {
     expect(h.lines().at(-1)).toBe('DCC: cancelled sending "my file.bin" to bob');
   });
 
-  it('ends offers and sends when the connection is disposed', async () => {
+  // And says so: dispose publishes nothing once its flag is set.
+  it('ends offers and sends when the connection is disposed, and tells the tabs', async () => {
+    enableSend();
+    enableListening();
+    const h = harness();
+    const offered = offer(h);
+    const sending = offer(h);
+    await waitFor(() => activeDccListenerCount() === 2);
+    // The second offer out is `sending`'s.
+    const ports = h.ctcpRequest.mock.calls.map((c) => offeredPort(c.slice(2).join(' ')));
+    const sock = dial(ports[1]);
+    sock.on('error', () => {});
+    sock.pause();
+    await waitFor(() => row(sending).state === 'sending');
+    h.conn.dispose();
+    await waitFor(() => row(sending).state === 'cancelled');
+    expect(row(offered).state).toBe('cancelled');
+    expect(activeDccListenerCount()).toBe(0);
+    const last = (id: number) =>
+      h.frames
+        .filter((f) => f.kind === 'dcc-transfer' && (f.transfer as { id: number }).id === id)
+        .at(-1)?.transfer as { state: string };
+    expect(last(offered).state).toBe('cancelled');
+    expect(last(sending).state).toBe('cancelled');
+  });
+
+  // stopNetwork disconnects and drops the connection from the map without
+  // disposing it; nothing could cancel what it held after.
+  it('ends offers on a deliberate disconnect', async () => {
     enableSend();
     enableListening();
     const h = harness();
     const id = offer(h);
     await waitFor(() => activeDccListenerCount() === 1);
-    h.conn.dispose();
+    h.conn.disconnect('bye');
     expect(row(id).state).toBe('cancelled');
     expect(activeDccListenerCount()).toBe(0);
+    h.conn.dispose();
+  });
+
+  it('withdraws an offer whose network dropped while its port was binding', async () => {
+    enableSend();
+    enableListening();
+    const h = harness();
+    const id = offer(h);
+    h.conn.state = 'reconnecting'; // before the bind's callback runs
+    await waitFor(() => row(id).state === 'failed');
+    expect(row(id).error).toBe('the network disconnected');
+    expect(h.ctcpRequest).not.toHaveBeenCalled();
+    expect(activeDccListenerCount()).toBe(0);
+  });
+
+  // rfc1459 folds [ to {, so bob{m} is the Bob[m] the offer went to.
+  it('matches a RESUME from the same nick as the network folds it', async () => {
+    enableSend();
+    enableListening();
+    db.prepare(`UPDATE networks SET casemapping = 'rfc1459' WHERE id = 1`).run();
+    invalidateCasemappingCache(1);
+    try {
+      const h = harness();
+      offer(h, { nick: 'Bob[m]' });
+      await waitFor(() => h.sent() !== null);
+      const port = offeredPort(h.sent()!);
+      h.from('bob{m}', `RESUME file.bin ${port} 10`);
+      expect(h.sent()).toBe(`ACCEPT "my file.bin" ${port} 10`);
+    } finally {
+      db.prepare(`UPDATE networks SET casemapping = NULL WHERE id = 1`).run();
+      invalidateCasemappingCache(1);
+    }
   });
 });
 
@@ -405,11 +466,30 @@ describe('a passive offer', () => {
     try {
       const h = harness();
       offer(h, { passive: true });
-      h.from('carol', h.sent()!);
+      // The echo comes back addressed to the peer we offered it to.
+      h.from('alice', h.sent()!, 'bob');
       const offers = db
         .prepare(`SELECT COUNT(*) AS n FROM dcc_transfers WHERE direction = 'recv'`)
         .get() as { n: number };
       expect(offers.n).toBe(0);
+    } finally {
+      setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
+    }
+  });
+
+  // The token is 6 bits: another peer's own passive offer can carry ours.
+  it("records another peer's passive offer that happens to carry our token", () => {
+    enableSend();
+    setUserCapability(1, CAPABILITY_DCC_RECEIVE, true);
+    try {
+      const h = harness();
+      offer(h, { passive: true });
+      const token = /(\d+)$/.exec(h.sent()!)![1];
+      h.from('carol', `SEND theirs.bin 16843009 0 100 ${token}`);
+      const offers = db
+        .prepare(`SELECT COUNT(*) AS n FROM dcc_transfers WHERE direction = 'recv'`)
+        .get() as { n: number };
+      expect(offers.n).toBe(1);
     } finally {
       setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
     }
@@ -424,11 +504,11 @@ describe('refusing an offer', () => {
     expect(result).toMatchObject({ status: 409, error: expect.stringMatching(/-passive/) });
   });
 
-  it('refuses a channel, all four sigils', () => {
+  it('refuses a channel, all four sigils, and a list or STATUSMSG target that reaches one', () => {
     enableSend();
     enableListening();
     const h = harness();
-    for (const target of ['#room', '&local', '+modeless', '!12345safe']) {
+    for (const target of ['#room', '&local', '+modeless', '!12345safe', 'bob,#room', '@#room']) {
       expect(h.conn.offerDccSend(file, target)).toMatchObject({ status: 400 });
     }
   });

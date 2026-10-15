@@ -63,7 +63,7 @@ import { accountIsEmpty } from './importService.js';
 import { UploadRequestError } from './uploadService.js';
 import { dccMaxFileBytes, dccSendEnabledForUser } from './dccConfig.js';
 import { dccRoot } from './dccPaths.js';
-import { dccUsageBytes } from '../db/dccTransfers.js';
+import { dccUsageBytes, pendingDccUploadBytes } from '../db/dccTransfers.js';
 import { getDccStorageLimit } from '../db/dccStorageLimits.js';
 import { formatBytes } from './dcc.js';
 
@@ -263,8 +263,9 @@ export function createUploadSession(
         { code: 'dcc_storage_limit' },
       );
     }
-    // It moves from the session dir to the DCC folder, which can be another disk.
-    if (!hasFreeSpaceFor(dccRoot()!, size)) {
+    // It moves from the session dir to the DCC folder, which can be another
+    // disk, with the other uploads on their way there.
+    if (!hasFreeSpaceFor(dccRoot()!, size + pendingDccUploadBytes())) {
       throw new UploadRequestError(507, 'not enough free disk space on the server for this file');
     }
   }

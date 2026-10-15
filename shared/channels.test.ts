@@ -5,6 +5,7 @@ import { describe, it, expect } from 'vitest';
 import {
   ensureChannelPrefix,
   isChannelTarget,
+  isSinglePeerTarget,
   parseChannelNames,
   stripChannelPrefix,
 } from './channels.js';
@@ -37,6 +38,24 @@ describe('isChannelTarget (#724)', () => {
     expect(isChannelTarget('')).toBe(false);
     expect(isChannelTarget(null)).toBe(false);
     expect(isChannelTarget(undefined)).toBe(false);
+  });
+});
+
+// What a DCC offer may go to (#1086): one person, never a channel by any route.
+describe('isSinglePeerTarget', () => {
+  it('takes a nick', () => {
+    for (const nick of ['bob', 'Bob[m]', 'b0b', '^_^', 'a|b']) {
+      expect(isSinglePeerTarget(nick)).toBe(true);
+    }
+  });
+
+  it('refuses a channel, a STATUSMSG channel, a list, and anything a line splits on', () => {
+    for (const t of ['#room', '&local', '+modeless', '!12345safe', '@#room', '%+room', '~&x']) {
+      expect(isSinglePeerTarget(t)).toBe(false);
+    }
+    for (const t of ['bob,#room', 'bob,carol', 'bob carol', 'bob\r', '']) {
+      expect(isSinglePeerTarget(t)).toBe(false);
+    }
   });
 });
 

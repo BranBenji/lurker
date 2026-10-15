@@ -373,6 +373,20 @@ describe('/api/upload-sessions', () => {
       expect((await open({ purpose: 'dcc-send', size: 600, filename: 'two' })).status).toBe(201);
     });
 
+    // A closed tab leaves its session for the day-long sweep; it stops holding
+    // space once it has gone an hour without a chunk.
+    it('stops counting an upload that has gone idle', async () => {
+      storage.setDccStorageLimit(aliceId, 1000);
+      const { default: db } = await import('../db/index.js');
+      db.prepare(`DELETE FROM upload_sessions WHERE purpose = 'dcc-send'`).run();
+      const idle = await open({ purpose: 'dcc-send', size: 600, filename: 'idle' });
+      expect((await open({ purpose: 'dcc-send', size: 600, filename: 'b' })).status).toBe(413);
+      db.prepare(
+        `UPDATE upload_sessions SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-2 hours') WHERE id = ?`,
+      ).run(idle.body.id);
+      expect((await open({ purpose: 'dcc-send', size: 600, filename: 'b' })).status).toBe(201);
+    });
+
     it('is refused without a DCC folder configured', async () => {
       delete process.env.LURKER_DCC_DIR;
       expect((await open({ purpose: 'dcc-send', size: 10, filename: 'x' })).status).toBe(503);

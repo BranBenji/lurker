@@ -2984,6 +2984,16 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
       localInfo(networkId, target, '/dcc send: run this from a network buffer');
       return;
     }
+    // Said before a file is picked or uploaded, not after: an active offer
+    // needs the server to listen, and passive is never chosen for you.
+    if (!cmd.passive && (await dcc.loadAccount())?.canListen === false) {
+      localInfo(
+        networkId,
+        target,
+        "/dcc send: this server can't listen for DCC; /dcc send -passive asks them to listen",
+      );
+      return;
+    }
     if (cmd.file === null) {
       dcc.openToSend({ networkId, nick: cmd.nick, passive: cmd.passive });
       localInfo(networkId, target, `/dcc send: pick a file to send to ${cmd.nick}, or upload one`);

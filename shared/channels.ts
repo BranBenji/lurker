@@ -38,6 +38,24 @@ export function isChannelTarget(target: string | null | undefined): boolean {
 }
 
 /**
+ * Whether `target` names exactly one person: what a DCC offer may go to. Not a channel, not a
+ * STATUSMSG channel target (`@#room`, `+#room`), not a list (`bob,#room` reaches every target
+ * on a server that takes several), and nothing a line could be split on. A DCC offer to a
+ * channel hands its file, or its chat, to whoever connects first.
+ */
+export function isSinglePeerTarget(target: string): boolean {
+  // eslint-disable-next-line no-control-regex
+  if (!target || /[,\s\u0000-\u001f]/.test(target)) return false;
+  // A STATUSMSG prefix can itself be a channel sigil (`+`, `&`), so every way of reading the
+  // leading run is tried: `%+room` is the `+room` channel to the halfops.
+  for (let t = target; t; t = t.slice(1)) {
+    if (isChannelTarget(t)) return false;
+    if (!'~&@%+'.includes(t[0])) break;
+  }
+  return true;
+}
+
+/**
  * A bare, prefix-less name is what people usually type, so it gets the common `#`; a name already
  * carrying any of the four prefixes is left alone. Callers own their own input validation
  * (whitespace, empty, lone prefix) — this only settles the prefix.

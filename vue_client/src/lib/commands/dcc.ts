@@ -17,7 +17,7 @@
 // ride that network's connection — so the SFC has to refuse them from the
 // network-agnostic system buffer rather than routing with a null networkId.
 
-import { isChannelTarget } from '../../../../shared/channels.js';
+import { isSinglePeerTarget } from '../../../../shared/channels.js';
 
 export type DccCommand =
   | { kind: 'list' }
@@ -68,10 +68,11 @@ const USAGE =
 //
 // ⚠ A channel is refused too: `/dcc chat #room` would broadcast the offer to
 // the whole channel. All four sigils — a `#`-only test is this codebase's most
-// repeated bug.
+// repeated bug — and a list or STATUSMSG target (`bob,#room`, `@#room`), which
+// reaches one as well.
 function parseNick(raw: string | undefined): string | null {
   const n = (raw || '').trim();
-  if (!n || n.startsWith('=') || isChannelTarget(n)) return null;
+  if (!n || n.startsWith('=') || !isSinglePeerTarget(n)) return null;
   return n;
 }
 

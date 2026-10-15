@@ -397,11 +397,32 @@ export function markDccCompleted(
   return complete();
 }
 
+// An upload to send that has taken no chunk for this long has been given up
+// (a closed tab, or a server that stopped mid-complete): it stops holding
+// space against the limit, though the sweep only removes it after a day. A
+// client retries a failed chunk for about a minute.
+const DCC_UPLOAD_STALE_MINUTES = 60;
+
+/** Bytes every account's uploads to send will still put in the DCC folder:
+ *  the free-disk check counts them, when that folder is another disk than
+ *  the sessions' own. */
+export function pendingDccUploadBytes(): number {
+  return (
+    db
+      .prepare(
+        `SELECT COALESCE(SUM(size), 0) AS n FROM upload_sessions
+         WHERE purpose = 'dcc-send' AND state != 'done'
+           AND updated_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${DCC_UPLOAD_STALE_MINUTES} minutes')`,
+      )
+      .get() as { n: number }
+  ).n;
+}
+
 /** What the user's DCC files take (#1125): the files they keep (#1133), and
  *  the partials of transfers that haven't finished, which still own theirs.
  *  `stored` is what is on disk now. `committed` adds what transfers in flight
  *  will still write: one of those counts its full advertised size, and so does
- *  a file still uploading to be sent (#1086). `exclude` leaves out transfers the
+ *  a file still uploading to be sent (#1086), until it goes an hour idle. `exclude` leaves out transfers the
  *  caller accounts for itself. */
 export function dccUsageBytes(
   userId: number,
@@ -427,7 +448,8 @@ export function dccUsageBytes(
     db
       .prepare(
         `SELECT COALESCE(SUM(size), 0) AS n FROM upload_sessions
-         WHERE user_id = ? AND purpose = 'dcc-send' AND state != 'done'`,
+         WHERE user_id = ? AND purpose = 'dcc-send' AND state != 'done'
+           AND updated_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${DCC_UPLOAD_STALE_MINUTES} minutes')`,
       )
       .get(userId) as { n: number }
   ).n;

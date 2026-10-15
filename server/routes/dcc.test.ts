@@ -712,6 +712,13 @@ describe('POST /api/dcc/send', () => {
       .send({ networkId: aliceNet.id, nick: '&room', fileId });
     expect(channel.status).toBe(400);
     expect(channel.body.error).toMatch(/not a channel/);
+    // A list or a STATUSMSG target reaches a channel too.
+    for (const nick of ['bob,#room', '@#room']) {
+      const res = await aliceAgent
+        .post('/api/dcc/send')
+        .send({ networkId: aliceNet.id, nick, fileId });
+      expect(res.status).toBe(400);
+    }
   });
 
   it('refuses to delete a file while it is offered, until the offer ends', async () => {

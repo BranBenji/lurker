@@ -300,7 +300,14 @@ function startSendTo(f: DccFile) {
   const active = networks.activeBuffer?.networkId;
   const list = connectedNetworks.value;
   const networkId = list.some((n) => n.id === active) ? active! : list[0].id;
-  sendingTo.value = { fileId: f.id, nick: '', networkId, passive: false };
+  // Ticked to start with when the server can't listen, so the form says so
+  // rather than failing.
+  sendingTo.value = {
+    fileId: f.id,
+    nick: '',
+    networkId,
+    passive: dcc.account?.canListen === false,
+  };
 }
 
 function onSendTo(f: DccFile) {
@@ -330,14 +337,17 @@ function chooseUpload() {
 }
 
 // A file chosen while picking: up it goes, then out to who it was picked for.
+// ⚠ That pick, not whatever is picking when the upload ends: a pick cancelled
+// meanwhile, or one for someone else, keeps the file and sends nothing.
 async function onUploadChosen(e: Event) {
   const input = e.target as HTMLInputElement;
   const chosen = input.files?.[0];
   input.value = '';
   if (!chosen) return;
+  const pick = dcc.pick;
   try {
     const kept = await dcc.uploadFile(chosen);
-    if (dcc.pick) await dcc.sendPicked(kept.id);
+    if (pick && dcc.pick === pick) await dcc.sendPicked(kept.id);
   } catch {
     /* surfaced via dcc.uploadError, or the file's own error */
   }
