@@ -22,11 +22,12 @@ export function useNetworkActions() {
   const notify = useNotifyLadder();
   const networks = useNetworksStore();
 
-  // ⚠ Takes the decision rather than re-deriving it. buildItems snapshots the state when the
-  // menu OPENS; re-reading it at click time lets the two disagree while the menu sits there —
-  // and it is reachable: right-click during a backoff (item reads "Disconnect"), the reconnect
-  // gate then refuses (paused account, host dropped from the allowlist) and stopReconnecting
-  // settles the state to 'disconnected', so the click on "Disconnect" would fire a RECONNECT.
+  // ⚠ Takes the decision rather than re-deriving it. connectionItem labels the item when the
+  // menu OPENS (the network menu here, the mobile server kebab); re-reading the state at click
+  // time lets the two disagree while the menu sits there, and it is reachable: open it during a
+  // backoff (item reads "Disconnect"), the reconnect gate then refuses (paused account, host
+  // dropped from the allowlist) and stopReconnecting settles the state to 'disconnected', so
+  // the click on "Disconnect" would fire a RECONNECT (#1136).
   function toggleConnection(networkId: number, offerDisconnect: boolean): void {
     const p = offerDisconnect ? networks.disconnect(networkId) : networks.reconnect(networkId);
     p.catch((err) => console.error('[useNetworkActions] toggle connection failed', err));

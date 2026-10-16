@@ -88,8 +88,10 @@ export function useNotifyLadder() {
     const notifyAlways = channelNotify.notifyAlways(networkId, target);
     const levels = ignores.bufferMuteRule(networkId, target)?.levels ?? [];
     const current: Rung = notifyAlways ? 'all' : rungFromLevels(levels, 'highlights');
+    // Each rung is a target, so it reconciles against the state as it is when
+    // tapped, not as it was when the menu opened (#1136).
     const set = (rung: Rung) => {
-      if ((rung === 'all') !== notifyAlways) {
+      if ((rung === 'all') !== channelNotify.notifyAlways(networkId, target)) {
         channelNotify.setNotifyAlways(networkId, target, rung === 'all');
       }
       reconcileRule(networkId, ignores.bufferMuteRule(networkId, target), levelsForRung(rung), [

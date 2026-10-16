@@ -114,13 +114,15 @@ export const useBookmarksStore = defineStore('bookmarks', {
     },
     toggle(message: { id?: number | string | null }) {
       if (!message || message.id == null) return;
+      this.setSaved(message, !this.ids.has(Number(message.id)));
+    },
+    // Save or remove, as asked: for a menu that labelled itself when it
+    // opened, so it does what it said (#1136).
+    setSaved(message: { id?: number | string | null }, saved: boolean) {
+      if (!message || message.id == null) return;
       const id = Number(message.id);
       if (!Number.isFinite(id)) return;
-      if (this.ids.has(id)) {
-        socketSend({ type: 'unset-bookmark', messageId: id });
-      } else {
-        socketSend({ type: 'set-bookmark', messageId: id });
-      }
+      socketSend({ type: saved ? 'set-bookmark' : 'unset-bookmark', messageId: id });
     },
     // Every row in the saved-messages list is saved by definition — the REST
     // rows carry no `bookmarked` flag because the endpoint returns nothing else.

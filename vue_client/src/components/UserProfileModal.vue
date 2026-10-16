@@ -414,13 +414,13 @@ function openNoteEditor() {
   nickNotes.openEditor(props.networkId, props.nick);
 }
 
-function onToggleRelay() {
+function onSetRelay(mark: boolean) {
   // Mark/unmark this nick as a relay bot (#277). Marking from here uses the
   // built-in envelope formats; a custom pattern is a power-user concern handled
   // by `/relay add <nick> <pattern>`. The store echoes back over WS so the chip
   // and the re-attributed messages update across every open tab.
   if (isSelf.value) return;
-  relayBots.setRelay(props.networkId, props.nick, !isRelay.value);
+  relayBots.setRelay(props.networkId, props.nick, mark);
 }
 
 // Secondary/contextual actions collapse into a "More" overflow menu so the
@@ -445,10 +445,12 @@ function openMoreMenu(e: MouseEvent) {
     });
   }
   if (!isSelf.value) {
+    // What it says is what it does, however long the menu stays open (#1136).
+    const marked = isRelay.value;
     items.push({
-      label: isRelay.value ? 'Unmark relay bot' : 'Mark relay bot',
+      label: marked ? 'Unmark relay bot' : 'Mark relay bot',
       icon: SatelliteDishIcon,
-      onClick: onToggleRelay,
+      onClick: () => onSetRelay(!marked),
     });
   }
   items.push({ label: 'Refresh', icon: RefreshCwIcon, onClick: onRefresh });

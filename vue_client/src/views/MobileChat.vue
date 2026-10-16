@@ -401,7 +401,11 @@ function openBufferActions() {
       // Decided as the menu opens, so the label and the action can't disagree
       // while it sits open (#1136).
       networkActions.connectionItem(a.networkId),
-      { label: 'Edit network', icon: SettingsIcon, onClick: editActiveNetwork },
+      {
+        label: 'Edit network',
+        icon: SettingsIcon,
+        onClick: () => editNetwork(a.network as Network | undefined),
+      },
     );
   } else {
     items.push(...bufferActions.buildItems(activeBuf.value as BufferLike));
@@ -415,10 +419,8 @@ function openAddNetwork() {
   networkEditor.open();
 }
 
-function editActiveNetwork() {
-  const net = active.value?.network as Network | undefined;
-  if (!net) return;
-  networkEditor.open(net);
+function editNetwork(net: Network | undefined) {
+  if (net) networkEditor.open(net);
 }
 
 // The server buffer's connection state, for the header buttons that need a live
