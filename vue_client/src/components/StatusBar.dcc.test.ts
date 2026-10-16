@@ -49,6 +49,11 @@ function mountOn(target: string, compact = false) {
 }
 
 const seg = (w: ReturnType<typeof mountOn>) => w.find('.seg.dcc');
+// The segment's pieces, in order: the name, the status, the queue count.
+const parts = (w: ReturnType<typeof mountOn>) =>
+  seg(w)
+    .findAll('span')
+    .map((p) => [p.classes()[0], p.text()]);
 
 describe('StatusBar — DCC segment', () => {
   beforeEach(() => setActivePinia(createPinia()));
@@ -59,12 +64,16 @@ describe('StatusBar — DCC segment', () => {
       row({ id: 2, pack: 31, state: 'queued', filename: 'XDCC #31' }),
       row({ id: 3, pack: 32, state: 'queued', filename: 'XDCC #32' }),
     ];
-    expect(seg(mountOn('bot')).text()).toBe('ep30.mkv 41% · 2 queued');
+    expect(parts(mountOn('bot'))).toEqual([
+      ['dcc-name', 'ep30.mkv'],
+      ['dcc-status', '41%'],
+      ['dcc-more', '· 2 queued'],
+    ]);
   });
 
   it('keeps the numbers and drops the name on a phone', () => {
     useDccStore().transfers = [row({})];
-    expect(seg(mountOn('Bot', true)).text()).toBe('41%');
+    expect(parts(mountOn('Bot', true))).toEqual([['dcc-status', '41%']]);
   });
 
   it('says when the bot has us in its own queue', () => {
@@ -76,9 +85,12 @@ describe('StatusBar — DCC segment', () => {
         bot_acked_at: '2026-10-16T00:00:00Z',
       }),
     ];
-    const s = seg(mountOn('Bot'));
-    expect(s.text()).toBe("#31 in the bot's queue");
-    expect(s.classes()).toContain('warn');
+    const w = mountOn('Bot');
+    expect(parts(w)).toEqual([
+      ['dcc-name', '#31'],
+      ['dcc-status', "in the bot's queue"],
+    ]);
+    expect(seg(w).classes()).toContain('warn');
   });
 
   it('opens the DCC window when tapped', async () => {

@@ -60,7 +60,13 @@
           :title="dccSegment.title"
           @click="dcc.open()"
         >
-          <component :is="dccSegment.icon" /><span class="dcc-text" v-text="dccSegment.text"></span>
+          <component :is="dccSegment.icon" /><span
+            v-if="dccSegment.name"
+            class="dcc-name"
+            v-text="dccSegment.name"
+          ></span
+          ><span class="dcc-status" v-text="dccSegment.status"></span
+          ><span v-if="dccSegment.more" class="dcc-more" v-text="dccSegment.more"></span>
         </button>
         <span v-if="splitLabel" class="seg split" :class="splitClass">{{ splitLabel }}</span>
         <span v-if="typingSegments.length" class="seg typing"
@@ -319,49 +325,56 @@ const dcc = useDccStore();
 
 // The DCC segment (#1085), for a DM: the transfer moving with that nick, or
 // the one asked for, or how many packs wait in the queue. On a phone it
-// drops the name and keeps the numbers.
-const dccSegment = computed(
-  (): { text: string; title: string; tone: string; icon: LucideIcon } | null => {
-    const a = active.value;
-    if (!a || isChannelTarget(a.target) || isDccChatTarget(a.target) || a.target.startsWith(':')) {
-      return null;
-    }
-    // The DM a nick's transfers belong to is the one findDm resolves for it,
-    // the house rule for matching a nick to its buffer.
-    const mine = dcc.transfers.filter(
-      (t) =>
-        t.network_id === a.networkId &&
-        inFlight(t) &&
-        buffers.findDm(a.networkId, t.peer_nick)?.target === a.target,
-    );
-    if (!mine.length) return null;
-    const queued = mine.filter((t) => t.state === 'queued').length;
-    const more = queued ? ` · ${queued} queued` : '';
-    const out = mine.find((t) => t.state !== 'queued');
-    const icon = out?.direction === 'send' ? ArrowUpIcon : ArrowDownIcon;
-    if (!out) {
-      return { text: `${queued} queued`, title: 'XDCC queue', tone: 'muted', icon };
-    }
-    const name = isXdccPlaceholder(out.filename, out.pack) ? `#${out.pack}` : out.filename;
-    const lead = props.compact ? '' : `${name} `;
-    if (out.state === 'requested') {
-      const what = out.bot_acked_at ? "in the bot's queue" : 'asked';
-      return {
-        text: `${name} ${what}${more}`,
-        title: name,
-        tone: out.bot_acked_at ? 'warn' : '',
-        icon,
-      };
-    }
-    if (out.state === 'offered') {
-      return { text: `${lead}offered${more}`, title: name, tone: '', icon };
-    }
-    if (out.state === 'connecting') {
-      return { text: `${lead}connecting${more}`, title: name, tone: '', icon };
-    }
-    return { text: `${lead}${percentReceived(out)}%${more}`, title: name, tone: '', icon };
-  },
-);
+// drops the name and keeps the numbers. The name is muted and truncates; the
+// arrow and the status carry the tone, so the percentage is what stands out.
+interface DccSegment {
+  name: string;
+  status: string;
+  more: string;
+  title: string;
+  tone: string;
+  icon: LucideIcon;
+}
+const dccSegment = computed((): DccSegment | null => {
+  const a = active.value;
+  if (!a || isChannelTarget(a.target) || isDccChatTarget(a.target) || a.target.startsWith(':')) {
+    return null;
+  }
+  // The DM a nick's transfers belong to is the one findDm resolves for it,
+  // the house rule for matching a nick to its buffer.
+  const mine = dcc.transfers.filter(
+    (t) =>
+      t.network_id === a.networkId &&
+      inFlight(t) &&
+      buffers.findDm(a.networkId, t.peer_nick)?.target === a.target,
+  );
+  if (!mine.length) return null;
+  const queued = mine.filter((t) => t.state === 'queued').length;
+  const more = queued ? `· ${queued} queued` : '';
+  const out = mine.find((t) => t.state !== 'queued');
+  const icon = out?.direction === 'send' ? ArrowUpIcon : ArrowDownIcon;
+  if (!out) {
+    return {
+      name: '',
+      status: `${queued} queued`,
+      more: '',
+      title: 'XDCC queue',
+      tone: 'muted',
+      icon,
+    };
+  }
+  const name = isXdccPlaceholder(out.filename, out.pack) ? `#${out.pack}` : out.filename;
+  const lead = props.compact ? '' : name;
+  const seg = { more, title: name, tone: '', icon };
+  if (out.state === 'requested') {
+    const what = out.bot_acked_at ? "in the bot's queue" : 'asked';
+    // The pack number is the subject here, so it stays on a phone.
+    return { ...seg, name, status: what, tone: out.bot_acked_at ? 'warn' : '' };
+  }
+  if (out.state === 'offered') return { ...seg, name: lead, status: 'offered' };
+  if (out.state === 'connecting') return { ...seg, name: lead, status: 'connecting' };
+  return { ...seg, name: lead, status: `${percentReceived(out)}%` };
+});
 const replies = useRepliesStore();
 const pendingReply = computed(() => replies.forKey(networks.activeKey));
 const pendingReplyExcerpt = computed(() =>
@@ -655,12 +668,14 @@ function onToggleUploadMenu() {
   color: var(--fg-muted);
 }
 /* Shrinks before anything else on the row, the filename going first. */
+/* The arrow and the status take the tone; the name and the queue count stay
+   muted, and only the name gives way, so the percentage never truncates. */
 .seg.dcc {
   flex: 0 1 auto;
   min-width: 0;
   display: inline-flex;
   align-items: center;
-  gap: 0.5ch;
+  gap: 1ch;
   background: none;
   border: none;
   padding: 0;
@@ -674,13 +689,19 @@ function onToggleUploadMenu() {
 .seg.dcc.muted {
   color: var(--fg-muted);
 }
-.seg.dcc .lucide {
+.seg.dcc .lucide,
+.seg.dcc .dcc-status,
+.seg.dcc .dcc-more {
   flex-shrink: 0;
 }
-.seg.dcc .dcc-text {
+.seg.dcc .dcc-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: var(--fg-muted);
+}
+.seg.dcc .dcc-more {
+  color: var(--fg-muted);
 }
 /* Shrink-only (grow: 0): the buffer name takes its natural width and lets the
    segments after it (peer-status/lag/upload/split/typing) pack immediately to
