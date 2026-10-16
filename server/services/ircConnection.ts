@@ -6780,7 +6780,9 @@ export class IrcConnection {
     }
     if (waiting.length === 0) return;
     if (isXdccRefusal(text)) {
+      // Matching control characters is the point: a bot's colours and bolds.
       const reason = text
+        // eslint-disable-next-line no-control-regex
         .replace(/[\u0000-\u001f]/g, '')
         .trim()
         .slice(0, 200);
