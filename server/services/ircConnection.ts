@@ -269,6 +269,10 @@ export type ReconnectGate = () => { ok: true } | { ok: false; reason: string };
 // attempts spread over the backoff ladder, which is not a hammer.
 const MAX_CONSECUTIVE_SASL_FAILURES = 3;
 
+/** Seconds of silence from the server before irc-framework gives up on the
+ *  connection (#1146): irssi's and WeeChat's 5 minutes. */
+const IRC_PING_TIMEOUT_S = 300;
+
 // Replies to the state requests a restore makes for each channel (MODE → 324
 // (+329), TOPIC → 331 or 332 (+333)). A real join is volunteered these; a
 // synthesised one has to ask, and the server-buffer renderer would print each
@@ -2424,7 +2428,7 @@ export class IrcConnection {
     });
 
     // Diagnostic: irc-framework fires 'ping timeout' when it hasn't seen data
-    // from the server for `ping_timeout` seconds (120s default) — then it QUITs
+    // from the server for `ping_timeout` seconds (IRC_PING_TIMEOUT_S) — then it QUITs
     // (ending the socket with NO socket error, so the disconnect otherwise
     // surfaces as a bare "Disconnected" with no cause) and our controller
     // schedules the reconnect from 'close'. A ping timeout on a
@@ -5445,6 +5449,13 @@ export class IrcConnection {
       // coerces 0 back to 3 — which is the bug this replaces.) With this off,
       // every socket death funnels to our 'close' handler, which decides.
       auto_reconnect: false,
+      // Give up on a silent server after 5 minutes, as irssi (lag.c) and WeeChat
+      // (lag_reconnect) do, not irc-framework's 2 (#1146). It counts from the
+      // last line read, and we PING every 30 s (ping_interval, left at its
+      // default so lag stays fresh). A dead link usually errors out sooner
+      // through TCP; this also rides out longer event-loop stalls (#1074).
+      // Same connect()-dict rule as enable_chghost below.
+      ping_timeout: IRC_PING_TIMEOUT_S,
       // Disable irc-framework's built-in CTCP VERSION auto-reply so our own
       // handler owns VERSION (#263). Like enable_chghost below, this MUST ride
       // the connect() dict — connect() overwrites client.options, so a

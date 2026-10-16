@@ -592,6 +592,15 @@ describe('tls certificate trust setting', () => {
     );
   });
 
+  it("waits 5 minutes for a silent server, not irc-framework's 2 (#1146)", () => {
+    const conn = makeConn(1);
+    conn.publish = vi.fn<(event: unknown) => void>();
+    const connect = vi.fn<(options: ConnectOptions) => void>();
+    conn.client.connect = connect;
+    conn.connect();
+    expect(connect).toHaveBeenCalledWith(expect.objectContaining({ ping_timeout: 300 }));
+  });
+
   it('logNet writes a system line scoped to the network and stamped with its id (#355)', async () => {
     const conn = makeConn(1); // network { id: 1, user_id: 1, name: 'n' }
     conn.logNet('a unique test line', 'warn');
