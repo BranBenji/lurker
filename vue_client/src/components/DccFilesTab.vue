@@ -303,16 +303,19 @@ const offers = computed(() =>
   dcc.transfers.filter((t) => t.state === 'pending_approval' && rowMatches(t)),
 );
 
-// A pack still waiting or out for its bot, so an earlier try of it that
-// failed has been taken care of (the queue's retry).
-function packOpen(t: DccTransfer): boolean {
-  return dcc.transfers.some(
-    (o) =>
-      o.id !== t.id &&
-      o.pack === t.pack &&
-      o.network_id === t.network_id &&
-      o.peer_nick.toLowerCase() === t.peer_nick.toLowerCase() &&
-      ACTIVE_STATES.has(o.state),
+// A later try of the same pack exists — waiting, out, done or failed in its
+// turn — so this one's ending has been taken care of. (Nicks folded as findDm
+// folds them.)
+function superseded(t: DccTransfer): boolean {
+  return (
+    t.pack != null &&
+    dcc.transfers.some(
+      (o) =>
+        o.id > t.id &&
+        o.pack === t.pack &&
+        o.network_id === t.network_id &&
+        o.peer_nick.toLowerCase() === t.peer_nick.toLowerCase(),
+    )
   );
 }
 
@@ -320,8 +323,8 @@ function packOpen(t: DccTransfer): boolean {
 // or delete, or a queued pack that failed and wasn't retried.
 function endedButOpen(t: DccTransfer): boolean {
   if (ACTIVE_STATES.has(t.state) || t.state === 'completed') return false;
-  if (holdsPartial(t)) return !packOpen(t);
-  return t.state === 'failed' && t.pack != null && !packOpen(t);
+  if (holdsPartial(t)) return !superseded(t);
+  return t.state === 'failed' && t.pack != null && !superseded(t);
 }
 
 interface PeerBlock {

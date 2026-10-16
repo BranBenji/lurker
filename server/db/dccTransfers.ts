@@ -245,6 +245,12 @@ export function listDccTransfers(
       `SELECT * FROM dcc_transfers WHERE user_id = ? AND (
          state IN (${ACTIVE_STATES_SQL})
          OR (destination_path IS NOT NULL AND file_id IS NULL AND received_bytes > 0)
+         OR (state = 'failed' AND pack IS NOT NULL AND NOT EXISTS (
+               SELECT 1 FROM dcc_transfers later
+               WHERE later.user_id = dcc_transfers.user_id
+                 AND later.network_id = dcc_transfers.network_id
+                 AND later.peer_nick = dcc_transfers.peer_nick
+                 AND later.pack = dcc_transfers.pack AND later.id > dcc_transfers.id))
        )
        UNION
        SELECT * FROM (SELECT * FROM dcc_transfers WHERE user_id = ? ORDER BY id DESC LIMIT ?)
@@ -400,7 +406,10 @@ export function nextXdccRequests(userId: number, networkId: number): DccTransfer
          AND NOT EXISTS (
            SELECT 1 FROM dcc_transfers o
            WHERE o.user_id = q.user_id AND o.network_id = q.network_id
-             AND o.peer_nick = q.peer_nick AND o.state IN (${XDCC_OUT_SQL}))
+             AND o.peer_nick = q.peer_nick AND o.state IN (${XDCC_OUT_SQL})
+             -- A request from before the queue (no pack) has no clock on it
+             -- and would hold the bot forever.
+             AND (o.state != 'requested' OR o.pack IS NOT NULL))
        ORDER BY q.id`,
     )
     .all(userId, networkId) as DccTransferRow[];
@@ -416,18 +425,18 @@ export function markXdccRequested(id: number): void {
   ).run(nowIso(), Number(id));
 }
 
-/** The bot answered: every request of ours it hasn't answered yet now holds
- *  its auto-accept for as long as the bot takes. Returns the rows it stamped. */
-export function ackXdccRequests(userId: number, networkId: number, bot: string): number[] {
+/** The bot answered these requests: each now holds its auto-accept for as
+ *  long as the bot takes. Returns the rows it stamped. */
+export function ackXdccRequests(userId: number, ids: readonly number[]): number[] {
   return (
     db
       .prepare(
         `UPDATE dcc_transfers SET bot_acked_at = ?, updated_at = datetime('now')
-         WHERE user_id = ? AND network_id = ? AND peer_nick = ? AND state = 'requested'
-           AND bot_acked_at IS NULL
+         WHERE user_id = ? AND state = 'requested' AND bot_acked_at IS NULL
+           AND id IN (SELECT value FROM json_each(?))
          RETURNING id`,
       )
-      .all(nowIso(), userId, networkId, bot) as { id: number }[]
+      .all(nowIso(), userId, JSON.stringify(ids)) as { id: number }[]
   ).map((r) => r.id);
 }
 
@@ -594,7 +603,7 @@ export function findResumableTransfer(
     .prepare(
       `SELECT * FROM dcc_transfers
        WHERE user_id = ? AND network_id = ? AND filename = ? AND destination_path IS NOT NULL
-         AND state IN ('failed', 'stalled', 'receiving')
+         AND state IN ('failed', 'stalled', 'receiving', 'cancelled')
        ORDER BY id DESC LIMIT 1`,
     )
     .get(userId, networkId, filename) as DccTransferRow | undefined;

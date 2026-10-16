@@ -376,6 +376,48 @@ describe('disconnects and cancels', () => {
     expect(byPack('Bot', 29).map((r) => r.state)).toEqual(['cancelled']);
   });
 
+  it('ends every request out to the bot when one is cancelled, as XDCC REMOVE does', () => {
+    const h = harness();
+    h.conn.queueXdcc('Bot', [1, 2]);
+    h.conn.say('Bot', 'xdcc send #9');
+    h.conn.cancelDcc(byPack('Bot', 1)[0].id);
+    expect(byPack('Bot', 9)[0]).toMatchObject({ state: 'cancelled' });
+    expect(h.privmsgs().filter((l) => l === 'Bot :XDCC REMOVE')).toHaveLength(1);
+  });
+
+  it('does not let a request from before the queue hold a bot forever', () => {
+    const h = harness();
+    db.prepare(
+      `INSERT INTO dcc_transfers (user_id, network_id, peer_nick, filename, advertised_size, state)
+       VALUES (1, 1, 'Bot', 'XDCC #1', 0, 'requested')`,
+    ).run();
+    h.conn.queueXdcc('Bot', [5]);
+    expect(h.privmsgs()).toEqual(['Bot :XDCC SEND #5']);
+  });
+
+  it('moves the queue on through the connection mapped now', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const h = harness();
+    const pump = vi.fn<() => void>();
+    h.conn.pumpXdcc = pump;
+    h.conn.queueXdcc('Bot', [1, 2]);
+    vi.advanceTimersByTime(2 * 60_000 + 1);
+    await tick();
+    expect(pump).toHaveBeenCalled();
+  });
+
+  it("doesn't call the bot silent while only the link to the engine is down", async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const h = harness();
+    h.conn.queueXdcc('Bot', [1]);
+    h.conn.state = 'reconnecting';
+    vi.advanceTimersByTime(2 * 60_000 + 1);
+    expect(byPack('Bot', 1)[0].state).toBe('requested');
+    h.conn.state = 'connected';
+    vi.advanceTimersByTime(2 * 60_000 + 1);
+    expect(byPack('Bot', 1)[0].state).toBe('failed');
+  });
+
   it('deletes a queued pack that is cancelled before its turn', () => {
     const h = harness();
     h.conn.queueXdcc('Bot', [29, 30]);

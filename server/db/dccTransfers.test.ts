@@ -299,6 +299,24 @@ describe('the XDCC queue', () => {
     ]);
   });
 
+  it('keeps a failed pack listed until a later try of it exists', () => {
+    const [first] = enqueueXdccPacks(owner, net, 'Fail', [3]);
+    updateDccTransferState(first, 'failed', 'no response');
+    for (let i = 0; i < 3; i++) {
+      const id = insertDccTransfer(owner, {
+        network_id: net,
+        peer_nick: 'y',
+        filename: `later${i}`,
+        advertised_size: 1,
+        state: 'requested',
+      });
+      updateDccTransferState(id, 'completed');
+    }
+    expect(listDccTransfers(owner, { limit: 1 }).map((r) => r.id)).toContain(first);
+    enqueueXdccPacks(owner, net, 'Fail', [3]);
+    expect(listDccTransfers(owner, { limit: 1 }).map((r) => r.id)).not.toContain(first);
+  });
+
   it('lists every open row, however many finished ones are newer', () => {
     const [waiting] = enqueueXdccPacks(owner, net, 'Old', [1]);
     for (let i = 0; i < 5; i++) {

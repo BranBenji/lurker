@@ -2652,6 +2652,7 @@ const COMMANDS_LINES = [
   '  /dcc send <nick> [<file>] — send one of your files; with no file, pick or upload one',
   '      the file is its name or its id from /dcc files; -passive asks them to listen',
   '      e.g. /dcc send bob   ·   /dcc send bob holiday.mkv   ·   /dcc send -passive bob 12',
+  '  /dcc retry <id>        — ask again for a queued pack that failed, next in its queue',
   '  /dcc clear [<id>]      — take finished transfers off the list; your files stay',
   '      one holding a partial download needs /dcc delete <id> first',
   '  /dcc chat <nick>       — open a direct peer-to-peer chat, in a =nick buffer',
@@ -3094,6 +3095,21 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
     }
     return;
   }
+  // A queued pack that ended without its file, asked for again at the front
+  // of its bot's queue (#1085) — what Retry does in the DCC tab.
+  if (cmd.kind === 'retry') {
+    try {
+      const t = await dcc.retry(cmd.id);
+      localInfo(
+        networkId,
+        target,
+        `/dcc retry: #${t.pack} from ${t.peer_nick} is next in the queue`,
+      );
+    } catch (e: any) {
+      localInfo(networkId, target, `/dcc retry: #${cmd.id} — ${e?.message || 'failed'}`);
+    }
+    return;
+  }
   // accept / reject / cancel — the parser guarantees a numeric id here. They all
   // route through the store's shared act() path.
   const verb = cmd.kind;
@@ -3109,7 +3125,6 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
   }
 }
 
-// One row for the /dcc list output: "#3  movie.mkv  receiving  alice  42%".
 // /xdcc (#1085) — the XDCC queue, in EasyXdcc's verbs (lib/commands/xdcc.ts).
 // Adding and removing ride the network's connection, which runs the queue;
 // the bot's DM gets the stored lines saying what happened, so the reply here
@@ -3195,6 +3210,7 @@ function xdccQueueLines(rows: DccTransfer[]): string[] {
   return lines;
 }
 
+// One row for the /dcc list output: "#3  movie.mkv  receiving  alice  42%".
 function dccListRow(t: DccTransfer): string[] {
   const pct = t.advertised_size > 0 ? `${percentReceived(t)}%` : '';
   const peer = t.direction === 'send' ? `to ${t.peer_nick}` : `from ${t.peer_nick}`;

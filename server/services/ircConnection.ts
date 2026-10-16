@@ -783,6 +783,10 @@ export class IrcConnection {
   /** A frame for every one of the user's clients that isn't an IRC event (a
    *  DCC transfer row). ircManager hands it to wsHub's fan-out. */
   onUserFrame: (frame: Record<string, unknown>) => void;
+  /** Move the network's XDCC queue on (#1085), on whichever connection is
+   *  mapped for it now: a receive can outlive a Disconnect, and when it ends
+   *  the connection that started it may no longer be the one connected. */
+  pumpXdcc: () => void;
   client: IrcClient;
   state: string;
   /** Mutate only through setChannel/deleteChannel/forgetJoinedChannels —
@@ -1187,10 +1191,12 @@ export class IrcConnection {
     reconnectGate,
     onTakenOver,
     onNeedsRebuild,
+    pumpXdcc,
   }: {
     network: Network;
     onEvent: (event: EnrichedEvent) => void;
     onUserFrame?: (frame: Record<string, unknown>) => void;
+    pumpXdcc?: () => void;
     reconnectGate?: ReconnectGate;
     onTakenOver?: () => void;
     onNeedsRebuild?: () => void;
@@ -1198,6 +1204,7 @@ export class IrcConnection {
     this.network = network;
     this.onEvent = onEvent;
     this.onUserFrame = onUserFrame ?? (() => {});
+    this.pumpXdcc = pumpXdcc ?? (() => this.pumpXdccQueue());
     this.reconnectGate = reconnectGate;
     this.onTakenOver = onTakenOver;
     this.onNeedsRebuild = onNeedsRebuild;
@@ -6750,6 +6757,13 @@ export class IrcConnection {
       this.xdccWaiting.delete(row.id);
       const now = getDccTransfer(this.network.user_id, row.id);
       if (!now || now.state !== 'requested' || !!now.bot_acked_at !== acked) return;
+      // Not connected (our link to the engine is down, while the IRC socket
+      // and whatever the bot said wait there): that isn't the bot's silence.
+      // Start the clock again.
+      if (this.state !== 'connected' && !this.disposed) {
+        this.armXdccTimer(now);
+        return;
+      }
       updateDccTransferState(
         row.id,
         'failed',
@@ -6794,7 +6808,9 @@ export class IrcConnection {
       }
       return;
     }
-    for (const id of ackXdccRequests(this.network.user_id, this.network.id, nick)) {
+    // By the rows waiting, which sameDccPeer matched under the network's
+    // casemapping: `{bot}` answering a request to `[Bot]` is the same bot.
+    for (const id of ackXdccRequests(this.network.user_id, waiting)) {
       const row = getDccTransfer(this.network.user_id, id);
       if (row) this.armXdccTimer(row);
       this.publishDcc(id);
@@ -6864,7 +6880,7 @@ export class IrcConnection {
     if (!xdccQueueOpen(this.network.user_id, this.network.id, row.peer_nick)) {
       this.dccLine(row.peer_nick, `XDCC: nothing left in the queue for ${row.peer_nick}`);
     }
-    setImmediate(() => this.pumpXdccQueue());
+    setImmediate(() => this.pumpXdcc());
   }
 
   // A stored DCC status line in the peer's DM (#1085): what happened to a
@@ -7573,9 +7589,28 @@ export class IrcConnection {
         return;
       }
       if (this.state === 'connected') {
-        if (xdcc.state === 'requested')
+        if (xdcc.state === 'requested') {
           this.writeLine('PRIVMSG', xdcc.peer_nick, 'XDCC REMOVE', null);
-        else if (xdcc.state === 'connecting' || xdcc.state === 'receiving') {
+          // The bot drops every request of ours it holds, not just this one:
+          // any other out to it (a typed one beside the queue's) ends too.
+          for (const other of listXdccQueue(this.network.user_id, this.network.id)) {
+            if (
+              other.id === transferId ||
+              other.state !== 'requested' ||
+              !this.sameDccPeer(other.peer_nick, xdcc.peer_nick)
+            ) {
+              continue;
+            }
+            this.stopWaitingForXdccBot(other.id);
+            this.xdccSettled.add(other.id);
+            updateDccTransferState(
+              other.id,
+              'cancelled',
+              'removed from the bot queue with the others',
+            );
+            this.publishDcc(other.id);
+          }
+        } else if (xdcc.state === 'connecting' || xdcc.state === 'receiving') {
           this.writeLine('PRIVMSG', xdcc.peer_nick, 'XDCC CANCEL', null);
         }
       }

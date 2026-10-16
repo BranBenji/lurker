@@ -124,6 +124,17 @@ describe('DccFilesTab', () => {
     expect(w.text()).not.toContain('no response');
   });
 
+  it('hides a failed try once a later one exists, even a finished one', async () => {
+    const dcc = useDccStore();
+    dcc.transfers = [
+      row({ id: 7, pack: 29, state: 'completed', filename: 'ep29.mkv', attempt: 2 }),
+      row({ id: 6, pack: 29, state: 'failed', error: 'no response from Bot' }),
+    ];
+    const w = mountTab();
+    await w.vm.$nextTick();
+    expect(w.text()).not.toContain('no response');
+  });
+
   it('puts offers first, with Accept and Decline right there', async () => {
     const dcc = useDccStore();
     dcc.transfers = [

@@ -74,6 +74,15 @@ describe('parseXdccCommand', () => {
       kind: 'error',
       message: 'addl at most 500 packs at a time',
     });
+    // A huge range is refused before anything is built.
+    expect(parseXdccCommand('add Bot 1-999999999')).toEqual({
+      kind: 'error',
+      message: 'add at most 500 packs at a time',
+    });
+    expect(parseXdccCommand('addm Bot 1-300 400-700')).toEqual({
+      kind: 'error',
+      message: 'addm at most 500 packs at a time',
+    });
     expect(parseXdccCommand('start')).toEqual({ kind: 'error', message: XDCC_USAGE });
     expect(parseXdccCommand('add')).toEqual({ kind: 'error', message: 'add needs a bot nick' });
   });

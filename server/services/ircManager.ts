@@ -480,6 +480,9 @@ class IrcManager extends EventEmitter {
       network,
       onEvent: (event) => this.emit('event', event),
       onUserFrame: (frame) => this.emit('user-frame', userId, frame),
+      // #1085: the queue moves on the connection mapped now, which may not be
+      // the one whose receive just ended.
+      pumpXdcc: () => this.getConnection(userId, networkId)?.pumpXdccQueue(),
       // #616: the retry controller asks this before each attempt opens a socket,
       // so a reconnect re-clears the same gates the initial connect did. Read
       // live (not captured), because pause/lockdown can change mid-backoff.

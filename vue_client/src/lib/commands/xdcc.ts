@@ -44,17 +44,22 @@ function parsePack(raw: string | undefined): number | null {
   return m ? Number(m[1]) : null;
 }
 
-// first..last, either way round, as a list.
-function range(first: number, last: number): number[] {
+// first..last, either way round, as a list; null past XDCC_MAX_PACKS, which
+// is checked before anything is built (a nine-digit range is a lot of array).
+function range(first: number, last: number): number[] | null {
   const lo = Math.min(first, last);
   const hi = Math.max(first, last);
+  if (hi - lo + 1 > XDCC_MAX_PACKS) return null;
   return Array.from({ length: hi - lo + 1 }, (_, i) => lo + i);
 }
 
-// `29`, `#29`, or a range `29-32` / `#29-#32`.
-function parsePackOrRange(raw: string): number[] | null {
+const TOO_MANY = `at most ${XDCC_MAX_PACKS} packs at a time`;
+
+// `29`, `#29`, or a range `29-32` / `#29-#32`; 'too many' for a range past
+// the limit.
+function parsePackOrRange(raw: string): number[] | 'too many' | null {
   const m = /^#?(\d{1,9})-#?(\d{1,9})$/.exec(raw.trim());
-  if (m) return range(Number(m[1]), Number(m[2]));
+  if (m) return range(Number(m[1]), Number(m[2])) ?? 'too many';
   const one = parsePack(raw);
   return one === null ? null : [one];
 }
@@ -63,20 +68,18 @@ function packsFor(verb: 'one' | 'range' | 'many', args: string[]): number[] | { 
   if (verb === 'range') {
     const [a, b] = [parsePack(args[0]), parsePack(args[1])];
     if (a === null || b === null || args.length !== 2) return { error: 'needs <first> <last>' };
-    const packs = range(a, b);
-    return packs.length > XDCC_MAX_PACKS
-      ? { error: `at most ${XDCC_MAX_PACKS} packs at a time` }
-      : packs;
+    return range(a, b) ?? { error: TOO_MANY };
   }
   if (args.length === 0) return { error: 'needs a pack number' };
   if (verb === 'one' && args.length !== 1) return { error: 'takes one pack; addm takes several' };
   const packs: number[] = [];
   for (const a of args) {
     const p = parsePackOrRange(a);
+    if (p === 'too many') return { error: TOO_MANY };
     if (!p) return { error: `"${a}" is not a pack number` };
+    if (packs.length + p.length > XDCC_MAX_PACKS) return { error: TOO_MANY };
     packs.push(...p);
   }
-  if (packs.length > XDCC_MAX_PACKS) return { error: `at most ${XDCC_MAX_PACKS} packs at a time` };
   return packs.filter((p, i) => packs.indexOf(p) === i);
 }
 

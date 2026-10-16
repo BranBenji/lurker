@@ -15,6 +15,11 @@ describe('parseDccCommand', () => {
     expect(parseDccCommand('ls')).toEqual({ kind: 'list' });
   });
 
+  it('parses retry by id (#1085)', () => {
+    expect(parseDccCommand('retry 7')).toEqual({ kind: 'retry', id: 7 });
+    expect(parseDccCommand('retry')).toEqual({ kind: 'error', message: 'usage: /dcc retry <id>' });
+  });
+
   it('parses files (#1133)', () => {
     expect(parseDccCommand('files')).toEqual({ kind: 'files' });
     expect(parseDccCommand('FILES')).toEqual({ kind: 'files' });

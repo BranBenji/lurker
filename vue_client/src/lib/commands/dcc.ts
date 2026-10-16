@@ -27,6 +27,8 @@ export type DccCommand =
   | { kind: 'cancel'; id: number }
   | { kind: 'download'; id: number }
   | { kind: 'delete'; id: number }
+  /** A queued XDCC pack that ended without its file, asked for again (#1085). */
+  | { kind: 'retry'; id: number }
   /** One transfer by id, or null for every finished one. */
   | { kind: 'clear'; id: number | null }
   /** `file` is a name, or an id as /dcc files shows it; null to pick one. */
@@ -43,19 +45,21 @@ const FILES = new Set(['files']);
 // Not `get`: irssi's `/dcc get` accepts an offer, and it does here too.
 const DOWNLOAD = new Set(['download', 'save']);
 const DELETE = new Set(['delete', 'rm']);
+const RETRY = new Set(['retry']);
 // The verbs that act on one transfer by id.
 const BY_ID: ReadonlyArray<
-  [ReadonlySet<string>, 'accept' | 'reject' | 'cancel' | 'download' | 'delete']
+  [ReadonlySet<string>, 'accept' | 'reject' | 'cancel' | 'download' | 'delete' | 'retry']
 > = [
   [ACCEPT, 'accept'],
   [REJECT, 'reject'],
   [CANCEL, 'cancel'],
   [DOWNLOAD, 'download'],
   [DELETE, 'delete'],
+  [RETRY, 'retry'],
 ];
 
 const USAGE =
-  'usage: /dcc [list] · /dcc files · /dcc accept|reject|cancel|download|delete <id> · ' +
+  'usage: /dcc [list] · /dcc files · /dcc accept|reject|cancel|download|delete|retry <id> · ' +
   '/dcc clear [<id>] · ' +
   '/dcc send [-passive] <nick> [<file>] · ' +
   '/dcc chat [-passive] <nick> · ' +
