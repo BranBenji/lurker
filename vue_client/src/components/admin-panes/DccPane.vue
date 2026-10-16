@@ -148,8 +148,8 @@
         already received stay theirs to download.
       </p>
       <p class="muted small">
-        Users delete their own files under Files to make room under a limit. Files they upload to
-        send count against it too.
+        Users delete their own files in the DCC window to make room under a limit. Files they upload
+        to send count against it too.
       </p>
     </template>
     <p v-else-if="!loadError" class="muted small">Loading…</p>

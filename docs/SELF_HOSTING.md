@@ -588,6 +588,61 @@ Playback replays the last 50 lines per joined channel (plus your 20 most recentl
 
 A reply goes only to the client that asked for it: your WHOIS or LIST isn't seen by other attached clients or by the web app. Known limitations: Lurker-side ignore rules don't filter the live relay, and on end-to-end encrypted channels an attached client sees the wire ciphertext for incoming messages.
 
+### DCC and XDCC
+
+Lurker can receive and send files over DCC, queue packs from XDCC bots, and hold DCC chats ([how people use it](/guide/dcc)). It's off by default. Transfers run on the server: a received file lands on its disk, and people download it through the browser.
+
+Turn it on and give it a directory on a volume:
+
+```yaml
+volumes:
+  - ./downloads:/downloads
+environment:
+  - LURKER_DCC_ENABLED=true
+  - LURKER_DCC_DIR=/downloads
+```
+
+Each account's files go under `<dir>/<username>/`. A separate volume keeps large downloads out of `./data/` and your backups of it.
+
+Then give people access under **Admin → DCC**. Each person has three parts, each off until you turn it on: **chat**, **receive** and **send**. The same tab shows what each person's files take up, and sets a storage **limit** per person (blank for none). Turning a part off stops what starts next; anything running finishes, and files already received stay downloadable.
+
+Limits:
+
+- `LURKER_DCC_MAX_FILE_MB` caps one transfer, and one file uploaded to send. Unset or `0` is no cap.
+- An offer that doesn't say its size is always refused.
+- The per-person limit counts their kept files, files uploaded to send, the partials of failed and cancelled transfers, and the full size of anything still coming in.
+- Lurker refuses a transfer that would leave less than 1 GB free on the disk.
+
+#### Peers on private networks
+
+A DCC offer names the address to connect to, and whoever sends it picks that address. So Lurker refuses offers that point at private, loopback, link-local or reserved addresses: otherwise anyone on IRC could make your server connect to something on your own network, or to a cloud metadata service. If you knowingly pull from a bot on your own LAN, set `LURKER_DCC_ALLOW_PRIVATE_HOSTS=true`.
+
+#### Sending, chat offers and passive offers
+
+Accepting a file or a chat needs nothing more: Lurker connects out to the sender. Three things need the other side to connect _in_ to Lurker: offering a chat, sending a file, and accepting a _passive_ offer (one where the sender can't listen, which is the default in halloy and HexDroid). For those, tell Lurker its public address and a port range, and publish that range:
+
+```yaml
+ports:
+  - '30000-30009:30000-30009'
+environment:
+  - LURKER_DCC_EXTERNAL_HOST=203.0.113.5 # your server's public IPv4, a literal address
+  - LURKER_DCC_LISTEN_PORT_MIN=30000
+  - LURKER_DCC_LISTEN_PORT_MAX=30009
+```
+
+- The host must be an IP address, not a hostname: DCC carries the address as a number. Prefer IPv4. An IPv6 address works with irssi, WeeChat, KVIrc and HexDroid, but HexChat and ZNC's bouncedcc misread it.
+- Open the same range in your firewall. Its size caps how many offers can wait at once.
+- `LURKER_DCC_LISTEN_BIND` sets the bind address inside the container. The default follows the external host: `0.0.0.0` for IPv4, `::` for IPv6 (which also needs IPv6 enabled in Docker).
+
+Without these, `/dcc send` and `/dcc chat` say what's missing. `-passive` asks the other side to listen instead and needs none of it, but only some clients handle a passive chat offer (irssi, HexChat and repartee do; WeeChat and HexDroid don't). Passive DCC doesn't work through ZNC's bouncedcc module, which turns every offer into an active one.
+
+#### Good to know
+
+- **A network with a proxy refuses DCC.** DCC connects directly, outside the proxy, which would give away the address the proxy hides.
+- **Turning `LURKER_DCC_ENABLED` off closes all of it**, including downloading and deleting files already received. They stay on disk under `LURKER_DCC_DIR`.
+- **Deleting an account doesn't delete its files.** Its directory under `LURKER_DCC_DIR` stays on disk; remove it by hand.
+- **Transfers run in the Lurker process, not the [IRC engine](#irc-engine-upgrade-without-dropping-irc).** Restarting Lurker ends any transfer in progress. It's kept as a partial and resumes the next time the file is offered, and a queued XDCC pack is requested again on its own.
+
 ### IRC engine (upgrade without dropping IRC)
 
 _Available from 2.1.4._ Every Lurker upgrade restarts the container, and the container holds your IRC connections — so every upgrade has meant a reconnect: re-register, re-identify, rejoin, and a `Quit`/`Join` for everyone in your channels. The **engine** ends that. It is a second container that holds the IRC sockets and nothing else, and the ordinary upgrade never recreates it.

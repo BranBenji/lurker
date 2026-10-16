@@ -2942,7 +2942,7 @@ function runRelay(argLine: string, networkId: number, target: string): boolean {
 }
 
 // /dcc (#270) — the slash-command surface over the DCC download manager. `list`
-// opens the Transfers view and echoes the current transfers into the buffer
+// opens the DCC window and echoes the current transfers into the buffer
 // (slash-command-first: the GUI is a view over the same core); accept/reject/
 // cancel act on one transfer by id and report the resulting state. User-wide, so
 // networkId may be null (running from the system buffer). The store writes go
