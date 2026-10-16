@@ -7,6 +7,7 @@
 // user deletes a file; nothing expires.
 
 import db from './index.js';
+import type { DccCrcStatus } from './dccTransfers.js';
 
 export type DccFileOrigin = 'received' | 'uploaded';
 
@@ -20,6 +21,7 @@ export interface DccFileRow {
   created_at: string;
   peer_nick: string | null;
   network_id: number | null;
+  crc_status: DccCrcStatus | null;
 }
 
 /** A file as clients see it: never its path, and for a received one, who it
@@ -36,11 +38,14 @@ export interface DccFile {
   peer_nick: string | null;
   /** Null for an upload, or once the network was deleted. */
   network_id: number | null;
+  /** How a received file checked out against the CRC32 in its name (#1082);
+   *  null for an upload, or a file kept before the check was recorded. */
+  crc_status: DccCrcStatus | null;
 }
 
 const VIEW = `
   SELECT f.id, f.name, f.size, f.origin, f.created_at,
-         t.id AS transfer_id, f.peer_nick, f.network_id
+         t.id AS transfer_id, f.peer_nick, f.network_id, f.crc_status
   FROM dcc_files f
   LEFT JOIN dcc_transfers t ON t.file_id = f.id AND t.direction = 'recv'
 `;
@@ -56,8 +61,8 @@ export function keepReceivedDccFile(
   const keep = db.transaction((): number | null => {
     const inserted = db
       .prepare(
-        `INSERT INTO dcc_files (user_id, path, name, size, origin, peer_nick, network_id)
-         SELECT ?, ?, ?, ?, 'received', peer_nick, network_id
+        `INSERT INTO dcc_files (user_id, path, name, size, origin, peer_nick, network_id, crc_status)
+         SELECT ?, ?, ?, ?, 'received', peer_nick, network_id, crc_status
          FROM dcc_transfers WHERE id = ? AND user_id = ?`,
       )
       .run(userId, f.path, f.name, f.size, transferId, userId);

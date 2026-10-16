@@ -98,6 +98,8 @@ export interface DccFile {
   transfer_id: number | null;
   peer_nick: string | null;
   network_id: number | null;
+  /** How a received file checked out (#1082); null for an upload. */
+  crc_status: DccCrcStatus | null;
 }
 
 /** Who the DCC window is picking a file for: `/dcc send <nick>` with no file

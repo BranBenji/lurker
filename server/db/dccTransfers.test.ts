@@ -186,6 +186,34 @@ describe('dccTransfers', () => {
   });
 });
 
+// #1082: a kept file says how it checked out, even once its transfer is
+// cleared from the list.
+describe("a kept file's checksum", () => {
+  it('comes from the transfer, and outlives it', async () => {
+    const { getDccFile } = await import('./dccFiles.js');
+    const owner = createUser('dcc-crc').id;
+    const id = insertDccTransfer(owner, {
+      network_id: null as unknown as number,
+      peer_nick: 'bot',
+      filename: 'ep [DEADBEEF].mkv',
+      advertised_size: 700,
+      state: 'pending_approval',
+    });
+    markDccReceiving(id, {
+      filename: 'ep [DEADBEEF].mkv',
+      advertised_size: 700,
+      destination_path: '/dcc/crc/ep.mkv',
+    });
+    const file = markDccCompleted(id, 700, '00000000', 'mismatch');
+    expect(file?.crc_status).toBe('mismatch');
+    db.prepare('DELETE FROM dcc_transfers WHERE id = ?').run(id);
+    expect(getDccFile(owner, file!.id)).toMatchObject({
+      transfer_id: null,
+      crc_status: 'mismatch',
+    });
+  });
+});
+
 // #1133: completing a receive keeps its file. The transfer mirrors the path,
 // and the file must count, and claim its path, once.
 describe('a completed receive', () => {
@@ -211,6 +239,7 @@ describe('a completed receive', () => {
       size: 700,
       origin: 'received',
       transfer_id: id,
+      crc_status: 'absent',
     });
     expect(getDccTransfer(owner, id)).toMatchObject({
       file_id: file!.id,

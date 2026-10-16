@@ -591,9 +591,11 @@ export function settleInterruptedDccReceives({
 }
 
 /** The most recent INCOMPLETE transfer for a (network, filename) whose partial we
- *  could resume — interrupted by failure, disconnect (stalled), or a restart that
- *  left it 'receiving'. Resuming is gated on this (not just any same-named file on
- *  disk) so an unrelated leftover can't get a bot's bytes appended onto it. */
+ *  could resume — interrupted by failure, disconnect (stalled), or a resume still
+ *  waiting on the bot's ACCEPT ('receiving' with nothing connected). Resuming is
+ *  gated on this (not just any same-named file on disk) so an unrelated leftover
+ *  can't get a bot's bytes appended onto it. ⚠ A 'receiving' row may be one a
+ *  receiver is writing right now: the caller, which knows, skips those (#1127). */
 export function findResumableTransfer(
   userId: number,
   networkId: number,

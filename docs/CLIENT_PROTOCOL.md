@@ -1568,9 +1568,14 @@ is one of the account's **files** (below), named by the row's `file_id`.
 transfer that brought it, until the user deletes it; nothing expires. Files
 count against the storage limit, as does the partial of a transfer that
 hasn't finished. `GET /files` → `{files: [{id, name, size, origin, created_at,
-transfer_id, peer_nick, network_id}]}`, newest first; `origin` is `received`
-(with the peer and network it came from, and the transfer while that is still
-on the list) or `uploaded` (through a `dcc-send` upload session).
+transfer_id, peer_nick, network_id, crc_status}]}`, newest first; `origin` is
+`received` (with the peer and network it came from, and the transfer while that
+is still on the list) or `uploaded` (through a `dcc-send` upload session).
+`crc_status` is how a received file checked out, kept from its transfer:
+`ok` and `mismatch` against the CRC32 in its name, `absent` when the name
+carried none, `unverified` when a resumed file couldn't be read back to check.
+A resume is checked by reading the whole file back, the transfer in state
+`verifying` meanwhile. Null for an upload.
 `GET /files/:id/file` downloads one, as `GET /:id/file` does (410 when it is
 gone from disk). `DELETE /files/:id` → `{ok: true}` removes it, except while it
 is offered to someone or being sent (409); the transfer

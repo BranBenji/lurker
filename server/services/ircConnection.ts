@@ -133,6 +133,7 @@ import {
   buildDccSendPassive,
   buildDccSendReply,
   crc32Hex,
+  crc32OfFile,
   dccWireFilename,
   encodeDccAddress,
   formatBytes,
@@ -176,6 +177,7 @@ import {
   dccUsageBytes,
   findArmedRequest,
   findResumableTransfer,
+  type DccCrcStatus,
   getDccTransfer,
   insertDccSend,
   insertDccTransfer,
@@ -7082,13 +7084,20 @@ export class IrcConnection {
       return;
     }
     // Resume only continues OUR OWN tracked incomplete transfer of this file (a
-    // prior failed/stalled/orphaned-receiving row whose partial is still on disk
-    // and shorter than the offer) — never an arbitrary same-named leftover, which
+    // prior failed/stalled/receiving row whose partial is still on disk and
+    // shorter than the offer) — never an arbitrary same-named leftover, which
     // could otherwise get this bot's bytes appended onto an unrelated prefix.
+    // A 'receiving' row nothing holds is a resume still waiting on the bot's
+    // ACCEPT, which a new offer takes over; one a receiver or a passive listen
+    // holds is being written right now, and is left alone (#1127).
     let destPath: string;
     let startOffset = 0;
     const username = findUserById(this.network.user_id)?.username || 'user';
-    const prior = findResumableTransfer(this.network.user_id, this.network.id, offer.filename);
+    const found = findResumableTransfer(this.network.user_id, this.network.id, offer.filename);
+    const prior =
+      found && (this.dccReceivers.has(found.id) || this.dccPassiveListens.has(found.id))
+        ? undefined
+        : found;
     const partialSize =
       prior?.destination_path && fs.existsSync(prior.destination_path)
         ? fs.statSync(prior.destination_path).size
@@ -7481,32 +7490,26 @@ export class IrcConnection {
       },
       onDone: (received, crc) => {
         this.dccReceivers.delete(transferId);
-        // A resume only re-checksummed the tail, so we don't claim ok/mismatch on
-        // the whole file — completion already verified the size. A fresh transfer
-        // checks the filename CRC.
-        const actual = crc32Hex(crc);
-        const status = resumed
-          ? 'unverified'
-          : expectedCrc == null
-            ? 'absent'
-            : actual === expectedCrc
-              ? 'ok'
-              : 'mismatch';
-        const kept = markDccCompleted(transferId, received, resumed ? null : actual, status);
-        const badge =
-          status === 'ok'
-            ? ' ✓ CRC verified'
-            : status === 'mismatch'
-              ? ` ⚠ CRC MISMATCH (got ${actual}, expected ${expectedCrc})`
-              : status === 'unverified'
-                ? ' (resumed — size verified)'
-                : '';
-        this.dccLine(
-          nick,
-          `DCC: received "${offer.filename}" (${formatBytes(received)}) from ${nick}${badge}`,
-        );
+        if (!resumed || expectedCrc == null) {
+          const actual = resumed ? null : crc32Hex(crc);
+          this.finishDccReceive(transferId, nick, offer, received, expectedCrc, actual);
+          return;
+        }
+        // A resume only hashed what it appended. The whole file is on disk now,
+        // so read it back and check it against the name's CRC32 (#1082); the
+        // bot's queue waits on 'verifying' as on any pack still out.
+        updateDccTransferState(transferId, 'verifying');
         this.publishDcc(transferId);
-        if (kept) this.publishDccFile(kept);
+        crc32OfFile(destPath)
+          .then(
+            (whole) => crc32Hex(whole),
+            () => null,
+          )
+          .then((actual) => {
+            // Cancelled meanwhile, or the row cleared: leave it be.
+            if (getDccTransfer(this.network.user_id, transferId)?.state !== 'verifying') return;
+            this.finishDccReceive(transferId, nick, offer, received, expectedCrc, actual);
+          });
       },
       onError: (err, received) => {
         this.dccReceivers.delete(transferId);
@@ -7535,6 +7538,42 @@ export class IrcConnection {
     });
     this.dccReceivers.set(transferId, receiver);
     receiver.start();
+  }
+
+  // A receive's end: how its bytes checked out against the filename CRC32, the
+  // row and the kept file, and the line in the DM. `actual` is the whole file's
+  // CRC32, or null when a resumed file couldn't be read back.
+  private finishDccReceive(
+    transferId: number,
+    nick: string,
+    offer: DccSend,
+    received: number,
+    expectedCrc: string | null,
+    actual: string | null,
+  ): void {
+    const status: DccCrcStatus =
+      expectedCrc == null
+        ? 'absent'
+        : actual == null
+          ? 'unverified'
+          : actual === expectedCrc
+            ? 'ok'
+            : 'mismatch';
+    const kept = markDccCompleted(transferId, received, actual, status);
+    const badge =
+      status === 'ok'
+        ? ' ✓ CRC verified'
+        : status === 'mismatch'
+          ? ` ⚠ CRC MISMATCH (got ${actual}, expected ${expectedCrc})`
+          : status === 'unverified'
+            ? ' (resumed — size verified)'
+            : '';
+    this.dccLine(
+      nick,
+      `DCC: received "${offer.filename}" (${formatBytes(received)}) from ${nick}${badge}`,
+    );
+    this.publishDcc(transferId);
+    if (kept) this.publishDccFile(kept);
   }
 
   // Push a transfer row to ALL the user's clients (user-scoped, not buffer-scoped)

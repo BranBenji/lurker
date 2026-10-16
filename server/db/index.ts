@@ -489,6 +489,9 @@ function migrate() {
       -- so clearing the transfer from the list keeps them.
       peer_nick TEXT,
       network_id INTEGER REFERENCES networks(id) ON DELETE SET NULL,
+      -- How a received file checked out against the CRC32 in its name (#1082),
+      -- as on the transfer; null for an upload.
+      crc_status TEXT,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_dcc_files_user ON dcc_files(user_id, id DESC);
@@ -1630,7 +1633,7 @@ ensureColumn('push_subscriptions', 'transport', "TEXT NOT NULL DEFAULT 'webpush'
 // Schema versioning lets us retire one-shot recovery blocks once every
 // production DB has run through them. Bump SCHEMA_VERSION when adding a new
 // recovery block, and delete blocks for versions far enough in the past.
-const SCHEMA_VERSION = 25;
+const SCHEMA_VERSION = 26;
 const schemaVersionRow = db
   .prepare(`SELECT value FROM app_meta WHERE key = 'schema_version'`)
   .get() as { value: string } | undefined;
@@ -2937,6 +2940,22 @@ if (schemaVersion < 25) {
   ensureColumn('dcc_transfers', 'attempt', 'INTEGER NOT NULL DEFAULT 1');
   ensureColumn('dcc_transfers', 'requested_at', 'TEXT');
   ensureColumn('dcc_transfers', 'bot_acked_at', 'TEXT');
+}
+// #1082: a kept file says how it checked out (verified, mismatch, no checksum,
+// resumed), so the DCC window can say it even after its transfer is cleared.
+// Filled from the transfer that received it, where that row is still there.
+if (schemaVersion < 26) {
+  ensureColumn('dcc_files', 'crc_status', 'TEXT');
+  const filled = db
+    .prepare(
+      `UPDATE dcc_files
+         SET crc_status = (SELECT t.crc_status FROM dcc_transfers t
+                           WHERE t.file_id = dcc_files.id AND t.direction = 'recv'
+                           ORDER BY t.id DESC LIMIT 1)
+       WHERE origin = 'received' AND crc_status IS NULL`,
+    )
+    .run().changes;
+  if (filled > 0) console.log(`[db] ${filled} kept DCC file(s) now say how they verified (#1082)`);
 }
 // The queue's lookups by bot and pack (a failed pack's later tries, a bot's
 // packs waiting or out). Partial: most rows aren't a queue's. After the block
