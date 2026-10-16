@@ -2933,7 +2933,7 @@ describe('auto-reconnect controller', () => {
     vi.useFakeTimers();
     const { conn, events } = makeConn('rc-ban-blackhole');
     conn.client.emit('irc error', { error: 'irc', reason: 'Closing Link: nick[u@h] (Z-Lined)' });
-    vi.advanceTimersByTime(120 * 1000); // irc-framework's ping timeout scale
+    vi.advanceTimersByTime(300 * 1000); // the ping timeout's scale (#1146)
     conn.client.emit('close', true);
     vi.runAllTimers();
     expect(conn.connect).not.toHaveBeenCalled();

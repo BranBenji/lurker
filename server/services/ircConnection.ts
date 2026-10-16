@@ -5450,15 +5450,15 @@ export class IrcConnection {
       // every socket death funnels to our 'close' handler, which decides.
       auto_reconnect: false,
       // Give up on a silent server after 5 minutes, as irssi (lag.c) and WeeChat
-      // (lag_reconnect) do, not irc-framework's 2 (#1146). After registration it
-      // counts from the last line read, which the lag pinger's PONGs keep fresh
-      // (startLagPinger). Before it, irc-framework guards only with the socket's
-      // idle timeout, ping_interval + ping_timeout, so a stuck TLS handshake or
-      // registration now waits 5.5 minutes, close to irssi's 5-minute
-      // server_connect_timeout. The socket has no TCP keepalive, so this is
-      // also what notices a link that died without a word. It rides out longer
-      // event-loop stalls (#1074), but doesn't fix them. Same connect()-dict
-      // rule as enable_chghost below.
+      // (lag_reconnect) do, not irc-framework's 2 (#1146). It counts from the
+      // last line read, starting once the socket connects, so it also bounds a
+      // server that never finishes registering: 5 minutes, as irssi's
+      // server_connect_timeout. The lag pinger's PONGs keep it fresh
+      // (startLagPinger). The dial and TLS handshake are bounded by the socket's
+      // idle timeout, ping_interval + ping_timeout, now 5.5 minutes. The socket
+      // has no TCP keepalive, so this is also what notices a link that died
+      // without a word. It rides out longer event-loop stalls (#1074), but
+      // doesn't fix them. Same connect()-dict rule as enable_chghost below.
       ping_timeout: IRC_PING_TIMEOUT_S,
       // Disable irc-framework's built-in CTCP VERSION auto-reply so our own
       // handler owns VERSION (#263). Like enable_chghost below, this MUST ride

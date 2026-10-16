@@ -94,8 +94,8 @@ export const RETENTION_SWEEP_DEFAULTS: RetentionSweepOptions = {
   minBatchRows: 25,
   // 50ms is the budget for ONE statement, not for the tick: the yields between
   // statements are what keep sockets breathing, so many short blocks are fine
-  // where one long one is not. Sized against the ~120s IRC ping timeout with
-  // three orders of magnitude to spare.
+  // where one long one is not. Sized against the IRC ping timeout (5 minutes,
+  // #1146) with three orders of magnitude to spare.
   targetStatementMs: 50,
   maxTickMs: 1000,
   maxBatchesPerTick: 20,

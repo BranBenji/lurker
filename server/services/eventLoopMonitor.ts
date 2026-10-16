@@ -69,7 +69,7 @@ export function startEventLoopMonitor(
       }
       console.warn(
         `[event-loop] stalled ~${maxMs}ms — synchronous work blocked socket I/O ` +
-          `(a stall past ~120s trips IRC ping timeouts; watch for a reconnect burst near this line)` +
+          `(a stall past ~300s trips IRC ping timeouts; watch for a reconnect burst near this line)` +
           context,
       );
     }
