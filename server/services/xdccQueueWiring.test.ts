@@ -92,8 +92,8 @@ function harness() {
   conn.state = 'connected';
   const raw = vi.fn<(line: string) => void>();
   conn.client.raw = raw as unknown as typeof conn.client.raw;
-  conn.client.ctcpRequest = vi.fn();
-  conn.client.ctcpResponse = vi.fn();
+  conn.client.ctcpRequest = vi.fn<(target: string, type: string, ...p: string[]) => void>();
+  conn.client.ctcpResponse = vi.fn<(target: string, type: string, ...p: string[]) => void>();
   const events: Array<Record<string, unknown>> = [];
   const frames: Array<Record<string, unknown>> = [];
   conn.publish = (event: Record<string, unknown>) => {

@@ -6743,7 +6743,7 @@ export class IrcConnection {
   // The connection dropped. A request still out goes back to the queue, at
   // the front, for the reconnect: the bot dropped it when we left.
   private requeueXdccOnDisconnect(): void {
-    for (const id of [...this.xdccWaiting.keys()]) this.stopWaitingForXdccBot(id);
+    for (const id of this.xdccWaiting.keys()) this.stopWaitingForXdccBot(id);
     for (const id of requeueXdccRequests(this.network.user_id, this.network.id)) {
       this.publishDcc(id);
     }
@@ -6778,7 +6778,7 @@ export class IrcConnection {
   // of its bot's queue, with its attempt. The receiver's own "cancelled" is
   // kept off the row, which ends as interrupted instead (its partial resumes).
   private requeueXdccForDispose(): void {
-    for (const id of [...this.xdccWaiting.keys()]) this.stopWaitingForXdccBot(id);
+    for (const id of this.xdccWaiting.keys()) this.stopWaitingForXdccBot(id);
     requeueXdccRequests(this.network.user_id, this.network.id);
     for (const [id, receiver] of this.dccReceivers) {
       const row = getDccTransfer(this.network.user_id, id);
