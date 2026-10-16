@@ -2444,7 +2444,7 @@ export class IrcConnection {
     // system buffer), and console.warn lands in `docker logs` next to the
     // [event-loop] stall line for correlation.
     on('ping timeout', () => {
-      const text = `Ping timeout — no data from ${this.network.host} for the timeout window; reconnecting. If every network did this at once, the server event loop stalled (check logs for [event-loop]).`;
+      const text = `Ping timeout — no data from ${this.network.host} for ${IRC_PING_TIMEOUT_S / 60} minutes; reconnecting. If every network did this at once, the server event loop stalled (check logs for [event-loop]).`;
       this.logNet(text, 'warn');
       console.warn(`[irc] ping timeout on network ${this.network.id} (${this.network.host})`);
     });
@@ -5450,11 +5450,15 @@ export class IrcConnection {
       // every socket death funnels to our 'close' handler, which decides.
       auto_reconnect: false,
       // Give up on a silent server after 5 minutes, as irssi (lag.c) and WeeChat
-      // (lag_reconnect) do, not irc-framework's 2 (#1146). It counts from the
-      // last line read, and we PING every 30 s (ping_interval, left at its
-      // default so lag stays fresh). A dead link usually errors out sooner
-      // through TCP; this also rides out longer event-loop stalls (#1074).
-      // Same connect()-dict rule as enable_chghost below.
+      // (lag_reconnect) do, not irc-framework's 2 (#1146). After registration it
+      // counts from the last line read, which the lag pinger's PONGs keep fresh
+      // (startLagPinger). Before it, irc-framework guards only with the socket's
+      // idle timeout, ping_interval + ping_timeout, so a stuck TLS handshake or
+      // registration now waits 5.5 minutes, close to irssi's 5-minute
+      // server_connect_timeout. The socket has no TCP keepalive, so this is
+      // also what notices a link that died without a word. It rides out longer
+      // event-loop stalls (#1074), but doesn't fix them. Same connect()-dict
+      // rule as enable_chghost below.
       ping_timeout: IRC_PING_TIMEOUT_S,
       // Disable irc-framework's built-in CTCP VERSION auto-reply so our own
       // handler owns VERSION (#263). Like enable_chghost below, this MUST ride

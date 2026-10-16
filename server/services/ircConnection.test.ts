@@ -536,7 +536,8 @@ describe('client certificate refusals', () => {
   });
 });
 
-describe('tls certificate trust setting', () => {
+// What connect() hands irc-framework, and the network's system lines.
+describe('connect options', () => {
   function makeConn(trusted_certificates: number): IrcConnection {
     return new IrcConnection({
       network: {
