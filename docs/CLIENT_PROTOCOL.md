@@ -1591,7 +1591,7 @@ asks a bot for its next pack (`XDCC SEND #<n>`, sent as the user's own line in
 the bot's DM) only once nothing of that bot's is out; the row is then
 `requested`. Any NOTICE or PRIVMSG from the bot sets `bot_acked_at`, and the
 request then waits as long as the bot's own queue takes; a request the bot
-doesn't answer within 2 minutes fails ("no response from <bot>"). A pack that
+doesn't answer within 2 minutes fails, its `error` saying the bot never answered. A pack that
 fails is queued once more, at the back, resuming its partial, unless it was
 refused for a reason that would hold again (too big, over the storage limit, a
 blocked address). A disconnect puts a request that was out back at the front.
