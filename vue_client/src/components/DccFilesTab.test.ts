@@ -5,7 +5,7 @@
 // The body of the DCC window (#1085): offers waiting, what is moving
 // grouped by peer (a bot's block is its queue), and the kept files.
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 
@@ -19,6 +19,7 @@ vi.mock('../stores/config.js', () => ({
 
 import DccFilesTab from './DccFilesTab.vue';
 import { useDccStore, type DccTransfer, type DccFile } from '../stores/dcc.js';
+import { useNetworksStore } from '../stores/networks.js';
 
 function row(over: Partial<DccTransfer>): DccTransfer {
   return {
@@ -51,6 +52,8 @@ const file = (id: number, name: string): DccFile => ({
   peer_nick: 'Bot',
   network_id: 1,
 });
+
+afterEach(() => vi.unstubAllGlobals());
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -165,5 +168,210 @@ describe('DccFilesTab', () => {
     const w = mountTab();
     await w.vm.$nextTick();
     expect(w.find('.note').text()).toContain("DCC isn't turned on for your account");
+  });
+
+  it('answers an offer from its row', async () => {
+    const dcc = useDccStore();
+    const accept = vi.spyOn(dcc, 'accept').mockResolvedValue(row({}));
+    const reject = vi.spyOn(dcc, 'reject').mockResolvedValue(row({}));
+    dcc.transfers = [
+      row({ id: 8, peer_nick: 'mira', state: 'pending_approval', filename: 'a.mov' }),
+    ];
+    const w = mountTab();
+    await w.vm.$nextTick();
+    const [yes, no] = w.findAll('.row.inline .acts .link');
+    await yes.trigger('click');
+    await no.trigger('click');
+    expect(accept).toHaveBeenCalledWith(8);
+    expect(reject).toHaveBeenCalledWith(8);
+  });
+
+  it('says where each transfer is, and offers what fits it', async () => {
+    const dcc = useDccStore();
+    useNetworksStore().networks = [{ id: 1, name: 'rizon' }] as never;
+    dcc.transfers = [
+      row({ id: 1, pack: 1, state: 'requested', filename: 'XDCC #1' }),
+      row({
+        id: 2,
+        pack: 2,
+        peer_nick: 'Two',
+        state: 'requested',
+        filename: 'XDCC #2',
+        bot_acked_at: '2026-10-16T00:00:00.000Z',
+      }),
+      row({ id: 3, pack: 3, peer_nick: 'Three', state: 'connecting', filename: 'c.mkv' }),
+      row({ id: 4, peer_nick: 'four', state: 'verifying', filename: 'v.mkv' }),
+      row({ id: 5, peer_nick: 'five', direction: 'send', state: 'offered', filename: 'o.txt' }),
+      row({
+        id: 6,
+        peer_nick: 'six',
+        direction: 'send',
+        state: 'sending',
+        filename: 's.txt',
+        advertised_size: 100,
+        received_bytes: 50,
+      }),
+      row({
+        id: 7,
+        peer_nick: 'seven',
+        state: 'failed',
+        filename: 'p.mkv',
+        advertised_size: 100,
+        received_bytes: 30,
+        destination_path: '/x/p.mkv',
+      }),
+    ];
+    const w = mountTab();
+    await w.vm.$nextTick();
+    const text = w.text();
+    expect(text).toContain('asked, waiting for an answer');
+    expect(text).toContain("in the bot's queue");
+    expect(text).toContain('#3 • connecting');
+    expect(text).toContain('checking the checksum');
+    expect(text).toContain('offered to five, waiting for them to accept');
+    expect(text).toContain('to six');
+    expect(text).toContain('50% · 50 B of 100 B');
+    expect(text).toContain('failed at 30% · it resumes if seven sends it again');
+    const labels = w.findAll('.acts .link').map((b) => b.text());
+    expect(labels).toEqual(expect.arrayContaining(['Cancel', 'Withdraw', 'Delete partial']));
+  });
+
+  it('deletes a partial only once confirmed', async () => {
+    const dcc = useDccStore();
+    const clear = vi.spyOn(dcc, 'clearTransfer').mockResolvedValue();
+    const confirm = vi.fn<() => boolean>().mockReturnValueOnce(false).mockReturnValueOnce(true);
+    vi.stubGlobal('confirm', confirm);
+    dcc.transfers = [
+      row({
+        id: 7,
+        state: 'failed',
+        filename: 'p.mkv',
+        received_bytes: 30,
+        destination_path: '/x/p.mkv',
+      }),
+    ];
+    const w = mountTab();
+    await w.vm.$nextTick();
+    const del = w.findAll('.acts .link').find((b) => b.text() === 'Delete partial')!;
+    await del.trigger('click');
+    expect(clear).not.toHaveBeenCalled();
+    await del.trigger('click');
+    expect(clear).toHaveBeenCalledWith(7, true);
+    expect(confirm).toHaveBeenCalledTimes(2);
+  });
+
+  it('shows speed and time left while a transfer moves', async () => {
+    const dcc = useDccStore();
+    dcc.transfers = [
+      row({
+        id: 3,
+        state: 'receiving',
+        filename: 'r.mkv',
+        advertised_size: 100,
+        received_bytes: 41,
+      }),
+    ];
+    dcc.rates = { 3: { bps: 2048, etaSeconds: 300 } } as never;
+    const w = mountTab();
+    await w.vm.$nextTick();
+    expect(w.text()).toContain('41% · 2.0 KB/s · 5m left');
+  });
+
+  it("opens one row's ⋯ menu at a time, and closes it again", async () => {
+    const dcc = useDccStore();
+    dcc.filesLoaded = true;
+    dcc.files = [file(1, 'a.mkv'), file(2, 'b.mkv')];
+    const w = mountTab();
+    await w.vm.$nextTick();
+    const [one, two] = w.findAll('button.more');
+    await one.trigger('click');
+    expect(w.findAll('.menu')).toHaveLength(1);
+    await two.trigger('click');
+    expect(w.findAll('.menu')).toHaveLength(1);
+    expect(two.attributes('aria-expanded')).toBe('true');
+    await two.trigger('click');
+    expect(w.findAll('.menu')).toHaveLength(0);
+  });
+
+  it('sends a kept file to a nick, on the network picked', async () => {
+    const dcc = useDccStore();
+    const networks = useNetworksStore();
+    networks.networks = [
+      { id: 1, name: 'rizon' },
+      { id: 2, name: 'libera' },
+    ] as never;
+    networks.states = {
+      1: { networkId: 1, channels: [], state: 'connected' },
+      2: { networkId: 2, channels: [], state: 'connected' },
+    } as never;
+    dcc.account = { chat: false, receive: true, send: true, canListen: false } as never;
+    dcc.filesLoaded = true;
+    dcc.files = [file(1, 'a.mkv')];
+    const send = vi.spyOn(dcc, 'sendFile').mockResolvedValue(row({}));
+    const w = mountTab();
+    await w.vm.$nextTick();
+    await w
+      .findAll('.acts .link')
+      .find((b) => b.text() === 'Send to…')!
+      .trigger('click');
+    const form = w.find('form.send-to');
+    expect(form.find('select').exists()).toBe(true);
+    (form.findAll('option')[1].element as HTMLOptionElement).selected = true;
+    await form.find('select').trigger('change');
+    await form.find('input.nick').setValue('  bob ');
+    await form.trigger('submit');
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(2, 'bob', 1, true));
+    await vi.waitFor(() => expect(w.find('form.send-to').exists()).toBe(false));
+  });
+
+  it('downloads a kept file, and deletes it only once confirmed', async () => {
+    const dcc = useDccStore();
+    dcc.filesLoaded = true;
+    dcc.files = [file(1, 'a.mkv')];
+    const download = vi.spyOn(dcc, 'downloadKeptFile').mockResolvedValue();
+    const del = vi.spyOn(dcc, 'deleteKeptFile').mockResolvedValue();
+    vi.stubGlobal(
+      'confirm',
+      vi.fn<() => boolean>().mockReturnValueOnce(false).mockReturnValueOnce(true),
+    );
+    const w = mountTab();
+    await w.vm.$nextTick();
+    const btn = (label: string) => w.findAll('.acts .link').find((b) => b.text() === label)!;
+    await btn('Download').trigger('click');
+    expect(download).toHaveBeenCalledWith(1);
+    await btn('Delete').trigger('click');
+    expect(del).not.toHaveBeenCalled();
+    await btn('Delete').trigger('click');
+    expect(del).toHaveBeenCalledWith(1);
+  });
+
+  it('while picking, sends the file picked, or one uploaded for the pick', async () => {
+    const dcc = useDccStore();
+    dcc.filesLoaded = true;
+    dcc.files = [file(1, 'a.mkv')];
+    dcc.pick = { networkId: 1, nick: 'bob', passive: false };
+    const picked = vi.spyOn(dcc, 'sendPicked').mockResolvedValue(null);
+    const upload = vi.spyOn(dcc, 'uploadFile').mockResolvedValue(file(9, 'new.txt'));
+    const w = mountTab();
+    await w.vm.$nextTick();
+    expect(w.find('.pick').text()).toContain('Pick a file to send to bob');
+    await w
+      .findAll('.acts .link')
+      .find((b) => b.text() === 'Send')!
+      .trigger('click');
+    expect(picked).toHaveBeenCalledWith(1);
+
+    const input = w.find('input[type="file"]');
+    const click = vi.spyOn(input.element as HTMLInputElement, 'click');
+    await w.find('.pick .link.inline').trigger('click');
+    expect(click).toHaveBeenCalled();
+    const chosen = new File(['hi'], 'new.txt');
+    Object.defineProperty(input.element, 'files', { value: [chosen], configurable: true });
+    await input.trigger('change');
+    await vi.waitFor(() => expect(picked).toHaveBeenLastCalledWith(9));
+    expect(upload).toHaveBeenCalledWith(chosen);
+
+    await w.findAll('.pick > .link').at(-1)!.trigger('click');
+    expect(dcc.pick).toBeNull();
   });
 });

@@ -152,6 +152,28 @@ function startSender(payload: Buffer): Promise<{ port: number }> {
   });
 }
 
+// A sender that sends the first `sent` bytes and then holds the connection,
+// so a download can be caught mid-way.
+function startStallingSender(sent: Buffer): Promise<{ port: number }> {
+  return new Promise((resolve) => {
+    const socks: net.Socket[] = [];
+    const server = net.createServer((sock) => {
+      socks.push(sock);
+      sock.on('error', () => {});
+      sock.write(sent);
+    });
+    server.listen(0, '127.0.0.1', () => {
+      senders.push({
+        close: () => {
+          for (const sock of socks) sock.destroy();
+          server.close();
+        },
+      });
+      resolve({ port: (server.address() as net.AddressInfo).port });
+    });
+  });
+}
+
 function waitFor(pred: () => boolean, timeoutMs = 5000): Promise<void> {
   return new Promise((resolve, reject) => {
     const start = Date.now();
@@ -510,6 +532,61 @@ describe('disconnects and cancels', () => {
     expect(queued.map((r) => [r.pack, r.attempt])).toEqual([
       [1, 2],
       [2, 1],
+    ]);
+  });
+
+  it('ends a stalled pack before asking for it again at the front', () => {
+    const h = harness();
+    h.conn.queueXdcc('Bot', [1, 2]);
+    const stalled = byPack('Bot', 1)[0];
+    db.prepare(`UPDATE dcc_transfers SET state = 'stalled' WHERE id = ?`).run(stalled.id);
+    h.conn.state = 'disconnected';
+    h.conn.retryXdcc(getDccTransfer(1, stalled.id)!);
+    expect(getDccTransfer(1, stalled.id)).toMatchObject({ state: 'failed', error: 'interrupted' });
+    const queued = rows().filter((r) => r.state === 'queued');
+    expect(queued.map((r) => [r.pack, r.attempt])).toEqual([
+      [1, 2],
+      [2, 1],
+    ]);
+  });
+});
+
+describe('mid-download', () => {
+  async function downloading() {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-xdcc-'));
+    process.env.LURKER_DCC_DIR = tmpDir;
+    process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1';
+    const sender = await startStallingSender(Buffer.alloc(10_000, 7));
+    const h = harness();
+    h.conn.queueXdcc('Bot', [29, 30]);
+    h.offer('Bot', `SEND ep29.mkv 2130706433 ${sender.port} 30000`);
+    await waitFor(() => (byPack('Bot', 29)[0]?.received_bytes ?? 0) > 0);
+    return h;
+  }
+
+  it('tells the bot when the pack coming in is cancelled, then asks for the next', async () => {
+    const h = await downloading();
+    h.conn.cancelDcc(byPack('Bot', 29)[0].id);
+    expect(h.privmsgs()).toContain('Bot :XDCC CANCEL');
+    await waitFor(() => byPack('Bot', 29)[0]?.state === 'cancelled');
+    await waitFor(() => byPack('Bot', 30)[0]?.state === 'requested');
+    // A cancel was the user's own word: no second try.
+    expect(byPack('Bot', 29)).toHaveLength(1);
+  });
+
+  it('puts a pack cut off by a reconnect back at the front, its try unspent', async () => {
+    const h = await downloading();
+    const first = byPack('Bot', 29)[0];
+    h.conn.dispose('reconnect');
+    await waitFor(() => byPack('Bot', 29).some((r) => r.state === 'queued'));
+    expect(getDccTransfer(1, first.id)).toMatchObject({
+      state: 'failed',
+      error: 'interrupted by a reconnect',
+    });
+    const queued = rows().filter((r) => r.state === 'queued');
+    expect(queued.map((r) => [r.pack, r.attempt])).toEqual([
+      [29, 1],
+      [30, 1],
     ]);
   });
 });

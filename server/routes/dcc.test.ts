@@ -752,12 +752,16 @@ describe('the XDCC queue routes', () => {
   let ircManager: typeof import('../services/ircManager.js').default;
   let enqueueXdccPacks: typeof import('../db/dccTransfers.js').enqueueXdccPacks;
   let updateDccTransferState: typeof import('../db/dccTransfers.js').updateDccTransferState;
+  let getDccTransfer: typeof import('../db/dccTransfers.js').getDccTransfer;
   const calls: Array<[string, unknown, unknown]> = [];
+  let retryAnswer: 'queued' | 'not-queued' = 'queued';
+  let conn: unknown;
 
   beforeAll(async () => {
     ircManager = (await import('../services/ircManager.js')).default;
-    ({ enqueueXdccPacks, updateDccTransferState } = await import('../db/dccTransfers.js'));
-    const conn = {
+    ({ enqueueXdccPacks, updateDccTransferState, getDccTransfer } =
+      await import('../db/dccTransfers.js'));
+    conn = {
       queueXdcc(bot: string, packs: number[]) {
         calls.push(['queue', bot, packs]);
         return enqueueXdccPacks(alice.id, aliceNet.id, bot, packs);
@@ -768,6 +772,7 @@ describe('the XDCC queue routes', () => {
       },
       retryXdcc(row: { pack: number | null }) {
         calls.push(['retry', row.pack, null]);
+        if (retryAnswer === 'not-queued') return null;
         return enqueueXdccPacks(alice.id, aliceNet.id, 'RetryBot', [row.pack!], {
           front: true,
           attempt: 2,
@@ -821,5 +826,62 @@ describe('the XDCC queue routes', () => {
     const res = await aliceAgent.post(`/api/dcc/${id}/retry`);
     expect(res.status).toBe(200);
     expect(res.body.transfer).toMatchObject({ pack: 44, state: 'queued', attempt: 2 });
+  });
+
+  it('says why a retry was refused: no such row, already queued, or no connection', async () => {
+    expect((await aliceAgent.post('/api/dcc/999999/retry')).status).toBe(404);
+    const [id] = enqueueXdccPacks(alice.id, aliceNet.id, 'RetryBot', [45]);
+    updateDccTransferState(id, 'failed', 'no response from RetryBot');
+    retryAnswer = 'not-queued';
+    try {
+      const res = await aliceAgent.post(`/api/dcc/${id}/retry`);
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('that pack is already in the queue');
+    } finally {
+      retryAnswer = 'queued';
+    }
+    ircManager.byUser.delete(alice.id);
+    try {
+      const res = await aliceAgent.post(`/api/dcc/${id}/retry`);
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('network not connected');
+    } finally {
+      ircManager.byUser.set(alice.id, new Map([[aliceNet.id, conn as never]]));
+    }
+  });
+
+  describe('with no connection for the network', () => {
+    beforeAll(() => ircManager.byUser.delete(alice.id));
+    afterAll(() => ircManager.byUser.set(alice.id, new Map([[aliceNet.id, conn as never]])));
+
+    it('refuses to queue, since a queue belongs to a connection', async () => {
+      const res = await aliceAgent
+        .post('/api/dcc/xdcc')
+        .send({ networkId: aliceNet.id, nick: 'Offline', packs: [1] });
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('network not connected');
+    });
+
+    it('still takes queued packs out, a pack or a whole bot', async () => {
+      const [one, two, three] = enqueueXdccPacks(alice.id, aliceNet.id, 'Offline', [1, 2, 3]);
+      const some = await aliceAgent
+        .post('/api/dcc/xdcc/remove')
+        .send({ networkId: aliceNet.id, nick: 'Offline', packs: [1] });
+      expect(some.body).toEqual({ removed: 1 });
+      expect(getDccTransfer(alice.id, one)).toBeUndefined();
+      const rest = await aliceAgent
+        .post('/api/dcc/xdcc/remove')
+        .send({ networkId: aliceNet.id, nick: 'offline', packs: null });
+      expect(rest.body).toEqual({ removed: 2 });
+      expect(getDccTransfer(alice.id, two)).toBeUndefined();
+      expect(getDccTransfer(alice.id, three)).toBeUndefined();
+    });
+
+    it('cancels a queued pack by taking it out of the queue', async () => {
+      const [id] = enqueueXdccPacks(alice.id, aliceNet.id, 'Offline', [7]);
+      const res = await aliceAgent.post(`/api/dcc/${id}/cancel`);
+      expect(res.status).toBe(200);
+      expect(getDccTransfer(alice.id, id)).toBeUndefined();
+    });
   });
 });
