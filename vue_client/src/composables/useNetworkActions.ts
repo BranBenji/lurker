@@ -32,13 +32,23 @@ export function useNetworkActions() {
     p.catch((err) => console.error('[useNetworkActions] toggle connection failed', err));
   }
 
+  // Disconnect or Reconnect, decided once, now: the label and the action are the same reading
+  // of the state however long the menu then stays open (#1136). Disconnect covers the
+  // in-flight states too, since during a backoff it is what stops the loop (#785).
+  function connectionItem(networkId: number): ContextMenuItem {
+    const offerDisconnect = canDisconnect(networks.states[networkId]?.state);
+    return {
+      label: offerDisconnect ? 'Disconnect' : 'Reconnect',
+      icon: offerDisconnect ? UnplugIcon : PlugIcon,
+      onClick: () => toggleConnection(networkId, offerDisconnect),
+    };
+  }
+
   function buildItems(net: Network): ContextMenuItem[] {
     const state = networks.states[net.id]?.state;
     const isConnected = state === 'connected';
-    // ⚠ Not `isConnected`. Disconnect is what stops a reconnect loop, so it has to be reachable
-    // DURING one — see canDisconnect (#785). Join below stays on isConnected, which is the
-    // different question of whether there's a socket to send JOIN on.
-    const offerDisconnect = canDisconnect(state);
+    // Join stays on isConnected, the question of whether there's a socket to send JOIN on;
+    // Disconnect is a different one (connectionItem).
     return [
       // Channel actions first — the common reason to reach for a network's menu.
       // Join needs a live connection; the channel list is still browsable from
@@ -60,11 +70,7 @@ export function useNetworkActions() {
         icon: SettingsIcon,
         onClick: () => networkEditor.open(net),
       },
-      {
-        label: offerDisconnect ? 'Disconnect' : 'Reconnect',
-        icon: offerDisconnect ? UnplugIcon : PlugIcon,
-        onClick: () => toggleConnection(net.id, offerDisconnect),
-      },
+      connectionItem(net.id),
       // Network-wide notification ladder (issue #359): Highlights only (default)
       // / Nothing / Muted — a -network-scoped NONOTIFY(+NOUNREAD) rule covering
       // every buffer on the network.
@@ -83,5 +89,5 @@ export function useNetworkActions() {
     menu.open(buildItems(net), x, y);
   }
 
-  return { openMenuFromButton, onNetworkContextMenu };
+  return { openMenuFromButton, onNetworkContextMenu, connectionItem };
 }
