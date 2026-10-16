@@ -15,7 +15,7 @@
     <h2>dcc</h2>
     <p class="section-desc">
       With DCC, people on IRC can open direct chats with you and swap files with you. Files are kept
-      on this server, under Files in the Transfers list.
+      on this server, in the DCC window.
     </p>
 
     <template v-if="config">

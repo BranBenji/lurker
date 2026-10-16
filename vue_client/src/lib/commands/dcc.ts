@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Parser for the /dcc command (#270) — the slash-command surface over DCC.
-// `list` opens the Transfers view and `files` the files the account keeps
+// `list` opens the DCC window and `files` lists the files the account keeps
 // (#1133); accept / reject / cancel act on one transfer
 // by its numeric id (the id shown in the list), download saves a completed
 // one through the browser, and delete removes its file from the server; `clear`

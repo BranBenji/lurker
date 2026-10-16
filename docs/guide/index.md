@@ -28,6 +28,7 @@ Whichever you choose, the application is identical — this guide covers using i
 - [The Interface](/guide/interface) — buffers, DMs, and finding your way around.
 - [Slash Commands](/guide/slash-commands) — driving Lurker from the keyboard.
 - [Notifications](/guide/notifications) — staying informed across devices.
+- [Files and Chat (DCC)](/guide/dcc) — receiving and sending files, XDCC bots, and direct chats.
 - [Encryption (E2E)](/guide/encryption) — end-to-end encrypted channels.
 
 ::: info This guide is growing

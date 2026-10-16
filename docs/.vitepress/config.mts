@@ -46,6 +46,7 @@ export default defineConfig({
             { text: 'The Interface', link: '/guide/interface' },
             { text: 'Slash Commands', link: '/guide/slash-commands' },
             { text: 'Notifications', link: '/guide/notifications' },
+            { text: 'Files and Chat (DCC)', link: '/guide/dcc' },
             { text: 'Encryption (E2E)', link: '/guide/encryption' },
           ],
         },
