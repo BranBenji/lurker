@@ -42,9 +42,3 @@ export function isXdccRefusal(text: string): boolean {
     text,
   );
 }
-
-/** A refusal a retry would meet again: the pack isn't there, or we may not
- *  have it. A full queue may have room later. */
-export function isXdccFinalRefusal(text: string): boolean {
-  return /invalid pack|no such pack|denied|not allowed|must be (?:on|in) /i.test(text);
-}

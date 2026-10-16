@@ -603,7 +603,7 @@ export function findResumableTransfer(
     .prepare(
       `SELECT * FROM dcc_transfers
        WHERE user_id = ? AND network_id = ? AND filename = ? AND destination_path IS NOT NULL
-         AND state IN ('failed', 'stalled', 'receiving', 'cancelled')
+         AND state IN ('failed', 'stalled', 'receiving')
        ORDER BY id DESC LIMIT 1`,
     )
     .get(userId, networkId, filename) as DccTransferRow | undefined;

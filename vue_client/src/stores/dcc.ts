@@ -21,6 +21,7 @@ import { uploadInChunks } from '../lib/chunkedUpload.js';
 import { formatBytes } from '../utils/formatBytes.js';
 import { useConfigStore } from './config.js';
 import { useToastsStore } from './toasts.js';
+import { useBuffersStore } from './buffers.js';
 
 export { describePacks } from '../../../shared/xdcc.js';
 
@@ -203,10 +204,22 @@ export function inFlight(t: DccTransfer): boolean {
 // (#1085).
 export function retryable(t: DccTransfer): boolean {
   return (
-    t.pack != null &&
-    t.direction === 'recv' &&
-    (t.state === 'failed' || t.state === 'cancelled' || t.state === 'rejected')
+    t.pack != null && t.direction === 'recv' && (t.state === 'failed' || t.state === 'stalled')
   );
+}
+
+// Whether two nicks on a network are one peer: the same DM, as the buffers
+// store's findDm resolves each (the house rule for matching a nick), and as
+// findDm folds them when either has no DM open.
+export function samePeer(networkId: number | null, a: string, b: string): boolean {
+  if (a === b) return true;
+  if (networkId != null) {
+    const buffers = useBuffersStore();
+    const da = buffers.findDm(networkId, a);
+    const db = buffers.findDm(networkId, b);
+    if (da && db) return da === db;
+  }
+  return a.toLowerCase() === b.toLowerCase();
 }
 
 // Bytes per second over recent progress frames, and the time left at that

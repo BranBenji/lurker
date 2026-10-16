@@ -202,6 +202,7 @@ import {
   describePacks,
   findDccFile,
   percentReceived,
+  samePeer,
   type DccFile,
   type DccTransfer,
 } from '../stores/dcc.js';
@@ -3145,7 +3146,7 @@ async function runXdcc(argLine: string, networkId: number | null, target: string
           t.direction === 'recv' &&
           ACTIVE_STATES.has(t.state) &&
           (networkId == null || t.network_id === networkId) &&
-          (!cmd.bot || t.peer_nick.toLowerCase() === cmd.bot.toLowerCase()),
+          (!cmd.bot || samePeer(t.network_id, t.peer_nick, cmd.bot)),
       );
       if (!rows.length) {
         say(cmd.bot ? `no packs queued from ${cmd.bot}.` : 'no packs queued.');
@@ -3185,13 +3186,17 @@ async function runXdcc(argLine: string, networkId: number | null, target: string
 // A bot's queue as /xdcc queue prints it: the bot, then its packs in order,
 // the one out first.
 function xdccQueueLines(rows: DccTransfer[]): string[] {
-  const byBot = new Map<string, DccTransfer[]>();
+  const byBot: DccTransfer[][] = [];
   for (const t of rows) {
-    const key = `${t.network_id}|${t.peer_nick.toLowerCase()}`;
-    byBot.set(key, [...(byBot.get(key) ?? []), t]);
+    const list = byBot.find(
+      (l) =>
+        l[0].network_id === t.network_id && samePeer(t.network_id, l[0].peer_nick, t.peer_nick),
+    );
+    if (list) list.push(t);
+    else byBot.push([t]);
   }
   const lines: string[] = [];
-  for (const list of byBot.values()) {
+  for (const list of byBot) {
     const net = networks.networkById(list[0].network_id ?? -1)?.name;
     lines.push(`${list[0].peer_nick}${net ? ` (${net})` : ''}`);
     const sorted = list.toSorted(

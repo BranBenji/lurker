@@ -232,6 +232,7 @@ import {
   inFlight,
   percentReceived,
   retryable,
+  samePeer,
   useDccStore,
   type DccFile,
   type DccTransfer,
@@ -304,8 +305,7 @@ const offers = computed(() =>
 );
 
 // A later try of the same pack exists — waiting, out, done or failed in its
-// turn — so this one's ending has been taken care of. (Nicks folded as findDm
-// folds them.)
+// turn — so this one's ending has been taken care of.
 function superseded(t: DccTransfer): boolean {
   return (
     t.pack != null &&
@@ -314,7 +314,7 @@ function superseded(t: DccTransfer): boolean {
         o.id > t.id &&
         o.pack === t.pack &&
         o.network_id === t.network_id &&
-        o.peer_nick.toLowerCase() === t.peer_nick.toLowerCase(),
+        samePeer(t.network_id, o.peer_nick, t.peer_nick),
     )
   );
 }
@@ -342,26 +342,28 @@ function order(t: DccTransfer): number {
 }
 
 const peers = computed((): PeerBlock[] => {
-  const blocks = new Map<string, PeerBlock>();
+  const blocks: PeerBlock[] = [];
   for (const t of dcc.transfers) {
     if (!(inFlight(t) || endedButOpen(t)) || !rowMatches(t)) continue;
-    const key = `${t.network_id ?? 'x'}|${t.peer_nick.toLowerCase()}`;
-    let b = blocks.get(key);
+    let b = blocks.find(
+      (x) => x.networkId === t.network_id && samePeer(t.network_id, x.nick, t.peer_nick),
+    );
     if (!b) {
+      const key = `${t.network_id ?? 'x'}|${t.id}`;
       b = { key, nick: t.peer_nick, networkId: t.network_id, queued: 0, rows: [] };
-      blocks.set(key, b);
+      blocks.push(b);
     }
     b.rows.push(t);
     if (t.state === 'queued') b.queued++;
   }
-  for (const b of blocks.values()) {
+  for (const b of blocks) {
     b.rows.sort(
       (a, c) =>
         order(a) - order(c) ||
         (a.state === 'queued' ? (a.queue_seq ?? 0) - (c.queue_seq ?? 0) : c.id - a.id),
     );
   }
-  return [...blocks.values()];
+  return blocks;
 });
 
 const kept = computed(() => dcc.files.filter((f) => matches(f.name)));
@@ -482,7 +484,7 @@ function rowActions(t: DccTransfer): RowAction[] {
     return [{ label: 'Cancel', tone: 'bad', run: () => act(dcc.cancel(t.id)) }];
   }
   const out: RowAction[] = [];
-  if (retryable(t) || (t.state === 'stalled' && t.pack != null)) {
+  if (retryable(t)) {
     out.push({ label: 'Retry', run: () => act(dcc.retry(t.id)) });
   }
   if (holdsPartial(t)) {

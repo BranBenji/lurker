@@ -430,8 +430,8 @@ router.post('/:id/retry', needsReceive, (req: Request, res: Response) => {
   }
   // A stalled pack (interrupted mid-resume, no receiver left) can be asked for
   // again too.
-  const ended = !DCC_ACTIVE_STATES.has(row.state) || row.state === 'stalled';
-  if (row.pack == null || !ended || row.state === 'completed') {
+  // A failed one; a cancel or reject was the user's own word.
+  if (row.pack == null || (row.state !== 'failed' && row.state !== 'stalled')) {
     res
       .status(409)
       .json({ error: 'only a queued pack that ended without its file can be retried' });
@@ -500,12 +500,7 @@ router.post('/xdcc/remove', (req: Request, res: Response) => {
   if (!t) return;
   const packs = packsFrom(req, res, true);
   if (packs === undefined) return;
-  const removed = ircManager.unqueueXdcc(req.user!.id, t.networkId, t.nick, packs);
-  if (removed === null) {
-    res.status(409).json({ error: 'network not connected' });
-    return;
-  }
-  res.json({ removed });
+  res.json({ removed: ircManager.unqueueXdcc(req.user!.id, t.networkId, t.nick, packs) });
 });
 
 // {networkId, nick}, ownership-checked. Shared by the chat routes and send so

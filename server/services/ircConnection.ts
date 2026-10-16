@@ -198,7 +198,6 @@ import {
 } from '../db/dccTransfers.js';
 import {
   describePacks,
-  isXdccFinalRefusal,
   isXdccRefusal,
   xdccPlaceholderName,
   xdccTrigger,
@@ -1535,7 +1534,14 @@ export class IrcConnection {
     // when you leave, so what was out waits again for the next connect.
     // ⚠ Not when only our link to the engine went (a detach, a takeover): the
     // IRC socket, and the bot's place for us, live on.
-    if (changed && state === 'connected') setImmediate(() => this.pumpXdccQueue());
+    // A fresh registration (not a re-attach to a socket the engine kept) means
+    // the bot never heard a request we think is out: it goes again, at the
+    // front. Under the engine a lost socket can be re-dialed without passing
+    // through 'disconnected', so this is the one place that sees it.
+    if (changed && state === 'connected') {
+      if (!this.restoring) this.requeueXdccOnDisconnect();
+      setImmediate(() => this.pumpXdccQueue());
+    }
     if (changed && state === 'disconnected' && !this.engineSocketAlive) {
       this.requeueXdccOnDisconnect();
     }
@@ -6761,7 +6767,7 @@ export class IrcConnection {
       // and whatever the bot said wait there): that isn't the bot's silence.
       // Start the clock again.
       if (this.state !== 'connected' && !this.disposed) {
-        this.armXdccTimer(now);
+        this.armXdccTimer({ ...now, bot_acked_at: null });
         return;
       }
       updateDccTransferState(
@@ -6794,6 +6800,10 @@ export class IrcConnection {
     }
     if (waiting.length === 0) return;
     if (isXdccRefusal(text)) {
+      // A bot answers in the order it was asked, so it is the oldest request
+      // still waiting that it refused (a typed one can be out beside the
+      // queue's). The bot said no: no automatic retry; Retry is the user's.
+      waiting.splice(1);
       // Matching control characters is the point: a bot's colours and bolds.
       const reason = text
         // eslint-disable-next-line no-control-regex
@@ -6802,7 +6812,7 @@ export class IrcConnection {
         .slice(0, 200);
       for (const id of waiting) {
         this.stopWaitingForXdccBot(id);
-        if (isXdccFinalRefusal(text)) this.xdccNoRetry.add(id);
+        this.xdccNoRetry.add(id);
         updateDccTransferState(id, 'failed', `${nick}: ${reason}`);
         this.publishDcc(id);
       }
@@ -6832,6 +6842,9 @@ export class IrcConnection {
   // request out goes back now; a pack waiting on the bot's resume ACCEPT is
   // ended here rather than left stalled.
   private interruptXdcc(): void {
+    // A detach or takeover: the engine kept the IRC socket for another process,
+    // which owns these rows now. Leave them be.
+    if (this.engineSocketAlive) return;
     this.xdccInterrupted = true;
     for (const id of this.xdccWaiting.keys()) this.stopWaitingForXdccBot(id);
     for (const id of requeueXdccRequests(this.network.user_id, this.network.id)) {

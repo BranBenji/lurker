@@ -1589,12 +1589,14 @@ number), `queue_seq` (its place: the lowest queued one goes next), `attempt`
 (2 on the one automatic retry), `requested_at` and `bot_acked_at`. The server
 asks a bot for its next pack (`XDCC SEND #<n>`, sent as the user's own line in
 the bot's DM) only once nothing of that bot's is out; the row is then
-`requested`. Any NOTICE or PRIVMSG from the bot sets `bot_acked_at`, and the
-request then waits as long as the bot's own queue takes; a request the bot
-doesn't answer within 2 minutes fails, its `error` saying the bot never answered. A pack that
-fails is queued once more, at the back, resuming its partial, unless it was
-refused for a reason that would hold again (too big, over the storage limit, a
-blocked address). A disconnect puts a request that was out back at the front.
+`requested`. A private NOTICE or PRIVMSG from the bot refusing it (`Invalid
+Pack Number`, `denied`, a full queue) fails it; any other sets `bot_acked_at`,
+and the request then waits for the bot's offer up to 12 hours. A request the
+bot doesn't answer within 2 minutes fails, its `error` saying the bot never
+answered. A pack that fails is queued once more, at the back, resuming its
+partial, unless the bot refused it or this server did for a reason that would
+hold again (too big, over the storage limit, a blocked address). A disconnect,
+or a fresh connection, puts a request that was out back at the front.
 A user's own typed `xdcc send #N` to a bot joins its queue as the request out.
 
 `POST /xdcc` (`{networkId, nick, packs: number[]}`, at most 500) queues packs
@@ -1605,8 +1607,9 @@ and returns `{removed}`; a queued row is deleted (`dcc-transfers-cleared`), one
 already out is cancelled. Cancelling a pack out tells the bot (`XDCC REMOVE` for
 a request, `XDCC CANCEL` for a download). Needs no grant. `POST /:id/retry`
 queues a pack that ended without its file again, at the FRONT, and returns
-`{transfer}` (the new row); 409 for a row that isn't one. Needs receive. All
-three answer 409 when the network has no connection.
+`{transfer}` (the new row); 409 for a row that isn't a failed pack. Needs
+receive. Queueing and retrying answer 409 when the network has no connection;
+removing works without one.
 
 **Status lines.** What happens to a transfer (offered, received, failed,
 refused, queued) is kept as a message of type `dcc` in the peer's DM, with

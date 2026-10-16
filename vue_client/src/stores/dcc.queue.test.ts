@@ -150,6 +150,8 @@ describe('the XDCC queue', () => {
   it('can retry a queued pack that ended without its file, and nothing else', () => {
     expect(retryable(row({ pack: 3, state: 'failed' }))).toBe(true);
     expect(retryable(row({ pack: 3, state: 'completed' }))).toBe(false);
+    // A cancel was the user's own word.
+    expect(retryable(row({ pack: 3, state: 'cancelled' }))).toBe(false);
     expect(retryable(row({ pack: null, state: 'failed' }))).toBe(false);
   });
 

@@ -262,6 +262,27 @@ describe('the bot answering, or not', () => {
     expect(byPack('Bot', 100)[0].state).toBe('requested');
   });
 
+  it('fails only the oldest request waiting on a bot that refuses, and not to retry', async () => {
+    const h = harness();
+    h.conn.queueXdcc('Bot', [29]);
+    h.conn.say('Bot', 'xdcc send #40');
+    h.botSays('Bot', '** Invalid Pack Number, Try Again');
+    await tick();
+    expect(byPack('Bot', 29).map((r) => r.state)).toEqual(['failed']);
+    expect(byPack('Bot', 40)[0].state).toBe('requested');
+  });
+
+  it('does not spin on an answered request past its hours while the engine link is down', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const h = harness();
+    h.conn.queueXdcc('Bot', [29]);
+    h.botSays('Bot', 'Added you to the main queue.');
+    h.conn.state = 'reconnecting';
+    vi.advanceTimersByTime(13 * 3_600_000);
+    expect(vi.getTimerCount()).toBeLessThanOrEqual(1);
+    expect(byPack('Bot', 29)[0].state).toBe('requested');
+  });
+
   it('gives an answered request 12 hours for its offer, then moves on', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     const h = harness();
@@ -346,6 +367,15 @@ describe('disconnects and cancels', () => {
       [29, 'queued'],
       [30, 'queued'],
     ]);
+    h.conn.setState('connected');
+    await tick();
+    expect(h.privmsgs()).toEqual(['Bot :XDCC SEND #29', 'Bot :XDCC SEND #29']);
+  });
+
+  it('asks again on a fresh connection, which the bot never heard', async () => {
+    const h = harness();
+    h.conn.queueXdcc('Bot', [29]);
+    h.conn.state = 'connecting';
     h.conn.setState('connected');
     await tick();
     expect(h.privmsgs()).toEqual(['Bot :XDCC SEND #29', 'Bot :XDCC SEND #29']);

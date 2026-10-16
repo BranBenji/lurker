@@ -2938,6 +2938,13 @@ if (schemaVersion < 25) {
   ensureColumn('dcc_transfers', 'requested_at', 'TEXT');
   ensureColumn('dcc_transfers', 'bot_acked_at', 'TEXT');
 }
+// The queue's lookups by bot and pack (a failed pack's later tries, a bot's
+// packs waiting or out). Partial: most rows aren't a queue's. After the block
+// above, as the column is absent on an older install until it runs.
+db.exec(
+  `CREATE INDEX IF NOT EXISTS idx_dcc_transfers_pack
+     ON dcc_transfers(user_id, network_id, peer_nick, pack) WHERE pack IS NOT NULL`,
+);
 // Every lookup of a file's transfers goes by file_id (the files list's join,
 // deleting a file, the foreign key's own check). Here, not in the base schema:
 // on an older install the column only exists once the block above has run.

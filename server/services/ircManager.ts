@@ -27,6 +27,7 @@ import {
   DCC_ACTIVE_STATES,
   deleteQueuedXdcc,
   getDccTransfer,
+  removeXdccPacks,
   markDccCancelled,
   updateDccTransferState,
   type DccTransferRow,
@@ -786,16 +787,15 @@ class IrcManager extends EventEmitter {
     return conn.queueXdcc(bot, packs);
   }
 
-  /** Take packs (or, with null, all of them) out of a bot's queue. */
-  unqueueXdcc(
-    userId: number,
-    networkId: number,
-    bot: string,
-    packs: number[] | null,
-  ): number | null {
+  /** Take packs (or, with null, all of them) out of a bot's queue. With no
+   *  connection nothing can be out, so the queued rows just go. */
+  unqueueXdcc(userId: number, networkId: number, bot: string, packs: number[] | null): number {
     const conn = this.getConnection(userId, networkId);
-    if (!conn) return null;
-    return conn.unqueueXdcc(bot, packs);
+    if (conn) return conn.unqueueXdcc(bot, packs);
+    const { deleted } = removeXdccPacks(userId, networkId, bot, packs);
+    if (deleted.length)
+      this.emit('user-frame', userId, { kind: 'dcc-transfers-cleared', ids: deleted });
+    return deleted.length;
   }
 
   /** Try a failed queued pack again, at the front of its bot's queue. */
