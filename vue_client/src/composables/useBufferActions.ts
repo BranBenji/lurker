@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import {
+  FileUpIcon,
   IdCardIcon,
   LogInIcon,
   PinIcon,
@@ -21,6 +22,7 @@ import { usePinsStore } from '../stores/pins.js';
 import { useFavoritesStore } from '../stores/favorites.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useWhoisStore } from '../stores/whois.js';
+import { useDccStore } from '../stores/dcc.js';
 import { useContextMenu } from './useContextMenu.js';
 import { useNotifyLadder } from './useNotifyLadder.js';
 import { useChannelModal } from './useChannelModal.js';
@@ -54,6 +56,7 @@ export function useBufferActions(): BufferActionsAPI {
   const favorites = useFavoritesStore();
   const nickNotes = useNickNotesStore();
   const whois = useWhoisStore();
+  const dcc = useDccStore();
   const menu = useContextMenu();
   const notify = useNotifyLadder();
   const channelModal = useChannelModal();
@@ -175,6 +178,15 @@ export function useBufferActions(): BufferActionsAPI {
           onClick: () => nickNotes.openEditor(networkId, peerNick),
         },
       );
+      // As on the nick menu (#1085): opens the DCC window picking a file for
+      // the peer. A `=nick` chat's peer is the nick, as for the profile above.
+      if (dcc.canSend) {
+        items.push({
+          label: 'Send File (DCC)…',
+          icon: FileUpIcon,
+          onClick: () => dcc.openSendTo(networkId, peerNick),
+        });
+      }
     }
     // Close drops the buffer entirely — for a channel that also PARTs it, for
     // a DM it just stops tracking the peer. Both are reversible (rejoin /
