@@ -13,6 +13,7 @@ vi.mock('../api.js', () => ({ api: vi.fn<() => Promise<unknown>>(() => Promise.r
 
 import StatusBar from './StatusBar.vue';
 import { useNetworksStore } from '../stores/networks.js';
+import { useBuffersStore } from '../stores/buffers.js';
 import { useDccStore, type DccTransfer } from '../stores/dcc.js';
 
 function row(over: Partial<DccTransfer>): DccTransfer {
@@ -39,6 +40,8 @@ function mountOn(target: string, compact = false) {
   networks.networks = [{ id: 1, name: 'rizon' }] as never;
   networks.states[1] = { networkId: 1, channels: [], state: 'connected' } as never;
   networks.activeKey = `1::${target}`;
+  // The DM, as it is when you're in it: findDm resolves a nick through it.
+  useBuffersStore().ensure(1, target);
   return mount(StatusBar, {
     props: { compact },
     global: { stubs: { SuggestionStrip: true, MircColorPicker: true, UploadMenu: true } },

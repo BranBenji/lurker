@@ -22,6 +22,8 @@ import { formatBytes } from '../utils/formatBytes.js';
 import { useConfigStore } from './config.js';
 import { useToastsStore } from './toasts.js';
 
+export { describePacks } from '../../../shared/xdcc.js';
+
 // Mirror of the server DccTransferState union (db/dccTransfers.ts). Two entry
 // states (requested / pending_approval), an active receive path, a send's
 // offered / sending (#1086), and terminal states. Kept in sync by hand — the
@@ -222,16 +224,6 @@ export function formatEta(seconds: number): string {
   return `${s}s`;
 }
 
-// XDCC pack numbers for a line: `#31`, `#29–#32` for a run of three or more,
-// else `#29, #31 and #35`. The server's describePacks, for client lines.
-export function describePacks(packs: readonly number[]): string {
-  const run = packs.length >= 3 && packs.every((p, i) => i === 0 || p === packs[i - 1] + 1);
-  if (run) return `#${packs[0]}–#${packs[packs.length - 1]}`;
-  const names = packs.map((p) => `#${p}`);
-  if (names.length <= 1) return names.join('');
-  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
-}
-
 // Where a completed transfer's file downloads from (#1079). The modal's link
 // and `/dcc download` both use it.
 export function dccFileUrl(id: number): string {
@@ -371,6 +363,7 @@ export const useDccStore = defineStore('dcc', {
           const missed = transfersMissed;
           transfersMissed = [];
           for (const t of missed) this.applyTransfer(t);
+          this.syncOfferToasts();
           this.loaded = true;
           return this.transfers;
         } catch (e: any) {
@@ -481,6 +474,21 @@ export const useDccStore = defineStore('dcc', {
       offerToasts.set(t.id, toastId);
     },
 
+    // Every offer's toast against the list as it now stands: one for each offer
+    // still waiting (an offer pending when the app loads gets its toast here),
+    // none for one answered elsewhere while this tab wasn't listening.
+    syncOfferToasts(): void {
+      const byId = new Map(this.transfers.map((t) => [t.id, t]));
+      for (const id of [...offerToasts.keys()]) {
+        const t = byId.get(id);
+        if (!t || t.state !== 'pending_approval') {
+          useToastsStore().dismiss(offerToasts.get(id)!);
+          offerToasts.delete(id);
+        }
+      }
+      for (const t of this.transfers) if (t.state === 'pending_approval') this.syncOfferToast(t);
+    },
+
     // Queue XDCC packs from a bot (#1085). Resolves with the rows queued.
     async queueXdcc(networkId: number, bot: string, packs: number[]): Promise<DccTransfer[]> {
       const { transfers } = await api<{ transfers: DccTransfer[] }>('/api/dcc/xdcc', {
@@ -569,6 +577,7 @@ export const useDccStore = defineStore('dcc', {
     dropTransfers(ids: number[]): void {
       for (const id of ids) clearedIds.add(id);
       this.transfers = this.transfers.filter((t) => !clearedIds.has(t.id));
+      this.syncOfferToasts();
       for (const id of ids) {
         delete this.busy[id];
         delete this.actionError[id];

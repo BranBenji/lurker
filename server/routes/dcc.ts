@@ -59,6 +59,7 @@ import { getNetwork } from '../db/networks.js';
 import { findUserById } from '../db/users.js';
 import type { UploadSessionResult, UploadSessionRow } from '../db/uploadSessions.js';
 import { isChannelTarget, isSinglePeerTarget } from '../../shared/channels.js';
+import { XDCC_MAX_PACKS } from '../../shared/xdcc.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -427,7 +428,10 @@ router.post('/:id/retry', needsReceive, (req: Request, res: Response) => {
     res.status(404).json({ error: 'transfer not found' });
     return;
   }
-  if (row.pack == null || DCC_ACTIVE_STATES.has(row.state) || row.state === 'completed') {
+  // A stalled pack (interrupted mid-resume, no receiver left) can be asked for
+  // again too.
+  const ended = !DCC_ACTIVE_STATES.has(row.state) || row.state === 'stalled';
+  if (row.pack == null || !ended || row.state === 'completed') {
     res
       .status(409)
       .json({ error: 'only a queued pack that ended without its file can be retried' });
@@ -445,10 +449,6 @@ router.post('/:id/retry', needsReceive, (req: Request, res: Response) => {
   res.json({ transfer: getDccTransfer(req.user!.id, result) });
 });
 
-// A guard against a typo, not a quota: `/xdcc addl bot 1 100000` would ask a
-// bot for a hundred thousand packs, one after another.
-const XDCC_MAX_PACKS_PER_REQUEST = 500;
-
 // The pack numbers in a body, or why not.
 function packsFrom(req: Request, res: Response, allowNull: boolean): number[] | null | undefined {
   const raw = req.body?.packs;
@@ -461,9 +461,9 @@ function packsFrom(req: Request, res: Response, allowNull: boolean): number[] | 
     res.status(400).json({ error: 'packs must be a list of pack numbers' });
     return undefined;
   }
-  if (raw.length > XDCC_MAX_PACKS_PER_REQUEST) {
+  if (raw.length > XDCC_MAX_PACKS) {
     res.status(400).json({
-      error: `at most ${XDCC_MAX_PACKS_PER_REQUEST} packs at a time`,
+      error: `at most ${XDCC_MAX_PACKS} packs at a time`,
     });
     return undefined;
   }

@@ -170,6 +170,7 @@ import { splitSetArgs, coerceSettingValue, formatSettingValue } from '../lib/com
 import { parseRelayCommand } from '../lib/commands/relay.js';
 import { parseDccCommand } from '../lib/commands/dcc.js';
 import { parseXdccCommand } from '../lib/commands/xdcc.js';
+import { isXdccPlaceholder } from '../../../shared/xdcc.js';
 import { bufferPeer } from '../lib/commands/ping.js';
 import { parseThemeCommand } from '../lib/commands/theme.js';
 import { parseSheepCommand, SHEEP_USAGE_LINES } from '../lib/commands/sheep.js';
@@ -3187,7 +3188,7 @@ function xdccQueueLines(rows: DccTransfer[]): string[] {
       `#${t.pack}`,
       t.state === 'requested' && t.bot_acked_at ? "in the bot's queue" : t.state,
       t.state === 'receiving' ? `${percentReceived(t)}%` : '',
-      t.state !== 'queued' && t.filename !== `XDCC #${t.pack}` ? t.filename : '',
+      t.state !== 'queued' && !isXdccPlaceholder(t.filename, t.pack) ? t.filename : '',
     ]);
     for (const line of formatColumns(cells)) lines.push(`  ${line}`);
   }

@@ -11,6 +11,7 @@
 
 import db from './index.js';
 import { dccFileAt, keepReceivedDccFile, type DccFile } from './dccFiles.js';
+import { xdccPlaceholderName, xdccTrigger } from '../../shared/xdcc.js';
 
 // The download-manager state machine. Three entry states:
 //   - `queued`: an XDCC pack waiting its turn in that bot's queue (#1085). The
@@ -303,16 +304,6 @@ export function findArmedRequest(
 // lowest one for a bot once nothing of that bot's is out, which makes it
 // `requested`, and from there it is an armed request like any other.
 
-/** The trigger a queued pack sends: what iroffer and every bot like it take. */
-export function xdccTrigger(pack: number): string {
-  return `XDCC SEND #${pack}`;
-}
-
-/** A queued pack's name until the bot's offer brings the real one. */
-export function xdccPlaceholderName(pack: number): string {
-  return `XDCC #${pack}`;
-}
-
 // States in which a bot is busy with one of ours: asked, or sending.
 const XDCC_OUT_STATES = ['requested', 'connecting', 'receiving', 'verifying'];
 const XDCC_OUT_SQL = XDCC_OUT_STATES.map((s) => `'${s}'`).join(',');
@@ -556,9 +547,13 @@ export function xdccQueueOpen(userId: number, networkId: number, bot: string): b
 
 /** At boot: what was in flight when the process stopped. A receive's socket
  *  died with it, so it failed; its partial stays to resume. A queued pack's
- *  request or download goes back to the front of its bot's queue (the restart
- *  isn't the pack's fault, so it keeps its attempt). Returns how many. */
-export function settleInterruptedDccReceives(): { failed: number; requeued: number } {
+ *  download goes back to the front of its bot's queue (the restart isn't the
+ *  pack's fault, so it keeps its attempt), and so does a request out — unless
+ *  the engine kept the IRC socket (`requestsSurvive`), when the bot still has
+ *  it and the request stays out. Returns how many. */
+export function settleInterruptedDccReceives({
+  requestsSurvive = false,
+}: { requestsSurvive?: boolean } = {}): { failed: number; requeued: number } {
   const run = db.transaction(() => {
     const broken = db
       .prepare(
@@ -568,14 +563,16 @@ export function settleInterruptedDccReceives(): { failed: number; requeued: numb
          RETURNING user_id, network_id, peer_nick, pack, attempt`,
       )
       .all() as Pick<DccTransferRow, 'user_id' | 'network_id' | 'peer_nick' | 'pack' | 'attempt'>[];
-    let requeued = db
-      .prepare(
-        `UPDATE dcc_transfers
-           SET state = 'queued', requested_at = NULL, bot_acked_at = NULL,
-               updated_at = datetime('now')
-         WHERE state = 'requested' AND pack IS NOT NULL AND network_id IS NOT NULL`,
-      )
-      .run().changes;
+    let requeued = requestsSurvive
+      ? 0
+      : db
+          .prepare(
+            `UPDATE dcc_transfers
+               SET state = 'queued', requested_at = NULL, bot_acked_at = NULL,
+                   updated_at = datetime('now')
+             WHERE state = 'requested' AND pack IS NOT NULL AND network_id IS NOT NULL`,
+          )
+          .run().changes;
     for (const r of broken) {
       if (requeueXdccPack(r, { front: true, attempt: r.attempt })) requeued++;
     }

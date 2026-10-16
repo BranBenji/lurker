@@ -195,6 +195,7 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore } from '../stores/uploads.js';
 import { inFlight, percentReceived, useDccStore } from '../stores/dcc.js';
+import { isXdccPlaceholder } from '../../../shared/xdcc.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useNickColors } from '../composables/useNickColors.js';
@@ -325,9 +326,13 @@ const dccSegment = computed(
     if (!a || isChannelTarget(a.target) || isDccChatTarget(a.target) || a.target.startsWith(':')) {
       return null;
     }
-    const peer = a.target.toLowerCase();
+    // The DM a nick's transfers belong to is the one findDm resolves for it,
+    // the house rule for matching a nick to its buffer.
     const mine = dcc.transfers.filter(
-      (t) => t.network_id === a.networkId && t.peer_nick.toLowerCase() === peer && inFlight(t),
+      (t) =>
+        t.network_id === a.networkId &&
+        inFlight(t) &&
+        buffers.findDm(a.networkId, t.peer_nick)?.target === a.target,
     );
     if (!mine.length) return null;
     const queued = mine.filter((t) => t.state === 'queued').length;
@@ -337,8 +342,7 @@ const dccSegment = computed(
     if (!out) {
       return { text: `${queued} queued`, title: 'XDCC queue', tone: 'muted', icon };
     }
-    const name =
-      out.pack != null && out.filename === `XDCC #${out.pack}` ? `#${out.pack}` : out.filename;
+    const name = isXdccPlaceholder(out.filename, out.pack) ? `#${out.pack}` : out.filename;
     const lead = props.compact ? '' : `${name} `;
     if (out.state === 'requested') {
       const what = out.bot_acked_at ? "in the bot's queue" : 'asked';

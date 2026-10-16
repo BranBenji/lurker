@@ -36,6 +36,8 @@ function row(over: Partial<DccTransfer>): DccTransfer {
     updated_at: '2026-10-16T00:00:00.000Z',
     completed_at: null,
     ...over,
+    // A queued pack is named for its number until the bot's offer names it.
+    ...(over.pack != null && !over.filename ? { filename: `XDCC #${over.pack}` } : {}),
   };
 }
 

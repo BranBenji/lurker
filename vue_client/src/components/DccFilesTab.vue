@@ -237,6 +237,7 @@ import {
   type DccTransfer,
 } from '../stores/dcc.js';
 import { useNetworksStore } from '../stores/networks.js';
+import { isXdccPlaceholder } from '../../../shared/xdcc.js';
 import type { UploadKind } from '../stores/uploads.js';
 import { formatRelative } from '../utils/timestamp.js';
 import { joinMeta } from '../utils/metaLine.js';
@@ -384,7 +385,7 @@ function offerLine(t: DccTransfer): string {
 
 function rowName(t: DccTransfer): string {
   // A queued pack's placeholder name ("XDCC #31") says less than its number.
-  if (t.pack != null && (t.state === 'queued' || t.state === 'requested')) return `#${t.pack}`;
+  if (isXdccPlaceholder(t.filename, t.pack)) return `#${t.pack}`;
   return t.filename;
 }
 

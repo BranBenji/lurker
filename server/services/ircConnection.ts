@@ -134,7 +134,6 @@ import {
   buildDccSendReply,
   crc32Hex,
   dccWireFilename,
-  describePacks,
   encodeDccAddress,
   formatBytes,
   formatDccOfferLine,
@@ -189,15 +188,21 @@ import {
   ackXdccRequests,
   deleteQueuedXdcc,
   enqueueXdccPacks,
+  listXdccQueue,
   markXdccRequested,
   nextXdccRequests,
   removeXdccPacks,
   requeueXdccPack,
   requeueXdccRequests,
-  xdccPlaceholderName,
   xdccQueueOpen,
-  xdccTrigger,
 } from '../db/dccTransfers.js';
+import {
+  describePacks,
+  isXdccFinalRefusal,
+  isXdccRefusal,
+  xdccPlaceholderName,
+  xdccTrigger,
+} from '../../shared/xdcc.js';
 import { getChannelConfig as getE2eChannelConfig } from '../db/e2e.js';
 import type { ChannelMode } from '../db/e2e.js';
 import { randomBytes } from 'node:crypto';
@@ -345,6 +350,11 @@ const PASSIVE_DCC_OFFER_MAX_AGE_MS = 5 * 60_000;
 // response (#1085). Any answer at all ends the wait: iroffer says "Sending
 // you pack" or puts you in its queue at once. xget waits 25 s, xdcc-dl 120 s.
 const XDCC_NO_REPLY_MS = 2 * 60_000;
+// How long a bot that answered a request has to send its offer. A busy bot's
+// queue can run for hours; past this the request fails, which frees the
+// queue behind it and ends the auto-accept (a bot that left, or answered
+// with something we didn't read as a refusal).
+const XDCC_ACKED_TTL_MS = 12 * 3_600_000;
 
 // How long a passive offer that ended unanswered is remembered, so a late
 // answer to it is recognised (see endedPassiveSends).
@@ -848,16 +858,15 @@ export class IrcConnection {
   // anything at all to us ends the wait (noteXdccBotSpoke).
   private readonly xdccWaiting = new Map<
     number,
-    { bot: string; timer: ReturnType<typeof setTimeout> }
+    { bot: string; timer: ReturnType<typeof setTimeout>; acked: boolean }
   >();
+  // Set while we end the queue's connection ourselves (interruptXdcc).
+  private xdccInterrupted = false;
   // Queue rows already settled (retried, or let go), so a terminal row
   // published twice can't queue its retry twice.
   private readonly xdccSettled = new Set<number>();
   // Queue rows refused for a reason a retry would meet again.
   private readonly xdccNoRetry = new Set<number>();
-  // Receives of queued packs a dispose took over (#1085): their row went back
-  // to the queue, so the receiver's own "cancelled" must not land on it.
-  private readonly dccReceiversRequeued = new Set<number>();
   // Passive offers that ended unanswered (expired, withdrawn, declined, torn
   // down), for a while after, by folded peer and token: WeeChat, HexChat, KVIrc,
   // HexDroid and halloy never expire an offer they were sent, so the peer can
@@ -1517,8 +1526,12 @@ export class IrcConnection {
     this.publish({ type: 'state', state, ...extra });
     // The XDCC queue (#1085) runs while connected: a bot forgets a request
     // when you leave, so what was out waits again for the next connect.
+    // ⚠ Not when only our link to the engine went (a detach, a takeover): the
+    // IRC socket, and the bot's place for us, live on.
     if (changed && state === 'connected') setImmediate(() => this.pumpXdccQueue());
-    if (changed && state === 'disconnected') this.requeueXdccOnDisconnect();
+    if (changed && state === 'disconnected' && !this.engineSocketAlive) {
+      this.requeueXdccOnDisconnect();
+    }
     if (opts.log === false) return;
     if (typeof opts.log === 'string') {
       if (changed) this.logNet(opts.log, 'info');
@@ -2630,7 +2643,7 @@ export class IrcConnection {
       // A bot we asked for a pack answering at all (#1085): it has the request,
       // so its offer is coming, however long its own queue takes.
       if (eventNick && !targetIsChannel && this.xdccWaiting.size > 0) {
-        this.noteXdccBotSpoke(eventNick);
+        this.noteXdccBotSpoke(eventNick, typeof eventMessage === 'string' ? eventMessage : '');
       }
       if (eventNick && me && eventNick.toLowerCase() === me.toLowerCase()) {
         // Our prefix exactly as the network relays it, on every echo: the one
@@ -6622,7 +6635,7 @@ export class IrcConnection {
       trigger_text: text,
       pack,
     });
-    this.waitForXdccBot(id, target);
+    this.armXdccTimer({ id, peer_nick: target, bot_acked_at: null });
     this.publishDcc(id);
   }
 
@@ -6631,16 +6644,23 @@ export class IrcConnection {
   // One queue per bot on this network, every bot's at once. The pump asks a bot
   // for its next pack only once nothing of that bot's is out, so a bot holding
   // you in its own queue is never asked for more. A request the bot never
-  // answers is a failure after XDCC_NO_REPLY_MS; any answer holds the
-  // auto-accept for as long as the bot takes. A pack that fails is retried
-  // once, at the back of the queue; the retry resumes its partial.
+  // answers is a failure after XDCC_NO_REPLY_MS; a refusal is one at once; any
+  // other answer holds the auto-accept for as long as the bot takes, up to
+  // XDCC_ACKED_TTL_MS. A pack that fails is retried once, at the back of the
+  // queue; the retry resumes its partial. A pack interrupted by us (a
+  // Reconnect, a Disconnect) goes back to the front instead, its try unspent.
 
   /** Queue packs from `bot`, then ask for whatever can go now. Returns the
    *  rows queued (none when every pack was already waiting or out). */
   queueXdcc(bot: string, packs: readonly number[]): number[] {
     const ids = enqueueXdccPacks(this.network.user_id, this.network.id, bot, packs);
-    for (const id of ids) this.publishDcc(id);
-    if (ids.length > 0) this.dccLine(bot, `XDCC: queued ${describePacks(packs)} from ${bot}`);
+    const queued: number[] = [];
+    for (const id of ids) {
+      const row = getDccTransfer(this.network.user_id, id);
+      if (row?.pack != null) queued.push(row.pack);
+      if (row) this.publishDccRow(row);
+    }
+    if (queued.length > 0) this.dccLine(bot, `XDCC: queued ${describePacks(queued)} from ${bot}`);
     this.pumpXdccQueue();
     return ids;
   }
@@ -6663,8 +6683,14 @@ export class IrcConnection {
     return n;
   }
 
-  /** Queue a failed pack again, at the front, for its own try (Retry). */
+  /** Queue a pack that ended without its file again, at the front, for its
+   *  own try (Retry). A stalled one (interrupted mid-resume) ends first. */
   retryXdcc(row: DccTransferRow): number | null {
+    if (row.state === 'stalled') {
+      this.xdccSettled.add(row.id);
+      updateDccTransferState(row.id, 'failed', row.error || 'interrupted');
+      this.publishDcc(row.id);
+    }
     const id = requeueXdccPack(row, { front: true, attempt: 2 });
     if (id != null) {
       this.publishDcc(id);
@@ -6673,16 +6699,21 @@ export class IrcConnection {
     return id;
   }
 
-  // For each bot with nothing out, send its next queued pack. Only while
-  // connected: what is queued waits for the connection.
+  // For each bot with nothing out, send its next queued pack, and keep a clock
+  // on every request out (one may predate this connection object: a restart
+  // under the engine keeps the IRC socket, and the bot, mid-request). Only
+  // while connected: what is queued waits for the connection.
   pumpXdccQueue(): void {
     if (this.disposed || this.state !== 'connected') return;
     if (!dccReceiveEnabledForUser(this.network.user_id) || this.dccBlockedByProxy()) return;
+    for (const row of listXdccQueue(this.network.user_id, this.network.id)) {
+      if (row.state === 'requested' && !this.xdccWaiting.has(row.id)) this.armXdccTimer(row);
+    }
     for (const row of nextXdccRequests(this.network.user_id, this.network.id)) {
       if (row.pack == null) continue;
       markXdccRequested(row.id);
       this.sendXdccRequest(row.peer_nick, row.trigger_text || xdccTrigger(row.pack));
-      this.waitForXdccBot(row.id, row.peer_nick);
+      this.armXdccTimer({ ...row, bot_acked_at: null });
       this.publishDcc(row.id);
     }
   }
@@ -6705,17 +6736,31 @@ export class IrcConnection {
     });
   }
 
-  private waitForXdccBot(transferId: number, bot: string): void {
-    this.stopWaitingForXdccBot(transferId);
+  // The clock on a request out: XDCC_NO_REPLY_MS for the bot to answer at all,
+  // then, once it has, XDCC_ACKED_TTL_MS from its answer for its offer. Either
+  // running out fails the request, which frees the queue and ends the arm.
+  private armXdccTimer(row: Pick<DccTransferRow, 'id' | 'peer_nick' | 'bot_acked_at'>): void {
+    this.stopWaitingForXdccBot(row.id);
+    const acked = !!row.bot_acked_at;
+    const wait = acked
+      ? Math.max(0, Date.parse(row.bot_acked_at!) + XDCC_ACKED_TTL_MS - Date.now())
+      : XDCC_NO_REPLY_MS;
+    const bot = row.peer_nick;
     const timer = setTimeout(() => {
-      this.xdccWaiting.delete(transferId);
-      const row = getDccTransfer(this.network.user_id, transferId);
-      if (!row || row.state !== 'requested' || row.bot_acked_at) return;
-      updateDccTransferState(transferId, 'failed', `no response from ${bot}`);
-      this.publishDcc(transferId);
-    }, XDCC_NO_REPLY_MS);
+      this.xdccWaiting.delete(row.id);
+      const now = getDccTransfer(this.network.user_id, row.id);
+      if (!now || now.state !== 'requested' || !!now.bot_acked_at !== acked) return;
+      updateDccTransferState(
+        row.id,
+        'failed',
+        acked
+          ? `no offer from ${bot} in ${XDCC_ACKED_TTL_MS / 3_600_000} hours`
+          : `no response from ${bot}`,
+      );
+      this.publishDcc(row.id);
+    }, wait);
     timer.unref?.();
-    this.xdccWaiting.set(transferId, { bot, timer });
+    this.xdccWaiting.set(row.id, { bot, timer, acked });
   }
 
   private stopWaitingForXdccBot(transferId: number): void {
@@ -6725,23 +6770,37 @@ export class IrcConnection {
     this.xdccWaiting.delete(transferId);
   }
 
-  // Someone messaged us in private. If it is a bot we're waiting on, it has
-  // our request: stop the clock, and hold the auto-accept.
-  private noteXdccBotSpoke(nick: string): void {
-    let heard = false;
+  // Someone messaged us in private. If it is a bot whose answer we're waiting
+  // for, this is it: a refusal fails the request now; anything else means the
+  // bot has it, which holds the auto-accept while its own queue takes.
+  private noteXdccBotSpoke(nick: string, text: string): void {
+    const waiting: number[] = [];
     for (const [id, w] of this.xdccWaiting) {
-      if (!this.sameDccPeer(w.bot, nick)) continue;
-      this.stopWaitingForXdccBot(id);
-      heard = true;
+      if (!w.acked && this.sameDccPeer(w.bot, nick)) waiting.push(id);
     }
-    if (!heard) return;
+    if (waiting.length === 0) return;
+    if (isXdccRefusal(text)) {
+      const reason = text
+        .replace(/[\u0000-\u001f]/g, '')
+        .trim()
+        .slice(0, 200);
+      for (const id of waiting) {
+        this.stopWaitingForXdccBot(id);
+        if (isXdccFinalRefusal(text)) this.xdccNoRetry.add(id);
+        updateDccTransferState(id, 'failed', `${nick}: ${reason}`);
+        this.publishDcc(id);
+      }
+      return;
+    }
     for (const id of ackXdccRequests(this.network.user_id, this.network.id, nick)) {
+      const row = getDccTransfer(this.network.user_id, id);
+      if (row) this.armXdccTimer(row);
       this.publishDcc(id);
     }
   }
 
-  // The connection dropped. A request still out goes back to the queue, at
-  // the front, for the reconnect: the bot dropped it when we left.
+  // The IRC socket closed. A request still out goes back to the queue, at the
+  // front, for the reconnect: the bot dropped it when we left.
   private requeueXdccOnDisconnect(): void {
     for (const id of this.xdccWaiting.keys()) this.stopWaitingForXdccBot(id);
     for (const id of requeueXdccRequests(this.network.user_id, this.network.id)) {
@@ -6749,15 +6808,47 @@ export class IrcConnection {
     }
   }
 
+  // We're ending the queue's connection ourselves (a dispose, which Reconnect
+  // runs through, or a Disconnect): everything of the queue's that ends from
+  // here on goes back to the front with its try unspent (settleXdcc). A
+  // request out goes back now; a pack waiting on the bot's resume ACCEPT is
+  // ended here rather than left stalled.
+  private interruptXdcc(): void {
+    this.xdccInterrupted = true;
+    for (const id of this.xdccWaiting.keys()) this.stopWaitingForXdccBot(id);
+    for (const id of requeueXdccRequests(this.network.user_id, this.network.id)) {
+      this.publishDcc(id);
+    }
+    for (const [key, pending] of this.dccPendingResume) {
+      const row = getDccTransfer(this.network.user_id, pending.transferId);
+      if (row?.pack == null) continue;
+      clearTimeout(pending.timer);
+      this.dccPendingResume.delete(key);
+      markDccFailed(pending.transferId, pending.startOffset, 'interrupted by a reconnect');
+      this.publishDcc(pending.transferId);
+    }
+  }
+
   // A queued pack's row reached an end. A failure is retried once, at the
-  // back of its bot's queue; then the next pack can go.
+  // back of its bot's queue; an interruption of ours goes back to the front.
+  // Then the next pack can go.
   private settleXdcc(row: DccTransferRow): void {
-    if (row.pack == null || row.direction !== 'recv' || row.network_id == null) return;
     if (DCC_ACTIVE_STATES.has(row.state) || row.state === 'pending_approval') return;
+    const retryable = !this.xdccNoRetry.delete(row.id);
+    if (row.pack == null || row.direction !== 'recv' || row.network_id == null) return;
     if (this.xdccSettled.has(row.id)) return;
     this.xdccSettled.add(row.id);
+    // Only a burst of publishes of one row needs remembering; keep the last
+    // few hundred.
+    if (this.xdccSettled.size > 500) {
+      this.xdccSettled.delete(this.xdccSettled.values().next().value!);
+    }
     this.stopWaitingForXdccBot(row.id);
-    const retryable = !this.xdccNoRetry.delete(row.id);
+    if (this.xdccInterrupted && (row.state === 'failed' || row.state === 'cancelled')) {
+      const back = requeueXdccPack(row, { front: true, attempt: row.attempt });
+      if (back != null) this.publishDcc(back);
+      return;
+    }
     if (row.state === 'failed' && row.attempt < 2 && retryable) {
       const retry = requeueXdccPack(row, { front: false, attempt: 2 });
       if (retry != null) {
@@ -6772,22 +6863,6 @@ export class IrcConnection {
       this.dccLine(row.peer_nick, `XDCC: nothing left in the queue for ${row.peer_nick}`);
     }
     setImmediate(() => this.pumpXdccQueue());
-  }
-
-  // Dispose: what of the queue is out or downloading waits again at the front
-  // of its bot's queue, with its attempt. The receiver's own "cancelled" is
-  // kept off the row, which ends as interrupted instead (its partial resumes).
-  private requeueXdccForDispose(): void {
-    for (const id of this.xdccWaiting.keys()) this.stopWaitingForXdccBot(id);
-    requeueXdccRequests(this.network.user_id, this.network.id);
-    for (const [id, receiver] of this.dccReceivers) {
-      const row = getDccTransfer(this.network.user_id, id);
-      if (!row || row.pack == null) continue;
-      this.dccReceiversRequeued.add(id);
-      this.xdccSettled.add(id);
-      markDccFailed(id, receiver.bytesReceived, 'interrupted by a reconnect');
-      requeueXdccPack(row, { front: true, attempt: row.attempt });
-    }
   }
 
   // A stored DCC status line in the peer's DM (#1085): what happened to a
@@ -7371,8 +7446,16 @@ export class IrcConnection {
       },
       onError: (err, received) => {
         this.dccReceivers.delete(transferId);
-        // A dispose already put this pack back in its queue (#1085).
-        if (this.dccReceiversRequeued.delete(transferId)) return;
+        // We ended the connection under a queued pack (#1085): it is an
+        // interruption, which puts it back in its queue, not the user's cancel.
+        if (
+          this.xdccInterrupted &&
+          getDccTransfer(this.network.user_id, transferId)?.pack != null
+        ) {
+          markDccFailed(transferId, received, 'interrupted by a reconnect');
+          this.publishDcc(transferId);
+          return;
+        }
         // A user-initiated cancel surfaces as a distinct 'cancelled' state, not a
         // failure (cancel() settles with this exact message).
         if (err.message === 'cancelled') {
@@ -9708,7 +9791,11 @@ export class IrcConnection {
   disconnect(reason?: string, opts: { announceCancelledRetry?: boolean } = {}): void {
     this.endDccChatHandshakes();
     this.endDccSends();
+    // A queued pack whose passive listen this ends goes back to the front of
+    // its queue (#1085): the user disconnected, the pack didn't fail.
+    this.xdccInterrupted = true;
     this.endPassiveDccListens();
+    this.xdccInterrupted = false;
     // The user/system asked to disconnect — record intent BEFORE quit() so the
     // 'close' handler doesn't fight them by auto-reconnecting, and drop any
     // pending backoff so an earlier drop's retry can't resurrect the connection.
@@ -9918,7 +10005,7 @@ export class IrcConnection {
     // A queued pack out or downloading goes back to the front of its bot's
     // queue for the next connection (#1085): a Reconnect runs through here,
     // and it isn't the pack's failure.
-    this.requeueXdccForDispose();
+    this.interruptXdcc();
     // Abort any in-flight DCC downloads (their sockets are independent of the IRC
     // socket, so they'd otherwise outlive this connection) and drop resume timers.
     for (const receiver of this.dccReceivers.values()) receiver.cancel();

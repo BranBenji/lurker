@@ -263,7 +263,9 @@ if (legacyNames.length > 0) {
 // keeping its partial to resume, and a queued pack goes back to its bot's
 // queue. Before initAll, so no connection pumps a queue half-settled.
 {
-  const receives = settleInterruptedDccReceives();
+  // Under the engine the IRC sockets outlived us, and the bots still hold our
+  // requests.
+  const receives = settleInterruptedDccReceives({ requestsSurvive: engineConfigured() });
   if (receives.failed + receives.requeued > 0) {
     console.log(
       `[lurker] ${receives.failed} DCC receive(s) ended by the restart, ` +

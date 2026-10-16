@@ -250,6 +250,34 @@ describe('the bot answering, or not', () => {
     expect(findArmedRequest(1, 1, 'Bot')?.id).toBe(row.id);
   });
 
+  it('fails a request the bot refuses at once, and does not retry a missing pack', async () => {
+    const h = harness();
+    h.conn.queueXdcc('Bot', [99, 100]);
+    h.botSays('Bot', '** Invalid Pack Number, Try Again');
+    await tick();
+    const [row] = byPack('Bot', 99);
+    expect(row.state).toBe('failed');
+    expect(row.error).toBe('Bot: ** Invalid Pack Number, Try Again');
+    expect(byPack('Bot', 99)).toHaveLength(1);
+    expect(byPack('Bot', 100)[0].state).toBe('requested');
+  });
+
+  it('gives an answered request 12 hours for its offer, then moves on', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const h = harness();
+    h.conn.queueXdcc('Bot', [29, 30]);
+    h.botSays('Bot', 'Added you to the main queue for pack #29 in position 40.');
+    vi.advanceTimersByTime(11 * 3_600_000);
+    expect(byPack('Bot', 29)[0].state).toBe('requested');
+    vi.advanceTimersByTime(3_600_000 + 1);
+    await tick();
+    expect(byPack('Bot', 29)[0]).toMatchObject({
+      state: 'failed',
+      error: 'no offer from Bot in 12 hours',
+    });
+    expect(byPack('Bot', 30)[0].state).toBe('requested');
+  });
+
   it('retries a failed pack only once', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const h = harness();
@@ -321,6 +349,21 @@ describe('disconnects and cancels', () => {
     h.conn.setState('connected');
     await tick();
     expect(h.privmsgs()).toEqual(['Bot :XDCC SEND #29', 'Bot :XDCC SEND #29']);
+  });
+
+  it('leaves requests out when only the link to the engine went', () => {
+    const h = harness();
+    h.conn.queueXdcc('Bot', [29]);
+    (h.conn as unknown as { engineSocketAlive: boolean }).engineSocketAlive = true;
+    h.conn.setState('disconnected');
+    expect(byPack('Bot', 29)[0].state).toBe('requested');
+  });
+
+  it('says only the packs it actually queued', () => {
+    const h = harness();
+    h.conn.queueXdcc('Bot', [30]);
+    h.conn.queueXdcc('Bot', [29, 30, 31, 32]);
+    expect(h.dccLines()).toContain('XDCC: queued #29, #31 and #32 from Bot');
   });
 
   it('tells the bot when a request out is cancelled, then asks for the next', async () => {

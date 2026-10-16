@@ -19,6 +19,7 @@
 // Pure and dependency-free so it unit-tests outside the Vue SFC.
 
 import { isSinglePeerTarget } from '../../../../shared/channels.js';
+import { XDCC_MAX_PACKS } from '../../../../shared/xdcc.js';
 
 export type XdccCommand =
   | { kind: 'add'; bot: string; packs: number[] }
@@ -26,9 +27,6 @@ export type XdccCommand =
   | { kind: 'remove'; bot: string; packs: number[] | null }
   | { kind: 'queue'; bot: string | null }
   | { kind: 'error'; message: string };
-
-// The server's own guard against a typo like `addl bot 1 100000`.
-export const XDCC_MAX_PACKS = 500;
 
 export const XDCC_USAGE =
   'usage: /xdcc add <bot> <pack> · /xdcc addl <bot> <first> <last> · ' +
