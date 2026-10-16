@@ -143,7 +143,7 @@
 
     <div class="group">
       <span>kept</span>
-      <span v-if="dcc.files.length">{{ storageLine }}</span>
+      <span v-if="dcc.files.length || partialBytes > 0">{{ storageLine }}</span>
     </div>
     <ul v-if="kept.length" class="list">
       <li v-for="f in kept" :key="f.id" class="row">
@@ -378,10 +378,22 @@ const peers = computed((): PeerBlock[] => {
 const kept = computed(() => dcc.files.filter((f) => matches(f.name)));
 const crcNotes = computed(() => new Map(kept.value.map((f) => [f.id, crcNote(f)])));
 
+// What the account's files take, as the limit counts it (#1153): kept files,
+// and the partials transfers still own, failed, cancelled or still coming in.
+// The partials are named, since Delete partial is what frees them.
+const partialBytes = computed(() =>
+  dcc.transfers.reduce(
+    (n, t) => (t.destination_path && t.file_id == null ? n + t.received_bytes : n),
+    0,
+  ),
+);
 const storageLine = computed(() => {
-  const used = formatBytes(dcc.files.reduce((n, f) => n + f.size, 0));
+  const used = dcc.files.reduce((n, f) => n + f.size, 0) + partialBytes.value;
   const limit = dcc.account?.limitBytes;
-  return limit ? `${used} of ${formatBytes(limit)}` : used;
+  return joinMeta([
+    limit ? `${formatBytes(used)} of ${formatBytes(limit)}` : formatBytes(used),
+    partialBytes.value > 0 && `${formatBytes(partialBytes.value)} in partials`,
+  ]);
 });
 
 function networkName(id: number | null): string {

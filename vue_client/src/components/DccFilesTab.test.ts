@@ -326,6 +326,31 @@ describe('DccFilesTab', () => {
     await vi.waitFor(() => expect(w.find('form.send-to').exists()).toBe(false));
   });
 
+  it('counts partials in the space used, as the limit does (#1153)', async () => {
+    const dcc = useDccStore();
+    dcc.filesLoaded = true;
+    dcc.account = { chat: false, receive: true, send: false, limitBytes: 10 * 1024 } as never;
+    dcc.files = [file(1, 'kept.mkv')];
+    dcc.transfers = [
+      // A failed transfer's partial, and one still coming in, both count.
+      row({ id: 5, state: 'failed', destination_path: '/d/a.mkv', received_bytes: 1024 }),
+      row({ id: 6, state: 'receiving', destination_path: '/d/b.mkv', received_bytes: 1024 }),
+      // A finished one's bytes are its kept file's, already counted.
+      row({ id: 7, state: 'completed', destination_path: '/d/kept.mkv', file_id: 1 }),
+    ];
+    const w = mountTab();
+    await w.vm.$nextTick();
+    expect(w.findAll('.group').at(-1)!.text()).toBe('kept4.0 KB of 10.0 KB • 2.0 KB in partials');
+
+    // With no kept files, partials alone still show.
+    dcc.files = [];
+    dcc.transfers = [
+      row({ id: 5, state: 'failed', destination_path: '/d/a.mkv', received_bytes: 1024 }),
+    ];
+    await w.vm.$nextTick();
+    expect(w.findAll('.group').at(-1)!.text()).toBe('kept1.0 KB of 10.0 KB • 1.0 KB in partials');
+  });
+
   it('says how each received file checked out, and nothing for an upload (#1082)', async () => {
     const dcc = useDccStore();
     dcc.filesLoaded = true;

@@ -43,6 +43,8 @@ import adminNetworksRouter from './adminNetworks.js';
 import adminStorageRouter from './adminStorage.js';
 import adminDccRouter from './adminDcc.js';
 import adminPushRouter from './adminPush.js';
+import { dccPathsOwnedBy } from '../db/dccFiles.js';
+import { removeDccFilesOf } from '../services/dccPaths.js';
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -266,6 +268,9 @@ router.delete('/users/:id', (req: Request, res: Response) => {
   // networks. Otherwise the next incoming PRIVMSG crashes the process on a
   // FOREIGN KEY violation in messages.network_id.
   ircManager.disposeUser(id, 'user deleted');
+  // Their DCC files (#1152): once nothing is writing them, and before the rows
+  // that say which they are go with the account.
+  removeDccFilesOf(target.username, dccPathsOwnedBy(id));
   deleteUser(id);
   res.json({ ok: true });
 });

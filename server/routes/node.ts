@@ -21,6 +21,8 @@ import { deleteOAuthForUser, upsertAppFromFleet } from '../db/oauth.js';
 import { validateRegistration } from '../services/oauth.js';
 import { closeSocketsForOAuthTokens } from '../services/wsHub.js';
 import ircManager from '../services/ircManager.js';
+import { dccPathsOwnedBy } from '../db/dccFiles.js';
+import { removeDccFilesOf } from '../services/dccPaths.js';
 import { sign as signCookie } from 'cookie-signature';
 import { createSession } from '../db/sessions.js';
 import { SESSION_COOKIE, getCookieOptions } from '../middleware/auth.js';
@@ -109,6 +111,8 @@ router.delete('/users/:id', (req: Request, res: Response) => {
     return;
   }
   ircManager.disposeUser(id, 'deprovisioned');
+  // Their DCC files (#1152), as an admin's delete does.
+  removeDccFilesOf(target.username, dccPathsOwnedBy(id));
   deleteUser(id);
   res.json({ ok: true });
 });

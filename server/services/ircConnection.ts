@@ -7773,16 +7773,11 @@ export class IrcConnection {
     if (this.dccBlockedByProxy()) {
       return { status: 409, error: "DCC does not go through this network's proxy" };
     }
-    const passive = opts.passive === true;
-    if (!passive && !dccActiveListenAvailable()) {
-      return {
-        status: 409,
-        error:
-          'this server has no public address and listening port range configured ' +
-          '(LURKER_DCC_EXTERNAL_HOST, LURKER_DCC_LISTEN_PORT_MIN/_MAX). ' +
-          '/dcc send -passive asks them to listen instead.',
-      };
-    }
+    // Active whenever this server can listen, as every client takes that; when
+    // it can't, passive is the one offer that can work, so it's made without
+    // asking (#1154). The line in the DM says "(passive)". Chat stays opt-in:
+    // far fewer clients answer a passive chat offer.
+    const passive = opts.passive === true || !dccActiveListenAvailable();
     // As the download route judges it: a file removed or replaced by hand.
     // HexChat refuses an offer of size 0 (dcc.c:2649), and Quassel fails on one.
     if (file.size === 0) return { status: 400, error: 'an empty file cannot be sent over DCC' };

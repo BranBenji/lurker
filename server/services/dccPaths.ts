@@ -138,6 +138,41 @@ export function resolveDccDestination(
   return candidate;
 }
 
+/**
+ * Remove a deleted account's DCC files (#1152): exactly the paths its rows own,
+ * and then its folder, only if that leaves it empty. Never the folder as a
+ * whole: it is named for the username made safe, so two accounts can share
+ * one (a case-twin on a case-insensitive disk, two names that sanitize alike),
+ * and a recursive delete would take the other's files. A path outside the
+ * account's folder under the current root (LURKER_DCC_DIR moved since) is left
+ * alone. Returns how many files went.
+ */
+export function removeDccFilesOf(username: string, paths: readonly string[]): number {
+  const userDir = dccUserDir(username);
+  if (!userDir) return 0;
+  const inside = (p: string) => {
+    const rel = path.relative(userDir, p);
+    return rel !== '' && !rel.startsWith(`..${path.sep}`) && rel !== '..' && !path.isAbsolute(rel);
+  };
+  let removed = 0;
+  for (const p of paths) {
+    if (!inside(p) || !fs.existsSync(p)) continue;
+    try {
+      fs.rmSync(p, { force: true });
+      removed++;
+    } catch (err) {
+      console.warn(`[dcc] couldn't remove ${p}:`, err);
+    }
+  }
+  try {
+    fs.rmdirSync(userDir); // only when empty
+  } catch {
+    // Not empty (another account's files, or something put there by hand), or
+    // never made.
+  }
+  return removed;
+}
+
 /** Free space a transfer must leave on the download dir's disk (#1125): the
  *  instance floor, shared with upload sessions. A transfer is refused when its
  *  advertised size wouldn't leave it (the receiver also caps writes at that

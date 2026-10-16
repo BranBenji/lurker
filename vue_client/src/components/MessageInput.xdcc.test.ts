@@ -3,7 +3,7 @@
 
 // @vitest-environment happy-dom
 
-// `/xdcc` and `/dcc retry` through the real composer (#1085): what each one
+// `/xdcc`, `/dcc retry` and `/dcc send` through the real composer: what each one
 // asks the DCC store for, and the receipt it leaves in the buffer.
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
@@ -211,5 +211,58 @@ describe('/dcc retry', () => {
     vi.spyOn(useDccStore(), 'retry').mockRejectedValue(new Error('not retryable'));
     await run('/dcc retry 6');
     expect(output()).toContain('/dcc retry: #6 — not retryable');
+  });
+});
+
+// #1154: a server that can't listen can only make a passive offer, so
+// `/dcc send` makes one, as the menus do.
+describe('/dcc send', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    seed();
+  });
+  afterEach(() => {
+    for (const wrapper of mounted) wrapper.unmount();
+    mounted = [];
+    vi.restoreAllMocks();
+  });
+
+  function account(canListen: boolean) {
+    vi.spyOn(useDccStore(), 'loadAccount').mockResolvedValue({
+      chat: false,
+      receive: false,
+      send: true,
+      canListen,
+    } as never);
+  }
+
+  it('picks a file to send passive when the server cannot listen', async () => {
+    account(false);
+    const open = vi.spyOn(useDccStore(), 'openToSend').mockImplementation(() => {});
+    await run('/dcc send bob');
+    expect(open).toHaveBeenCalledWith({ networkId: 1, nick: 'bob', passive: true });
+  });
+
+  it('sends a named file passive, or active when the server can listen', async () => {
+    const dcc = useDccStore();
+    const file = {
+      id: 3,
+      name: 'a.mkv',
+      size: 10,
+      origin: 'uploaded',
+      created_at: '2026-10-16T00:00:00.000Z',
+      transfer_id: null,
+      peer_nick: null,
+      network_id: null,
+      crc_status: null,
+    } as const;
+    vi.spyOn(dcc, 'loadFiles').mockResolvedValue([file]);
+    const send = vi.spyOn(dcc, 'sendFile').mockResolvedValue(undefined as never);
+    account(false);
+    await run('/dcc send bob a.mkv');
+    expect(send).toHaveBeenLastCalledWith(1, 'bob', 3, true);
+    account(true);
+    await run('/dcc send bob a.mkv');
+    expect(send).toHaveBeenLastCalledWith(1, 'bob', 3, false);
   });
 });
