@@ -479,7 +479,7 @@ export const useDccStore = defineStore('dcc', {
     // none for one answered elsewhere while this tab wasn't listening.
     syncOfferToasts(): void {
       const byId = new Map(this.transfers.map((t) => [t.id, t]));
-      for (const id of [...offerToasts.keys()]) {
+      for (const id of offerToasts.keys()) {
         const t = byId.get(id);
         if (!t || t.state !== 'pending_approval') {
           useToastsStore().dismiss(offerToasts.get(id)!);
