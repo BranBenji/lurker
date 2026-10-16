@@ -25,6 +25,7 @@ import {
 import { hasMessageForTarget, replySendMsgid } from '../db/messages.js';
 import {
   DCC_ACTIVE_STATES,
+  deleteQueuedXdcc,
   getDccTransfer,
   markDccCancelled,
   updateDccTransferState,
@@ -759,11 +760,46 @@ class IrcManager extends EventEmitter {
     if (!row) return false;
     const conn = this.dccConnection(userId, row);
     if (conn) conn.cancelDcc(transferId);
+    // A queued pack never started: it just leaves the queue (#1085).
+    else if (row.state === 'queued') {
+      if (deleteQueuedXdcc(userId, transferId)) {
+        this.emit('user-frame', userId, { kind: 'dcc-transfers-cleared', ids: [transferId] });
+      }
+    }
     // No connection, so no receiver: the row's byte count is whatever was last
     // checkpointed, and the file on disk is the truth (#1125).
     else if (DCC_ACTIVE_STATES.has(row.state))
       markDccCancelled(transferId, dccFileBytes(row.destination_path));
     return true;
+  }
+
+  /** Queue XDCC packs from a bot (#1085). Null when the network has no
+   *  connection to run the queue; else the rows queued, which are none when
+   *  every pack was already waiting or out. A queue waits out a disconnect,
+   *  but it needs a connection object to belong to. */
+  queueXdcc(userId: number, networkId: number, bot: string, packs: number[]): number[] | null {
+    const conn = this.getConnection(userId, networkId);
+    if (!conn) return null;
+    return conn.queueXdcc(bot, packs);
+  }
+
+  /** Take packs (or, with null, all of them) out of a bot's queue. */
+  unqueueXdcc(
+    userId: number,
+    networkId: number,
+    bot: string,
+    packs: number[] | null,
+  ): number | null {
+    const conn = this.getConnection(userId, networkId);
+    if (!conn) return null;
+    return conn.unqueueXdcc(bot, packs);
+  }
+
+  /** Try a failed queued pack again, at the front of its bot's queue. */
+  retryXdcc(userId: number, row: DccTransferRow): number | 'not-connected' | 'not-queued' {
+    const conn = this.dccConnection(userId, row);
+    if (!conn) return 'not-connected';
+    return conn.retryXdcc(row) ?? 'not-queued';
   }
 
   // The connection a transfer rides, if its network still exists and is mapped.

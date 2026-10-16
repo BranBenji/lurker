@@ -1630,7 +1630,7 @@ ensureColumn('push_subscriptions', 'transport', "TEXT NOT NULL DEFAULT 'webpush'
 // Schema versioning lets us retire one-shot recovery blocks once every
 // production DB has run through them. Bump SCHEMA_VERSION when adding a new
 // recovery block, and delete blocks for versions far enough in the past.
-const SCHEMA_VERSION = 24;
+const SCHEMA_VERSION = 25;
 const schemaVersionRow = db
   .prepare(`SELECT value FROM app_meta WHERE key = 'schema_version'`)
   .get() as { value: string } | undefined;
@@ -2924,6 +2924,19 @@ if (schemaVersion < 24) {
   // .immediate(): see the v20 block above (lurker#603).
   const kept = keep.immediate();
   if (kept > 0) console.log(`[db] ${kept} received DCC file(s) are now kept as files (#1133)`);
+}
+// #1085: the XDCC queue. A queued pack is a transfer row in state `queued`
+// that knows its pack number and its place in that bot's queue; `attempt` is
+// 2 on the one automatic retry; `requested_at` is when the request went to the
+// bot and `bot_acked_at` when the bot first answered, which holds the
+// auto-accept for as long as the bot's own queue takes. All nullable or
+// defaulted, so no row needs rewriting.
+if (schemaVersion < 25) {
+  ensureColumn('dcc_transfers', 'pack', 'INTEGER');
+  ensureColumn('dcc_transfers', 'queue_seq', 'INTEGER');
+  ensureColumn('dcc_transfers', 'attempt', 'INTEGER NOT NULL DEFAULT 1');
+  ensureColumn('dcc_transfers', 'requested_at', 'TEXT');
+  ensureColumn('dcc_transfers', 'bot_acked_at', 'TEXT');
 }
 // Every lookup of a file's transfers goes by file_id (the files list's join,
 // deleting a file, the foreign key's own check). Here, not in the base schema:

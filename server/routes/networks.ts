@@ -32,6 +32,7 @@ import { validateProxy, isProxyProblem } from '../../shared/proxy.js';
 import { parseChannelNames } from '../../shared/channels.js';
 import { fanOutToUser, favoritesChangedFrame } from '../services/wsHub.js';
 import { renumberFavorites } from '../db/favoriteBuffers.js';
+import { dropXdccQueue } from '../db/dccTransfers.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -427,6 +428,10 @@ router.delete('/:id', (req: Request, res: Response) => {
   // Before the row goes: a chat that outlived a Disconnect is owned by a
   // connection disposeNetwork can no longer see (see ircManager.endDccChats).
   ircManager.endDccChats(req.user!.id, id, 'network removed');
+  // Its XDCC queue too (#1085): a queued pack can't be asked for on a network
+  // that's gone. Received files and partials stay, as they always have.
+  const unqueued = dropXdccQueue(req.user!.id, id);
+  if (unqueued.length) fanOutToUser(req.user!.id, { kind: 'dcc-transfers-cleared', ids: unqueued });
   deleteNetwork(id, req.user!.id);
   ircManager.networkChanged(req.user!.id, id);
   // The network's buffers cascaded away and took their favorite rows with

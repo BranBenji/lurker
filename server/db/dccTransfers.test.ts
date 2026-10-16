@@ -10,8 +10,13 @@ import db from './index.js';
 import { createNetwork } from './networks.js';
 import { createUser } from './users.js';
 import {
+  enqueueXdccPacks,
   findArmedRequest,
   findResumableTransfer,
+  markXdccRequested,
+  nextXdccRequests,
+  removeXdccPacks,
+  settleInterruptedDccReceives,
   getDccTransfer,
   insertDccTransfer,
   listDccTransfers,
@@ -220,5 +225,94 @@ describe('a completed receive', () => {
     // with no transfer mirroring it.
     db.prepare('UPDATE dcc_transfers SET destination_path = NULL WHERE id = ?').run(id);
     expect(dccPathClaimed(owner, '/dcc/kept/show.mkv')).toBe(true);
+  });
+});
+
+// #1085: the XDCC queue's rows.
+describe('the XDCC queue', () => {
+  let owner: number;
+  let net: number;
+  beforeAll(() => {
+    owner = createUser('dcc-queue-owner').id;
+    net = createNetwork(owner, { name: 'q', host: 'h', port: 6697, tls: true, nick: 'q' })!.id;
+  });
+  const queueOf = (bot: string) =>
+    (
+      db
+        .prepare(
+          `SELECT pack, state, queue_seq, attempt FROM dcc_transfers
+           WHERE user_id = ? AND peer_nick = ? ORDER BY queue_seq, id`,
+        )
+        .all(owner, bot) as { pack: number; state: string; attempt: number }[]
+    ).map((r) => [r.pack, r.state, r.attempt]);
+
+  it('queues at the back, a retry at the front, and never the same pack twice', () => {
+    enqueueXdccPacks(owner, net, 'QBot', [5, 6, 5]);
+    enqueueXdccPacks(owner, net, 'QBot', [6, 7]);
+    enqueueXdccPacks(owner, net, 'QBot', [4], { front: true, attempt: 2 });
+    expect(queueOf('QBot')).toEqual([
+      [4, 'queued', 2],
+      [5, 'queued', 1],
+      [6, 'queued', 1],
+      [7, 'queued', 1],
+    ]);
+  });
+
+  it('offers each idle bot its next pack, and none to a bot with one out', () => {
+    enqueueXdccPacks(owner, net, 'Idle', [1, 2]);
+    enqueueXdccPacks(owner, net, 'Busy', [8, 9]);
+    const [busy] = nextXdccRequests(owner, net).filter((r) => r.peer_nick === 'Busy');
+    markXdccRequested(busy.id);
+    const next = nextXdccRequests(owner, net).map((r) => [r.peer_nick, r.pack]);
+    expect(next).toContainEqual(['Idle', 1]);
+    expect(next.some(([bot]) => bot === 'Busy')).toBe(false);
+  });
+
+  it('takes packs out: waiting ones deleted, ones out handed back to cancel', () => {
+    enqueueXdccPacks(owner, net, 'Rm', [1, 2, 3]);
+    const [first] = nextXdccRequests(owner, net).filter((r) => r.peer_nick === 'Rm');
+    markXdccRequested(first.id);
+    const { deleted, out } = removeXdccPacks(owner, net, 'Rm', null);
+    expect(deleted).toHaveLength(2);
+    expect(out.map((r) => r.pack)).toEqual([1]);
+  });
+
+  it('at boot, fails what was receiving and puts queued packs back in line', () => {
+    enqueueXdccPacks(owner, net, 'Boot', [1, 2]);
+    const [one] = nextXdccRequests(owner, net).filter((r) => r.peer_nick === 'Boot');
+    markXdccRequested(one.id);
+    db.prepare(`UPDATE dcc_transfers SET state = 'receiving' WHERE id = ?`).run(one.id);
+    const plain = insertDccTransfer(owner, {
+      network_id: net,
+      peer_nick: 'friend',
+      filename: 'home.mov',
+      advertised_size: 10,
+      state: 'receiving',
+    });
+    settleInterruptedDccReceives();
+    expect(getDccTransfer(owner, plain)!.state).toBe('failed');
+    // Pack 1 failed, and a fresh row for it waits at the front, before 2.
+    expect(getDccTransfer(owner, one.id)!.state).toBe('failed');
+    expect(queueOf('Boot').filter(([, state]) => state !== 'failed')).toEqual([
+      [1, 'queued', 1],
+      [2, 'queued', 1],
+    ]);
+  });
+
+  it('lists every open row, however many finished ones are newer', () => {
+    const [waiting] = enqueueXdccPacks(owner, net, 'Old', [1]);
+    for (let i = 0; i < 5; i++) {
+      const id = insertDccTransfer(owner, {
+        network_id: net,
+        peer_nick: 'x',
+        filename: `done${i}`,
+        advertised_size: 1,
+        state: 'requested',
+      });
+      updateDccTransferState(id, 'completed');
+    }
+    const listed = listDccTransfers(owner, { limit: 2 }).map((r) => r.id);
+    expect(listed).toContain(waiting);
+    expect(listed.length).toBeGreaterThanOrEqual(3);
   });
 });

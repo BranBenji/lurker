@@ -65,7 +65,7 @@ import {
 import { startIgnoreSweeper, stopIgnoreSweeper } from './services/ignoreSweeper.js';
 import { sweepTempUploads } from './routes/uploads.js';
 import { startUploadSessionSweeper } from './services/uploadSessions.js';
-import { failInterruptedDccSends } from './db/dccTransfers.js';
+import { failInterruptedDccSends, settleInterruptedDccReceives } from './db/dccTransfers.js';
 import { startEventLoopMonitor, stopEventLoopMonitor } from './services/eventLoopMonitor.js';
 import restoreGate from './services/restoreGate.js';
 import * as systemMessages from './db/systemMessages.js';
@@ -257,6 +257,19 @@ if (legacyNames.length > 0) {
       'grandfathered (they keep logging in with them): ' +
       legacyNames.map((u) => `#${u.id} "${u.username}" — ${u.why}`).join('; '),
   );
+}
+
+// DCC receives whose sockets died with the last process (#1085): each fails,
+// keeping its partial to resume, and a queued pack goes back to its bot's
+// queue. Before initAll, so no connection pumps a queue half-settled.
+{
+  const receives = settleInterruptedDccReceives();
+  if (receives.failed + receives.requeued > 0) {
+    console.log(
+      `[lurker] ${receives.failed} DCC receive(s) ended by the restart, ` +
+        `${receives.requeued} XDCC pack(s) back in the queue`,
+    );
+  }
 }
 
 ircManager.initAll();

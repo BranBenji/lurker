@@ -111,8 +111,13 @@ function harness() {
   const publishEphemeral = vi.fn<(event: Record<string, unknown>) => void>();
   conn.client.ctcpResponse = ctcpResponse;
   conn.publishEphemeral = publishEphemeral;
+  // DCC status lines are stored lines in the peer's DM (#1085); the rest of
+  // CTCP stays ephemeral.
+  const publish = vi.spyOn(conn, 'publish');
   const ctcpLines = () =>
-    publishEphemeral.mock.calls.map((c) => c[0]).filter((e) => e.type === 'ctcp') as Array<{
+    [...publishEphemeral.mock.calls, ...publish.mock.calls]
+      .map((c) => c[0] as Record<string, unknown>)
+      .filter((e) => e.type === 'ctcp' || e.type === 'dcc') as Array<{
       target: string;
       text: string;
     }>;
@@ -180,7 +185,7 @@ describe('inbound DCC SEND — enabled', () => {
       received_bytes: 0,
     });
     const last = ctcpLines().at(-1);
-    expect(last?.text).toBe('[EWG]MArchive offered "scene.mkv" (5.0 GB) via DCC SEND');
+    expect(last?.text).toBe('DCC: [EWG]MArchive offered "scene.mkv" (5.0 GB) via DCC SEND');
   });
 
   it('captures a passive offer with its token', () => {

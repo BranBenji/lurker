@@ -509,6 +509,16 @@ export function formatBytes(n: number): string {
   return `${v.toFixed(1)} ${units[i]}`;
 }
 
+/** XDCC pack numbers for a status line (#1085): `#31`, `#29–#32` for a run
+ *  of three or more, else `#29, #31 and #35`. In the order given. */
+export function describePacks(packs: readonly number[]): string {
+  const run = packs.length >= 3 && packs.every((p, i) => i === 0 || p === packs[i - 1] + 1);
+  if (run) return `#${packs[0]}–#${packs[packs.length - 1]}`;
+  const names = packs.map((p) => `#${p}`);
+  if (names.length <= 1) return names.join('');
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
 /** One-line description of an inbound DCC SEND offer for a status buffer, e.g.
  *  `[EWG]MArchive offered "scene.mkv" (5.0 GB) via DCC SEND`. */
 export function formatDccOfferLine(nick: string, offer: DccSend): string {

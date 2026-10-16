@@ -118,7 +118,11 @@ function harness(networkFields: Record<string, unknown> = {}) {
   const frames: Array<Record<string, unknown>> = [];
   conn.client.ctcpRequest = ctcpRequest;
   conn.client.ctcpResponse = ctcpResponse;
-  conn.publish = () => undefined;
+  // DCC status lines are stored lines in the peer's DM (#1085).
+  conn.publish = (event: Record<string, unknown>) => {
+    ephemeral.push(event);
+    return undefined;
+  };
   conn.publishEphemeral = (event: Record<string, unknown>) => {
     ephemeral.push(event);
   };
@@ -130,7 +134,8 @@ function harness(networkFields: Record<string, unknown> = {}) {
     const call = ctcpRequest.mock.calls.at(-back);
     return call ? call.slice(2).join(' ') : null;
   };
-  const lines = () => ephemeral.filter((e) => e.type === 'ctcp').map((e) => String(e.text ?? ''));
+  const lines = () =>
+    ephemeral.filter((e) => e.type === 'ctcp' || e.type === 'dcc').map((e) => String(e.text ?? ''));
   const from = (nick: string, body: string, target = 'alice') =>
     conn.client.emit('ctcp request', { nick, target, type: 'DCC', message: `DCC ${body}` });
   return { conn, ctcpRequest, ctcpResponse, sent, lines, frames, from };

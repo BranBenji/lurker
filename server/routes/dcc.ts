@@ -418,6 +418,96 @@ router.post('/:id/cancel', (req: Request, res: Response) => {
   res.json({ transfer: getDccTransfer(req.user!.id, id) });
 });
 
+/** POST /api/dcc/:id/retry — ask again for a queued pack that failed (#1085):
+ *  a new row at the FRONT of its bot's queue, which resumes the partial. */
+router.post('/:id/retry', needsReceive, (req: Request, res: Response) => {
+  const id = rowId(req);
+  const row = id == null ? undefined : getDccTransfer(req.user!.id, id);
+  if (!row) {
+    res.status(404).json({ error: 'transfer not found' });
+    return;
+  }
+  if (row.pack == null || DCC_ACTIVE_STATES.has(row.state) || row.state === 'completed') {
+    res
+      .status(409)
+      .json({ error: 'only a queued pack that ended without its file can be retried' });
+    return;
+  }
+  const result = ircManager.retryXdcc(req.user!.id, row);
+  if (result === 'not-connected') {
+    res.status(409).json({ error: 'network not connected' });
+    return;
+  }
+  if (result === 'not-queued') {
+    res.status(409).json({ error: 'that pack is already in the queue' });
+    return;
+  }
+  res.json({ transfer: getDccTransfer(req.user!.id, result) });
+});
+
+// A guard against a typo, not a quota: `/xdcc addl bot 1 100000` would ask a
+// bot for a hundred thousand packs, one after another.
+const XDCC_MAX_PACKS_PER_REQUEST = 500;
+
+// The pack numbers in a body, or why not.
+function packsFrom(req: Request, res: Response, allowNull: boolean): number[] | null | undefined {
+  const raw = req.body?.packs;
+  if (raw === null && allowNull) return null;
+  if (
+    !Array.isArray(raw) ||
+    raw.length === 0 ||
+    !raw.every((p) => Number.isSafeInteger(p) && (p as number) >= 0)
+  ) {
+    res.status(400).json({ error: 'packs must be a list of pack numbers' });
+    return undefined;
+  }
+  if (raw.length > XDCC_MAX_PACKS_PER_REQUEST) {
+    res.status(400).json({
+      error: `at most ${XDCC_MAX_PACKS_PER_REQUEST} packs at a time`,
+    });
+    return undefined;
+  }
+  return raw as number[];
+}
+
+/**
+ * POST /api/dcc/xdcc — queue XDCC packs from a bot (#1085). Body: {networkId,
+ * nick, packs: number[]}. One queue per bot on a network; the next pack is
+ * asked for once nothing of that bot's is out. A pack already waiting or out
+ * is skipped. Answers with the rows queued.
+ */
+router.post('/xdcc', needsReceive, (req: Request, res: Response) => {
+  const t = peerTarget(req, res, 'an XDCC bot is a nick, not a channel');
+  if (!t) return;
+  const packs = packsFrom(req, res, false);
+  if (!packs) return;
+  const ids = ircManager.queueXdcc(req.user!.id, t.networkId, t.nick, packs);
+  if (ids === null) {
+    res.status(409).json({ error: 'network not connected' });
+    return;
+  }
+  res.json({ transfers: ids.map((id) => getDccTransfer(req.user!.id, id)).filter(Boolean) });
+});
+
+/**
+ * POST /api/dcc/xdcc/remove — take packs out of a bot's queue (#1085). Body:
+ * {networkId, nick, packs: number[] | null}; null empties the bot's queue. A
+ * pack already asked for is cancelled, which tells the bot. Needs no grant:
+ * stopping is always allowed.
+ */
+router.post('/xdcc/remove', (req: Request, res: Response) => {
+  const t = peerTarget(req, res, 'an XDCC bot is a nick, not a channel');
+  if (!t) return;
+  const packs = packsFrom(req, res, true);
+  if (packs === undefined) return;
+  const removed = ircManager.unqueueXdcc(req.user!.id, t.networkId, t.nick, packs);
+  if (removed === null) {
+    res.status(409).json({ error: 'network not connected' });
+    return;
+  }
+  res.json({ removed });
+});
+
 // {networkId, nick}, ownership-checked. Shared by the chat routes and send so
 // none can act on a network the caller doesn't own.
 function peerTarget(

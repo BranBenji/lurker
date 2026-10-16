@@ -106,14 +106,19 @@ function harness() {
   conn.client.ctcpRequest = ctcpRequest;
   conn.client.ctcpResponse = vi.fn<(target: string, type: string, ...p: string[]) => void>();
   conn.client.say = vi.fn<(target: string, text: string) => void>();
-  conn.publish = () => undefined;
+  // DCC status lines are stored lines in the peer's DM (#1085).
+  conn.publish = (event: Record<string, unknown>) => {
+    ephemeral.push(event);
+    return undefined;
+  };
   conn.publishEphemeral = (event: Record<string, unknown>) => {
     ephemeral.push(event);
   };
   conn.onUserFrame = () => {};
   // Every outgoing CTCP DCC request body, oldest first.
   const sent = (): string[] => ctcpRequest.mock.calls.map((c) => c.slice(2).join(' '));
-  const lines = () => ephemeral.filter((e) => e.type === 'ctcp').map((e) => String(e.text ?? ''));
+  const lines = () =>
+    ephemeral.filter((e) => e.type === 'ctcp' || e.type === 'dcc').map((e) => String(e.text ?? ''));
   const from = (nick: string, body: string) =>
     conn.client.emit('ctcp request', {
       nick,
@@ -209,7 +214,7 @@ describe('a passive offer', () => {
     h.from('bob', `SEND "my show.mkv" 199 0 ${DATA.length} 0`);
     const offered = onlyRow();
     expect(offered).toMatchObject({ state: 'pending_approval', passive: 1, token: 0 });
-    expect(h.lines()).toContain('bob offered "my show.mkv" (48.8 KB) via DCC SEND (passive)');
+    expect(h.lines()).toContain('DCC: bob offered "my show.mkv" (48.8 KB) via DCC SEND (passive)');
 
     h.conn.acceptPendingDcc(offered);
     await waitFor(() => h.sent().length === 1);
@@ -304,7 +309,7 @@ describe('a passive offer that ends early', () => {
     const h = harness();
     h.from('bob', `SEND f.bin 16843009 0 ${DATA.length} 5`);
     expect(h.lines()).toContain(
-      'bob offered "f.bin" (48.8 KB) via DCC SEND (passive), but this server has no listening port to take it on',
+      'DCC: bob offered "f.bin" (48.8 KB) via DCC SEND (passive), but this server has no listening port to take it on',
     );
     h.conn.acceptPendingDcc(onlyRow());
     expect(onlyRow()).toMatchObject({
