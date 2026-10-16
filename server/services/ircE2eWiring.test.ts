@@ -739,3 +739,69 @@ describe('/e2e forget + literal-handle resolution (departed peers)', () => {
     );
   });
 });
+
+// #1149: handshake NOTICEs burst (every peer KEYREQs us at once; a rotation
+// REKEYs every recipient), and IRCnet kills a client for a handful of long
+// lines back to back. The first goes at once; after a line of 100+ bytes the
+// next waits 2 s + 1 s per 100 bytes, as irssi paces.
+describe('handshake NOTICE pacing (#1149)', () => {
+  // `NOTICE bob :\x01…\x01\r\n` around a 280-byte body is 296 bytes, and
+  // `NOTICE carol :…` 298: 2 s + 2 s each.
+  const LONG = `RPEE2E KEYRSP ${'x'.repeat(266)}`;
+  const GAP_MS = 4000;
+
+  function paced() {
+    vi.useFakeTimers();
+    const conn = makeConn();
+    conn.publish = vi.fn<(event: unknown) => void>();
+    const notice = vi.fn<(target: string, text: string) => void>();
+    conn.client.notice = notice;
+    return { conn, notice };
+  }
+
+  it('sends the first at once and spaces long lines by their length', () => {
+    const { conn, notice } = paced();
+    try {
+      conn.sendHandshakeReply('bob', LONG);
+      conn.sendHandshakeReply('carol', LONG);
+      conn.sendHandshakeReply('dave', LONG);
+      expect(notice.mock.calls.map((c) => c[0])).toEqual(['bob']);
+      vi.advanceTimersByTime(GAP_MS - 1);
+      expect(notice).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1);
+      expect(notice.mock.calls.map((c) => c[0])).toEqual(['bob', 'carol']);
+      vi.advanceTimersByTime(GAP_MS);
+      expect(notice.mock.calls.map((c) => c[0])).toEqual(['bob', 'carol', 'dave']);
+      expect(notice.mock.calls[2][1]).toBe(`${CTCP}${LONG}${CTCP}`);
+    } finally {
+      conn.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('sends short lines back to back', () => {
+    const { conn, notice } = paced();
+    try {
+      conn.sendHandshakeReply('bob', 'RPEE2E REKEY v=1 c=#x');
+      conn.sendHandshakeReply('carol', 'RPEE2E REKEY v=1 c=#x');
+      expect(notice).toHaveBeenCalledTimes(2);
+    } finally {
+      conn.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('drops what is still queued when the socket closes', () => {
+    const { conn, notice } = paced();
+    try {
+      conn.sendHandshakeReply('bob', LONG);
+      conn.sendHandshakeReply('carol', LONG);
+      conn.client.emit('close');
+      vi.advanceTimersByTime(GAP_MS * 2);
+      expect(notice.mock.calls.map((c) => c[0])).toEqual(['bob']);
+    } finally {
+      conn.dispose();
+      vi.useRealTimers();
+    }
+  });
+});
