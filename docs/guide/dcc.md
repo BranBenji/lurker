@@ -30,7 +30,8 @@ The window has three parts:
 - **kept**: every file you have on the server, received or uploaded, with
   **Download**, **Send to…** and **Delete**. The line above the list says how
   much space your files take, partials included, and your limit if the admin
-  set one. **Delete partial** frees a partial's space.
+  set one. What a file coming in has still to send counts toward the limit
+  too, shown as "on the way". **Delete partial** frees a partial's space.
 
 On a phone, each row's actions are behind its **⋯** button.
 

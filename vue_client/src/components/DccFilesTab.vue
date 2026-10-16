@@ -378,21 +378,28 @@ const peers = computed((): PeerBlock[] => {
 const kept = computed(() => dcc.files.filter((f) => matches(f.name)));
 const crcNotes = computed(() => new Map(kept.value.map((f) => [f.id, crcNote(f)])));
 
-// What the account's files take on disk (#1153), as Settings → DCC and the
-// limit count it: kept files, and what each transfer that still owns a path
-// has written, in flight or not. (An offer is checked against this plus what
-// in-flight transfers still have to write.) The partials Delete partial can
-// free are named.
+// What the account's files take on disk (#1153), as Settings → DCC counts it:
+// kept files, and what each transfer that still owns a path has written. The
+// limit also holds back what in-flight receives have still to write, shown as
+// on the way, and the partials Delete partial can free are named.
+const IN_FLIGHT = new Set(['connecting', 'receiving', 'stalled', 'verifying']);
+const ownsPath = (t: DccTransfer) => !!t.destination_path && t.file_id == null;
 const partialBytes = computed(() =>
   dcc.transfers.reduce((n, t) => (holdsPartial(t) ? n + t.received_bytes : n), 0),
 );
 const usedBytes = computed(
   () =>
     dcc.files.reduce((n, f) => n + f.size, 0) +
-    dcc.transfers.reduce(
-      (n, t) => (t.destination_path && t.file_id == null ? n + t.received_bytes : n),
-      0,
-    ),
+    dcc.transfers.reduce((n, t) => (ownsPath(t) ? n + t.received_bytes : n), 0),
+);
+const comingBytes = computed(() =>
+  dcc.transfers.reduce(
+    (n, t) =>
+      ownsPath(t) && IN_FLIGHT.has(t.state)
+        ? n + Math.max(0, t.advertised_size - t.received_bytes)
+        : n,
+    0,
+  ),
 );
 const storageLine = computed(() => {
   const used = usedBytes.value;
@@ -400,6 +407,7 @@ const storageLine = computed(() => {
   return joinMeta([
     limit ? `${formatBytes(used)} of ${formatBytes(limit)}` : formatBytes(used),
     partialBytes.value > 0 && `${formatBytes(partialBytes.value)} in partials`,
+    comingBytes.value > 0 && `${formatBytes(comingBytes.value)} on the way`,
   ]);
 });
 

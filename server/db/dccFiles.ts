@@ -144,22 +144,28 @@ export function dccFileAt(userId: number, path: string): boolean {
 
 /** Every path on disk the user's DCC rows own: kept files, and the partials of
  *  transfers that never finished (#1152). Read before the account is deleted,
- *  as that takes the rows with it. A path another account's rows also name is
- *  left out: two accounts can share a folder, and a row of one can name a path
- *  the other's file came to fill (an offer accepted that never connected). */
+ *  as that takes the rows with it. Two accounts can share a folder, so a path
+ *  another account's rows also name is left out: a kept file when the other
+ *  keeps it too, a partial when the other names it at all (an offer of theirs
+ *  that never connected can name the file this one came to fill). Compared
+ *  without case, as a case-insensitive disk sees them. */
 export function dccPathsOwnedBy(userId: number): string[] {
   const rows = db
     .prepare(
-      `SELECT p FROM (
-         SELECT path AS p FROM dcc_files WHERE user_id = ?
-         UNION
-         SELECT destination_path FROM dcc_transfers
-         WHERE user_id = ? AND destination_path IS NOT NULL
-       )
-       WHERE p NOT IN (SELECT path FROM dcc_files WHERE user_id != ?)
-         AND p NOT IN (SELECT destination_path FROM dcc_transfers
-                       WHERE user_id != ? AND destination_path IS NOT NULL)`,
+      `SELECT path AS p FROM dcc_files f
+       WHERE user_id = ?
+         AND NOT EXISTS (SELECT 1 FROM dcc_files o
+                         WHERE o.user_id != f.user_id AND o.path = f.path COLLATE NOCASE)
+       UNION
+       SELECT destination_path FROM dcc_transfers t
+       WHERE user_id = ? AND destination_path IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM dcc_files o
+                         WHERE o.user_id != t.user_id
+                           AND o.path = t.destination_path COLLATE NOCASE)
+         AND NOT EXISTS (SELECT 1 FROM dcc_transfers o
+                         WHERE o.user_id != t.user_id
+                           AND o.destination_path = t.destination_path COLLATE NOCASE)`,
     )
-    .all(userId, userId, userId, userId) as { p: string }[];
+    .all(userId, userId) as { p: string }[];
   return rows.map((r) => r.p);
 }

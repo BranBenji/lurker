@@ -463,6 +463,46 @@ describe('DELETE /api/admin/users/:id', () => {
     }
   });
 
+  it('leaves out DCC paths another account names, case aside (#1152)', async () => {
+    const { createUser } = await import('../db/users.js');
+    const { keepUploadedDccFile, dccPathsOwnedBy } = await import('../db/dccFiles.js');
+    const { insertDccTransfer, markDccReceiving, updateDccTransferState } =
+      await import('../db/dccTransfers.js');
+    const a = createUser('owns-a');
+    const b = createUser('owns-b');
+    const reserve = (userId: number, p: string) => {
+      const t = insertDccTransfer(userId, {
+        network_id: null as unknown as number,
+        peer_nick: 'bot',
+        filename: 'f.mkv',
+        advertised_size: 10,
+        state: 'pending_approval',
+      });
+      markDccReceiving(t, {
+        filename: 'f.mkv',
+        advertised_size: 10,
+        destination_path: p,
+        received_bytes: 0,
+      });
+      updateDccTransferState(t, 'failed', 'timed out');
+    };
+    const keep = (userId: number, p: string) =>
+      keepUploadedDccFile(userId, { path: p, name: 'f.mkv', size: 4 });
+
+    keep(a.id, '/d/x/solo.mkv');
+    // Kept by both, as a case-insensitive disk sees it: not a's to delete.
+    keep(a.id, '/d/x/Movie.mkv');
+    keep(b.id, '/d/x/movie.mkv');
+    // a keeps it; b only named it for an offer that never connected.
+    keep(a.id, '/d/x/kept.mkv');
+    reserve(b.id, '/d/x/kept.mkv');
+    // a's partial at a path b's row names too.
+    reserve(a.id, '/d/x/half.mkv');
+    reserve(b.id, '/d/x/HALF.mkv');
+
+    expect(dccPathsOwnedBy(a.id).sort()).toEqual(['/d/x/kept.mkv', '/d/x/solo.mkv']);
+  });
+
   it("disposes the user's IRC connections before deletion", async () => {
     const target = (await import('../db/users.js')).createUser('to-be-removed');
     fakeManager.reset();
