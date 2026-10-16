@@ -335,6 +335,8 @@ export const useDccStore = defineStore('dcc', {
     clearError: '',
     // What the account may do, from /api/dcc/config, once asked (#1086).
     account: null as DccAccountConfig | null,
+    // The DCC tab was opened by name since the window last opened.
+    dccAsked: false,
     // Speed and time left per transfer in flight, from its progress frames.
     rates: {} as Record<number, DccRate>,
     // Set while the Files tab is picking a file to send (#1086).
@@ -353,7 +355,9 @@ export const useDccStore = defineStore('dcc', {
     hasDccTab(s): boolean {
       if (!useConfigStore().features.dcc) return false;
       const a = s.account;
-      return !!(a && (a.chat || a.receive || a.send)) || this.hasAny;
+      // Or asked for by name (`/dcc`, `/xdcc`): then the tab says what's
+      // missing, rather than the window showing shares instead.
+      return !!(a && (a.chat || a.receive || a.send)) || this.hasAny || s.dccAsked;
     },
     // Unsolicited offers awaiting a decision — the urgent, you-must-act count
     // that warn-colors the affordance.
@@ -502,6 +506,16 @@ export const useDccStore = defineStore('dcc', {
       for (const t of this.transfers) if (t.state === 'pending_approval') this.syncOfferToast(t);
     },
 
+    // Sign-out: every offer's toast goes, and what was put off is forgotten.
+    // Sticky, they would otherwise sit on the next account's screen with
+    // buttons bound to this one's transfers.
+    dropOfferToasts(): void {
+      const toasts = useToastsStore();
+      for (const id of offerToasts.values()) toasts.dismiss(id);
+      offerToasts.clear();
+      offersPutOff.clear();
+    },
+
     // Queue XDCC packs from a bot (#1085). Resolves with the rows queued.
     async queueXdcc(networkId: number, bot: string, packs: number[]): Promise<DccTransfer[]> {
       const { transfers } = await api<{ transfers: DccTransfer[] }>('/api/dcc/xdcc', {
@@ -515,11 +529,17 @@ export const useDccStore = defineStore('dcc', {
     // Take packs out of a bot's queue, or (null) all of them. Resolves with
     // how many went.
     async unqueueXdcc(networkId: number, bot: string, packs: number[] | null): Promise<number> {
-      const { removed } = await api<{ removed: number }>('/api/dcc/xdcc/remove', {
-        method: 'POST',
-        body: { networkId, nick: bot, packs },
-      });
-      return removed;
+      this.clearError = '';
+      try {
+        const { removed } = await api<{ removed: number }>('/api/dcc/xdcc/remove', {
+          method: 'POST',
+          body: { networkId, nick: bot, packs },
+        });
+        return removed;
+      } catch (e: any) {
+        this.clearError = e?.message || 'could not take the packs out';
+        throw e;
+      }
     },
 
     // Ask again for a queued pack that ended without its file: a new row at
@@ -818,6 +838,7 @@ export const useDccStore = defineStore('dcc', {
     open(tab: DccPanelTab = 'shares'): void {
       this.panelOpen = true;
       this.panelTab = tab;
+      this.dccAsked = tab === 'dcc';
       this.pick = null;
       if (!useConfigStore().features.dcc) return;
       void this.loadAccount();

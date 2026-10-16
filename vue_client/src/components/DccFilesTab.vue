@@ -27,6 +27,7 @@
       DCC isn't turned on for your account. You can still download and delete what's here.
     </p>
     <p v-if="dcc.listError" class="error">{{ dcc.listError }}</p>
+    <p v-if="dcc.clearError" class="error">{{ dcc.clearError }}</p>
     <p v-if="dcc.filesError" class="error">{{ dcc.filesError }}</p>
     <div v-if="dcc.pick" class="pick">
       <span>

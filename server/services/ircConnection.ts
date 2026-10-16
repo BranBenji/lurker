@@ -1540,6 +1540,10 @@ export class IrcConnection {
     // through 'disconnected', so this is the one place that sees it.
     if (changed && state === 'connected') {
       if (!this.restoring) this.requeueXdccOnDisconnect();
+      // Now, not on the pump's tick: on a re-attach the engine delivers what
+      // the bot said meanwhile right behind the registration, and its answer
+      // has to find the request it answers.
+      this.armXdccTimers();
       setImmediate(() => this.pumpXdccQueue());
     }
     if (changed && state === 'disconnected' && !this.engineSocketAlive) {
@@ -6719,15 +6723,21 @@ export class IrcConnection {
   pumpXdccQueue(): void {
     if (this.disposed || this.state !== 'connected') return;
     if (!dccReceiveEnabledForUser(this.network.user_id) || this.dccBlockedByProxy()) return;
-    for (const row of listXdccQueue(this.network.user_id, this.network.id)) {
-      if (row.state === 'requested' && !this.xdccWaiting.has(row.id)) this.armXdccTimer(row);
-    }
+    this.armXdccTimers();
     for (const row of nextXdccRequests(this.network.user_id, this.network.id)) {
       if (row.pack == null) continue;
       markXdccRequested(row.id);
       this.sendXdccRequest(row.peer_nick, row.trigger_text || xdccTrigger(row.pack));
       this.armXdccTimer({ ...row, bot_acked_at: null });
       this.publishDcc(row.id);
+    }
+  }
+
+  // A clock on every request out that has none (one can predate this
+  // connection object).
+  private armXdccTimers(): void {
+    for (const row of listXdccQueue(this.network.user_id, this.network.id)) {
+      if (row.state === 'requested' && !this.xdccWaiting.has(row.id)) this.armXdccTimer(row);
     }
   }
 
@@ -6795,11 +6805,22 @@ export class IrcConnection {
   // bot has it, which holds the auto-accept while its own queue takes.
   private noteXdccBotSpoke(nick: string, text: string): void {
     const waiting: number[] = [];
+    const answered: number[] = [];
     for (const [id, w] of this.xdccWaiting) {
-      if (!w.acked && this.sameDccPeer(w.bot, nick)) waiting.push(id);
+      if (!this.sameDccPeer(w.bot, nick)) continue;
+      (w.acked ? answered : waiting).push(id);
     }
-    if (waiting.length === 0) return;
+    if (waiting.length + answered.length === 0) return;
     if (isXdccRefusal(text)) {
+      // A refusal can come after the bot took the request (its queue let it
+      // go, or it is leaving), so answered requests count here too; the oldest
+      // sent goes, whatever order the clocks were set in.
+      waiting.push(...answered);
+      const sentAt = (id: number) => {
+        const r = getDccTransfer(this.network.user_id, id);
+        return `${r?.requested_at ?? r?.created_at ?? ''}|${String(id).padStart(12, '0')}`;
+      };
+      waiting.sort((x, y) => sentAt(x).localeCompare(sentAt(y)));
       // A bot answers in the order it was asked, so it is the oldest request
       // still waiting that it refused (a typed one can be out beside the
       // queue's). The bot said no: no automatic retry; Retry is the user's.
@@ -6818,6 +6839,7 @@ export class IrcConnection {
       }
       return;
     }
+    if (waiting.length === 0) return;
     // By the rows waiting, which sameDccPeer matched under the network's
     // casemapping: `{bot}` answering a request to `[Bot]` is the same bot.
     for (const id of ackXdccRequests(this.network.user_id, waiting)) {
@@ -6842,11 +6864,12 @@ export class IrcConnection {
   // request out goes back now; a pack waiting on the bot's resume ACCEPT is
   // ended here rather than left stalled.
   private interruptXdcc(): void {
+    // Our clocks stop either way: this connection is going.
+    for (const id of this.xdccWaiting.keys()) this.stopWaitingForXdccBot(id);
     // A detach or takeover: the engine kept the IRC socket for another process,
     // which owns these rows now. Leave them be.
     if (this.engineSocketAlive) return;
     this.xdccInterrupted = true;
-    for (const id of this.xdccWaiting.keys()) this.stopWaitingForXdccBot(id);
     for (const id of requeueXdccRequests(this.network.user_id, this.network.id)) {
       this.publishDcc(id);
     }
@@ -6899,8 +6922,17 @@ export class IrcConnection {
   // A stored DCC status line in the peer's DM (#1085): what happened to a
   // transfer, kept with the conversation it belongs to. A line for a stranger
   // opens a DM with them, the way their PM would.
+  //
+  // ⚠ Never throws. It runs from socket and file callbacks, and a receive can
+  // outlive its network (a Disconnect unmaps the connection, then the network
+  // is deleted): the write then has no network to land in, and a throw there
+  // would take the process down.
   private dccLine(nick: string, text: string): void {
-    this.publish({ type: 'dcc', target: nick, nick, text });
+    try {
+      this.publish({ type: 'dcc', target: nick, nick, text });
+    } catch (e) {
+      console.warn('[dcc] status line not kept:', (e as Error)?.message || e);
+    }
   }
 
   private publishDccCleared(ids: number[]): void {
@@ -7298,6 +7330,7 @@ export class IrcConnection {
         `sender accepted an unexpected resume position (${accept.position})`,
       );
       this.dccLine(nick, `DCC: "${accept.filename}" — sender accepted a bad resume position`);
+      this.publishDcc(pending.transferId);
       return;
     }
     if (pending.offer.passive) {

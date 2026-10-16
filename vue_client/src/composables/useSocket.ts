@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import { getActivePinia } from 'pinia';
 import type { Ref } from 'vue';
 import { ref, onMounted, watch, effectScope } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
@@ -1389,6 +1390,9 @@ export function resetSocket(): void {
   // an offer toast is sticky, so it would sit on the NEXT user's screen after a
   // logout, with an Accept button bound to the previous account's session.
   for (const key of dccOfferToasts.keys()) dismissDccOfferToast(key);
+  // The file offers' toasts too (#1085), which the DCC store keeps. (No store
+  // to ask before the app has one.)
+  if (getActivePinia()) useDccStore().dropOfferToasts();
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;

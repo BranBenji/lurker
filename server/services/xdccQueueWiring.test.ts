@@ -272,6 +272,25 @@ describe('the bot answering, or not', () => {
     expect(byPack('Bot', 40)[0].state).toBe('requested');
   });
 
+  it('fails an answered request the bot later refuses', async () => {
+    const h = harness();
+    h.conn.queueXdcc('Bot', [29, 30]);
+    h.botSays('Bot', 'Added you to the main queue for pack #29 in position 2.');
+    h.botSays('Bot', 'XDCC SEND denied, you must be on a known channel');
+    await tick();
+    expect(byPack('Bot', 29).map((r) => r.state)).toEqual(['failed']);
+    expect(byPack('Bot', 30)[0].state).toBe('requested');
+  });
+
+  it('never throws from a status line it cannot keep', () => {
+    const h = harness();
+    h.conn.publish = () => {
+      throw new Error('FOREIGN KEY constraint failed');
+    };
+    const line = (h.conn as unknown as { dccLine: (n: string, t: string) => void }).dccLine;
+    expect(() => line.call(h.conn, 'Bot', 'DCC: received "x"')).not.toThrow();
+  });
+
   it('does not spin on an answered request past its hours while the engine link is down', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     const h = harness();

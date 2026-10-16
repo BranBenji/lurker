@@ -96,6 +96,14 @@ describe('an offer', () => {
     expect(toasts.items).toHaveLength(0);
   });
 
+  it('takes every offer toast down at sign-out', () => {
+    const dcc = useDccStore();
+    dcc.applyTransfer(row({ id: 88 }));
+    expect(useToastsStore().items).toHaveLength(1);
+    dcc.dropOfferToasts();
+    expect(useToastsStore().items).toHaveLength(0);
+  });
+
   it('gets no toast for a send of ours, or a row that is not an offer', () => {
     const dcc = useDccStore();
     dcc.applyTransfer(row({ id: 2, direction: 'send', state: 'offered' }));
