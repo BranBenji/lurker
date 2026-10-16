@@ -464,6 +464,8 @@ describe('/api/dcc/files', () => {
       transfer_id: id,
       peer_nick: 'bot',
       network_id: aliceNet.id,
+      // The name carries no CRC32, so nothing was checked (#1082).
+      crc_status: 'absent',
     });
   });
 

@@ -29,6 +29,7 @@ function file(id: number, name: string): DccFile {
     transfer_id: null,
     peer_nick: null,
     network_id: null,
+    crc_status: null,
   };
 }
 

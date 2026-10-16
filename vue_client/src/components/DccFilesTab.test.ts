@@ -42,7 +42,7 @@ function row(over: Partial<DccTransfer>): DccTransfer {
   };
 }
 
-const file = (id: number, name: string): DccFile => ({
+const file = (id: number, name: string, over: Partial<DccFile> = {}): DccFile => ({
   id,
   name,
   size: 2048,
@@ -51,6 +51,8 @@ const file = (id: number, name: string): DccFile => ({
   transfer_id: null,
   peer_nick: 'Bot',
   network_id: 1,
+  crc_status: null,
+  ...over,
 });
 
 afterEach(() => vi.unstubAllGlobals());
@@ -322,6 +324,31 @@ describe('DccFilesTab', () => {
     await form.trigger('submit');
     await vi.waitFor(() => expect(send).toHaveBeenCalledWith(2, 'bob', 1, true));
     await vi.waitFor(() => expect(w.find('form.send-to').exists()).toBe(false));
+  });
+
+  it('says how each received file checked out, and nothing for an upload (#1082)', async () => {
+    const dcc = useDccStore();
+    dcc.filesLoaded = true;
+    dcc.files = [
+      file(1, 'ok.mkv', { crc_status: 'ok' }),
+      file(2, 'bad.mkv', { crc_status: 'mismatch' }),
+      file(3, 'plain.mkv', { crc_status: 'absent' }),
+      file(4, 'resumed.mkv', { crc_status: 'unverified' }),
+      file(5, 'mine.mkv', { origin: 'uploaded', peer_nick: null, network_id: null }),
+    ];
+    const w = mountTab();
+    await w.vm.$nextTick();
+    const rows = w.findAll('.list .row');
+    const note = (i: number) => rows[i]!.find('.crc');
+    expect(note(0).text()).toBe('checksum verified');
+    expect(note(0).classes()).toContain('good');
+    expect(note(1).text()).toBe('checksum mismatch');
+    expect(note(1).classes()).toContain('bad');
+    expect(rows[1]!.find('.glyph').classes()).toContain('bad');
+    expect(note(2).text()).toBe('not verified (no checksum)');
+    expect(note(3).text()).toBe('not verified (resumed)');
+    expect(note(4).exists()).toBe(false);
+    expect(rows[0]!.find('.sub').text()).toMatch(/from Bot • .* • checksum verified$/);
   });
 
   it('downloads a kept file, and deletes it only once confirmed', async () => {

@@ -7082,9 +7082,10 @@ export class IrcConnection {
       return;
     }
     // Resume only continues OUR OWN tracked incomplete transfer of this file (a
-    // prior failed/stalled/orphaned-receiving row whose partial is still on disk
-    // and shorter than the offer) — never an arbitrary same-named leftover, which
-    // could otherwise get this bot's bytes appended onto an unrelated prefix.
+    // prior failed/stalled row whose partial is still on disk and shorter than
+    // the offer) — never an arbitrary same-named leftover, which could otherwise
+    // get this bot's bytes appended onto an unrelated prefix, and never a file
+    // another receive is writing right now (#1127).
     let destPath: string;
     let startOffset = 0;
     const username = findUserById(this.network.user_id)?.username || 'user';

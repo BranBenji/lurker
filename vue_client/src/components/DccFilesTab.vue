@@ -147,10 +147,18 @@
     </div>
     <ul v-if="kept.length" class="list">
       <li v-for="f in kept" :key="f.id" class="row">
-        <div class="glyph muted"><FileIcon /></div>
+        <div class="glyph" :class="f.crc_status === 'mismatch' ? 'bad' : 'muted'">
+          <FileIcon />
+        </div>
         <div class="meta">
           <div class="name">{{ f.name }}</div>
-          <div class="sub">{{ fileLine(f) }}</div>
+          <div class="sub">
+            {{ fileLine(f) }}
+            <template v-if="crcNote(f)">
+              {{ META_SEPARATOR }}
+              <span class="crc" :class="crcNote(f)!.tone">{{ crcNote(f)!.text }}</span>
+            </template>
+          </div>
           <form v-if="sendingTo?.fileId === f.id" class="send-to" @submit.prevent="onSendTo(f)">
             <input
               v-model="sendingTo.nick"
@@ -242,7 +250,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { isXdccPlaceholder } from '../../../shared/xdcc.js';
 import type { UploadKind } from '../stores/uploads.js';
 import { formatRelative } from '../utils/timestamp.js';
-import { joinMeta } from '../utils/metaLine.js';
+import { META_SEPARATOR, joinMeta } from '../utils/metaLine.js';
 import { formatBytes } from '../utils/formatBytes.js';
 import {
   ArrowDownIcon,
@@ -556,6 +564,23 @@ function onSendTo(f: DccFile) {
     });
 }
 
+// How a received file checked out (#1082). One with no CRC32 in its name, or
+// one resumed, says it wasn't verified rather than saying nothing.
+function crcNote(f: DccFile): { text: string; tone: 'good' | 'bad' | null } | null {
+  switch (f.crc_status) {
+    case 'ok':
+      return { text: 'checksum verified', tone: 'good' };
+    case 'mismatch':
+      return { text: 'checksum mismatch', tone: 'bad' };
+    case 'absent':
+      return { text: 'not verified (no checksum)', tone: null };
+    case 'unverified':
+      return { text: 'not verified (resumed)', tone: null };
+    default:
+      return null;
+  }
+}
+
 function fileLine(f: DccFile): string {
   return joinMeta([
     f.peer_nick ? `from ${f.peer_nick}` : 'uploaded by you',
@@ -687,6 +712,12 @@ async function onUploadChosen(e: Event) {
 }
 .glyph.muted {
   color: var(--fg-muted);
+}
+.crc.good {
+  color: var(--good);
+}
+.crc.bad {
+  color: var(--bad);
 }
 .meta {
   min-width: 0;

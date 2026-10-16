@@ -29,6 +29,7 @@ function file(id: number, over: Partial<DccFile> = {}): DccFile {
     transfer_id: id * 10,
     peer_nick: 'bot',
     network_id: 1,
+    crc_status: null,
     ...over,
   };
 }
