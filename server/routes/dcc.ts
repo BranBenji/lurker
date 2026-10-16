@@ -5,7 +5,7 @@
 // transfers, act on them — accept a pending offer, reject it, cancel an
 // in-flight one — and fetch a completed file over HTTP), the files the account
 // keeps (#1133: list, download, delete), sending one of them to a peer (#1086),
-// and DCC CHAT (open or close a direct chat with a peer). The transfer list is the Transfers view's initial load; live updates arrive over the WS as
+// and DCC CHAT (open or close a direct chat with a peer). The transfer list is the DCC window's initial load; live updates arrive over the WS as
 // `dcc-transfer` frames, and a chat's own output arrives as ordinary messages in
 // its `=nick` buffer. All routes are user-scoped via requireAuth.
 

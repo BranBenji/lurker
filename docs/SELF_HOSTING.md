@@ -608,8 +608,9 @@ Then give people access under **Admin → DCC**. Each person has three parts, ea
 
 Limits:
 
-- `LURKER_DCC_MAX_FILE_MB` caps one transfer, and one file uploaded to send. Unset or `0` is no cap. An offer that is too big, or that doesn't say its size, is refused.
-- The per-person limit counts their kept files, files uploaded to send, and the full size of anything still coming in.
+- `LURKER_DCC_MAX_FILE_MB` caps one transfer, and one file uploaded to send. Unset or `0` is no cap.
+- An offer that doesn't say its size is always refused.
+- The per-person limit counts their kept files, files uploaded to send, the partials of failed and cancelled transfers, and the full size of anything still coming in.
 - Lurker refuses a transfer that would leave less than 1 GB free on the disk.
 
 #### Peers on private networks
@@ -631,13 +632,15 @@ environment:
 
 - The host must be an IP address, not a hostname: DCC carries the address as a number. Prefer IPv4. An IPv6 address works with irssi, WeeChat, KVIrc and HexDroid, but HexChat and ZNC's bouncedcc misread it.
 - Open the same range in your firewall. Its size caps how many offers can wait at once.
-- `LURKER_DCC_LISTEN_BIND` sets the bind address inside the container (default `0.0.0.0`).
+- `LURKER_DCC_LISTEN_BIND` sets the bind address inside the container. The default follows the external host: `0.0.0.0` for IPv4, `::` for IPv6 (which also needs IPv6 enabled in Docker).
 
 Without these, `/dcc send` and `/dcc chat` say what's missing. `-passive` asks the other side to listen instead and needs none of it, but only some clients handle a passive chat offer (irssi, HexChat and repartee do; WeeChat and HexDroid don't). Passive DCC doesn't work through ZNC's bouncedcc module, which turns every offer into an active one.
 
 #### Good to know
 
 - **A network with a proxy refuses DCC.** DCC connects directly, outside the proxy, which would give away the address the proxy hides.
+- **Turning `LURKER_DCC_ENABLED` off closes all of it**, including downloading and deleting files already received. They stay on disk under `LURKER_DCC_DIR`.
+- **Deleting an account doesn't delete its files.** Its directory under `LURKER_DCC_DIR` stays on disk; remove it by hand.
 - **Transfers run in the Lurker process, not the [IRC engine](#irc-engine-upgrade-without-dropping-irc).** Restarting Lurker ends any transfer in progress. It's kept as a partial and resumes the next time the file is offered, and a queued XDCC pack is requested again on its own.
 
 ### IRC engine (upgrade without dropping IRC)

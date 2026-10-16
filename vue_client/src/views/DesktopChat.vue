@@ -20,7 +20,7 @@
       <BufferList v-if="showChannels" />
       <!-- Collapsing the list takes its per-row highlight badges with it, so the
            control that brings it back carries their total (#636). Unlike the
-           Transfers button below this one IS a count badge: the number is the
+           DCC button below this one IS a count badge: the number is the
            information here, not a state the glyph could stand in for. -->
       <button
         v-else

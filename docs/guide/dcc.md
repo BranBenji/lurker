@@ -12,8 +12,8 @@ receive files and send files. See [DCC and XDCC](/SELF_HOSTING#dcc-and-xdcc)
 in the self-hosting guide.
 :::
 
-Once you have any part of it, a **DCC** button appears in the bottom bar, next
-to **Shares**. It opens the DCC window, and it turns the warning colour while
+Once you have any part of it, a **DCC** button appears next to **Shares**: at
+the foot of the buffer list on a computer, at the top on a phone. It opens the DCC window, and it turns the warning colour while
 an offer is waiting for you. **Settings → DCC** shows which parts you have, the
 space your files use, and the limits the admin set.
 
@@ -29,7 +29,9 @@ The window has three parts:
   bytes it got.
 - **kept**: every file you have on the server, received or uploaded, with
   **Download**, **Send to…** and **Delete**. The line above the list says how
-  much space your files take, and your limit if the admin set one.
+  much space your kept files take, and your limit if the admin set one. The
+  limit also counts the partials of failed and cancelled transfers, which
+  **Delete partial** frees.
 
 On a phone, each row's actions are behind its **⋯** button.
 
@@ -42,6 +44,10 @@ offer from someone you have no DM with opens one, as a private message would.
 While a file comes in, the status bar shows it whenever you're in that
 person's DM: the file, how far along it is, and how many more are queued.
 Tapping it opens the DCC window.
+
+Some clients (halloy and HexDroid by default) send _passive_ offers, where your
+server has to accept a connection from them. Those only work if the admin set
+your server up for it; otherwise Lurker says it can't take the offer.
 
 A file that was cut off, by a dropped connection or a restart, isn't lost. The
 next time the same file is offered, Lurker asks the sender to resume from where
@@ -68,11 +74,12 @@ The queue asks each bot for one pack at a time, and every bot's queue runs at
 once. It lives on the server, so it keeps going while you're away and after a
 restart. Up to 500 packs can be queued in one command.
 
-- If the bot doesn't answer within two minutes, or a pack fails, the pack goes
-  to the back of that bot's queue for one more try. If it fails again it stays
-  failed, with **Retry**.
+- If the bot doesn't answer within two minutes, or the download fails, the pack
+  goes to the back of that bot's queue for one more try. If it fails again it
+  stays failed, with **Retry**. A pack the bot refuses (no such pack, queue
+  full) or Lurker refuses (too big, over your limit) isn't tried again.
 - If the bot puts you in its own queue, the status bar says so and Lurker waits
-  for as long as that takes.
+  up to 12 hours.
 - Cancelling a pack the bot is sending tells the bot to stop.
 
 ## Checksums
@@ -96,16 +103,17 @@ window says "checking the checksum" while that happens.
 
 To send someone a file, use **Send File (DCC)…** from their name in the member
 list or their profile's **⋯** menu, or from a DM: the DM's menu in the buffer
-list, or the send button at the top of the DM. The DCC window opens to pick the
+list, or (on a computer) the send button at the top of the DM. The DCC window opens to pick the
 file: one you keep, or a new one to upload. A kept file also has **Send to…**,
 which asks for a nick, and for a network when you're on more than one.
 
 From the keyboard: `/dcc send <nick> [<file>]`, where the file is a name or an
 id from `/dcc files`. With no file, the DCC window opens to pick one.
 
-Sending needs the server to be reachable from outside. If your admin hasn't set
-that up, Lurker says so. `/dcc send -passive <nick>` asks the other side to
-listen instead, if their client supports it.
+A normal send needs your server to be reachable from outside. If the admin
+hasn't set that up, sending from the menus asks the other side to connect
+instead (a _passive_ offer), and `/dcc send` says to use `-passive`. Not every
+client takes a passive offer.
 
 ## DCC chat
 
@@ -113,18 +121,21 @@ A DCC chat is a direct conversation with one person, not relayed by the IRC
 server. It opens in a buffer named `=nick`.
 
 - `/dcc chat <nick>` offers one. `/dcc chat -passive <nick>` asks the other
-  side to listen instead. Only some clients handle that (irssi and HexChat do;
-  WeeChat and HexDroid don't).
-- An offer someone sends you gets the same **Accept**, **Decline** and **Later**
-  toast as a file.
+  side to listen instead. Only some clients handle that (irssi, HexChat and
+  repartee do; WeeChat and HexDroid don't).
+- An offer someone sends you gets an **Accept**, **Decline** and **Later**
+  toast. Unlike a file, it doesn't wait in the DCC window: after **Later**,
+  `/dcc chat <nick>` accepts it, for up to 10 minutes.
 - `/dcc close chat <nick>` ends it.
 
 ## /dcc commands
 
+The `<id>` below is a transfer's, as `/dcc list` shows it.
+
 | Command                                | What it does                                        |
 | -------------------------------------- | --------------------------------------------------- |
-| `/dcc` or `/dcc list`                  | Open the DCC window                                 |
-| `/dcc files`                           | List your kept files, with their ids                |
+| `/dcc` or `/dcc list`                  | Open the DCC window and list transfers, with ids    |
+| `/dcc files`                           | List your kept files, with ids for `/dcc send`      |
 | `/dcc accept <id>`, `/dcc reject <id>` | Answer an offer                                     |
 | `/dcc cancel <id>`                     | Stop a transfer                                     |
 | `/dcc retry <id>`                      | Ask a bot for a failed pack again                   |

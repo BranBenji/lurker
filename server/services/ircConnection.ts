@@ -7577,7 +7577,7 @@ export class IrcConnection {
   }
 
   // Push a transfer row to ALL the user's clients (user-scoped, not buffer-scoped)
-  // so the Transfers view updates live, as a { kind: 'dcc-transfer' } frame.
+  // so the DCC window updates live, as a { kind: 'dcc-transfer' } frame.
   private publishDcc(transferId: number): void {
     const transfer = getDccTransfer(this.network.user_id, transferId);
     if (transfer) this.publishDccRow(transfer);
@@ -7604,7 +7604,7 @@ export class IrcConnection {
     if (this.disposed) return;
     // ⚠⚠ Gated HERE as well as at the offer, because a pending row outlives the
     // setting that let it in: an offer recorded while the network was direct is
-    // still sitting in the Transfers view after the user configures a proxy and
+    // still sitting in the DCC window after the user configures a proxy and
     // reconnects, and accepting it dials the peer with a bare net.connect —
     // leaking exactly the address the proxy exists to hide. The offer-side gate
     // stops new ones; this stops the backlog.
