@@ -16,16 +16,14 @@
   A file card that happens to show an icon reads as a peer of one that shows a photo;
   a separate list of them would not.
 
-  It is also the files window (#1085). Uploads are called shares here: what you
-  shared in chat. An account with DCC gets a second tab, DCC, for the files it
-  keeps on the server and the transfers and XDCC queue moving them (DccFilesTab);
-  the search and type chips work on both. Without DCC the window is just shares,
-  with no tabs, as it always was.
+  Uploads are called shares here (#1085): what you shared in chat. The same
+  window, with `view="dcc"`, is the DCC window, opened by its own button: the
+  files the account keeps on the server and the transfers and XDCC queue moving
+  them (DccFilesTab), under the same search and type chips.
 -->
 
 <template>
-  <AppModal :word="windowWord" :title="windowWord" size="xl" fill-height @close="$emit('close')">
-    <TabStrip v-if="dcc.hasDccTab" v-model="dcc.panelTab" :tabs="TABS" label="Files" />
+  <AppModal :word="view" :title="view" size="xl" fill-height @close="$emit('close')">
     <div class="filters">
       <!-- Search and the starred toggle share a line. The toggle used to sit after
            the kind chips, where it had nowhere to go: those five fill the content
@@ -216,9 +214,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import AppModal from './AppModal.vue';
-import TabStrip from './TabStrip.vue';
 import DccFilesTab from './DccFilesTab.vue';
-import { useDccStore, type DccPanelTab } from '../stores/dcc.js';
 import { useUploadsStore } from '../stores/uploads.js';
 import type { UploadItem, UploadKind } from '../stores/uploads.js';
 import { useMediaViewer } from '../composables/useMediaViewer.js';
@@ -261,19 +257,14 @@ const KIND_CHIPS: Array<{ label: string; value: UploadKind | null }> = [
 // the grid still feels like it's responding to you.
 const SEARCH_DEBOUNCE_MS = 250;
 
+const props = withDefaults(defineProps<{ view?: 'shares' | 'dcc' }>(), { view: 'shares' });
 const emit = defineEmits<{
   close: [];
 }>();
 const uploads = useUploadsStore();
-const dcc = useDccStore();
 
-const TABS: { id: DccPanelTab; label: string }[] = [
-  { id: 'shares', label: 'Shares' },
-  { id: 'dcc', label: 'DCC' },
-];
-const onDcc = computed(() => dcc.hasDccTab && dcc.panelTab === 'dcc');
-const windowWord = computed(() => (dcc.hasDccTab ? 'files' : 'shares'));
-// The DCC tab filters what it already holds, so its search and chip are its
+const onDcc = computed(() => props.view === 'dcc');
+// The DCC window filters what it already holds, so its search and chip are its
 // own, apart from the shares search the server answers.
 const dccQuery = ref('');
 const onDccQueryInput = useImeSafeInput(dccQuery);
@@ -334,13 +325,14 @@ watch(query, (next) => {
 });
 
 onMounted(() => {
+  searchEl.value?.focus();
+  if (onDcc.value) return;
   // Reset the filters on open. A search left over from a previous session would look
   // like an empty uploads list — the worst possible first impression of the browser.
   void uploads.setFilters({ query: '', kind: null, favoritesOnly: false }).catch(() => {
     /* surfaced via store.listError */
   });
   query.value = '';
-  searchEl.value?.focus();
 });
 
 onBeforeUnmount(() => {

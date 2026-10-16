@@ -22,7 +22,10 @@
         <button class="icon" title="Saved messages" @click="showBookmarks = true">
           <BookmarkIcon />
         </button>
-        <SharesButton class="icon" />
+        <button class="icon" title="Shares" @click="showUploads = true">
+          <ShareIcon />
+        </button>
+        <DccButton class="icon" />
         <button class="icon" title="Add network" @click="openAddNetwork">
           <PlusIcon />
         </button>
@@ -177,7 +180,8 @@
       :network-id="joinChannelModal.networkId!"
       @close="joinChannelModal.close()"
     />
-    <RecentUploadsModal v-if="dcc.panelOpen" @close="dcc.close()" />
+    <RecentUploadsModal v-if="showUploads" @close="showUploads = false" />
+    <RecentUploadsModal v-if="dcc.panelOpen" view="dcc" @close="dcc.close()" />
     <SearchModal
       v-if="showSearch"
       :scope="searchScope"
@@ -242,7 +246,7 @@ import { useChannelModal } from '../composables/useChannelModal.js';
 import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
-import SharesButton from '../components/SharesButton.vue';
+import DccButton from '../components/DccButton.vue';
 import SearchModal from '../components/SearchModal.vue';
 import NickNoteModal from '../components/NickNoteModal.vue';
 import ReactModal from '../components/ReactModal.vue';
@@ -275,6 +279,7 @@ import {
   PlusIcon,
   SearchIcon,
   SettingsIcon,
+  ShareIcon,
   ShieldCogIcon,
   UnplugIcon,
   UsersIcon,
@@ -367,6 +372,7 @@ const channelModal = useChannelModal();
 // Its open state is module-level: leaving the chat view (a logout, say) must
 // not leave it open for whoever's session mounts the view next.
 onBeforeUnmount(() => channelModal.close());
+const showUploads = ref(false);
 const pendingScrollId = ref<number | null>(null);
 const messageInputRef = ref<{ focus: () => void } | null>(null);
 const bufferCogBtn = ref<HTMLElement | null>(null);

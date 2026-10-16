@@ -2955,7 +2955,7 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
     return;
   }
   if (cmd.kind === 'files') {
-    dcc.open('dcc');
+    dcc.open();
     try {
       const files = await dcc.loadFiles();
       if (!files.length) {
@@ -2972,7 +2972,7 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
     return;
   }
   if (cmd.kind === 'list') {
-    dcc.open('dcc');
+    dcc.open();
     try {
       const rows = await dcc.load();
       if (!rows.length) {
@@ -3097,7 +3097,7 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
     return;
   }
   // A queued pack that ended without its file, asked for again at the front
-  // of its bot's queue (#1085) — what Retry does in the DCC tab.
+  // of its bot's queue (#1085) — what Retry does in the DCC window.
   if (cmd.kind === 'retry') {
     try {
       const t = await dcc.retry(cmd.id);
@@ -3138,7 +3138,7 @@ async function runXdcc(argLine: string, networkId: number | null, target: string
     return;
   }
   if (cmd.kind === 'queue') {
-    dcc.open('dcc');
+    dcc.open();
     try {
       const rows = (await dcc.load()).filter(
         (t) =>

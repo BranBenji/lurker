@@ -146,7 +146,7 @@ export function parseDccCommand(argLine: string): DccCommand {
     return { kind: 'chat', nick, passive: flags.length > 0 };
   }
   // irssi's `DCC SEND [-passive] <nick> <file>` (dcc-send.c:164), with the
-  // file optional: without one, the Files tab opens to pick or upload it. The
+  // file optional: without one, the DCC window opens to pick or upload it. The
   // file is the rest of the line, so a name with spaces needs no quotes.
   if (verb === 'send') {
     const usage = 'usage: /dcc send [-passive] <nick> [<file>]';

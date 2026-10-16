@@ -3,7 +3,7 @@
 
 // Client store for the DCC download manager (#270 phase 2), for sending
 // (#1086), and for the XDCC queue (#1085). Mirrors the server's dcc_transfers
-// rows and backs the DCC tab of the files window: the initial list comes from
+// rows and backs the DCC window: the initial list comes from
 // GET /api/dcc, then live state changes arrive over the WS as `dcc-transfer`
 // frames (applyTransfer). Acting on a transfer (accept / reject / cancel) goes
 // over POST and the authoritative row echoes back — both through the action's
@@ -100,10 +100,7 @@ export interface DccFile {
   network_id: number | null;
 }
 
-/** The files window's tabs (#1085): shares (uploads) and DCC. */
-export type DccPanelTab = 'shares' | 'dcc';
-
-/** Who the Files tab is picking a file for: `/dcc send <nick>` with no file
+/** Who the DCC window is picking a file for: `/dcc send <nick>` with no file
  *  (#1086). */
 export interface DccSendPick {
   networkId: number;
@@ -280,7 +277,7 @@ const progressSamples = new Map<number, { at: number; bytes: number }>();
 // transfer id, so it goes when the offer is answered anywhere.
 const offerToasts = new Map<number, number>();
 // Offers put off with Later: their toast doesn't come back when the lists
-// reload (every reconnect resyncs them), only their row in the DCC tab stays.
+// reload (every reconnect resyncs them), only their row in the DCC window stays.
 const offersPutOff = new Set<number>();
 
 // Hand a file to the browser's download manager, after a HEAD: a refusal
@@ -312,12 +309,10 @@ export const useDccStore = defineStore('dcc', {
     loaded: false,
     loading: false,
     listError: '',
-    // Whether the Transfers modal is open. Lives in the store (not a view-local
-    // ref) so `/dcc list` can open it from MessageInput, mirroring the
-    // composable-backed opens (useMediaViewer, useChannelListModal).
+    // Whether the DCC window is open. Lives in the store (not a view-local
+    // ref) so `/dcc`, `/xdcc`, the status bar and offer toasts can open it,
+    // mirroring the composable-backed opens (useMediaViewer, useChannelListModal).
     panelOpen: false,
-    // Which list the panel shows.
-    panelTab: 'shares' as DccPanelTab,
     // The files the account keeps (#1133), newest first.
     files: [] as DccFile[],
     filesLoaded: false,
@@ -335,11 +330,9 @@ export const useDccStore = defineStore('dcc', {
     clearError: '',
     // What the account may do, from /api/dcc/config, once asked (#1086).
     account: null as DccAccountConfig | null,
-    // The DCC tab was opened by name since the window last opened.
-    dccAsked: false,
     // Speed and time left per transfer in flight, from its progress frames.
     rates: {} as Record<number, DccRate>,
-    // Set while the Files tab is picking a file to send (#1086).
+    // Set while the DCC window is picking a file to send (#1086).
     pick: null as DccSendPick | null,
     // A file going up to be sent, and how far (0–100), or its failure.
     uploading: null as { name: string; percent: number } | null,
@@ -350,14 +343,12 @@ export const useDccStore = defineStore('dcc', {
     // Whether this account can send a file over DCC (#1085): what offers
     // "Send File (DCC)…" on a nick.
     canSend: (s): boolean => useConfigStore().features.dcc && !!s.account?.send,
-    // Whether the files window shows its DCC tab: DCC runs here, and the
-    // account has some of it (a grant), or something from before a grant went.
-    hasDccTab(s): boolean {
+    // Whether the DCC button shows: DCC runs here, and the account has some
+    // of it (a grant), or something from before a grant went.
+    hasDcc(s): boolean {
       if (!useConfigStore().features.dcc) return false;
       const a = s.account;
-      // Or asked for by name (`/dcc`, `/xdcc`): then the tab says what's
-      // missing, rather than the window showing shares instead.
-      return !!(a && (a.chat || a.receive || a.send)) || this.hasAny || s.dccAsked;
+      return !!(a && (a.chat || a.receive || a.send)) || this.hasAny;
     },
     // Unsolicited offers awaiting a decision — the urgent, you-must-act count
     // that warn-colors the affordance.
@@ -444,7 +435,7 @@ export const useDccStore = defineStore('dcc', {
     // An offer waiting for an answer has a toast (#1085): Accept · Decline ·
     // Later, the way a DCC chat offer does. It goes once the offer is answered,
     // from here or anywhere else. Later only puts the toast away; the offer
-    // stays in the DCC tab.
+    // stays in the DCC window.
     syncOfferToast(t: DccTransfer): void {
       const toasts = useToastsStore();
       const shown = offerToasts.get(t.id);
@@ -474,7 +465,7 @@ export const useDccStore = defineStore('dcc', {
             tone: 'good',
             onClick: () => {
               offerToasts.delete(t.id);
-              this.accept(t.id).catch(() => this.open('dcc'));
+              this.accept(t.id).catch(() => this.open());
             },
           },
           {
@@ -482,7 +473,7 @@ export const useDccStore = defineStore('dcc', {
             tone: 'bad',
             onClick: () => {
               offerToasts.delete(t.id);
-              this.reject(t.id).catch(() => this.open('dcc'));
+              this.reject(t.id).catch(() => this.open());
             },
           },
           { label: 'Later', tone: 'muted', onClick: () => offersPutOff.add(t.id) },
@@ -798,7 +789,7 @@ export const useDccStore = defineStore('dcc', {
       }
     },
 
-    // The Files tab's pick: send `fileId` to who it is picking for, and show
+    // The DCC window's pick: send `fileId` to who it is picking for, and show
     // the transfer.
     async sendPicked(fileId: number): Promise<DccTransfer | null> {
       const pick = this.pick;
@@ -816,7 +807,7 @@ export const useDccStore = defineStore('dcc', {
 
     // `/dcc send <nick>` with no file: open Files to pick one, or upload one.
     openToSend(pick: DccSendPick): void {
-      this.open('dcc');
+      this.open();
       this.pick = pick;
     },
 
@@ -832,13 +823,11 @@ export const useDccStore = defineStore('dcc', {
       await api('/api/dcc/chat/close', { method: 'POST', body: { networkId, nick } });
     },
 
-    // Open the files window (#1085) on `tab`, and (re)load the DCC lists when
-    // DCC runs here. Used by the shares button, the status bar, `/dcc` and
-    // `/xdcc`. Load errors surface in the window (listError, filesError).
-    open(tab: DccPanelTab = 'shares'): void {
+    // Open the DCC window, and (re)load the DCC lists when DCC runs here. Used
+    // by the DCC button, the status bar, offer toasts, `/dcc` and `/xdcc`.
+    // Load errors surface in the window (listError, filesError).
+    open(): void {
       this.panelOpen = true;
-      this.panelTab = tab;
-      this.dccAsked = tab === 'dcc';
       this.pick = null;
       if (!useConfigStore().features.dcc) return;
       void this.loadAccount();

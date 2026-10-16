@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// The DCC tab of the files window (#1085): offers waiting, what is moving
+// The body of the DCC window (#1085): offers waiting, what is moving
 // grouped by peer (a bot's block is its queue), and the kept files.
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';

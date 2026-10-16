@@ -159,7 +159,7 @@ export function useMemberActions(): MemberActionsAPI {
         onClick: () => buffers.activate(ctx.networkId, nick),
       });
       // Sending over DCC starts from the person (#1085), never the composer:
-      // the paperclip only shares. Opens the DCC tab picking a file for them.
+      // the paperclip only shares. Opens the DCC window picking a file for them.
       if (dcc.canSend) {
         items.push({
           label: 'Send File (DCC)…',

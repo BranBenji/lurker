@@ -51,14 +51,14 @@
         }}</span>
         <!-- What's in flight with this DM's nick over DCC (#1085): the pack or
              file moving, or the XDCC queue waiting. One line that truncates,
-             never grows; a tap opens the DCC tab. Offers are toasts, not this. -->
+             never grows; a tap opens the DCC window. Offers are toasts, not this. -->
         <button
           v-if="dccSegment"
           class="seg dcc"
           :class="dccSegment.tone"
           type="button"
           :title="dccSegment.title"
-          @click="dcc.open('dcc')"
+          @click="dcc.open()"
         >
           <component :is="dccSegment.icon" /><span class="dcc-text" v-text="dccSegment.text"></span>
         </button>

@@ -4,7 +4,7 @@
 -->
 
 <!--
-  The DCC tab of the files window (#1085). It replaces the Transfers modal: a
+  The body of the DCC window (#1085). It replaces the Transfers modal: a
   transfer's history is its lines in the peer's DM, so what is left to manage
   is what needs you now, what is moving, and what you keep.
 

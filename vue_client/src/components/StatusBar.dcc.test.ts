@@ -81,12 +81,11 @@ describe('StatusBar — DCC segment', () => {
     expect(s.classes()).toContain('warn');
   });
 
-  it('opens the DCC tab when tapped', async () => {
+  it('opens the DCC window when tapped', async () => {
     useDccStore().transfers = [row({})];
     const w = mountOn('Bot');
     await seg(w).trigger('click');
     expect(useDccStore().panelOpen).toBe(true);
-    expect(useDccStore().panelTab).toBe('dcc');
   });
 
   it('is not in a channel, another DM, or for an offer still waiting', () => {

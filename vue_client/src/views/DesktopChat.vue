@@ -63,7 +63,10 @@
         <button class="link" @click="showBookmarks = true" title="Saved messages">
           <BookmarkIcon />
         </button>
-        <SharesButton class="link" />
+        <button class="link" @click="showUploads = true" title="Shares">
+          <ShareIcon />
+        </button>
+        <DccButton class="link" />
       </div>
     </aside>
 
@@ -258,7 +261,8 @@
       :network-id="joinChannelModal.networkId!"
       @close="joinChannelModal.close()"
     />
-    <RecentUploadsModal v-if="dcc.panelOpen" @close="dcc.close()" />
+    <RecentUploadsModal v-if="showUploads" @close="showUploads = false" />
+    <RecentUploadsModal v-if="dcc.panelOpen" view="dcc" @close="dcc.close()" />
     <QuickSwitcher v-if="showSwitcher" @close="showSwitcher = false" />
     <SearchModal
       v-if="showSearch"
@@ -326,7 +330,7 @@ import { useChannelModal } from '../composables/useChannelModal.js';
 import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
-import SharesButton from '../components/SharesButton.vue';
+import DccButton from '../components/DccButton.vue';
 import QuickSwitcher from '../components/QuickSwitcher.vue';
 import SearchModal from '../components/SearchModal.vue';
 import KeyboardHelpModal from '../components/KeyboardHelpModal.vue';
@@ -359,6 +363,7 @@ import {
   PlusIcon,
   SearchIcon,
   SettingsIcon,
+  ShareIcon,
   ShieldCogIcon,
   SlidersHorizontalIcon,
   StickyNoteIcon,
@@ -416,6 +421,7 @@ const channelModal = useChannelModal();
 // Its open state is module-level: leaving the chat view (a logout, say) must
 // not leave it open for whoever's session mounts the view next.
 onBeforeUnmount(() => channelModal.close());
+const showUploads = ref(false);
 const showSwitcher = ref(false);
 const showKbdHelp = ref(false);
 const pendingScrollId = ref<number | null>(null);
@@ -437,6 +443,7 @@ const anyModalOpen = computed(
     channelListModal.isOpen ||
     joinChannelModal.isOpen ||
     viewer.isOpen ||
+    showUploads.value ||
     dcc.panelOpen ||
     showSwitcher.value ||
     showSearch.value ||
