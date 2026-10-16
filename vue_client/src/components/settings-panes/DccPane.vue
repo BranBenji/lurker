@@ -35,8 +35,7 @@
               <td>
                 {{ config.send ? 'on' : 'off' }}
                 <span v-if="config.send && !config.canListen" class="muted">
-                  — passive only (<code>/dcc send -passive</code>): this server has no public
-                  address set up for DCC
+                  — passive only: this server has no public address set up for DCC
                 </span>
               </td>
             </tr>

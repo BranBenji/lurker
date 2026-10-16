@@ -7746,9 +7746,9 @@ export class IrcConnection {
   //
   // Offering one of the account's DCC files (#1133) to a peer. Active by
   // default: we listen on a port from the configured range and offer
-  // `DCC SEND <file> <addr> <port> <size>`. `-passive` (port 0 and a token; the
-  // receiver listens and replies with where to connect) is opt-in and never an
-  // automatic fallback, as for chat. A peer's RESUME is answered with ACCEPT,
+  // `DCC SEND <file> <addr> <port> <size>`. Passive (port 0 and a token; the
+  // receiver listens and replies with where to connect) is `-passive`, or what
+  // an offer falls back to when this server can't listen (#1154). A peer's RESUME is answered with ACCEPT,
   // and the send starts from there. An offer nobody takes expires after five
   // minutes, which ends the offer, not the file.
 

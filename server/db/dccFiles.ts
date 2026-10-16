@@ -144,15 +144,22 @@ export function dccFileAt(userId: number, path: string): boolean {
 
 /** Every path on disk the user's DCC rows own: kept files, and the partials of
  *  transfers that never finished (#1152). Read before the account is deleted,
- *  as that takes the rows with it. */
+ *  as that takes the rows with it. A path another account's rows also name is
+ *  left out: two accounts can share a folder, and a row of one can name a path
+ *  the other's file came to fill (an offer accepted that never connected). */
 export function dccPathsOwnedBy(userId: number): string[] {
   const rows = db
     .prepare(
-      `SELECT path AS p FROM dcc_files WHERE user_id = ?
-       UNION
-       SELECT destination_path FROM dcc_transfers
-       WHERE user_id = ? AND destination_path IS NOT NULL`,
+      `SELECT p FROM (
+         SELECT path AS p FROM dcc_files WHERE user_id = ?
+         UNION
+         SELECT destination_path FROM dcc_transfers
+         WHERE user_id = ? AND destination_path IS NOT NULL
+       )
+       WHERE p NOT IN (SELECT path FROM dcc_files WHERE user_id != ?)
+         AND p NOT IN (SELECT destination_path FROM dcc_transfers
+                       WHERE user_id != ? AND destination_path IS NOT NULL)`,
     )
-    .all(userId, userId) as { p: string }[];
+    .all(userId, userId, userId, userId) as { p: string }[];
   return rows.map((r) => r.p);
 }

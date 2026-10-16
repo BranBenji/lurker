@@ -143,7 +143,7 @@
 
     <div class="group">
       <span>kept</span>
-      <span v-if="dcc.files.length || partialBytes > 0">{{ storageLine }}</span>
+      <span v-if="dcc.files.length || usedBytes > 0">{{ storageLine }}</span>
     </div>
     <ul v-if="kept.length" class="list">
       <li v-for="f in kept" :key="f.id" class="row">
@@ -378,17 +378,24 @@ const peers = computed((): PeerBlock[] => {
 const kept = computed(() => dcc.files.filter((f) => matches(f.name)));
 const crcNotes = computed(() => new Map(kept.value.map((f) => [f.id, crcNote(f)])));
 
-// What the account's files take, as the limit counts it (#1153): kept files,
-// and the partials transfers still own, failed, cancelled or still coming in.
-// The partials are named, since Delete partial is what frees them.
+// What the account's files take on disk (#1153), as Settings → DCC and the
+// limit count it: kept files, and what each transfer that still owns a path
+// has written, in flight or not. (An offer is checked against this plus what
+// in-flight transfers still have to write.) The partials Delete partial can
+// free are named.
 const partialBytes = computed(() =>
-  dcc.transfers.reduce(
-    (n, t) => (t.destination_path && t.file_id == null ? n + t.received_bytes : n),
-    0,
-  ),
+  dcc.transfers.reduce((n, t) => (holdsPartial(t) ? n + t.received_bytes : n), 0),
+);
+const usedBytes = computed(
+  () =>
+    dcc.files.reduce((n, f) => n + f.size, 0) +
+    dcc.transfers.reduce(
+      (n, t) => (t.destination_path && t.file_id == null ? n + t.received_bytes : n),
+      0,
+    ),
 );
 const storageLine = computed(() => {
-  const used = dcc.files.reduce((n, f) => n + f.size, 0) + partialBytes.value;
+  const used = usedBytes.value;
   const limit = dcc.account?.limitBytes;
   return joinMeta([
     limit ? `${formatBytes(used)} of ${formatBytes(limit)}` : formatBytes(used),
@@ -565,10 +572,9 @@ function startSendTo(f: DccFile) {
 function onSendTo(f: DccFile) {
   const to = sendingTo.value;
   if (!to || !to.nick.trim()) return;
-  // Passive only when this server can't listen: then it's the only way.
-  const passive = dcc.account?.canListen === false;
+  // Active or passive is the server's call: passive when it can't listen (#1154).
   dcc
-    .sendFile(to.networkId, to.nick.trim(), f.id, passive)
+    .sendFile(to.networkId, to.nick.trim(), f.id)
     .then(() => {
       sendingTo.value = null;
     })

@@ -322,7 +322,8 @@ describe('DccFilesTab', () => {
     await form.find('select').trigger('change');
     await form.find('input.nick').setValue('  bob ');
     await form.trigger('submit');
-    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(2, 'bob', 1, true));
+    // Active or passive is the server's call (#1154).
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(2, 'bob', 1));
     await vi.waitFor(() => expect(w.find('form.send-to').exists()).toBe(false));
   });
 
@@ -332,7 +333,7 @@ describe('DccFilesTab', () => {
     dcc.account = { chat: false, receive: true, send: false, limitBytes: 10 * 1024 } as never;
     dcc.files = [file(1, 'kept.mkv')];
     dcc.transfers = [
-      // A failed transfer's partial, and one still coming in, both count.
+      // A failed transfer's partial, and one still coming in, both count to the total.
       row({ id: 5, state: 'failed', destination_path: '/d/a.mkv', received_bytes: 1024 }),
       row({ id: 6, state: 'receiving', destination_path: '/d/b.mkv', received_bytes: 1024 }),
       // A finished one's bytes are its kept file's, already counted.
@@ -340,7 +341,8 @@ describe('DccFilesTab', () => {
     ];
     const w = mountTab();
     await w.vm.$nextTick();
-    expect(w.findAll('.group').at(-1)!.text()).toBe('kept4.0 KB of 10.0 KB • 2.0 KB in partials');
+    // Only the failed one is a partial Delete partial can free.
+    expect(w.findAll('.group').at(-1)!.text()).toBe('kept4.0 KB of 10.0 KB • 1.0 KB in partials');
 
     // With no kept files, partials alone still show.
     dcc.files = [];

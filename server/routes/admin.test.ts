@@ -430,6 +430,33 @@ describe('DELETE /api/admin/users/:id', () => {
       expect((await adminAgent.delete(`/api/admin/users/${shared.target.id}`)).status).toBe(200);
       expect(fs.existsSync(shared.kept)).toBe(false);
       expect(fs.existsSync(other)).toBe(true);
+
+      // Two accounts in one folder: a row of the deleted one names a path
+      // (an offer accepted that never connected) that the other's kept file
+      // then came to fill. That file stays.
+      const stale = createUser('dcc-stale');
+      const twin = createUser('dcc-twin');
+      const dir = path.join(root, 'dcc-stale');
+      fs.mkdirSync(dir, { recursive: true });
+      const twins = path.join(dir, 'x.mkv');
+      const t = insertDccTransfer(stale.id, {
+        network_id: null as unknown as number,
+        peer_nick: 'bot',
+        filename: 'x.mkv',
+        advertised_size: 10,
+        state: 'pending_approval',
+      });
+      markDccReceiving(t, {
+        filename: 'x.mkv',
+        advertised_size: 10,
+        destination_path: twins,
+        received_bytes: 0,
+      });
+      updateDccTransferState(t, 'failed', 'timed out');
+      fs.writeFileSync(twins, 'twin');
+      keepUploadedDccFile(twin.id, { path: twins, name: 'x.mkv', size: 4 });
+      expect((await adminAgent.delete(`/api/admin/users/${stale.id}`)).status).toBe(200);
+      expect(fs.existsSync(twins)).toBe(true);
     } finally {
       undo();
       fs.rmSync(root, { recursive: true, force: true });

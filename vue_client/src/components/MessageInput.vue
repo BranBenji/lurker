@@ -2995,9 +2995,9 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
       localInfo(networkId, target, '/dcc send: run this from a network buffer');
       return;
     }
-    // A server that can't listen can only make a passive offer, so it makes one
-    // (#1154), as the menus do.
-    const passive = cmd.passive || (await dcc.loadAccount())?.canListen === false;
+    // Without -passive, the server still makes it passive when it can't listen
+    // (#1154).
+    const passive = cmd.passive;
     if (cmd.file === null) {
       dcc.openToSend({ networkId, nick: cmd.nick, passive });
       localInfo(networkId, target, `/dcc send: pick a file to send to ${cmd.nick}, or upload one`);
