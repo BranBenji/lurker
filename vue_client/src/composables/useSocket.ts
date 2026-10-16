@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
+import { getActivePinia } from 'pinia';
 import type { Ref } from 'vue';
 import { ref, onMounted, watch, effectScope } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
@@ -454,16 +455,37 @@ function applyEvent(event: any): boolean {
             ? `${from} wants to chat directly (they're firewalled, so this server listens)`
             : `${from} wants to chat directly`,
           ttlMs: 0,
-          action: {
-            label: 'Accept',
-            onClick: () => {
-              dccOfferToasts.delete(key);
-              void useDccStore()
-                .openChat(networkId, from)
-                .then(() => buffers.activate(networkId, `=${from}`))
-                .catch(() => {});
+          // The same three answers as a file offer (#1085). Later only puts
+          // the toast away; `/dcc chat <nick>` still accepts the offer.
+          dismissible: false,
+          actions: [
+            {
+              label: 'Accept',
+              tone: 'good',
+              onClick: () => {
+                dccOfferToasts.delete(key);
+                void useDccStore()
+                  .openChat(networkId, from)
+                  .then(() => buffers.activate(networkId, `=${from}`))
+                  .catch(() => {});
+              },
             },
-          },
+            {
+              label: 'Decline',
+              tone: 'bad',
+              onClick: () => {
+                dccOfferToasts.delete(key);
+                void useDccStore()
+                  .closeChat(networkId, from)
+                  .catch(() => {});
+              },
+            },
+            {
+              label: 'Later',
+              tone: 'muted',
+              onClick: () => dccOfferToasts.delete(key),
+            },
+          ],
         }),
       );
       break;
@@ -566,6 +588,11 @@ function applyEvent(event: any): boolean {
       take();
       break;
     }
+    case 'dcc':
+      // A stored DCC status line (#1085), in the peer's DM: it opens that DM
+      // like a PM would, and never notifies (the offer's toast does).
+      take();
+      break;
     case 'e2e': // RPE2E status line (#382) — same routing as a server notice.
     case 'ctcp': // CTCP request/reply/echo status line (#263) — same routing.
     case 'motd':
@@ -1363,6 +1390,9 @@ export function resetSocket(): void {
   // an offer toast is sticky, so it would sit on the NEXT user's screen after a
   // logout, with an Accept button bound to the previous account's session.
   for (const key of dccOfferToasts.keys()) dismissDccOfferToast(key);
+  // The file offers' toasts too (#1085), which the DCC store keeps. (No store
+  // to ask before the app has one.)
+  if (getActivePinia()) useDccStore().dropOfferToasts();
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;

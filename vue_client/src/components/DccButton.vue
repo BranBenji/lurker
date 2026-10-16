@@ -2,17 +2,16 @@
   Copyright (c) 2026 Brad Root
   SPDX-License-Identifier: MPL-2.0
 
-  The DCC Transfers button, in the desktop rail and the mobile top bar; each
-  view gives it its own button class. Self-revealing: DCC is off for almost
-  everyone, so it only appears while the account has a transfer or a file (or
-  the panel is open), and goes again once both lists are empty.
-  Color-as-signal (house style, no count badge): the glyph turns warn-colored
-  while an unsolicited offer awaits a decision.
+  The DCC button, in the desktop rail and the mobile top bar; each view gives
+  it its own button class. It opens the DCC window (#1085), apart from shares.
+  It shows for an account with DCC (a grant, or transfers or files from before
+  one went), and while the window is open. Color-as-signal (house style, no
+  count badge): the glyph turns warn-colored while an offer waits for an answer.
 -->
 
 <template>
   <button
-    v-if="dcc.hasAny || dcc.panelOpen"
+    v-if="dcc.hasDcc || dcc.panelOpen"
     class="dcc-btn"
     :class="{ pending: dcc.pendingCount > 0 }"
     :title="title"
@@ -28,9 +27,11 @@ import { useDccStore } from '../stores/dcc.js';
 import { ArchiveIcon } from '@lucide/vue';
 
 const dcc = useDccStore();
-const title = computed(() =>
-  dcc.pendingCount > 0 ? `DCC transfers — ${dcc.pendingCount} awaiting approval` : 'DCC transfers',
-);
+const title = computed(() => {
+  const n = dcc.pendingCount;
+  if (n === 0) return 'DCC';
+  return `DCC — ${n} ${n === 1 ? 'offer' : 'offers'} waiting`;
+});
 </script>
 
 <style scoped>

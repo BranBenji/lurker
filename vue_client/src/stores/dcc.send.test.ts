@@ -81,7 +81,7 @@ describe('sending from the Files tab', () => {
     h.api.mockResolvedValue({ transfer: offered(10, 3) });
     const dcc = useDccStore();
     dcc.openToSend({ networkId: 1, nick: 'bob', passive: true });
-    expect(dcc.panelTab).toBe('files');
+    expect(dcc.panelOpen).toBe(true);
     expect(dcc.pick).toEqual({ networkId: 1, nick: 'bob', passive: true });
     await dcc.sendPicked(3);
     expect(h.api).toHaveBeenCalledWith('/api/dcc/send', {
@@ -89,7 +89,8 @@ describe('sending from the Files tab', () => {
       body: { networkId: 1, nick: 'bob', fileId: 3, passive: true },
     });
     expect(dcc.pick).toBeNull();
-    expect(dcc.panelTab).toBe('transfers');
+    // The send shows in the same DCC window, under in progress.
+    expect(dcc.panelOpen).toBe(true);
     expect(dcc.transfers.map((t) => t.id)).toEqual([10]);
   });
 
@@ -107,7 +108,7 @@ describe('sending from the Files tab', () => {
     h.api.mockResolvedValue({ transfers: [], files: [] });
     const dcc = useDccStore();
     dcc.openToSend({ networkId: 1, nick: 'bob', passive: false });
-    dcc.open('files');
+    dcc.open();
     expect(dcc.pick).toBeNull();
   });
 });

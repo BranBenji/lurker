@@ -862,6 +862,7 @@ Also the `type` of rows inside `backlog`/`history` `events[]`. **P** = persisted
 | `lag`                         | E   | `lagMs`                                                                       |
 | `whois_result`                | E   | `whois{…}` — a WHOIS reply, **no `target`**. See §7.5                         |
 | `ctcp`                        | E   | CTCP request/reply status text                                                |
+| `dcc`                         | P   | what happened to a DCC transfer or the XDCC queue, in the peer's DM (`text`)  |
 | `chghost`                     | P   | `newIdent, newHost` — render only; the nicklist patch rides `member-update`   |
 | `e2e`                         | E   | RPE2E status, `level` + `text`                                                |
 | `chanlist-start/progress/end` | E   | `/LIST` refresh progress                                                      |
@@ -1578,7 +1579,43 @@ that received it stays, its `file_deleted_at` set. Live: a `dcc-file` frame
 `dcc-file-deleted` (`{id}`) when one goes, from any route. Needs no grant.
 
 `GET /?limit` list · `POST /:id/accept|reject|cancel`. Live updates via
-`dcc-transfer` frames; a transfer's bytes move over IRC, not HTTP.
+`dcc-transfer` frames; a transfer's bytes move over IRC, not HTTP. The list
+always holds every open row (still active, or holding a partial download)
+however old, then the newest finished ones up to `limit`.
+
+**The XDCC queue.** One queue per bot on a network, every bot's running at
+once. A queued pack is a transfer row in state `queued`, with `pack` (the pack
+number), `queue_seq` (its place: the lowest queued one goes next), `attempt`
+(2 on the one automatic retry), `requested_at` and `bot_acked_at`. The server
+asks a bot for its next pack (`XDCC SEND #<n>`, sent as the user's own line in
+the bot's DM) only once nothing of that bot's is out; the row is then
+`requested`. A private NOTICE or PRIVMSG from the bot refusing it (`Invalid
+Pack Number`, `denied`, a full queue) fails it; any other sets `bot_acked_at`,
+and the request then waits for the bot's offer up to 12 hours. A request the
+bot doesn't answer within 2 minutes fails, its `error` saying the bot never
+answered. A pack that fails is queued once more, at the back, resuming its
+partial, unless the bot refused it or this server did for a reason that would
+hold again (too big, over the storage limit, a blocked address). A disconnect,
+or a fresh connection, puts a request that was out back at the front.
+A user's own typed `xdcc send #N` to a bot joins its queue as the request out.
+
+`POST /xdcc` (`{networkId, nick, packs: number[]}`, at most 500) queues packs
+and returns `{transfers}`, the rows queued; a pack already waiting or out for
+that bot is skipped. Needs receive. `POST /xdcc/remove` (`{networkId, nick,
+packs: number[] | null}`) takes packs out, or with `null` the bot's whole queue,
+and returns `{removed}`; a queued row is deleted (`dcc-transfers-cleared`), one
+already out is cancelled. Cancelling a pack out tells the bot (`XDCC REMOVE` for
+a request, `XDCC CANCEL` for a download). Needs no grant. `POST /:id/retry`
+queues a pack that ended without its file again, at the FRONT, and returns
+`{transfer}` (the new row); 409 for a row that isn't a failed pack. Needs
+receive. Queueing and retrying answer 409 when the network has no connection;
+removing works without one.
+
+**Status lines.** What happens to a transfer (offered, received, failed,
+refused, queued) is kept as a message of type `dcc` in the peer's DM, with
+`text` — an offer from a stranger opens a DM with them, as their PM would.
+`dcc` lines don't count toward unread and never notify; progress isn't
+written as lines. A client that doesn't know the type may skip it.
 
 `DELETE /:id` → `{ids}` clears a finished transfer from the list. Its kept file
 stays. A partial it still holds (`received_bytes` > 0, no `file_id`) is deleted
@@ -1602,7 +1639,7 @@ there is no file. Needs no grant.
 
 `POST /send` (`{networkId, nick, fileId, passive?}`) offers one of the account's
 files to a peer and returns `{transfer}`, `offered`. The rest arrives as
-`dcc-transfer` frames, and as status lines in the peer's buffer. Active by
+`dcc-transfer` frames, and as `dcc` lines in the peer's DM. Active by
 default: the server listens on a port and the peer connects. `passive: true`
 asks the peer to listen and the server connects to them instead; it is never
 chosen for the client. 400 for a channel, 404 for a file that isn't the

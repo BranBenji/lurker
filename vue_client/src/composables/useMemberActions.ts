@@ -4,6 +4,7 @@
 import {
   BanIcon,
   CopyIcon,
+  FileUpIcon,
   GavelIcon,
   IdCardIcon,
   MailIcon,
@@ -22,6 +23,7 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useFavoritesStore } from '../stores/favorites.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useWhoisStore } from '../stores/whois.js';
+import { useDccStore } from '../stores/dcc.js';
 import { useContextMenu } from './useContextMenu.js';
 import { socketSend } from './useSocket.js';
 import { historyCountBy } from '../lib/historyPaging.js';
@@ -111,6 +113,7 @@ export function useMemberActions(): MemberActionsAPI {
   const nickNotes = useNickNotesStore();
   const whois = useWhoisStore();
   const menu = useContextMenu();
+  const dcc = useDccStore();
 
   function buildItems(
     member: MemberLike | string | null | undefined,
@@ -155,6 +158,15 @@ export function useMemberActions(): MemberActionsAPI {
         icon: MailIcon,
         onClick: () => buffers.activate(ctx.networkId, nick),
       });
+      // Sending over DCC starts from the person (#1085), never the composer:
+      // the paperclip only shares. Opens the DCC window picking a file for them.
+      if (dcc.canSend) {
+        items.push({
+          label: 'Send File (DCC)…',
+          icon: FileUpIcon,
+          onClick: () => dcc.openSendTo(ctx.networkId, nick),
+        });
+      }
     }
     items.push({
       label: hasNote ? 'Edit Note…' : 'Add Note…',

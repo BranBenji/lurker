@@ -22,10 +22,10 @@
         <button class="icon" title="Saved messages" @click="showBookmarks = true">
           <BookmarkIcon />
         </button>
-        <button class="icon" title="Recent uploads" @click="showUploads = true">
+        <button class="icon" title="Shares" @click="showUploads = true">
           <ShareIcon />
         </button>
-        <TransfersButton class="icon" />
+        <DccButton class="icon" />
         <button class="icon" title="Add network" @click="openAddNetwork">
           <PlusIcon />
         </button>
@@ -181,7 +181,7 @@
       @close="joinChannelModal.close()"
     />
     <RecentUploadsModal v-if="showUploads" @close="showUploads = false" />
-    <TransfersModal v-if="dcc.panelOpen" @close="dcc.close()" />
+    <RecentUploadsModal v-if="dcc.panelOpen" view="dcc" @close="dcc.close()" />
     <SearchModal
       v-if="showSearch"
       :scope="searchScope"
@@ -246,8 +246,7 @@ import { useChannelModal } from '../composables/useChannelModal.js';
 import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
-import TransfersModal from '../components/TransfersModal.vue';
-import TransfersButton from '../components/TransfersButton.vue';
+import DccButton from '../components/DccButton.vue';
 import SearchModal from '../components/SearchModal.vue';
 import NickNoteModal from '../components/NickNoteModal.vue';
 import ReactModal from '../components/ReactModal.vue';

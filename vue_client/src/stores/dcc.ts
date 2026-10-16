@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// Client store for the DCC download manager (#270 phase 2), and for sending
-// (#1086). Mirrors the server's dcc_transfers rows and backs the Transfers view: the initial list comes from
+// Client store for the DCC download manager (#270 phase 2), for sending
+// (#1086), and for the XDCC queue (#1085). Mirrors the server's dcc_transfers
+// rows and backs the DCC window: the initial list comes from
 // GET /api/dcc, then live state changes arrive over the WS as `dcc-transfer`
 // frames (applyTransfer). Acting on a transfer (accept / reject / cancel) goes
 // over POST and the authoritative row echoes back — both through the action's
@@ -17,13 +18,19 @@
 import { defineStore } from 'pinia';
 import { api } from '../api.js';
 import { uploadInChunks } from '../lib/chunkedUpload.js';
+import { formatBytes } from '../utils/formatBytes.js';
 import { useConfigStore } from './config.js';
+import { useToastsStore } from './toasts.js';
+import { useBuffersStore } from './buffers.js';
+
+export { describePacks } from '../../../shared/xdcc.js';
 
 // Mirror of the server DccTransferState union (db/dccTransfers.ts). Two entry
 // states (requested / pending_approval), an active receive path, a send's
 // offered / sending (#1086), and terminal states. Kept in sync by hand — the
 // wire is plain JSON.
 export type DccState =
+  | 'queued'
   | 'requested'
   | 'pending_approval'
   | 'connecting'
@@ -68,6 +75,15 @@ export interface DccTransfer {
   /** The kept file a completed receive produced, or the one a send sends,
    *  while it is kept (#1133). */
   file_id?: number | null;
+  /** The XDCC pack, on a row the queue owns or a typed `xdcc send #N` made
+   *  (#1085). */
+  pack?: number | null;
+  /** Its place in the bot's queue; the lowest queued goes next. */
+  queue_seq?: number | null;
+  /** 2 on the queue's one automatic retry. */
+  attempt?: number;
+  /** When the bot first answered the request: it has us in its own queue. */
+  bot_acked_at?: string | null;
 }
 
 /** A file the account keeps on the server (#1133): a completed receive, or
@@ -84,9 +100,7 @@ export interface DccFile {
   network_id: number | null;
 }
 
-export type DccPanelTab = 'transfers' | 'files';
-
-/** Who the Files tab is picking a file for: `/dcc send <nick>` with no file
+/** Who the DCC window is picking a file for: `/dcc send <nick>` with no file
  *  (#1086). */
 export interface DccSendPick {
   networkId: number;
@@ -101,6 +115,8 @@ export interface DccAccountConfig {
   send: boolean;
   /** Whether an offer can be active; without it only `-passive` sends work. */
   canListen?: boolean;
+  /** What the account's DCC files may take, null for no limit (#1125). */
+  limitBytes?: number | null;
 }
 
 // The file `/dcc send <nick> <file>` means (#1086): one named exactly that,
@@ -121,6 +137,7 @@ export function keptFileUrl(id: number): string {
 // States that can still change — a transfer in one of these is "active" (drives
 // the affordance badge) and is the only thing /dcc cancel meaningfully targets.
 export const ACTIVE_STATES: ReadonlySet<DccState> = new Set([
+  'queued',
   'requested',
   'pending_approval',
   'connecting',
@@ -175,6 +192,48 @@ export function hasFile(t: DccTransfer): boolean {
   return !ACTIVE_STATES.has(t.state) && !!t.destination_path;
 }
 
+// A row in flight: anything active but an offer still waiting for an answer.
+export function inFlight(t: DccTransfer): boolean {
+  return ACTIVE_STATES.has(t.state) && t.state !== 'pending_approval';
+}
+
+// A queued pack that ended without its file, which Retry can ask for again
+// (#1085).
+export function retryable(t: DccTransfer): boolean {
+  return (
+    t.pack != null && t.direction === 'recv' && (t.state === 'failed' || t.state === 'stalled')
+  );
+}
+
+// Whether two nicks on a network are one peer: the same DM, as the buffers
+// store's findDm resolves each (the house rule for matching a nick), and as
+// findDm folds them when either has no DM open.
+export function samePeer(networkId: number | null, a: string, b: string): boolean {
+  if (a === b) return true;
+  if (networkId != null) {
+    const buffers = useBuffersStore();
+    const da = buffers.findDm(networkId, a);
+    const db = buffers.findDm(networkId, b);
+    if (da && db) return da === db;
+  }
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+// Bytes per second over recent progress frames, and the time left at that
+// rate, in seconds. Null until two frames have come in.
+export interface DccRate {
+  bps: number;
+  etaSeconds: number | null;
+}
+
+// "1h 4m", "5m", "40s".
+export function formatEta(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s >= 3600) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  if (s >= 60) return `${Math.floor(s / 60)}m`;
+  return `${s}s`;
+}
+
 // Where a completed transfer's file downloads from (#1079). The modal's link
 // and `/dcc download` both use it.
 export function dccFileUrl(id: number): string {
@@ -210,6 +269,16 @@ let inflightFiles: Promise<DccFile[]> | null = null;
 // Frames that land while the files list loads: the response was read before
 // them, so they are applied again on top of it.
 let filesMissed: Array<DccFile | number> = [];
+// Progress samples per transfer, for speed and time left: when the last frame
+// came and how many bytes it said. Module-local: they are a reading of the
+// frames' timing, not state anyone else needs.
+const progressSamples = new Map<number, { at: number; bytes: number }>();
+// The toast standing for each offer still waiting for an answer (#1085), by
+// transfer id, so it goes when the offer is answered anywhere.
+const offerToasts = new Map<number, number>();
+// Offers put off with Later: their toast doesn't come back when the lists
+// reload (every reconnect resyncs them), only their row in the DCC window stays.
+const offersPutOff = new Set<number>();
 
 // Hand a file to the browser's download manager, after a HEAD: a refusal
 // handed to the browser is saved as a .json file of the error (or, without
@@ -240,12 +309,10 @@ export const useDccStore = defineStore('dcc', {
     loaded: false,
     loading: false,
     listError: '',
-    // Whether the Transfers modal is open. Lives in the store (not a view-local
-    // ref) so `/dcc list` can open it from MessageInput, mirroring the
-    // composable-backed opens (useMediaViewer, useChannelListModal).
+    // Whether the DCC window is open. Lives in the store (not a view-local
+    // ref) so `/dcc`, `/xdcc`, the status bar and offer toasts can open it,
+    // mirroring the composable-backed opens (useMediaViewer, useChannelListModal).
     panelOpen: false,
-    // Which list the panel shows.
-    panelTab: 'transfers' as DccPanelTab,
     // The files the account keeps (#1133), newest first.
     files: [] as DccFile[],
     filesLoaded: false,
@@ -263,7 +330,9 @@ export const useDccStore = defineStore('dcc', {
     clearError: '',
     // What the account may do, from /api/dcc/config, once asked (#1086).
     account: null as DccAccountConfig | null,
-    // Set while the Files tab is picking a file to send (#1086).
+    // Speed and time left per transfer in flight, from its progress frames.
+    rates: {} as Record<number, DccRate>,
+    // Set while the DCC window is picking a file to send (#1086).
     pick: null as DccSendPick | null,
     // A file going up to be sent, and how far (0–100), or its failure.
     uploading: null as { name: string; percent: number } | null,
@@ -271,6 +340,16 @@ export const useDccStore = defineStore('dcc', {
   }),
   getters: {
     hasAny: (s): boolean => s.transfers.length > 0 || s.files.length > 0,
+    // Whether this account can send a file over DCC (#1085): what offers
+    // "Send File (DCC)…" on a nick.
+    canSend: (s): boolean => useConfigStore().features.dcc && !!s.account?.send,
+    // Whether the DCC button shows: DCC runs here, and the account has some
+    // of it (a grant), or something from before a grant went.
+    hasDcc(s): boolean {
+      if (!useConfigStore().features.dcc) return false;
+      const a = s.account;
+      return !!(a && (a.chat || a.receive || a.send)) || this.hasAny;
+    },
     // Unsolicited offers awaiting a decision — the urgent, you-must-act count
     // that warn-colors the affordance.
     pendingCount: (s): number => s.transfers.filter((t) => t.state === 'pending_approval').length,
@@ -292,6 +371,7 @@ export const useDccStore = defineStore('dcc', {
           const missed = transfersMissed;
           transfersMissed = [];
           for (const t of missed) this.applyTransfer(t);
+          this.syncOfferToasts();
           this.loaded = true;
           return this.transfers;
         } catch (e: any) {
@@ -322,11 +402,141 @@ export const useDccStore = defineStore('dcc', {
       if (idx >= 0) {
         if (TERMINAL_STATES.has(this.transfers[idx].state) && !TERMINAL_STATES.has(t.state)) return;
         this.transfers[idx] = t;
+      } else {
+        const at = this.transfers.findIndex((x) => x.id < t.id);
+        if (at === -1) this.transfers.push(t);
+        else this.transfers.splice(at, 0, t);
+      }
+      this.sampleProgress(t);
+      this.syncOfferToast(t);
+    },
+
+    // Speed and time left from consecutive progress frames (the server
+    // checkpoints every few seconds). A smoothed rate, so one slow checkpoint
+    // doesn't swing the estimate.
+    sampleProgress(t: DccTransfer): void {
+      const moving = t.state === 'receiving' || t.state === 'sending';
+      if (!moving) {
+        progressSamples.delete(t.id);
+        delete this.rates[t.id];
         return;
       }
-      const at = this.transfers.findIndex((x) => x.id < t.id);
-      if (at === -1) this.transfers.push(t);
-      else this.transfers.splice(at, 0, t);
+      const now = Date.now();
+      const prev = progressSamples.get(t.id);
+      progressSamples.set(t.id, { at: now, bytes: t.received_bytes });
+      if (!prev || t.received_bytes < prev.bytes || now - prev.at < 500) return;
+      const instant = ((t.received_bytes - prev.bytes) * 1000) / (now - prev.at);
+      const old = this.rates[t.id]?.bps;
+      const bps = old == null ? instant : old * 0.6 + instant * 0.4;
+      const left = t.advertised_size - t.received_bytes;
+      this.rates[t.id] = { bps, etaSeconds: bps > 0 && left > 0 ? left / bps : null };
+    },
+
+    // An offer waiting for an answer has a toast (#1085): Accept · Decline ·
+    // Later, the way a DCC chat offer does. It goes once the offer is answered,
+    // from here or anywhere else. Later only puts the toast away; the offer
+    // stays in the DCC window.
+    syncOfferToast(t: DccTransfer): void {
+      const toasts = useToastsStore();
+      const shown = offerToasts.get(t.id);
+      if (t.state !== 'pending_approval') {
+        if (shown != null) {
+          toasts.dismiss(shown);
+          offerToasts.delete(t.id);
+        }
+        return;
+      }
+      // A toast counts only while it is still up: the toasts can be cleared
+      // from under this map (a sign-out), and the offer then needs a new one.
+      if (shown != null && toasts.items.some((x) => x.id === shown)) return;
+      if (t.direction !== 'recv' || offersPutOff.has(t.id)) return;
+      const size = t.advertised_size > 0 ? ` · ${formatBytes(t.advertised_size)}` : '';
+      const toastId = toasts.push({
+        kind: 'notify',
+        title: `DCC file from ${t.peer_nick}`,
+        body: `${t.filename}${size}`,
+        networkId: t.network_id ?? undefined,
+        target: t.peer_nick,
+        ttlMs: 0,
+        dismissible: false,
+        actions: [
+          {
+            label: 'Accept',
+            tone: 'good',
+            onClick: () => {
+              offerToasts.delete(t.id);
+              this.accept(t.id).catch(() => this.open());
+            },
+          },
+          {
+            label: 'Decline',
+            tone: 'bad',
+            onClick: () => {
+              offerToasts.delete(t.id);
+              this.reject(t.id).catch(() => this.open());
+            },
+          },
+          { label: 'Later', tone: 'muted', onClick: () => offersPutOff.add(t.id) },
+        ],
+      });
+      offerToasts.set(t.id, toastId);
+    },
+
+    // Every offer's toast against the list as it now stands: one for each offer
+    // still waiting (an offer pending when the app loads gets its toast here),
+    // none for one answered elsewhere while this tab wasn't listening.
+    syncOfferToasts(): void {
+      const byId = new Map(this.transfers.map((t) => [t.id, t]));
+      for (const id of offerToasts.keys()) {
+        const t = byId.get(id);
+        if (!t || t.state !== 'pending_approval') {
+          useToastsStore().dismiss(offerToasts.get(id)!);
+          offerToasts.delete(id);
+        }
+      }
+      for (const t of this.transfers) if (t.state === 'pending_approval') this.syncOfferToast(t);
+    },
+
+    // Sign-out: every offer's toast goes, and what was put off is forgotten.
+    // Sticky, they would otherwise sit on the next account's screen with
+    // buttons bound to this one's transfers.
+    dropOfferToasts(): void {
+      const toasts = useToastsStore();
+      for (const id of offerToasts.values()) toasts.dismiss(id);
+      offerToasts.clear();
+      offersPutOff.clear();
+    },
+
+    // Queue XDCC packs from a bot (#1085). Resolves with the rows queued.
+    async queueXdcc(networkId: number, bot: string, packs: number[]): Promise<DccTransfer[]> {
+      const { transfers } = await api<{ transfers: DccTransfer[] }>('/api/dcc/xdcc', {
+        method: 'POST',
+        body: { networkId, nick: bot, packs },
+      });
+      for (const t of transfers || []) this.applyTransfer(t);
+      return transfers || [];
+    },
+
+    // Take packs out of a bot's queue, or (null) all of them. Resolves with
+    // how many went.
+    async unqueueXdcc(networkId: number, bot: string, packs: number[] | null): Promise<number> {
+      this.clearError = '';
+      try {
+        const { removed } = await api<{ removed: number }>('/api/dcc/xdcc/remove', {
+          method: 'POST',
+          body: { networkId, nick: bot, packs },
+        });
+        return removed;
+      } catch (e: any) {
+        this.clearError = e?.message || 'could not take the packs out';
+        throw e;
+      }
+    },
+
+    // Ask again for a queued pack that ended without its file: a new row at
+    // the front of its bot's queue.
+    async retry(id: number): Promise<DccTransfer> {
+      return this.changeRow(id, `/api/dcc/${id}/retry`, 'POST', 'retry failed');
     },
 
     async accept(id: number): Promise<DccTransfer> {
@@ -391,6 +601,7 @@ export const useDccStore = defineStore('dcc', {
     dropTransfers(ids: number[]): void {
       for (const id of ids) clearedIds.add(id);
       this.transfers = this.transfers.filter((t) => !clearedIds.has(t.id));
+      this.syncOfferToasts();
       for (const id of ids) {
         delete this.busy[id];
         delete this.actionError[id];
@@ -578,20 +789,25 @@ export const useDccStore = defineStore('dcc', {
       }
     },
 
-    // The Files tab's pick: send `fileId` to who it is picking for, and show
+    // The DCC window's pick: send `fileId` to who it is picking for, and show
     // the transfer.
     async sendPicked(fileId: number): Promise<DccTransfer | null> {
       const pick = this.pick;
       if (!pick) return null;
       const transfer = await this.sendFile(pick.networkId, pick.nick, fileId, pick.passive);
       this.pick = null;
-      this.panelTab = 'transfers';
       return transfer;
+    },
+
+    // "Send File (DCC)…" on a nick (#1085): pick a file for them. Passive only
+    // when this server can't listen, the one case it is the only way.
+    openSendTo(networkId: number, nick: string): void {
+      this.openToSend({ networkId, nick, passive: this.account?.canListen === false });
     },
 
     // `/dcc send <nick>` with no file: open Files to pick one, or upload one.
     openToSend(pick: DccSendPick): void {
-      this.open('files');
+      this.open();
       this.pick = pick;
     },
 
@@ -607,13 +823,13 @@ export const useDccStore = defineStore('dcc', {
       await api('/api/dcc/chat/close', { method: 'POST', body: { networkId, nick } });
     },
 
-    // Open the Transfers modal on `tab` and (re)load both lists. Used by the
-    // sidebar button, `/dcc list` and `/dcc files`. Load errors surface in the
-    // modal (listError, filesError).
-    open(tab: DccPanelTab = 'transfers'): void {
+    // Open the DCC window, and (re)load the DCC lists when DCC runs here. Used
+    // by the DCC button, the status bar, offer toasts, `/dcc` and `/xdcc`.
+    // Load errors surface in the window (listError, filesError).
+    open(): void {
       this.panelOpen = true;
-      this.panelTab = tab;
       this.pick = null;
+      if (!useConfigStore().features.dcc) return;
       void this.loadAccount();
       this.load().catch(() => {
         /* surfaced via listError */
@@ -634,6 +850,7 @@ export const useDccStore = defineStore('dcc', {
       const config = useConfigStore();
       await config.fetch();
       if (!config.features.dcc) return;
+      void this.loadAccount();
       this.load().catch(() => {});
       this.loadFiles().catch(() => {});
     },

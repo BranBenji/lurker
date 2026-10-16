@@ -63,10 +63,10 @@
         <button class="link" @click="showBookmarks = true" title="Saved messages">
           <BookmarkIcon />
         </button>
-        <button class="link" @click="showUploads = true" title="Recent uploads">
+        <button class="link" @click="showUploads = true" title="Shares">
           <ShareIcon />
         </button>
-        <TransfersButton class="link" />
+        <DccButton class="link" />
       </div>
     </aside>
 
@@ -203,6 +203,16 @@
             >
               <StickyNoteIcon />
             </button>
+            <button
+              v-if="dcc.canSend"
+              type="button"
+              class="link"
+              title="Send file (DCC)"
+              aria-label="Send file (DCC)"
+              @click="sendDmFile"
+            >
+              <FileUpIcon />
+            </button>
           </template>
           <template v-else-if="isChannel">
             <button
@@ -262,7 +272,7 @@
       @close="joinChannelModal.close()"
     />
     <RecentUploadsModal v-if="showUploads" @close="showUploads = false" />
-    <TransfersModal v-if="dcc.panelOpen" @close="dcc.close()" />
+    <RecentUploadsModal v-if="dcc.panelOpen" view="dcc" @close="dcc.close()" />
     <QuickSwitcher v-if="showSwitcher" @close="showSwitcher = false" />
     <SearchModal
       v-if="showSearch"
@@ -330,8 +340,8 @@ import { useChannelModal } from '../composables/useChannelModal.js';
 import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
-import TransfersModal from '../components/TransfersModal.vue';
-import TransfersButton from '../components/TransfersButton.vue';
+import DccButton from '../components/DccButton.vue';
+import { dccChatPeer, isDccChatTarget } from '../../../shared/channels.js';
 import QuickSwitcher from '../components/QuickSwitcher.vue';
 import SearchModal from '../components/SearchModal.vue';
 import KeyboardHelpModal from '../components/KeyboardHelpModal.vue';
@@ -358,6 +368,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   ChevronsRightIcon,
+  FileUpIcon,
   HashIcon,
   IdCardIcon,
   PlugIcon,
@@ -540,6 +551,13 @@ const dmNoteLabel = computed(() =>
 function openDmNote() {
   if (!active.value) return;
   nickNotes.openEditor(active.value.networkId, active.value.target);
+}
+// Send this peer a file over DCC (#1085): the DCC window, picking one for them.
+// A `=nick` chat's peer is the nick.
+function sendDmFile() {
+  if (!active.value) return;
+  const t = active.value.target;
+  dcc.openSendTo(active.value.networkId, isDccChatTarget(t) ? dccChatPeer(t) : t);
 }
 
 // Channel notification level (always/highlights/nothing/muted) now lives in the

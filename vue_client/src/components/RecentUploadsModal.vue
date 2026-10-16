@@ -15,10 +15,15 @@
   #515), so they get a type-icon tile in the same box rather than a different layout.
   A file card that happens to show an icon reads as a peer of one that shows a photo;
   a separate list of them would not.
+
+  Uploads are called shares here (#1085): what you shared in chat. The same
+  window, with `view="dcc"`, is the DCC window, opened by its own button: the
+  files the account keeps on the server and the transfers and XDCC queue moving
+  them (DccFilesTab), under the same search and type chips.
 -->
 
 <template>
-  <AppModal word="uploads" title="uploads" size="xl" fill-height @close="$emit('close')">
+  <AppModal :word="view" :title="view" size="xl" fill-height @close="$emit('close')">
     <div class="filters">
       <!-- Search and the starred toggle share a line. The toggle used to sit after
            the kind chips, where it had nowhere to go: those five fill the content
@@ -30,12 +35,12 @@
           <SearchIcon class="search-icon" />
           <input
             ref="searchEl"
-            :value="query"
-            @input="onQueryInput"
+            :value="onDcc ? dccQuery : query"
+            @input="onDcc ? onDccQueryInput($event) : onQueryInput($event)"
             type="search"
             class="search-input"
             placeholder="Search filenames…"
-            aria-label="Search uploads by filename"
+            :aria-label="onDcc ? 'Search DCC files by filename' : 'Search shares by filename'"
             @keydown.esc="onEscape"
           />
         </div>
@@ -44,6 +49,7 @@
              row would imply the mutual exclusivity those have. Beside the search
              field it reads as what it is — another way to narrow the same list. -->
         <button
+          v-if="!onDcc"
           class="chip starred"
           :class="{ active: uploads.favoritesOnly }"
           :aria-pressed="uploads.favoritesOnly"
@@ -59,8 +65,8 @@
           v-for="k in KIND_CHIPS"
           :key="k.value ?? 'all'"
           class="chip"
-          :class="{ active: uploads.kind === k.value }"
-          :aria-pressed="uploads.kind === k.value"
+          :class="{ active: activeKind === k.value }"
+          :aria-pressed="activeKind === k.value"
           @click="onKind(k.value)"
         >
           {{ k.label }}
@@ -68,10 +74,14 @@
       </div>
     </div>
 
-    <p v-if="uploads.listError" class="error">{{ uploads.listError }}</p>
-    <p v-if="actionError" class="error">{{ actionError }}</p>
+    <div v-if="onDcc" class="grid-wrap">
+      <DccFilesTab :query="dccQuery" :kind="dccKind" />
+    </div>
 
-    <div ref="listEl" class="grid-wrap" @scroll="onScroll">
+    <p v-if="!onDcc && uploads.listError" class="error">{{ uploads.listError }}</p>
+    <p v-if="!onDcc && actionError" class="error">{{ actionError }}</p>
+
+    <div v-if="!onDcc" ref="listEl" class="grid-wrap" @scroll="onScroll">
       <ul v-if="recentRows.length" class="grid">
         <li v-for="u in recentRows" :key="u.id" class="tile" :class="{ removed: u.removed }">
           <!-- Moderated-away upload: the object is gone, so show a tombstone
@@ -186,13 +196,13 @@
         Nothing matches {{ filterDescription }}.
       </p>
       <p v-else-if="uploads.loaded" class="empty">
-        No uploads yet. Paste, drop, or pick a file in the input.
+        Nothing shared yet. Paste, drop, or pick a file in the input.
       </p>
       <!-- The starred view comes back whole rather than paged, so when it arrives
            full there may be more the server didn't send. Say so — silence here
            reads as "that's all of them". -->
       <p v-if="uploads.favoritesTruncated" class="empty small">
-        Showing your {{ recentRows.length }} most recently starred uploads.
+        Showing your {{ recentRows.length }} most recently starred shares.
       </p>
       <p v-if="uploads.loading && uploads.loaded && recentRows.length" class="empty small">
         Loading more…
@@ -204,6 +214,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import AppModal from './AppModal.vue';
+import DccFilesTab from './DccFilesTab.vue';
 import { useUploadsStore } from '../stores/uploads.js';
 import type { UploadItem, UploadKind } from '../stores/uploads.js';
 import { useMediaViewer } from '../composables/useMediaViewer.js';
@@ -246,10 +257,19 @@ const KIND_CHIPS: Array<{ label: string; value: UploadKind | null }> = [
 // the grid still feels like it's responding to you.
 const SEARCH_DEBOUNCE_MS = 250;
 
+const props = withDefaults(defineProps<{ view?: 'shares' | 'dcc' }>(), { view: 'shares' });
 const emit = defineEmits<{
   close: [];
 }>();
 const uploads = useUploadsStore();
+
+const onDcc = computed(() => props.view === 'dcc');
+// The DCC window filters what it already holds, so its search and chip are its
+// own, apart from the shares search the server answers.
+const dccQuery = ref('');
+const onDccQueryInput = useImeSafeInput(dccQuery);
+const dccKind = ref<UploadKind | null>(null);
+const activeKind = computed(() => (onDcc.value ? dccKind.value : uploads.kind));
 // Raw (not reactive()-wrapped) because this component reads the refs in script rather
 // than the template — the two views that RENDER the viewer wrap it for unwrapping.
 const viewer = useMediaViewer();
@@ -305,13 +325,14 @@ watch(query, (next) => {
 });
 
 onMounted(() => {
+  searchEl.value?.focus();
+  if (onDcc.value) return;
   // Reset the filters on open. A search left over from a previous session would look
   // like an empty uploads list — the worst possible first impression of the browser.
   void uploads.setFilters({ query: '', kind: null, favoritesOnly: false }).catch(() => {
     /* surfaced via store.listError */
   });
   query.value = '';
-  searchEl.value?.focus();
 });
 
 onBeforeUnmount(() => {
@@ -326,12 +347,17 @@ onBeforeUnmount(() => {
 // severs the bubble in both cases, so Escape on an empty field just blurred the input
 // and the modal never closed — exactly the behaviour this comment used to claim it had.
 function onEscape(event: KeyboardEvent) {
-  if (!query.value) return; // nothing to clear → let AppModal have it
+  const field = onDcc.value ? dccQuery : query;
+  if (!field.value) return; // nothing to clear → let AppModal have it
   event.stopPropagation();
-  query.value = '';
+  field.value = '';
 }
 
 function onKind(kind: UploadKind | null) {
+  if (onDcc.value) {
+    dccKind.value = kind;
+    return;
+  }
   if (uploads.kind === kind) return;
   void uploads.setFilters({ kind }).catch(() => {
     /* surfaced via store.listError */

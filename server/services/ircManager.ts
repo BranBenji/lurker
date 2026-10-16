@@ -25,7 +25,9 @@ import {
 import { hasMessageForTarget, replySendMsgid } from '../db/messages.js';
 import {
   DCC_ACTIVE_STATES,
+  deleteQueuedXdcc,
   getDccTransfer,
+  removeXdccPacks,
   markDccCancelled,
   updateDccTransferState,
   type DccTransferRow,
@@ -479,6 +481,9 @@ class IrcManager extends EventEmitter {
       network,
       onEvent: (event) => this.emit('event', event),
       onUserFrame: (frame) => this.emit('user-frame', userId, frame),
+      // #1085: the queue moves on the connection mapped now, which may not be
+      // the one whose receive just ended.
+      pumpXdcc: () => this.getConnection(userId, networkId)?.pumpXdccQueue(),
       // #616: the retry controller asks this before each attempt opens a socket,
       // so a reconnect re-clears the same gates the initial connect did. Read
       // live (not captured), because pause/lockdown can change mid-backoff.
@@ -759,11 +764,45 @@ class IrcManager extends EventEmitter {
     if (!row) return false;
     const conn = this.dccConnection(userId, row);
     if (conn) conn.cancelDcc(transferId);
+    // A queued pack never started: it just leaves the queue (#1085).
+    else if (row.state === 'queued') {
+      if (deleteQueuedXdcc(userId, transferId)) {
+        this.emit('user-frame', userId, { kind: 'dcc-transfers-cleared', ids: [transferId] });
+      }
+    }
     // No connection, so no receiver: the row's byte count is whatever was last
     // checkpointed, and the file on disk is the truth (#1125).
     else if (DCC_ACTIVE_STATES.has(row.state))
       markDccCancelled(transferId, dccFileBytes(row.destination_path));
     return true;
+  }
+
+  /** Queue XDCC packs from a bot (#1085). Null when the network has no
+   *  connection to run the queue; else the rows queued, which are none when
+   *  every pack was already waiting or out. A queue waits out a disconnect,
+   *  but it needs a connection object to belong to. */
+  queueXdcc(userId: number, networkId: number, bot: string, packs: number[]): number[] | null {
+    const conn = this.getConnection(userId, networkId);
+    if (!conn) return null;
+    return conn.queueXdcc(bot, packs);
+  }
+
+  /** Take packs (or, with null, all of them) out of a bot's queue. With no
+   *  connection nothing can be out, so the queued rows just go. */
+  unqueueXdcc(userId: number, networkId: number, bot: string, packs: number[] | null): number {
+    const conn = this.getConnection(userId, networkId);
+    if (conn) return conn.unqueueXdcc(bot, packs);
+    const { deleted } = removeXdccPacks(userId, networkId, bot, packs);
+    if (deleted.length)
+      this.emit('user-frame', userId, { kind: 'dcc-transfers-cleared', ids: deleted });
+    return deleted.length;
+  }
+
+  /** Try a failed queued pack again, at the front of its bot's queue. */
+  retryXdcc(userId: number, row: DccTransferRow): number | 'not-connected' | 'not-queued' {
+    const conn = this.dccConnection(userId, row);
+    if (!conn) return 'not-connected';
+    return conn.retryXdcc(row) ?? 'not-queued';
   }
 
   // The connection a transfer rides, if its network still exists and is mapped.

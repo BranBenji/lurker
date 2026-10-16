@@ -26,7 +26,7 @@ describe('toasts store', () => {
     });
     const t = toasts.items[0];
     // Pinia state holds only { label } — no function leaks into the store.
-    expect(t.action).toEqual({ label: 'Join' });
+    expect(t.actions).toEqual([{ label: 'Join', tone: undefined }]);
     toasts.runAction(id);
     expect(onClick).toHaveBeenCalledTimes(1);
   });
@@ -43,7 +43,34 @@ describe('toasts store', () => {
   it('omits action when none is given (plain toast)', () => {
     const toasts = useToastsStore();
     toasts.push({ title: 'hi', body: '', ttlMs: 0 });
-    expect(toasts.items[0].action).toBeUndefined();
+    expect(toasts.items[0].actions).toBeUndefined();
+  });
+
+  // #1085: an offer asks a question with three answers, and no ×.
+  it('runs the action at the index pressed', () => {
+    const toasts = useToastsStore();
+    const accept = vi.fn<() => void>();
+    const decline = vi.fn<() => void>();
+    const id = toasts.push({
+      title: 'DCC file from mira',
+      body: 'talk.mp4',
+      ttlMs: 0,
+      dismissible: false,
+      actions: [
+        { label: 'Accept', onClick: accept, tone: 'good' },
+        { label: 'Decline', onClick: decline, tone: 'bad' },
+      ],
+    });
+    expect(toasts.items[0]).toMatchObject({
+      dismissible: false,
+      actions: [
+        { label: 'Accept', tone: 'good' },
+        { label: 'Decline', tone: 'bad' },
+      ],
+    });
+    toasts.runAction(id, 1);
+    expect(decline).toHaveBeenCalledTimes(1);
+    expect(accept).not.toHaveBeenCalled();
   });
 
   it('auto-dismisses after the ttl', () => {

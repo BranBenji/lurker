@@ -11,8 +11,11 @@
 
 import db from './index.js';
 import { dccFileAt, keepReceivedDccFile, type DccFile } from './dccFiles.js';
+import { xdccPlaceholderName, xdccTrigger } from '../../shared/xdcc.js';
 
-// The download-manager state machine. Two entry states:
+// The download-manager state machine. Three entry states:
+//   - `queued`: an XDCC pack waiting its turn in that bot's queue (#1085). The
+//     queue sends one request per bot at a time; its turn makes it `requested`.
 //   - `requested`: we sent an XDCC trigger and armed acceptance for the bot's
 //     reply (phase 1). Survives a slow bot queue — the row just waits.
 //   - `pending_approval`: an UNSOLICITED offer awaiting the user's Accept/Reject
@@ -25,6 +28,7 @@ import { dccFileAt, keepReceivedDccFile, type DccFile } from './dccFiles.js';
 // column (matching the repo's other enum columns, e.g. peer_presence_state.state)
 // rather than a DB CHECK, so the allowed values live in one documented place.
 export type DccTransferState =
+  | 'queued'
   | 'requested'
   | 'pending_approval'
   | 'connecting'
@@ -43,6 +47,7 @@ export type DccTransferState =
 // failed / rejected / cancelled): a one-shot transfer never legitimately
 // re-enters an active state, so a late action on a terminal row is a no-op.
 export const DCC_ACTIVE_STATES: ReadonlySet<DccTransferState> = new Set([
+  'queued',
   'requested',
   'pending_approval',
   'connecting',
@@ -86,6 +91,18 @@ export interface DccTransferRow {
    *  sends (#1086), while it is kept. For a receive, destination_path mirrors
    *  its path; a send has none. */
   file_id: number | null;
+  /** The XDCC pack number, on a row the queue owns (#1085), or one a typed
+   *  `xdcc send #N` made. Null for anything else. */
+  pack: number | null;
+  /** Its place in that bot's queue: the lowest queued one goes next. */
+  queue_seq: number | null;
+  /** 2 on the queue's one automatic retry of a pack that failed. */
+  attempt: number;
+  /** When the request went to the bot. */
+  requested_at: string | null;
+  /** When the bot first answered the request (any NOTICE or PRIVMSG). From
+   *  then the auto-accept holds as long as the bot's own queue takes. */
+  bot_acked_at: string | null;
 }
 
 export interface InsertDccTransferFields {
@@ -105,13 +122,17 @@ export interface InsertDccTransferFields {
   trigger_text?: string | null;
   /** CRC32 parsed from the filename (e.g. `[A1B2C3D4]`), null when absent. */
   crc_expected?: string | null;
+  /** The pack a typed `xdcc send #N` asked for, which puts the row in that
+   *  bot's queue as its pending request (#1085). */
+  pack?: number | null;
 }
 
 const insertStmt = db.prepare(`
   INSERT INTO dcc_transfers
     (user_id, network_id, peer_nick, filename, advertised_size, state,
-     passive, token, peer_host, peer_port, trigger_text, crc_expected)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     passive, token, peer_host, peer_port, trigger_text, crc_expected,
+     pack, queue_seq, requested_at)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 export function insertDccTransfer(userId: number, f: InsertDccTransferFields): number {
@@ -128,6 +149,10 @@ export function insertDccTransfer(userId: number, f: InsertDccTransferFields): n
     f.peer_port ?? null,
     f.trigger_text ?? null,
     f.crc_expected ?? null,
+    f.pack ?? null,
+    // A typed request goes to the front of its bot's queue: it is out already.
+    f.pack != null ? frontSeq(userId, f.network_id, f.peer_nick) : null,
+    f.state === 'requested' && f.pack != null ? nowIso() : null,
   );
   return Number(info.lastInsertRowid);
 }
@@ -206,15 +231,32 @@ export function getDccTransfer(userId: number, id: number): DccTransferRow | und
     .get(userId, Number(id)) as DccTransferRow | undefined;
 }
 
-/** A user's transfers, newest first — backs the download-manager view. */
+/** A user's transfers, newest first — backs the download-manager view. Every
+ *  open row (still active, or holding a partial download) is in it whatever
+ *  its age, and then the newest finished ones up to `limit`: a long history
+ *  must not push a bot's queue, or a partial to resume, off the list. */
 export function listDccTransfers(
   userId: number,
   { limit = 100 }: { limit?: number } = {},
 ): DccTransferRow[] {
   const lim = Math.max(1, Math.min(500, Number(limit) || 100));
   return db
-    .prepare('SELECT * FROM dcc_transfers WHERE user_id = ? ORDER BY id DESC LIMIT ?')
-    .all(userId, lim) as DccTransferRow[];
+    .prepare(
+      `SELECT * FROM dcc_transfers WHERE user_id = ? AND (
+         state IN (${ACTIVE_STATES_SQL})
+         OR (destination_path IS NOT NULL AND file_id IS NULL AND received_bytes > 0)
+         OR (state = 'failed' AND pack IS NOT NULL AND NOT EXISTS (
+               SELECT 1 FROM dcc_transfers later
+               WHERE later.user_id = dcc_transfers.user_id
+                 AND later.network_id = dcc_transfers.network_id
+                 AND later.peer_nick = dcc_transfers.peer_nick
+                 AND later.pack = dcc_transfers.pack AND later.id > dcc_transfers.id))
+       )
+       UNION
+       SELECT * FROM (SELECT * FROM dcc_transfers WHERE user_id = ? ORDER BY id DESC LIMIT ?)
+       ORDER BY id DESC`,
+    )
+    .all(userId, userId, lim) as DccTransferRow[];
 }
 
 /** Transition a transfer's state, optionally stamping an error. Always bumps
@@ -233,13 +275,17 @@ export function updateDccTransferState(
 // An armed request only auto-accepts an offer that arrives within this window of
 // the trigger. Generous enough to survive a slow bot send-queue, but bounded so a
 // stale arm from hours/days ago can't silently auto-accept a later unsolicited
-// offer (which would defeat the pending_approval gate).
+// offer (which would defeat the pending_approval gate). Once the bot has answered
+// the request (#1085) the window no longer applies: the bot has you in its own
+// queue, which can take hours, and its offer is the one you asked for.
 export const DCC_ARM_TTL_MINUTES = 120;
 
 /** The most recent still-waiting, NOT-yet-expired `requested` row for a bot on a
  *  network — used to match an inbound DCC SEND offer to a trigger the user sent
  *  (arm-on-trigger auto-accept). peer_nick collates NOCASE, so the bot's nick
- *  casing in the offer needn't match what the user typed. */
+ *  casing in the offer needn't match what the user typed. The oldest one when
+ *  several are out (a typed request beside the queue's): a bot sends in the
+ *  order it was asked. */
 export function findArmedRequest(
   userId: number,
   networkId: number,
@@ -249,10 +295,299 @@ export function findArmedRequest(
     .prepare(
       `SELECT * FROM dcc_transfers
        WHERE user_id = ? AND network_id = ? AND peer_nick = ? AND state = 'requested'
-         AND created_at >= datetime('now', '-${DCC_ARM_TTL_MINUTES} minutes')
-       ORDER BY id DESC LIMIT 1`,
+         AND (bot_acked_at IS NOT NULL
+              OR julianday(COALESCE(requested_at, created_at))
+                 >= julianday('now', '-${DCC_ARM_TTL_MINUTES} minutes'))
+       ORDER BY COALESCE(requested_at, created_at), id LIMIT 1`,
     )
     .get(userId, networkId, peerNick) as DccTransferRow | undefined;
+}
+
+// --- The XDCC queue (#1085) -------------------------------------------------
+//
+// One queue per (account, network, bot). A queued pack is a row in state
+// `queued`; the connection's pump (IrcConnection.pumpXdccQueue) sends the
+// lowest one for a bot once nothing of that bot's is out, which makes it
+// `requested`, and from there it is an armed request like any other.
+
+// States in which a bot is busy with one of ours: asked, or sending.
+const XDCC_OUT_STATES = ['requested', 'connecting', 'receiving', 'verifying'];
+const XDCC_OUT_SQL = XDCC_OUT_STATES.map((s) => `'${s}'`).join(',');
+const ACTIVE_STATES_SQL = [...DCC_ACTIVE_STATES].map((s) => `'${s}'`).join(',');
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function queueSeqBounds(
+  userId: number,
+  networkId: number,
+  bot: string,
+): { lo: number | null; hi: number | null } {
+  return db
+    .prepare(
+      `SELECT MIN(queue_seq) AS lo, MAX(queue_seq) AS hi FROM dcc_transfers
+       WHERE user_id = ? AND network_id = ? AND peer_nick = ? AND queue_seq IS NOT NULL
+         AND state IN (${ACTIVE_STATES_SQL})`,
+    )
+    .get(userId, networkId, bot) as { lo: number | null; hi: number | null };
+}
+
+/** A place ahead of everything in the bot's queue. */
+function frontSeq(userId: number, networkId: number, bot: string): number {
+  const { lo } = queueSeqBounds(userId, networkId, bot);
+  return lo == null ? 0 : lo - 1;
+}
+
+/** Packs already waiting or out for the bot, which adding again would double. */
+function packsInQueue(userId: number, networkId: number, bot: string): Set<number> {
+  const rows = db
+    .prepare(
+      `SELECT pack FROM dcc_transfers
+       WHERE user_id = ? AND network_id = ? AND peer_nick = ? AND pack IS NOT NULL
+         AND state IN ('queued', ${XDCC_OUT_SQL})`,
+    )
+    .all(userId, networkId, bot) as { pack: number }[];
+  return new Set(rows.map((r) => r.pack));
+}
+
+/** Queue packs from a bot, in the order given, at the back of its queue (or
+ *  the front, for a manual retry). A pack already waiting or out for that bot
+ *  is skipped. Returns the new rows' ids. */
+export function enqueueXdccPacks(
+  userId: number,
+  networkId: number,
+  bot: string,
+  packs: readonly number[],
+  opts: { front?: boolean; attempt?: number } = {},
+): number[] {
+  const run = db.transaction((): number[] => {
+    const have = packsInQueue(userId, networkId, bot);
+    const fresh = packs.filter((p, i) => !have.has(p) && packs.indexOf(p) === i);
+    if (fresh.length === 0) return [];
+    const { lo, hi } = queueSeqBounds(userId, networkId, bot);
+    let seq = opts.front ? (lo ?? 0) - fresh.length : (hi ?? -1) + 1;
+    const insert = db.prepare(
+      `INSERT INTO dcc_transfers
+         (user_id, network_id, peer_nick, filename, advertised_size, state, trigger_text,
+          pack, queue_seq, attempt)
+       VALUES (?, ?, ?, ?, 0, 'queued', ?, ?, ?, ?)`,
+    );
+    const ids: number[] = [];
+    for (const pack of fresh) {
+      const info = insert.run(
+        userId,
+        networkId,
+        bot,
+        xdccPlaceholderName(pack),
+        xdccTrigger(pack),
+        pack,
+        seq++,
+        opts.attempt ?? 1,
+      );
+      ids.push(Number(info.lastInsertRowid));
+    }
+    return ids;
+  });
+  return run.immediate();
+}
+
+/** For each bot of the network's with nothing out, the next queued pack —
+ *  what the pump sends now. */
+export function nextXdccRequests(userId: number, networkId: number): DccTransferRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM dcc_transfers q
+       WHERE q.user_id = ? AND q.network_id = ? AND q.state = 'queued'
+         AND q.queue_seq = (
+           SELECT MIN(queue_seq) FROM dcc_transfers
+           WHERE user_id = q.user_id AND network_id = q.network_id AND peer_nick = q.peer_nick
+             AND state = 'queued')
+         AND NOT EXISTS (
+           SELECT 1 FROM dcc_transfers o
+           WHERE o.user_id = q.user_id AND o.network_id = q.network_id
+             AND o.peer_nick = q.peer_nick AND o.state IN (${XDCC_OUT_SQL})
+             -- A request from before the queue (no pack) has no clock on it
+             -- and would hold the bot forever.
+             AND (o.state != 'requested' OR o.pack IS NOT NULL))
+       ORDER BY q.id`,
+    )
+    .all(userId, networkId) as DccTransferRow[];
+}
+
+/** The pump sent a queued pack's request. */
+export function markXdccRequested(id: number): void {
+  db.prepare(
+    `UPDATE dcc_transfers
+       SET state = 'requested', requested_at = ?, bot_acked_at = NULL, error = NULL,
+           updated_at = datetime('now')
+     WHERE id = ? AND state = 'queued'`,
+  ).run(nowIso(), Number(id));
+}
+
+/** The bot answered these requests: each now holds its auto-accept for as
+ *  long as the bot takes. Returns the rows it stamped. */
+export function ackXdccRequests(userId: number, ids: readonly number[]): number[] {
+  return (
+    db
+      .prepare(
+        `UPDATE dcc_transfers SET bot_acked_at = ?, updated_at = datetime('now')
+         WHERE user_id = ? AND state = 'requested' AND bot_acked_at IS NULL
+           AND id IN (SELECT value FROM json_each(?))
+         RETURNING id`,
+      )
+      .all(nowIso(), userId, JSON.stringify(ids)) as { id: number }[]
+  ).map((r) => r.id);
+}
+
+/** The connection dropped: the bot forgets a request when you leave, so each
+ *  queued pack that was out waits again, at the front, for the reconnect.
+ *  Returns the rows it moved. */
+export function requeueXdccRequests(userId: number, networkId: number): number[] {
+  return (
+    db
+      .prepare(
+        `UPDATE dcc_transfers
+           SET state = 'queued', requested_at = NULL, bot_acked_at = NULL,
+               updated_at = datetime('now')
+         WHERE user_id = ? AND network_id = ? AND state = 'requested' AND pack IS NOT NULL
+         RETURNING id`,
+      )
+      .all(userId, networkId) as { id: number }[]
+  ).map((r) => r.id);
+}
+
+/** Queue a pack again after its row ended without the file: the automatic
+ *  retry (back of the queue, attempt 2) or one the user asked for (front).
+ *  Null when there is no pack to retry, or it is already waiting or out. */
+export function requeueXdccPack(
+  row: Pick<DccTransferRow, 'user_id' | 'network_id' | 'peer_nick' | 'pack'>,
+  opts: { front: boolean; attempt: number },
+): number | null {
+  if (row.pack == null || row.network_id == null) return null;
+  const [id] = enqueueXdccPacks(row.user_id, row.network_id, row.peer_nick, [row.pack], opts);
+  return id ?? null;
+}
+
+/** Take packs out of a bot's queue: the given ones, or all of them. Queued
+ *  rows are deleted (they never started, so there is nothing to keep).
+ *  Returns those ids, and the rows of the same packs that are already out,
+ *  which the caller cancels. */
+export function removeXdccPacks(
+  userId: number,
+  networkId: number,
+  bot: string,
+  packs: readonly number[] | null,
+): { deleted: number[]; out: DccTransferRow[] } {
+  const run = db.transaction(() => {
+    const json = JSON.stringify(packs ?? []);
+    const all = packs === null ? 1 : 0;
+    const deleted = (
+      db
+        .prepare(
+          `DELETE FROM dcc_transfers
+           WHERE user_id = ? AND network_id = ? AND peer_nick = ? AND state = 'queued'
+             AND (? = 1 OR pack IN (SELECT value FROM json_each(?)))
+           RETURNING id`,
+        )
+        .all(userId, networkId, bot, all, json) as { id: number }[]
+    ).map((r) => r.id);
+    const out = db
+      .prepare(
+        `SELECT * FROM dcc_transfers
+         WHERE user_id = ? AND network_id = ? AND peer_nick = ? AND pack IS NOT NULL
+           AND state IN (${XDCC_OUT_SQL})
+           AND (? = 1 OR pack IN (SELECT value FROM json_each(?)))`,
+      )
+      .all(userId, networkId, bot, all, json) as DccTransferRow[];
+    return { deleted, out };
+  });
+  return run.immediate();
+}
+
+/** Delete one queued row (its × in the queue). False when it isn't queued. */
+export function deleteQueuedXdcc(userId: number, id: number): boolean {
+  return (
+    db
+      .prepare(`DELETE FROM dcc_transfers WHERE user_id = ? AND id = ? AND state = 'queued'`)
+      .run(userId, Number(id)).changes > 0
+  );
+}
+
+/** The network is going: its queue goes with it. Rows waiting or asked for
+ *  are deleted (a request out is dropped with the connection). Returns the ids. */
+export function dropXdccQueue(userId: number, networkId: number): number[] {
+  return (
+    db
+      .prepare(
+        `DELETE FROM dcc_transfers
+         WHERE user_id = ? AND network_id = ? AND pack IS NOT NULL
+           AND state IN ('queued', 'requested')
+         RETURNING id`,
+      )
+      .all(userId, networkId) as { id: number }[]
+  ).map((r) => r.id);
+}
+
+/** A user's queue for one network, bot by bot in queue order: what
+ *  `/xdcc queue` prints. Rows out come first in each bot's list. */
+export function listXdccQueue(userId: number, networkId: number): DccTransferRow[] {
+  return db
+    .prepare(
+      `SELECT * FROM dcc_transfers
+       WHERE user_id = ? AND network_id = ? AND pack IS NOT NULL
+         AND state IN ('queued', ${XDCC_OUT_SQL})
+       ORDER BY peer_nick COLLATE NOCASE, state = 'queued', queue_seq, id`,
+    )
+    .all(userId, networkId) as DccTransferRow[];
+}
+
+/** Whether the bot still has packs of ours waiting or out — so the queue
+ *  isn't finished yet. */
+export function xdccQueueOpen(userId: number, networkId: number, bot: string): boolean {
+  return !!db
+    .prepare(
+      `SELECT 1 FROM dcc_transfers
+       WHERE user_id = ? AND network_id = ? AND peer_nick = ? AND pack IS NOT NULL
+         AND state IN ('queued', ${XDCC_OUT_SQL}) LIMIT 1`,
+    )
+    .get(userId, networkId, bot);
+}
+
+/** At boot: what was in flight when the process stopped. A receive's socket
+ *  died with it, so it failed; its partial stays to resume. A queued pack's
+ *  download goes back to the front of its bot's queue (the restart isn't the
+ *  pack's fault, so it keeps its attempt), and so does a request out — unless
+ *  the engine kept the IRC socket (`requestsSurvive`), when the bot still has
+ *  it and the request stays out. Returns how many. */
+export function settleInterruptedDccReceives({
+  requestsSurvive = false,
+}: { requestsSurvive?: boolean } = {}): { failed: number; requeued: number } {
+  const run = db.transaction(() => {
+    const broken = db
+      .prepare(
+        `UPDATE dcc_transfers
+           SET state = 'failed', error = 'the server restarted', updated_at = datetime('now')
+         WHERE direction = 'recv' AND state IN ('connecting', 'receiving', 'verifying', 'stalled')
+         RETURNING user_id, network_id, peer_nick, pack, attempt`,
+      )
+      .all() as Pick<DccTransferRow, 'user_id' | 'network_id' | 'peer_nick' | 'pack' | 'attempt'>[];
+    let requeued = requestsSurvive
+      ? 0
+      : db
+          .prepare(
+            `UPDATE dcc_transfers
+               SET state = 'queued', requested_at = NULL, bot_acked_at = NULL,
+                   updated_at = datetime('now')
+             WHERE state = 'requested' AND pack IS NOT NULL AND network_id IS NOT NULL`,
+          )
+          .run().changes;
+    for (const r of broken) {
+      if (requeueXdccPack(r, { front: true, attempt: r.attempt })) requeued++;
+    }
+    return { failed: broken.length, requeued };
+  });
+  return run.immediate();
 }
 
 /** The most recent INCOMPLETE transfer for a (network, filename) whose partial we

@@ -16,6 +16,8 @@ import { useContextMenu } from './useContextMenu.js';
 import { socketSend } from './useSocket.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNetworksStore } from '../stores/networks.js';
+import { useConfigStore } from '../stores/config.js';
+import { useDccStore } from '../stores/dcc.js';
 
 // Seeded the way production seeds it: the buffer exists, then a channel-joined /
 // channel-parted frame (or the snapshot's live `joined`) sets the flag.
@@ -95,6 +97,32 @@ describe('useBufferActions', () => {
       networkState('connected');
       const items = useBufferActions().buildItems({ networkId: 1, target: 'alice' });
       expect(items.map((i) => i.label)).not.toContain('Channel Settings…');
+    });
+  });
+
+  describe('Send File (DCC)…', () => {
+    function grant(send: boolean): void {
+      useConfigStore().features.dcc = true;
+      useDccStore().account = { chat: false, receive: true, send };
+    }
+    const sendItem = (target: string) =>
+      useBufferActions()
+        .buildItems({ networkId: 1, target })
+        .find((i) => i.label === 'Send File (DCC)…');
+
+    it("opens the DCC window picking a file for a DM's peer, or a DCC chat's", () => {
+      grant(true);
+      sendItem('alice')!.onClick?.();
+      expect(useDccStore().pick).toMatchObject({ networkId: 1, nick: 'alice' });
+      sendItem('=bob')!.onClick?.();
+      expect(useDccStore().pick).toMatchObject({ networkId: 1, nick: 'bob' });
+    });
+
+    it('is not offered without the send grant, or for a channel', () => {
+      grant(false);
+      expect(sendItem('alice')).toBeUndefined();
+      grant(true);
+      expect(sendItem('#lurker')).toBeUndefined();
     });
   });
 });

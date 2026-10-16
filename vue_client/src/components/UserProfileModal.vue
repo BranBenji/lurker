@@ -174,6 +174,7 @@ import {
   CircleQuestionMarkIcon,
   CopyIcon,
   EllipsisIcon,
+  FileUpIcon,
   InfoIcon,
   LoaderCircleIcon,
   LockIcon,
@@ -185,6 +186,7 @@ import {
   ShieldHalfIcon,
 } from '@lucide/vue';
 import type { LucideIcon } from '@lucide/vue';
+import { useDccStore } from '../stores/dcc.js';
 
 const props = defineProps<{
   nick: string;
@@ -197,6 +199,7 @@ const relayBots = useRelayBotsStore();
 const contextMenu = useContextMenu();
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
+const dcc = useDccStore();
 const ignoreOpen = ref(false);
 
 const isRelay = computed(() => relayBots.isRelay(props.networkId, props.nick));
@@ -429,6 +432,17 @@ function openMoreMenu(e: MouseEvent) {
   const items: ContextMenuItem[] = [];
   if (!isOffline.value && !isSelf.value) {
     items.push({ label: 'Ignore…', icon: BanIcon, onClick: onIgnore });
+  }
+  // From the person, as on the nick menu (#1085).
+  if (!isOffline.value && !isSelf.value && dcc.canSend) {
+    items.push({
+      label: 'Send File (DCC)…',
+      icon: FileUpIcon,
+      onClick: () => {
+        whoisStore.closeViewer();
+        dcc.openSendTo(props.networkId, props.nick);
+      },
+    });
   }
   if (!isSelf.value) {
     items.push({
