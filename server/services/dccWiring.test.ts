@@ -614,8 +614,165 @@ describe('arm-on-trigger + auto-accept', () => {
     await waitFor(() => listDccTransfers(1)[0]?.state === 'completed', 5000);
     const row = listDccTransfers(1)[0];
     expect(row.received_bytes).toBe(full.length);
-    expect(row.crc_status).toBe('unverified'); // resumed → full-file CRC not rechecked
+    expect(row.crc_status).toBe('absent'); // no CRC32 in the name to check against
     expect(fs.readFileSync(path.join(userDir, 'show.mkv')).equals(full)).toBe(true);
+  });
+
+  // #1082: a resume only hashes what it appends, so the whole file is read back
+  // and checked against the name's CRC32 once it is all there.
+  describe('a resumed file whose name carries a CRC32', () => {
+    async function resume(partial: Buffer, full: Buffer) {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-dcc-resume-crc-'));
+      process.env.LURKER_DCC_DIR = tmpDir;
+      process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1';
+      enableDcc();
+      const name = `show_[${crc32Hex(crc32Update(0, full))}].mkv`;
+      const userDir = path.join(tmpDir, 'dcc-wire-alice');
+      fs.mkdirSync(userDir, { recursive: true });
+      const partialPath = path.join(userDir, name);
+      fs.writeFileSync(partialPath, partial);
+      const priorId = insertDccTransfer(1, {
+        network_id: 1,
+        peer_nick: 'bot',
+        filename: name,
+        advertised_size: full.length,
+        state: 'requested',
+      });
+      markDccReceiving(priorId, {
+        filename: name,
+        advertised_size: full.length,
+        destination_path: partialPath,
+        received_bytes: partial.length,
+      });
+      updateDccTransferState(priorId, 'failed', 'interrupted');
+      const sender = await startSender(full.subarray(partial.length));
+      activeSender = sender;
+      const { conn } = harness();
+      conn.client.say = vi.fn<(target: string, text: string) => void>();
+      conn.client.ctcpRequest = vi.fn<(target: string, type: string, ...p: string[]) => void>();
+      conn.say('bot', 'xdcc send #1');
+      conn.client.emit('ctcp request', {
+        nick: 'bot',
+        type: 'DCC',
+        message: `DCC SEND ${name} 2130706433 ${sender.port} ${full.length}`,
+      });
+      conn.client.emit('ctcp request', {
+        nick: 'bot',
+        type: 'DCC',
+        message: `DCC ACCEPT ${name} ${sender.port} ${partial.length}`,
+      });
+      await waitFor(() => listDccTransfers(1).some((t) => t.state === 'completed'), 5000);
+      return listDccTransfers(1).find((t) => t.state === 'completed')!;
+    }
+
+    it('says it verified when the whole file matches', async () => {
+      const full = makePayload(30_000);
+      const row = await resume(full.subarray(0, 10_000), full);
+      expect(row.crc_status).toBe('ok');
+      expect(row.crc_actual).toBe(row.crc_expected);
+      // It went through 'verifying' while it was read back.
+      expect(frames().some((f) => f.transfer.state === 'verifying')).toBe(true);
+    });
+
+    it('catches a partial that was already bad', async () => {
+      const full = makePayload(30_000);
+      const partial = Buffer.from(full.subarray(0, 10_000));
+      partial[5] ^= 0xff;
+      const row = await resume(partial, full);
+      expect(row.crc_status).toBe('mismatch');
+    });
+  });
+
+  // #1127: a resume continues a file nothing is writing. A second offer of a
+  // file still downloading starts a file of its own; a re-offer while a resume
+  // waits on the bot's ACCEPT takes that resume over.
+  describe('a second offer of the same file', () => {
+    function setup() {
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-dcc-second-offer-'));
+      process.env.LURKER_DCC_DIR = tmpDir;
+      process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1';
+      enableDcc();
+      const { conn } = harness();
+      conn.client.say = vi.fn<(target: string, text: string) => void>();
+      const resumeReq = vi.fn<(target: string, type: string, ...p: string[]) => void>();
+      conn.client.ctcpRequest = resumeReq;
+      const offer = (port: number, size: number) => {
+        conn.say('bot', 'xdcc send #1');
+        conn.client.emit('ctcp request', {
+          nick: 'bot',
+          type: 'DCC',
+          message: `DCC SEND show.mkv 2130706433 ${port} ${size}`,
+        });
+        // With #1 already out, the second offer waits for the user: Accept it,
+        // as the DCC window would.
+        const pending = listDccTransfers(1).find((t) => t.state === 'pending_approval');
+        if (pending) conn.acceptPendingDcc(pending);
+      };
+      return { resumeReq, offer, userDir: path.join(tmpDir, 'dcc-wire-alice') };
+    }
+
+    it('leaves a file another receive is writing alone', async () => {
+      const { resumeReq, offer, userDir } = setup();
+      const full = makePayload(30_000);
+      // A sender that sends a third of the file, then holds the connection.
+      const socks: net.Socket[] = [];
+      const server = net.createServer((sock) => {
+        socks.push(sock);
+        sock.on('error', () => {});
+        sock.write(full.subarray(0, 10_000));
+      });
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      activeSender = {
+        close: () => {
+          for (const sock of socks) sock.destroy();
+          server.close();
+        },
+      };
+      const port = (server.address() as net.AddressInfo).port;
+      const live = path.join(userDir, 'show.mkv');
+      offer(port, full.length);
+      await waitFor(() => fs.existsSync(live) && fs.statSync(live).size === 10_000, 5000);
+
+      offer(port, full.length);
+      expect(resumeReq).not.toHaveBeenCalled();
+      const paths = listDccTransfers(1)
+        .filter((t) => t.state === 'receiving')
+        .map((t) => t.destination_path);
+      expect(paths).toHaveLength(2);
+      expect(new Set(paths).size).toBe(2);
+      expect(paths).toContain(live);
+    });
+
+    it('takes over a resume still waiting on the bot', () => {
+      const { resumeReq, offer, userDir } = setup();
+      fs.mkdirSync(userDir, { recursive: true });
+      const partialPath = path.join(userDir, 'show.mkv');
+      fs.writeFileSync(partialPath, makePayload(10_000));
+      const priorId = insertDccTransfer(1, {
+        network_id: 1,
+        peer_nick: 'bot',
+        filename: 'show.mkv',
+        advertised_size: 30_000,
+        state: 'requested',
+      });
+      markDccReceiving(priorId, {
+        filename: 'show.mkv',
+        advertised_size: 30_000,
+        destination_path: partialPath,
+        received_bytes: 10_000,
+      });
+      updateDccTransferState(priorId, 'failed', 'interrupted');
+      offer(50_001, 30_000);
+      const waiting = listDccTransfers(1).find((t) => t.state === 'receiving')!;
+      offer(50_001, 30_000);
+      expect(resumeReq).toHaveBeenCalledTimes(2);
+      const rows = listDccTransfers(1);
+      expect(rows.find((t) => t.id === waiting.id)).toMatchObject({
+        state: 'stalled',
+        error: 'superseded by a newer resume',
+      });
+      expect(rows.find((t) => t.state === 'receiving')?.destination_path).toBe(partialPath);
+    });
   });
 
   // Revoking stops what starts next; a transfer already running finishes (#1080),
@@ -676,7 +833,7 @@ describe('arm-on-trigger + auto-accept', () => {
     await waitFor(() => listDccTransfers(1)[0]?.state === 'completed', 5000);
     const row = listDccTransfers(1)[0];
     expect(row.received_bytes).toBe(full.length);
-    expect(row.crc_status).toBe('unverified'); // resumed → full-file CRC not rechecked
+    expect(row.crc_status).toBe('absent'); // no CRC32 in the name to check against
     expect(fs.readFileSync(path.join(userDir, 'show.mkv')).equals(full)).toBe(true);
   });
 

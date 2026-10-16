@@ -31,6 +31,7 @@
 // (dcc.c:2500-2504) and it is the one case where a naive parser tries to open a
 // TCP connection to port 0.
 
+import fs from 'fs';
 import net from 'net';
 import zlib from 'zlib';
 import { isBlockedIpLiteral } from '../utils/ipGuard.js';
@@ -545,6 +546,14 @@ export function isBlockedDccHost(host: string): boolean {
  *  `b`, so it composes across chunks. */
 export function crc32Update(crc: number, buf: Buffer): number {
   return zlib.crc32(buf, crc) >>> 0;
+}
+
+/** The CRC32 of a whole file on disk, read as a stream so a large one never
+ *  sits in memory. A resumed receive only hashed what it appended (#1082). */
+export async function crc32OfFile(filePath: string): Promise<number> {
+  let crc = 0;
+  for await (const chunk of fs.createReadStream(filePath)) crc = crc32Update(crc, chunk as Buffer);
+  return crc;
 }
 
 /** Render a CRC32 value as the conventional 8-char uppercase hex. */

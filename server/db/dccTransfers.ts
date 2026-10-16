@@ -591,11 +591,11 @@ export function settleInterruptedDccReceives({
 }
 
 /** The most recent INCOMPLETE transfer for a (network, filename) whose partial we
- *  could resume — interrupted by failure or a disconnect (stalled). Resuming is
+ *  could resume — interrupted by failure, disconnect (stalled), or a resume still
+ *  waiting on the bot's ACCEPT ('receiving' with nothing connected). Resuming is
  *  gated on this (not just any same-named file on disk) so an unrelated leftover
- *  can't get a bot's bytes appended onto it. A 'receiving' row is never a prior:
- *  boot settles the ones a restart left behind, so one is always being written
- *  right now (#1127). */
+ *  can't get a bot's bytes appended onto it. ⚠ A 'receiving' row may be one a
+ *  receiver is writing right now: the caller, which knows, skips those (#1127). */
 export function findResumableTransfer(
   userId: number,
   networkId: number,
@@ -605,7 +605,7 @@ export function findResumableTransfer(
     .prepare(
       `SELECT * FROM dcc_transfers
        WHERE user_id = ? AND network_id = ? AND filename = ? AND destination_path IS NOT NULL
-         AND state IN ('failed', 'stalled')
+         AND state IN ('failed', 'stalled', 'receiving')
        ORDER BY id DESC LIMIT 1`,
     )
     .get(userId, networkId, filename) as DccTransferRow | undefined;

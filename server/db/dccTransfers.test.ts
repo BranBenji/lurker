@@ -184,27 +184,6 @@ describe('dccTransfers', () => {
     markDccCompleted(done, 10);
     expect(findResumableTransfer(userId, networkId, 'done.iso')).toBeUndefined();
   });
-
-  it('findResumableTransfer never picks a file still being received (#1127)', () => {
-    // Boot settles what a restart left 'receiving', so a 'receiving' row is
-    // live: a second offer of the same file must not append onto it.
-    const live = insertDccTransfer(userId, {
-      network_id: networkId,
-      peer_nick: 'b',
-      filename: 'live.iso',
-      advertised_size: 100,
-      state: 'requested',
-    });
-    markDccReceiving(live, {
-      filename: 'live.iso',
-      advertised_size: 100,
-      destination_path: '/data/live.iso',
-      received_bytes: 40,
-    });
-    expect(findResumableTransfer(userId, networkId, 'live.iso')).toBeUndefined();
-    updateDccTransferState(live, 'stalled', 'disconnected');
-    expect(findResumableTransfer(userId, networkId, 'live.iso')?.id).toBe(live);
-  });
 });
 
 // #1082: a kept file says how it checked out, even once its transfer is

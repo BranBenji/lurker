@@ -147,17 +147,17 @@
     </div>
     <ul v-if="kept.length" class="list">
       <li v-for="f in kept" :key="f.id" class="row">
-        <div class="glyph" :class="f.crc_status === 'mismatch' ? 'bad' : 'muted'">
+        <div class="glyph" :class="crcNotes.get(f.id)?.tone === 'bad' ? 'bad' : 'muted'">
           <FileIcon />
         </div>
         <div class="meta">
           <div class="name">{{ f.name }}</div>
           <div class="sub">
-            {{ fileLine(f) }}
-            <template v-if="crcNote(f)">
-              {{ META_SEPARATOR }}
-              <span class="crc" :class="crcNote(f)!.tone">{{ crcNote(f)!.text }}</span>
-            </template>
+            <span>{{ fileLine(f) }}</span>
+            <span v-if="crcNotes.get(f.id)">{{ ` ${META_SEPARATOR} ` }}</span>
+            <span v-if="crcNotes.get(f.id)" class="crc" :class="crcNotes.get(f.id)!.tone">{{
+              crcNotes.get(f.id)!.text
+            }}</span>
           </div>
           <form v-if="sendingTo?.fileId === f.id" class="send-to" @submit.prevent="onSendTo(f)">
             <input
@@ -376,6 +376,7 @@ const peers = computed((): PeerBlock[] => {
 });
 
 const kept = computed(() => dcc.files.filter((f) => matches(f.name)));
+const crcNotes = computed(() => new Map(kept.value.map((f) => [f.id, crcNote(f)])));
 
 const storageLine = computed(() => {
   const used = formatBytes(dcc.files.reduce((n, f) => n + f.size, 0));
