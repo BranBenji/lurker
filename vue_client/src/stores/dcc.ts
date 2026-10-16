@@ -115,7 +115,7 @@ export interface DccAccountConfig {
   chat: boolean;
   receive: boolean;
   send: boolean;
-  /** Whether an offer can be active; without it only `-passive` sends work. */
+  /** Whether an offer can be active; without it a file send goes passive. */
   canListen?: boolean;
   /** What the account's DCC files may take, null for no limit (#1125). */
   limitBytes?: number | null;
@@ -801,10 +801,10 @@ export const useDccStore = defineStore('dcc', {
       return transfer;
     },
 
-    // "Send File (DCC)…" on a nick (#1085): pick a file for them. Passive only
-    // when this server can't listen, the one case it is the only way.
+    // "Send File (DCC)…" on a nick (#1085): pick a file for them. The server
+    // makes it passive when it can't listen (#1154).
     openSendTo(networkId: number, nick: string): void {
-      this.openToSend({ networkId, nick, passive: this.account?.canListen === false });
+      this.openToSend({ networkId, nick, passive: false });
     },
 
     // `/dcc send <nick>` with no file: open Files to pick one, or upload one.

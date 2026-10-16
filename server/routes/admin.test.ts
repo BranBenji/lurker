@@ -377,6 +377,132 @@ describe('DELETE /api/admin/users/:id', () => {
     expect((await challengerAgent.delete(`/api/admin/users/${promoted.id}`)).status).toBe(200);
   });
 
+  // #1152: the account's DCC files go with it, and only those: its folder is
+  // named for the username made safe, so another account's files can share it.
+  it('removes the DCC files the account owned, and its folder once empty', async () => {
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+    const { createUser } = await import('../db/users.js');
+    const { keepUploadedDccFile } = await import('../db/dccFiles.js');
+    const { insertDccTransfer, markDccReceiving, updateDccTransferState } =
+      await import('../db/dccTransfers.js');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-admin-dcc-'));
+    const undo = setEnv('LURKER_DCC_DIR', root);
+    try {
+      const own = (name: string) => {
+        const target = createUser(name);
+        const dir = path.join(root, name);
+        fs.mkdirSync(dir, { recursive: true });
+        const kept = path.join(dir, 'kept.mkv');
+        const partial = path.join(dir, 'half.mkv');
+        fs.writeFileSync(kept, 'kept');
+        fs.writeFileSync(partial, 'half');
+        keepUploadedDccFile(target.id, { path: kept, name: 'kept.mkv', size: 4 });
+        const t = insertDccTransfer(target.id, {
+          network_id: null as unknown as number,
+          peer_nick: 'bot',
+          filename: 'half.mkv',
+          advertised_size: 10,
+          state: 'pending_approval',
+        });
+        markDccReceiving(t, {
+          filename: 'half.mkv',
+          advertised_size: 10,
+          destination_path: partial,
+          received_bytes: 4,
+        });
+        updateDccTransferState(t, 'failed', 'dropped');
+        return { target, dir, kept, partial };
+      };
+
+      const gone = own('dcc-gone');
+      expect((await adminAgent.delete(`/api/admin/users/${gone.target.id}`)).status).toBe(200);
+      expect(fs.existsSync(gone.kept)).toBe(false);
+      expect(fs.existsSync(gone.partial)).toBe(false);
+      expect(fs.existsSync(gone.dir)).toBe(false);
+
+      // A file in the folder that no row of theirs owns stays, and so does
+      // the folder.
+      const shared = own('dcc-shared');
+      const other = path.join(shared.dir, 'not-theirs.mkv');
+      fs.writeFileSync(other, 'other');
+      expect((await adminAgent.delete(`/api/admin/users/${shared.target.id}`)).status).toBe(200);
+      expect(fs.existsSync(shared.kept)).toBe(false);
+      expect(fs.existsSync(other)).toBe(true);
+
+      // Two accounts in one folder: a row of the deleted one names a path
+      // (an offer accepted that never connected) that the other's kept file
+      // then came to fill. That file stays.
+      const stale = createUser('dcc-stale');
+      const twin = createUser('dcc-twin');
+      const dir = path.join(root, 'dcc-stale');
+      fs.mkdirSync(dir, { recursive: true });
+      const twins = path.join(dir, 'x.mkv');
+      const t = insertDccTransfer(stale.id, {
+        network_id: null as unknown as number,
+        peer_nick: 'bot',
+        filename: 'x.mkv',
+        advertised_size: 10,
+        state: 'pending_approval',
+      });
+      markDccReceiving(t, {
+        filename: 'x.mkv',
+        advertised_size: 10,
+        destination_path: twins,
+        received_bytes: 0,
+      });
+      updateDccTransferState(t, 'failed', 'timed out');
+      fs.writeFileSync(twins, 'twin');
+      keepUploadedDccFile(twin.id, { path: twins, name: 'x.mkv', size: 4 });
+      expect((await adminAgent.delete(`/api/admin/users/${stale.id}`)).status).toBe(200);
+      expect(fs.existsSync(twins)).toBe(true);
+    } finally {
+      undo();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves out DCC paths another account names, case aside (#1152)', async () => {
+    const { createUser } = await import('../db/users.js');
+    const { keepUploadedDccFile, dccPathsOwnedBy } = await import('../db/dccFiles.js');
+    const { insertDccTransfer, markDccReceiving, updateDccTransferState } =
+      await import('../db/dccTransfers.js');
+    const a = createUser('owns-a');
+    const b = createUser('owns-b');
+    const reserve = (userId: number, p: string) => {
+      const t = insertDccTransfer(userId, {
+        network_id: null as unknown as number,
+        peer_nick: 'bot',
+        filename: 'f.mkv',
+        advertised_size: 10,
+        state: 'pending_approval',
+      });
+      markDccReceiving(t, {
+        filename: 'f.mkv',
+        advertised_size: 10,
+        destination_path: p,
+        received_bytes: 0,
+      });
+      updateDccTransferState(t, 'failed', 'timed out');
+    };
+    const keep = (userId: number, p: string) =>
+      keepUploadedDccFile(userId, { path: p, name: 'f.mkv', size: 4 });
+
+    keep(a.id, '/d/x/solo.mkv');
+    // Kept by both, as a case-insensitive disk sees it: not a's to delete.
+    keep(a.id, '/d/x/Movie.mkv');
+    keep(b.id, '/d/x/movie.mkv');
+    // a keeps it; b only named it for an offer that never connected.
+    keep(a.id, '/d/x/kept.mkv');
+    reserve(b.id, '/d/x/kept.mkv');
+    // a's partial at a path b's row names too.
+    reserve(a.id, '/d/x/half.mkv');
+    reserve(b.id, '/d/x/HALF.mkv');
+
+    expect(dccPathsOwnedBy(a.id).sort()).toEqual(['/d/x/kept.mkv', '/d/x/solo.mkv']);
+  });
+
   it("disposes the user's IRC connections before deletion", async () => {
     const target = (await import('../db/users.js')).createUser('to-be-removed');
     fakeManager.reset();

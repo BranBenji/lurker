@@ -2652,6 +2652,7 @@ const COMMANDS_LINES = [
   '      e.g. /xdcc addl Ginpachi-Sensei 29 32   ·   /xdcc rmp Ginpachi-Sensei 31',
   '  /dcc send <nick> [<file>] — send one of your files; with no file, pick or upload one',
   '      the file is its name or its id from /dcc files; -passive asks them to listen',
+  "      (it's passive anyway when this server can't listen)",
   '      e.g. /dcc send bob   ·   /dcc send bob holiday.mkv   ·   /dcc send -passive bob 12',
   '  /dcc retry <id>        — ask again for a queued pack that failed, next in its queue',
   '  /dcc clear [<id>]      — take finished transfers off the list; your files stay',
@@ -2994,18 +2995,11 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
       localInfo(networkId, target, '/dcc send: run this from a network buffer');
       return;
     }
-    // Said before a file is picked or uploaded, not after: an active offer
-    // needs the server to listen, and passive is never chosen for you.
-    if (!cmd.passive && (await dcc.loadAccount())?.canListen === false) {
-      localInfo(
-        networkId,
-        target,
-        "/dcc send: this server can't listen for DCC; /dcc send -passive asks them to listen",
-      );
-      return;
-    }
+    // Without -passive, the server still makes it passive when it can't listen
+    // (#1154).
+    const passive = cmd.passive;
     if (cmd.file === null) {
-      dcc.openToSend({ networkId, nick: cmd.nick, passive: cmd.passive });
+      dcc.openToSend({ networkId, nick: cmd.nick, passive });
       localInfo(networkId, target, `/dcc send: pick a file to send to ${cmd.nick}, or upload one`);
       return;
     }
@@ -3015,7 +3009,7 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
         localInfo(networkId, target, `/dcc send: no file "${cmd.file}" — see /dcc files`);
         return;
       }
-      await dcc.sendFile(networkId, cmd.nick, f.id, cmd.passive);
+      await dcc.sendFile(networkId, cmd.nick, f.id, passive);
       localInfo(networkId, target, `/dcc send: offered "${f.name}" to ${cmd.nick}`);
     } catch (e: any) {
       localInfo(networkId, target, `/dcc send: ${e?.message || 'failed'}`);

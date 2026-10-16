@@ -4,14 +4,7 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
-import {
-  listUsers,
-  findUserById,
-  deleteUser,
-  countAdmins,
-  setUserPaused,
-  setUserIdent,
-} from '../db/users.js';
+import { listUsers, findUserById, countAdmins, setUserPaused, setUserIdent } from '../db/users.js';
 import type { User } from '../db/users.js';
 import {
   createInvite,
@@ -43,6 +36,7 @@ import adminNetworksRouter from './adminNetworks.js';
 import adminStorageRouter from './adminStorage.js';
 import adminDccRouter from './adminDcc.js';
 import adminPushRouter from './adminPush.js';
+import { deleteAccount } from '../services/deleteAccount.js';
 
 const router = Router();
 router.use(requireAuth, requireAdmin);
@@ -260,13 +254,7 @@ router.delete('/users/:id', (req: Request, res: Response) => {
     res.status(409).json({ error: 'cannot delete the only admin' });
     return;
   }
-  // Tear down the user's live IRC connections (and their WS sockets via the
-  // 'user-disposed' listener in wsHub) BEFORE deleting the row, so any
-  // in-flight events stop trying to persist against the about-to-be-deleted
-  // networks. Otherwise the next incoming PRIVMSG crashes the process on a
-  // FOREIGN KEY violation in messages.network_id.
-  ircManager.disposeUser(id, 'user deleted');
-  deleteUser(id);
+  deleteAccount(target, 'user deleted');
   res.json({ ok: true });
 });
 

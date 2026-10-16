@@ -634,13 +634,13 @@ environment:
 - Open the same range in your firewall. Its size caps how many offers can wait at once.
 - `LURKER_DCC_LISTEN_BIND` sets the bind address inside the container. The default follows the external host: `0.0.0.0` for IPv4, `::` for IPv6 (which also needs IPv6 enabled in Docker).
 
-Without these, `/dcc send` and `/dcc chat` say what's missing. `-passive` asks the other side to listen instead and needs none of it, but only some clients handle a passive chat offer (irssi, HexChat and repartee do; WeeChat and HexDroid don't). Passive DCC doesn't work through ZNC's bouncedcc module, which turns every offer into an active one.
+Without these, a file is sent as a _passive_ offer, which asks the other side to listen, and `/dcc chat` says what's missing; `/dcc chat -passive` makes a passive chat offer. Neither needs any of this, but not every client takes a passive offer (irssi, HexChat and repartee do; WeeChat and HexDroid don't). Passive DCC doesn't work through ZNC's bouncedcc module, which turns every offer into an active one.
 
 #### Good to know
 
 - **A network with a proxy refuses DCC.** DCC connects directly, outside the proxy, which would give away the address the proxy hides.
 - **Turning `LURKER_DCC_ENABLED` off closes all of it**, including downloading and deleting files already received. They stay on disk under `LURKER_DCC_DIR`.
-- **Deleting an account doesn't delete its files.** Its directory under `LURKER_DCC_DIR` stays on disk; remove it by hand.
+- **Deleting an account deletes its DCC files**, and its folder if that leaves it empty. Anything else put in the folder by hand stays.
 - **Transfers run in the Lurker process, not the [IRC engine](#irc-engine-upgrade-without-dropping-irc).** Restarting Lurker ends any transfer in progress. It's kept as a partial and resumes the next time the file is offered, and a queued XDCC pack is requested again on its own.
 
 ### IRC engine (upgrade without dropping IRC)

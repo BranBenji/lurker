@@ -29,9 +29,9 @@ The window has three parts:
   bytes it got.
 - **kept**: every file you have on the server, received or uploaded, with
   **Download**, **Send to…** and **Delete**. The line above the list says how
-  much space your kept files take, and your limit if the admin set one. The
-  limit also counts the partials of failed and cancelled transfers, which
-  **Delete partial** frees.
+  much space your files take, partials included, and your limit if the admin
+  set one. What a file coming in has still to send counts toward the limit
+  too, shown as "on the way". **Delete partial** frees a partial's space.
 
 On a phone, each row's actions are behind its **⋯** button.
 
@@ -111,9 +111,9 @@ From the keyboard: `/dcc send <nick> [<file>]`, where the file is a name or an
 id from `/dcc files`. With no file, the DCC window opens to pick one.
 
 A normal send needs your server to be reachable from outside. If the admin
-hasn't set that up, sending from the menus asks the other side to connect
-instead (a _passive_ offer), and `/dcc send` says to use `-passive`. Not every
-client takes a passive offer.
+hasn't set that up, Lurker asks the other side to connect instead (a _passive_
+offer), and the line in the DM says "(passive)". Not every client takes one:
+WeeChat and HexDroid don't.
 
 ## DCC chat
 

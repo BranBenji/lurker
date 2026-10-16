@@ -86,7 +86,7 @@ router.get('/config', (req: Request, res: Response) => {
     maxFileBytes: dccMaxFileBytes(),
     allowPrivateHosts: dccAllowPrivateHosts(),
     // Whether an offer can be active (#1086). Without a public address and a
-    // port range, only `-passive` sends work.
+    // port range, a file send goes passive (#1154).
     canListen: dccActiveListenAvailable(),
     // What this account's files take on disk, and its limit (null for none)
     // (#1125).

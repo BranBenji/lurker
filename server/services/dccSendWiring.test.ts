@@ -615,11 +615,11 @@ describe('a passive offer', () => {
 });
 
 describe('refusing an offer', () => {
-  it('refuses an active offer with nowhere to listen, and says what to do', () => {
+  it('makes a passive offer when there is nowhere to listen (#1154)', () => {
     enableSend();
     const h = harness();
-    const result = h.conn.offerDccSend(file, 'bob');
-    expect(result).toMatchObject({ status: 409, error: expect.stringMatching(/-passive/) });
+    expect(h.conn.offerDccSend(file, 'bob')).toHaveProperty('transferId');
+    expect(h.sent()).toMatch(/^SEND \S+ \d+ 0 \d+ \d+$/);
   });
 
   it('refuses a channel, all four sigils, and a list or STATUSMSG target that reaches one', () => {

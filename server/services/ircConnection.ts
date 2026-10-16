@@ -7746,9 +7746,9 @@ export class IrcConnection {
   //
   // Offering one of the account's DCC files (#1133) to a peer. Active by
   // default: we listen on a port from the configured range and offer
-  // `DCC SEND <file> <addr> <port> <size>`. `-passive` (port 0 and a token; the
-  // receiver listens and replies with where to connect) is opt-in and never an
-  // automatic fallback, as for chat. A peer's RESUME is answered with ACCEPT,
+  // `DCC SEND <file> <addr> <port> <size>`. Passive (port 0 and a token; the
+  // receiver listens and replies with where to connect) is `-passive`, or what
+  // an offer falls back to when this server can't listen (#1154). A peer's RESUME is answered with ACCEPT,
   // and the send starts from there. An offer nobody takes expires after five
   // minutes, which ends the offer, not the file.
 
@@ -7773,16 +7773,11 @@ export class IrcConnection {
     if (this.dccBlockedByProxy()) {
       return { status: 409, error: "DCC does not go through this network's proxy" };
     }
-    const passive = opts.passive === true;
-    if (!passive && !dccActiveListenAvailable()) {
-      return {
-        status: 409,
-        error:
-          'this server has no public address and listening port range configured ' +
-          '(LURKER_DCC_EXTERNAL_HOST, LURKER_DCC_LISTEN_PORT_MIN/_MAX). ' +
-          '/dcc send -passive asks them to listen instead.',
-      };
-    }
+    // Active whenever this server can listen, as every client takes that; when
+    // it can't, passive is the one offer that can work, so it's made without
+    // asking (#1154). The line in the DM says "(passive)". Chat stays opt-in:
+    // far fewer clients answer a passive chat offer.
+    const passive = opts.passive === true || !dccActiveListenAvailable();
     // As the download route judges it: a file removed or replaced by hand.
     // HexChat refuses an offer of size 0 (dcc.c:2649), and Quassel fails on one.
     if (file.size === 0) return { status: 400, error: 'an empty file cannot be sent over DCC' };

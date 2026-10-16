@@ -10,7 +10,6 @@ import { isValidUsername } from '../../shared/username.js';
 import {
   countUsers,
   createUser,
-  deleteUser,
   findUserById,
   findUserByUsername,
   usernameTaken,
@@ -21,6 +20,7 @@ import { deleteOAuthForUser, upsertAppFromFleet } from '../db/oauth.js';
 import { validateRegistration } from '../services/oauth.js';
 import { closeSocketsForOAuthTokens } from '../services/wsHub.js';
 import ircManager from '../services/ircManager.js';
+import { deleteAccount } from '../services/deleteAccount.js';
 import { sign as signCookie } from 'cookie-signature';
 import { createSession } from '../db/sessions.js';
 import { SESSION_COOKIE, getCookieOptions } from '../middleware/auth.js';
@@ -108,8 +108,7 @@ router.delete('/users/:id', (req: Request, res: Response) => {
     res.status(409).json({ error: 'refusing to delete an admin account' });
     return;
   }
-  ircManager.disposeUser(id, 'deprovisioned');
-  deleteUser(id);
+  deleteAccount(target, 'deprovisioned');
   res.json({ ok: true });
 });
 

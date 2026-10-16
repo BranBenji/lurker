@@ -1546,7 +1546,7 @@ its own.
 `allowPrivateHosts`, `canListen`, `usedBytes` and `limitBytes` when `receive` or
 `send` is true (`maxFileBytes` 0 for no cap; `limitBytes` null for no storage
 limit; `canListen` false when the server has no public address and port range,
-so only passive sends work, and a peer's passive offer fails at accept). A transfer that would take the account over its
+so a file send goes passive, and a peer's passive offer fails at accept). A transfer that would take the account over its
 limit fails at accept, with the reason in the row's `error`. A client shows chat
 actions only when `chat` is true, receiving actions only when `receive` is, and
 sending only when `send` is.
@@ -1646,10 +1646,10 @@ there is no file. Needs no grant.
 files to a peer and returns `{transfer}`, `offered`. The rest arrives as
 `dcc-transfer` frames, and as `dcc` lines in the peer's DM. Active by
 default: the server listens on a port and the peer connects. `passive: true`
-asks the peer to listen and the server connects to them instead; it is never
-chosen for the client. 400 for a channel, 404 for a file that isn't the
-account's, 409 when the network isn't connected, goes through a proxy, or (not
-passive) the server can't listen, and 410 when the file is gone from disk. A
+asks the peer to listen and the server connects to them instead. The server
+makes the offer passive by itself when it can't listen (`canListen` false). 400
+for a channel, 404 for a file that isn't the account's, 409 when the network
+isn't connected or goes through a proxy, and 410 when the file is gone from disk. A
 peer's RESUME is answered and the send starts where it asked.
 
 `POST /chat` (`{networkId, nick, passive?}`) opens a DCC CHAT; `POST /chat/close`
