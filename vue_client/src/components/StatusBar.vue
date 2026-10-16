@@ -49,6 +49,19 @@
         <span v-if="uploadLabel" class="seg upload" :class="{ failed: uploads.failedAt }">{{
           uploadLabel
         }}</span>
+        <!-- What's in flight with this DM's nick over DCC (#1085): the pack or
+             file moving, or the XDCC queue waiting. One line that truncates,
+             never grows; a tap opens the DCC tab. Offers are toasts, not this. -->
+        <button
+          v-if="dccSegment"
+          class="seg dcc"
+          :class="dccSegment.tone"
+          type="button"
+          :title="dccSegment.title"
+          @click="dcc.open('dcc')"
+        >
+          <component :is="dccSegment.icon" /><span class="dcc-text" v-text="dccSegment.text"></span>
+        </button>
         <span v-if="splitLabel" class="seg split" :class="splitClass">{{ splitLabel }}</span>
         <span v-if="typingSegments.length" class="seg typing"
           ><KeyboardIcon role="img" aria-label="Typing"><title>Typing</title></KeyboardIcon>
@@ -181,6 +194,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore } from '../stores/uploads.js';
+import { inFlight, percentReceived, useDccStore } from '../stores/dcc.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useNickColors } from '../composables/useNickColors.js';
@@ -214,9 +228,18 @@ import { replyExcerpt } from '../utils/replyText.js';
 import NickRef from './NickRef.vue';
 import type { EmojiMatch } from '../utils/emojiData.js';
 import { dccChatPeer, isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
-import { KeyboardIcon, PaletteIcon, PaperclipIcon, ReplyIcon, XIcon } from '@lucide/vue';
+import {
+  ArrowDownIcon,
+  ArrowUpIcon,
+  KeyboardIcon,
+  PaletteIcon,
+  PaperclipIcon,
+  ReplyIcon,
+  XIcon,
+} from '@lucide/vue';
+import type { LucideIcon } from '@lucide/vue';
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     // Mobile/petite mode: drops the clock segment (not worth the row at phone
     // widths) and hides lag so the typing/split/upload signals stay legible.
@@ -291,6 +314,50 @@ const uploadLabel = computed(() => {
 const { newBelow, stuckToBottom, unreadAnchor } = useScrollState();
 
 const active = computed(() => networks.activeBuffer);
+const dcc = useDccStore();
+
+// The DCC segment (#1085), for a DM: the transfer moving with that nick, or
+// the one asked for, or how many packs wait in the queue. On a phone it
+// drops the name and keeps the numbers.
+const dccSegment = computed(
+  (): { text: string; title: string; tone: string; icon: LucideIcon } | null => {
+    const a = active.value;
+    if (!a || isChannelTarget(a.target) || isDccChatTarget(a.target) || a.target.startsWith(':')) {
+      return null;
+    }
+    const peer = a.target.toLowerCase();
+    const mine = dcc.transfers.filter(
+      (t) => t.network_id === a.networkId && t.peer_nick.toLowerCase() === peer && inFlight(t),
+    );
+    if (!mine.length) return null;
+    const queued = mine.filter((t) => t.state === 'queued').length;
+    const more = queued ? ` · ${queued} queued` : '';
+    const out = mine.find((t) => t.state !== 'queued');
+    const icon = out?.direction === 'send' ? ArrowUpIcon : ArrowDownIcon;
+    if (!out) {
+      return { text: `${queued} queued`, title: 'XDCC queue', tone: 'muted', icon };
+    }
+    const name =
+      out.pack != null && out.filename === `XDCC #${out.pack}` ? `#${out.pack}` : out.filename;
+    const lead = props.compact ? '' : `${name} `;
+    if (out.state === 'requested') {
+      const what = out.bot_acked_at ? "in the bot's queue" : 'asked';
+      return {
+        text: `${name} ${what}${more}`,
+        title: name,
+        tone: out.bot_acked_at ? 'warn' : '',
+        icon,
+      };
+    }
+    if (out.state === 'offered') {
+      return { text: `${lead}offered${more}`, title: name, tone: '', icon };
+    }
+    if (out.state === 'connecting') {
+      return { text: `${lead}connecting${more}`, title: name, tone: '', icon };
+    }
+    return { text: `${lead}${percentReceived(out)}%${more}`, title: name, tone: '', icon };
+  },
+);
 const replies = useRepliesStore();
 const pendingReply = computed(() => replies.forKey(networks.activeKey));
 const pendingReplyExcerpt = computed(() =>
@@ -582,6 +649,34 @@ function onToggleUploadMenu() {
 }
 .seg.clock {
   color: var(--fg-muted);
+}
+/* Shrinks before anything else on the row, the filename going first. */
+.seg.dcc {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5ch;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+}
+.seg.dcc.warn {
+  color: var(--warn);
+}
+.seg.dcc.muted {
+  color: var(--fg-muted);
+}
+.seg.dcc .lucide {
+  flex-shrink: 0;
+}
+.seg.dcc .dcc-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* Shrink-only (grow: 0): the buffer name takes its natural width and lets the
    segments after it (peer-status/lag/upload/split/typing) pack immediately to

@@ -10,7 +10,7 @@ let nextId = 1;
 // persistence never have to deal with a function (same rationale as the
 // drafts store's module-local timers). Registered in push(), cleared in
 // dismiss()/clear() so the map can't outlive its toast.
-const actionHandlers = new Map<number, () => void>();
+const actionHandlers = new Map<number, Array<() => void>>();
 
 export type ToastKind =
   | 'highlight'
@@ -30,6 +30,14 @@ export type ToastKind =
 export interface ToastAction {
   label: string;
   onClick: () => void;
+  /** Colours the button: an accept reads good, a decline bad, a "later" muted. */
+  tone?: 'good' | 'bad' | 'muted';
+}
+
+/** The serializable half of a ToastAction, as the store keeps it. */
+export interface ToastActionLabel {
+  label: string;
+  tone?: 'good' | 'bad' | 'muted';
 }
 
 export interface Toast {
@@ -40,8 +48,12 @@ export interface Toast {
   target?: string;
   messageId?: number;
   kind: ToastKind;
-  // Serializable subset of ToastAction — the onClick is held in actionHandlers.
-  action?: { label: string };
+  // Serializable subset of each ToastAction — the onClicks are held in
+  // actionHandlers, in the same order.
+  actions?: ToastActionLabel[];
+  /** False hides the × — for a toast that asks a question every button of
+   *  which answers it (a DCC offer: Accept · Decline · Later, #1085). */
+  dismissible?: boolean;
 }
 
 export interface ToastOptions {
@@ -52,7 +64,11 @@ export interface ToastOptions {
   messageId?: number;
   kind?: ToastKind;
   ttlMs?: number;
+  /** One button. Shorthand for `actions: [action]`. */
   action?: ToastAction;
+  /** Several buttons, in order. */
+  actions?: ToastAction[];
+  dismissible?: boolean;
 }
 
 export const useToastsStore = defineStore('toasts', {
@@ -69,9 +85,16 @@ export const useToastsStore = defineStore('toasts', {
       kind = 'highlight',
       ttlMs = 5000,
       action,
+      actions,
+      dismissible,
     }: ToastOptions) {
       const id = nextId++;
-      if (action) actionHandlers.set(id, action.onClick);
+      const all = actions ?? (action ? [action] : []);
+      if (all.length)
+        actionHandlers.set(
+          id,
+          all.map((a) => a.onClick),
+        );
       this.items.push({
         id,
         title,
@@ -80,16 +103,18 @@ export const useToastsStore = defineStore('toasts', {
         target,
         messageId,
         kind,
-        action: action ? { label: action.label } : undefined,
+        actions: all.length ? all.map(({ label, tone }) => ({ label, tone })) : undefined,
+        dismissible,
       });
       if (ttlMs > 0) {
         setTimeout(() => this.dismiss(id), ttlMs);
       }
       return id;
     },
-    // Run a toast's action handler (looked up module-local, not from state).
-    runAction(id: number) {
-      actionHandlers.get(id)?.();
+    // Run one of a toast's action handlers (looked up module-local, not from
+    // state); the first when no index is given.
+    runAction(id: number, index = 0) {
+      actionHandlers.get(id)?.[index]?.();
     },
     dismiss(id: number) {
       actionHandlers.delete(id);

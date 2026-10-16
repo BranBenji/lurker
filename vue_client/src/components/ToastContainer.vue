@@ -15,13 +15,26 @@
       >
         <div class="row">
           <span class="title">{{ t.title }}</span>
-          <button class="x" title="dismiss" @click.stop="toasts.dismiss(t.id)">
+          <button
+            v-if="t.dismissible !== false"
+            class="x"
+            title="dismiss"
+            @click.stop="toasts.dismiss(t.id)"
+          >
             <XIcon />
           </button>
         </div>
         <div v-if="t.body" class="body">{{ t.body }}</div>
-        <div v-if="t.action" class="actions">
-          <button class="action" @click.stop="onAction(t)">{{ t.action.label }}</button>
+        <div v-if="t.actions?.length" class="actions">
+          <button
+            v-for="(a, i) in t.actions"
+            :key="i"
+            class="action"
+            :class="a.tone"
+            @click.stop="onAction(t, i)"
+          >
+            {{ a.label }}
+          </button>
         </div>
       </div>
     </div>
@@ -61,8 +74,8 @@ function onClick(t: Toast) {
   toasts.dismiss(t.id);
 }
 
-function onAction(t: Toast) {
-  toasts.runAction(t.id);
+function onAction(t: Toast, index: number) {
+  toasts.runAction(t.id, index);
   toasts.dismiss(t.id);
 }
 </script>
@@ -177,6 +190,22 @@ function onAction(t: Toast) {
 }
 .action:hover {
   filter: brightness(1.08);
+}
+.action.good {
+  background: var(--good);
+}
+.action.bad {
+  background: var(--bad);
+}
+/* "Later": puts the question off rather than answering it, so it doesn't
+   compete with the answers. */
+.action.muted {
+  background: none;
+  color: var(--fg-muted);
+}
+.action.muted:hover {
+  color: var(--fg);
+  filter: none;
 }
 @keyframes toast-in {
   from {

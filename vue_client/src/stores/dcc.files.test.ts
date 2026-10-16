@@ -80,16 +80,28 @@ describe('dcc store files', () => {
     expect(dcc.fileError[6]).toBe('file is no longer on the server');
   });
 
-  it('opens the panel on the tab asked for, loading both lists', () => {
+  it('opens the files window on the tab asked for, loading both DCC lists', () => {
     const dcc = useDccStore();
     h.api.mockResolvedValue({ transfers: [], files: [] });
-    dcc.open('files');
+    dcc.open('dcc');
     expect(dcc.panelOpen).toBe(true);
-    expect(dcc.panelTab).toBe('files');
+    expect(dcc.panelTab).toBe('dcc');
     expect(h.api).toHaveBeenCalledWith('/api/dcc');
     expect(h.api).toHaveBeenCalledWith('/api/dcc/files');
     dcc.open();
-    expect(dcc.panelTab).toBe('transfers');
+    expect(dcc.panelTab).toBe('shares');
+  });
+
+  it('opens on shares alone, loading nothing of DCC, where DCC is off', () => {
+    features.dcc = false;
+    try {
+      const dcc = useDccStore();
+      dcc.open();
+      expect(dcc.panelOpen).toBe(true);
+      expect(h.api).not.toHaveBeenCalled();
+    } finally {
+      features.dcc = true;
+    }
   });
 });
 

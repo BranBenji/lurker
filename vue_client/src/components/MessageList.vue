@@ -309,7 +309,8 @@
                 row.m?.type === 'motd' ||
                 row.m?.type === 'system' ||
                 row.m?.type === 'e2e' ||
-                row.m?.type === 'ctcp'
+                row.m?.type === 'ctcp' ||
+                row.m?.type === 'dcc'
               "
               ><LinkedText :text="row.m.text ?? ''"
             /></template>
@@ -1543,6 +1544,10 @@ function prefixText(m: ChatMessage | undefined): string {
     case 'ctcp':
       // CTCP request/reply/echo status lines get their own tag (#263).
       return 'CTCP';
+    case 'dcc':
+      // What happened to a DCC transfer or the XDCC queue, kept in the peer's
+      // DM (#1085).
+      return 'DCC';
     case 'error':
       return '!!';
     default:

@@ -22,10 +22,7 @@
         <button class="icon" title="Saved messages" @click="showBookmarks = true">
           <BookmarkIcon />
         </button>
-        <button class="icon" title="Recent uploads" @click="showUploads = true">
-          <ShareIcon />
-        </button>
-        <TransfersButton class="icon" />
+        <SharesButton class="icon" />
         <button class="icon" title="Add network" @click="openAddNetwork">
           <PlusIcon />
         </button>
@@ -180,8 +177,7 @@
       :network-id="joinChannelModal.networkId!"
       @close="joinChannelModal.close()"
     />
-    <RecentUploadsModal v-if="showUploads" @close="showUploads = false" />
-    <TransfersModal v-if="dcc.panelOpen" @close="dcc.close()" />
+    <RecentUploadsModal v-if="dcc.panelOpen" @close="dcc.close()" />
     <SearchModal
       v-if="showSearch"
       :scope="searchScope"
@@ -246,8 +242,7 @@ import { useChannelModal } from '../composables/useChannelModal.js';
 import ChannelListModal from '../components/ChannelListModal.vue';
 import JoinChannelModal from '../components/JoinChannelModal.vue';
 import RecentUploadsModal from '../components/RecentUploadsModal.vue';
-import TransfersModal from '../components/TransfersModal.vue';
-import TransfersButton from '../components/TransfersButton.vue';
+import SharesButton from '../components/SharesButton.vue';
 import SearchModal from '../components/SearchModal.vue';
 import NickNoteModal from '../components/NickNoteModal.vue';
 import ReactModal from '../components/ReactModal.vue';
@@ -280,7 +275,6 @@ import {
   PlusIcon,
   SearchIcon,
   SettingsIcon,
-  ShareIcon,
   ShieldCogIcon,
   UnplugIcon,
   UsersIcon,
@@ -373,7 +367,6 @@ const channelModal = useChannelModal();
 // Its open state is module-level: leaving the chat view (a logout, say) must
 // not leave it open for whoever's session mounts the view next.
 onBeforeUnmount(() => channelModal.close());
-const showUploads = ref(false);
 const pendingScrollId = ref<number | null>(null);
 const messageInputRef = ref<{ focus: () => void } | null>(null);
 const bufferCogBtn = ref<HTMLElement | null>(null);

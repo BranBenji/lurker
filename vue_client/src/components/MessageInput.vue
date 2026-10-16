@@ -169,6 +169,7 @@ import { parseNetworkCommand } from '../lib/commands/network.js';
 import { splitSetArgs, coerceSettingValue, formatSettingValue } from '../lib/commands/settings.js';
 import { parseRelayCommand } from '../lib/commands/relay.js';
 import { parseDccCommand } from '../lib/commands/dcc.js';
+import { parseXdccCommand } from '../lib/commands/xdcc.js';
 import { bufferPeer } from '../lib/commands/ping.js';
 import { parseThemeCommand } from '../lib/commands/theme.js';
 import { parseSheepCommand, SHEEP_USAGE_LINES } from '../lib/commands/sheep.js';
@@ -195,7 +196,9 @@ import { useDraftStore } from '../stores/drafts.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useUploadsStore, onInsertUrl } from '../stores/uploads.js';
 import {
+  ACTIVE_STATES,
   useDccStore,
+  describePacks,
   findDccFile,
   percentReceived,
   type DccFile,
@@ -2638,9 +2641,13 @@ const COMMANDS_LINES = [
   "          [-autosendcmd '<cmds>'] [-channel <#chan>] [-auto|-noauto] <name>",
   '      modify <name> [-flags…]   ·   remove <name>   ·   move <name> <position>',
   '      connect <name>   ·   disconnect <name>   (Lurker folds irssi /server into these)',
-  '  /dcc [list]            — DCC downloads: list, or accept/reject/cancel/download/delete <id>',
+  '  /dcc [list]            — DCC transfers: list, or accept/reject/cancel/download/delete <id>',
   '      e.g. /dcc   ·   /dcc accept 3   ·   /dcc download 3   ·   /dcc delete 3',
   '  /dcc files             — the files you keep from DCC, until you delete them',
+  '  /xdcc add <bot> <pack> — queue an XDCC pack; the queue asks each bot for one at a time',
+  '      addl <bot> <first> <last>   ·   addm <bot> <pack> <pack>…   ·   queue [<bot>]',
+  "      rmp|rmpl|rmpm <bot> …  take packs out   ·   rmbot <bot>  drop that bot's queue",
+  '      e.g. /xdcc addl Ginpachi-Sensei 29 32   ·   /xdcc rmp Ginpachi-Sensei 31',
   '  /dcc send <nick> [<file>] — send one of your files; with no file, pick or upload one',
   '      the file is its name or its id from /dcc files; -passive asks them to listen',
   '      e.g. /dcc send bob   ·   /dcc send bob holiday.mkv   ·   /dcc send -passive bob 12',
@@ -2945,7 +2952,7 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
     return;
   }
   if (cmd.kind === 'files') {
-    dcc.open('files');
+    dcc.open('dcc');
     try {
       const files = await dcc.loadFiles();
       if (!files.length) {
@@ -2962,7 +2969,7 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
     return;
   }
   if (cmd.kind === 'list') {
-    dcc.open('transfers');
+    dcc.open('dcc');
     try {
       const rows = await dcc.load();
       if (!rows.length) {
@@ -3102,6 +3109,91 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
 }
 
 // One row for the /dcc list output: "#3  movie.mkv  receiving  alice  42%".
+// /xdcc (#1085) — the XDCC queue, in EasyXdcc's verbs (lib/commands/xdcc.ts).
+// Adding and removing ride the network's connection, which runs the queue;
+// the bot's DM gets the stored lines saying what happened, so the reply here
+// is a short receipt.
+async function runXdcc(argLine: string, networkId: number | null, target: string): Promise<void> {
+  const cmd = parseXdccCommand(argLine);
+  const say = (text: string) => localInfo(networkId, target, text);
+  if (cmd.kind === 'error') {
+    say(`/xdcc: ${cmd.message}`);
+    return;
+  }
+  if (cmd.kind === 'queue') {
+    dcc.open('dcc');
+    try {
+      const rows = (await dcc.load()).filter(
+        (t) =>
+          t.pack != null &&
+          t.direction === 'recv' &&
+          ACTIVE_STATES.has(t.state) &&
+          (networkId == null || t.network_id === networkId) &&
+          (!cmd.bot || t.peer_nick.toLowerCase() === cmd.bot.toLowerCase()),
+      );
+      if (!rows.length) {
+        say(cmd.bot ? `no packs queued from ${cmd.bot}.` : 'no packs queued.');
+        return;
+      }
+      for (const line of xdccQueueLines(rows)) say(line);
+    } catch (e: any) {
+      say(`/xdcc: ${e?.message || 'failed to load'}`);
+    }
+    return;
+  }
+  if (networkId == null) {
+    say('/xdcc: run this from a network buffer');
+    return;
+  }
+  try {
+    if (cmd.kind === 'add') {
+      const queued = await dcc.queueXdcc(networkId, cmd.bot, cmd.packs);
+      say(
+        queued.length
+          ? `/xdcc: queued ${describePacks(queued.map((t) => t.pack!))} from ${cmd.bot}`
+          : `/xdcc: ${describePacks(cmd.packs)} already in the queue for ${cmd.bot}`,
+      );
+      return;
+    }
+    const removed = await dcc.unqueueXdcc(networkId, cmd.bot, cmd.packs);
+    say(
+      removed
+        ? `/xdcc: took ${removed} ${removed === 1 ? 'pack' : 'packs'} out of the queue for ${cmd.bot}`
+        : `/xdcc: nothing in the queue for ${cmd.bot} to take out`,
+    );
+  } catch (e: any) {
+    say(`/xdcc: ${e?.message || 'failed'}`);
+  }
+}
+
+// A bot's queue as /xdcc queue prints it: the bot, then its packs in order,
+// the one out first.
+function xdccQueueLines(rows: DccTransfer[]): string[] {
+  const byBot = new Map<string, DccTransfer[]>();
+  for (const t of rows) {
+    const key = `${t.network_id}|${t.peer_nick.toLowerCase()}`;
+    byBot.set(key, [...(byBot.get(key) ?? []), t]);
+  }
+  const lines: string[] = [];
+  for (const list of byBot.values()) {
+    const net = networks.networkById(list[0].network_id ?? -1)?.name;
+    lines.push(`${list[0].peer_nick}${net ? ` (${net})` : ''}`);
+    const sorted = list.toSorted(
+      (a, b) =>
+        Number(a.state === 'queued') - Number(b.state === 'queued') ||
+        (a.queue_seq ?? 0) - (b.queue_seq ?? 0),
+    );
+    const cells = sorted.map((t) => [
+      `#${t.pack}`,
+      t.state === 'requested' && t.bot_acked_at ? "in the bot's queue" : t.state,
+      t.state === 'receiving' ? `${percentReceived(t)}%` : '',
+      t.state !== 'queued' && t.filename !== `XDCC #${t.pack}` ? t.filename : '',
+    ]);
+    for (const line of formatColumns(cells)) lines.push(`  ${line}`);
+  }
+  return lines;
+}
+
 function dccListRow(t: DccTransfer): string[] {
   const pct = t.advertised_size > 0 ? `${percentReceived(t)}%` : '';
   const peer = t.direction === 'send' ? `to ${t.peer_nick}` : `from ${t.peer_nick}`;
@@ -3791,6 +3883,11 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       // REST-backed + async, so fire-and-forget like /network; it reports into
       // the buffer when it settles.
       void runDcc(argLine, networkId, target);
+      return true;
+    case 'xdcc':
+      // The XDCC queue (#1085). Per network, like /dcc send; `queue` alone
+      // runs from anywhere.
+      void runXdcc(argLine, networkId, target);
       return true;
     case 'theme':
       // Theme presets. App-scoped like /set; async like /dcc.
