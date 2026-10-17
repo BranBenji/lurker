@@ -31,9 +31,11 @@ export type DccCommand =
   | { kind: 'retry'; id: number }
   /** One transfer by id, or null for every finished one. */
   | { kind: 'clear'; id: number | null }
-  /** `file` is a name, or an id as /dcc files shows it; null to pick one. */
-  | { kind: 'send'; nick: string; passive: boolean; file: string | null }
-  | { kind: 'chat'; nick: string; passive: boolean }
+  /** `file` is a name, or an id as /dcc files shows it; null to pick one.
+   *  `secure` (#1157) sends over TLS, KVIrc's SSEND. */
+  | { kind: 'send'; nick: string; passive: boolean; secure: boolean; file: string | null }
+  /** `secure` (#1157) chats over TLS, KVIrc's SCHAT. */
+  | { kind: 'chat'; nick: string; passive: boolean; secure: boolean }
   | { kind: 'chatClose'; nick: string }
   | { kind: 'error'; message: string };
 
@@ -61,8 +63,8 @@ const BY_ID: ReadonlyArray<
 const USAGE =
   'usage: /dcc [list] · /dcc files · /dcc accept|reject|cancel|download|delete|retry <id> · ' +
   '/dcc clear [<id>] · ' +
-  '/dcc send [-passive] <nick> [<file>] · ' +
-  '/dcc chat [-passive] <nick> · ' +
+  '/dcc send [-passive] [-secure] <nick> [<file>] · ' +
+  '/dcc chat [-passive] [-secure] <nick> · ' +
   '/dcc close chat <nick>';
 
 // A nick is any non-whitespace token; the server does the real validation. A
@@ -119,15 +121,19 @@ export function parseDccCommand(argLine: string): DccCommand {
   // irssi's shape leaves nothing ambiguous to guess about.
   //
   // `-passive` is opt-in rather than a fallback: WeeChat and HexDroid mishandle
-  // a passive offer into a silent dial to port 0.
+  // a passive offer into a silent dial to port 0. `-secure` is KVIrc's `/dcc
+  // chat -s`, an SCHAT over TLS (#1157), spelled out like `-passive`.
   if (verb === 'chat') {
-    const flags = parts.slice(1).filter((p) => p.startsWith('-'));
+    const flags = parts
+      .slice(1)
+      .filter((p) => p.startsWith('-'))
+      .map((f) => f.toLowerCase());
     const rest = parts.slice(1).filter((p) => !p.startsWith('-'));
-    const unknown = flags.find((f) => f.toLowerCase() !== '-passive');
+    const unknown = flags.find((f) => f !== '-passive' && f !== '-secure');
     if (unknown) {
       return {
         kind: 'error',
-        message: `unknown option "${unknown}". usage: /dcc chat [-passive] <nick>`,
+        message: `unknown option "${unknown}". usage: /dcc chat [-passive] [-secure] <nick>`,
       };
     }
     // ⚠ `/dcc chat close bob` isn't a command, and read literally it would OFFER
@@ -138,33 +144,39 @@ export function parseDccCommand(argLine: string): DccCommand {
         message:
           rest[0].toLowerCase() === 'close'
             ? 'to end a chat: /dcc close chat <nick>'
-            : 'usage: /dcc chat [-passive] <nick>',
+            : 'usage: /dcc chat [-passive] [-secure] <nick>',
       };
     }
     const nick = parseNick(rest[0]);
-    if (!nick) return { kind: 'error', message: 'usage: /dcc chat [-passive] <nick>' };
-    return { kind: 'chat', nick, passive: flags.length > 0 };
+    if (!nick) return { kind: 'error', message: 'usage: /dcc chat [-passive] [-secure] <nick>' };
+    return {
+      kind: 'chat',
+      nick,
+      passive: flags.includes('-passive'),
+      secure: flags.includes('-secure'),
+    };
   }
   // irssi's `DCC SEND [-passive] <nick> <file>` (dcc-send.c:164), with the
   // file optional: without one, the DCC window opens to pick or upload it. The
   // file is the rest of the line, so a name with spaces needs no quotes.
   if (verb === 'send') {
-    const usage = 'usage: /dcc send [-passive] <nick> [<file>]';
+    const usage = 'usage: /dcc send [-passive] [-secure] <nick> [<file>]';
     let rest = trimmed.slice(parts[0].length).trim();
     let passive = false;
+    let secure = false;
     while (rest.startsWith('-')) {
       const flag = rest.split(/\s+/, 1)[0];
-      if (flag.toLowerCase() !== '-passive') {
-        return { kind: 'error', message: `unknown option "${flag}". ${usage}` };
-      }
-      passive = true;
+      const lower = flag.toLowerCase();
+      if (lower === '-passive') passive = true;
+      else if (lower === '-secure') secure = true;
+      else return { kind: 'error', message: `unknown option "${flag}". ${usage}` };
       rest = rest.slice(flag.length).trim();
     }
     const nickRaw = rest.split(/\s+/, 1)[0];
     const nick = parseNick(nickRaw);
     if (!nick) return { kind: 'error', message: usage };
     const file = rest.slice(nickRaw.length).trim();
-    return { kind: 'send', nick, passive, file: file || null };
+    return { kind: 'send', nick, passive, secure, file: file || null };
   }
   if (verb === 'close') {
     const type = (parts[1] || '').toLowerCase();

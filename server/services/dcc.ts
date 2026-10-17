@@ -13,6 +13,16 @@
 // to resume a file we offered, #1086) and `CHAT`; anything else is reported as
 // `unsupported` so the caller can ignore it cleanly.
 //
+// Secure DCC (#1157): KVIrc's `SSEND` and `SCHAT` are SEND and CHAT with the
+// connection wrapped in TLS, and nothing else changes — RESUME and ACCEPT keep
+// their names, the ACKs ride inside the TLS stream, a passive reply keeps the
+// `S` (DccFileTransfer.cpp:2103-2115, DccChatWindow.cpp:229). There is no spec;
+// KVIrc's `/dcc -s` help (libkvidcc.cpp:1475-1527) and code are the reference,
+// and ZNC's `schat` module speaks the chat half. A `T` means turbo, a SEND
+// with no ACKs, which Lurker doesn't take in either spelling (`TSEND`,
+// `TSSEND`, `STSEND`): KVIrc reads the prefix letters in any order
+// (requests.cpp:487-495).
+//
 // References cloned for parity (see ~/Coding/irc-clients): irssi
 // (src/irc/dcc/dcc-get.c — the SEND param parse + IPv4/IPv6 address handling) and
 // WeeChat (src/plugins/irc/irc-ctcp.c — the quoted-first / single-token-else
@@ -51,6 +61,8 @@ export interface DccSend {
   size: number;
   token: number | null;
   passive: boolean;
+  /** `SSEND`: the transfer runs over TLS (#1157). */
+  secure: boolean;
 }
 
 /** A parsed inbound `DCC ACCEPT` — the sender's reply to a `DCC RESUME` we sent,
@@ -87,6 +99,8 @@ export interface DccChat {
   port: number;
   token: number | null;
   passive: boolean;
+  /** `SCHAT`: the chat runs over TLS (#1157). */
+  secure: boolean;
 }
 
 /** Result of parsing a CTCP DCC body: a `SEND` offer, an `ACCEPT` (resume
@@ -150,10 +164,16 @@ export function parseDcc(args: string): DccParse {
   const sp = body.indexOf(' ');
   const subtype = (sp === -1 ? body : body.slice(0, sp)).toUpperCase();
   const rest = sp === -1 ? '' : body.slice(sp + 1).trim();
-  if (subtype === 'SEND') return parseDccSend(rest);
   if (subtype === 'ACCEPT') return parseDccResumeLike('accept', rest);
   if (subtype === 'RESUME') return parseDccResumeLike('resume', rest);
-  if (subtype === 'CHAT') return parseDccChat(rest);
+  // `SEND` and `CHAT`, with KVIrc's prefix letters: `S` for TLS, `T` for turbo
+  // (see the module header). A turbo transfer has no ACKs, so it is left
+  // unsupported in every spelling rather than received as if it had them.
+  const m = /^([ST]{0,2})(SEND|CHAT)$/.exec(subtype);
+  if (m && !m[1].includes('T')) {
+    const secure = m[1].includes('S');
+    return m[2] === 'SEND' ? parseDccSend(rest, secure) : parseDccChat(rest, secure);
+  }
   return { kind: 'unsupported', subtype };
 }
 
@@ -166,7 +186,7 @@ export function parseDcc(args: string): DccParse {
 // ⚠ Trailing junk past the token is IGNORED rather than rejected — irssi accepts
 // a 5th+ field (dcc-chat.c:627 only tests `paramcount < 3`), so refusing one
 // would drop offers that a real client considers well-formed.
-function parseDccChat(rest: string): DccParse {
+function parseDccChat(rest: string, secure: boolean): DccParse {
   if (rest === '') return { kind: 'invalid', reason: 'missing DCC CHAT parameters' };
   const fields = rest.split(/\s+/).filter(Boolean);
   if (fields.length < 3) {
@@ -189,7 +209,7 @@ function parseDccChat(rest: string): DccParse {
   if (port === 0 && token === null) {
     return { kind: 'invalid', reason: 'passive DCC CHAT offer carries no token' };
   }
-  return { kind: 'chat', protocol, host, port, token, passive: port === 0 };
+  return { kind: 'chat', protocol, host, port, token, passive: port === 0, secure };
 }
 
 // `DCC ACCEPT <filename> <port> <position> [token]` — the sender's go-ahead for a
@@ -265,7 +285,7 @@ function parseNamed(
   return first ?? { kind: 'invalid', reason: `expected ${min}-${max} fields after the filename` };
 }
 
-function parseDccSend(rest: string): DccParse {
+function parseDccSend(rest: string, secure: boolean): DccParse {
   if (rest === '') return { kind: 'invalid', reason: 'missing DCC SEND parameters' };
   return parseNamed(rest, 3, 4, (filename, fields, fromRight) => {
     const [hostStr, portStr, sizeStr, tokenStr] = fields;
@@ -290,7 +310,7 @@ function parseDccSend(rest: string): DccParse {
     if (port === 0 && token === null) {
       return { kind: 'invalid', reason: 'passive DCC SEND offer carries no token' };
     }
-    return { kind: 'send', filename, host, port, size, token, passive: port === 0 };
+    return { kind: 'send', filename, host, port, size, token, passive: port === 0, secure };
   });
 }
 
@@ -346,25 +366,38 @@ export function dccWireFilename(name: string): string {
   return sanitizeDccFilename(name).replace(/"/g, "'").replace(/\s/g, '_');
 }
 
+/** The verb a SEND or CHAT body opens with: KVIrc's `S` in front for a
+ *  transfer over TLS (#1157). */
+function dccVerb(verb: 'SEND' | 'CHAT', secure: boolean): string {
+  return secure ? `S${verb}` : verb;
+}
+
 /** The body of an active `DCC SEND` offer — `SEND <file> <addr> <port> <size>`.
- *  `file` is already in its wire form (dccWireFilename). */
+ *  `file` is already in its wire form (dccWireFilename). `secure` makes it an
+ *  `SSEND`. */
 export function buildDccSend(
   file: string,
   host: string,
   port: number,
   size: number,
+  secure = false,
 ): string | null {
   const addr = encodeDccAddress(host);
   if (addr === null) return null;
-  return `SEND ${file} ${addr} ${port} ${size}`;
+  return `${dccVerb('SEND', secure)} ${file} ${addr} ${port} ${size}`;
 }
 
 /** The body of a passive `DCC SEND` offer — `SEND <file> <addr> 0 <size> <token>`:
  *  the receiver listens and replies with a SEND carrying its address, its port
  *  and our token. The address is a placeholder the receiver ignores, the same
  *  1.1.1.1 irssi sends (dcc-send.c:455-457). */
-export function buildDccSendPassive(file: string, size: number, token: number): string {
-  return `SEND ${file} ${encodeDccAddress(PASSIVE_DCC_FAKE_HOST)} 0 ${size} ${token}`;
+export function buildDccSendPassive(
+  file: string,
+  size: number,
+  token: number,
+  secure = false,
+): string {
+  return `${dccVerb('SEND', secure)} ${file} ${encodeDccAddress(PASSIVE_DCC_FAKE_HOST)} 0 ${size} ${token}`;
 }
 
 /** A peer's filename sent back to them as they wrote it, quoted when it has a
@@ -378,17 +411,19 @@ function echoDccFilename(name: string): string {
 /** Our answer to a peer's passive `DCC SEND` (#1145): where to connect, with
  *  their name, size and token as they sent them. A wrong token makes irssi
  *  drop its send (dcc-get.c:505-511), HexDroid wants the same size, and
- *  HexChat refuses a size of 0. */
+ *  HexChat refuses a size of 0. An `SSEND` is answered with `SSEND`, which is
+ *  what KVIrc sends back and reads (DccFileTransfer.cpp:2103-2115). */
 export function buildDccSendReply(
   file: string,
   host: string,
   port: number,
   size: number,
   token: number,
+  secure = false,
 ): string | null {
   const addr = encodeDccAddress(host);
   if (addr === null) return null;
-  return `SEND ${echoDccFilename(file)} ${addr} ${port} ${size} ${token}`;
+  return `${dccVerb('SEND', secure)} ${echoDccFilename(file)} ${addr} ${port} ${size} ${token}`;
 }
 
 /** The body of a `DCC RESUME` for a peer's offer: its name, its port (0 for a
@@ -432,27 +467,38 @@ export function parseDccRejectSend(body: string): string | null {
   return file.startsWith('"') && file.endsWith('"') && file.length > 1 ? file.slice(1, -1) : file;
 }
 
-/** Build the body of an active `DCC CHAT` offer — `CHAT chat <addr> <port>`. */
-export function buildDccChat(host: string, port: number): string | null {
+/** Build the body of an active `DCC CHAT` offer — `CHAT chat <addr> <port>`;
+ *  `secure` makes it `SCHAT chat …` (#1157). The second token stays `chat`
+ *  either way: KVIrc's own SCHAT offer reads `DCC SCHAT chat <ip> <port>`
+ *  (libkvidcc.cpp:1475). */
+export function buildDccChat(host: string, port: number, secure = false): string | null {
   const addr = encodeDccAddress(host);
   if (addr === null) return null;
-  return `CHAT chat ${addr} ${port}`;
+  return `${dccVerb('CHAT', secure)} chat ${addr} ${port}`;
 }
 
 /** Build the body of a passive/reverse `DCC CHAT` offer —
  *  `CHAT chat <addr> 0 <token>` (the peer listens and replies). */
-export function buildDccChatPassive(host: string, token: number): string | null {
+export function buildDccChatPassive(host: string, token: number, secure = false): string | null {
   const addr = encodeDccAddress(host);
   if (addr === null) return null;
-  return `CHAT chat ${addr} 0 ${token}`;
+  return `${dccVerb('CHAT', secure)} chat ${addr} 0 ${token}`;
 }
 
 /** Reverse reply to a peer's PASSIVE `DCC CHAT`: our listening address/port +
- *  their token — `CHAT chat <addr> <port> <token>`. */
-export function buildDccChatReverse(host: string, port: number, token: number): string | null {
+ *  their token — `CHAT chat <addr> <port> <token>`. An `SCHAT` is answered
+ *  with `SCHAT`: KVIrc takes whether the chat is TLS from the reply's verb
+ *  (requests.cpp:356-358), so a plain `CHAT` back would have it dial our TLS
+ *  listener in the clear. */
+export function buildDccChatReverse(
+  host: string,
+  port: number,
+  token: number,
+  secure = false,
+): string | null {
   const addr = encodeDccAddress(host);
   if (addr === null) return null;
-  return `CHAT chat ${addr} ${port} ${token}`;
+  return `${dccVerb('CHAT', secure)} chat ${addr} ${port} ${token}`;
 }
 
 /**
@@ -514,7 +560,8 @@ export function formatBytes(n: number): string {
  *  `[EWG]MArchive offered "scene.mkv" (5.0 GB) via DCC SEND`. */
 export function formatDccOfferLine(nick: string, offer: DccSend): string {
   const mode = offer.passive ? ' (passive)' : '';
-  return `${nick} offered "${offer.filename}" (${formatBytes(offer.size)}) via DCC SEND${mode}`;
+  const verb = offer.secure ? 'DCC SSEND (secure)' : 'DCC SEND';
+  return `${nick} offered "${offer.filename}" (${formatBytes(offer.size)}) via ${verb}${mode}`;
 }
 
 /**

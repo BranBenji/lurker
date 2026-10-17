@@ -454,6 +454,8 @@ function migrate() {
       state TEXT NOT NULL,
       passive INTEGER NOT NULL DEFAULT 0,
       token INTEGER,
+      -- Secure DCC (#1157): the transfer runs over TLS (SSEND).
+      secure INTEGER NOT NULL DEFAULT 0,
       peer_host TEXT,
       peer_port INTEGER,
       trigger_text TEXT,
@@ -1633,7 +1635,7 @@ ensureColumn('push_subscriptions', 'transport', "TEXT NOT NULL DEFAULT 'webpush'
 // Schema versioning lets us retire one-shot recovery blocks once every
 // production DB has run through them. Bump SCHEMA_VERSION when adding a new
 // recovery block, and delete blocks for versions far enough in the past.
-const SCHEMA_VERSION = 26;
+const SCHEMA_VERSION = 27;
 const schemaVersionRow = db
   .prepare(`SELECT value FROM app_meta WHERE key = 'schema_version'`)
   .get() as { value: string } | undefined;
@@ -2956,6 +2958,12 @@ if (schemaVersion < 26) {
     )
     .run().changes;
   if (filled > 0) console.log(`[db] ${filled} kept DCC file(s) now say how they verified (#1082)`);
+}
+// #1157: secure DCC. A transfer remembers whether it runs over TLS (an SSEND),
+// so an accept or resume after a restart wraps its socket the way the offer
+// asked. Defaulted, so no row needs rewriting: everything before was plain.
+if (schemaVersion < 27) {
+  ensureColumn('dcc_transfers', 'secure', 'INTEGER NOT NULL DEFAULT 0');
 }
 // The queue's lookups by bot and pack (a failed pack's later tries, a bot's
 // packs waiting or out). Partial: most rows aren't a queue's. After the block

@@ -37,6 +37,7 @@ import { setDccStorageLimit } from '../db/dccStorageLimits.js';
 import { forgetDccFile } from '../db/dccFiles.js';
 import { IrcConnection } from './ircConnection.js';
 import { stubCtcpRequest } from '../test-utils/ctcpStub.js';
+import { startTlsPeer } from '../test-utils/dccTlsPeer.js';
 
 // Transfer rows reach the user's clients as `dcc-transfer` frames (#1084).
 const userFrame = vi.fn<(frame: Record<string, unknown>) => void>();
@@ -302,6 +303,34 @@ describe('arm-on-trigger + auto-accept', () => {
     enableDcc();
     conn.say('#chan', 'xdcc send #1');
     expect(listDccTransfers(1)).toHaveLength(0);
+  });
+
+  // Secure DCC (#1157): an SSEND from a KVIrc with no certificate, so the
+  // dial has to manage anonymous DH; the row remembers it was secure.
+  it('takes an SSEND over TLS from a cert-less KVIrc', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-dcc-tls-'));
+    process.env.LURKER_DCC_DIR = tmpDir;
+    process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1';
+    enableDcc();
+    const payload = makePayload(40_000);
+    const sender = await startTlsPeer({ anonymous: true });
+    activeSender = sender;
+    void sender.socket.then((s) => s.write(payload, () => s.end()));
+
+    const { conn } = harness();
+    conn.client.say = vi.fn<(target: string, text: string) => void>();
+    conn.say('[EWG]MArchive', 'xdcc send #1');
+    conn.client.emit('ctcp request', {
+      nick: '[EWG]MArchive',
+      type: 'DCC',
+      message: `DCC SSEND payload.bin 2130706433 ${sender.port} ${payload.length}`,
+    });
+
+    await waitFor(() => listDccTransfers(1)[0]?.state === 'completed', 5000);
+    const row = listDccTransfers(1)[0];
+    expect(row.secure).toBe(1);
+    expect(fs.readFileSync(row.destination_path as string).equals(payload)).toBe(true);
+    expect((await sender.socket).getProtocol()).toBe('TLSv1.2');
   });
 
   it('auto-accepts a matching offer and streams the file to disk', async () => {

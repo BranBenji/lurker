@@ -15,8 +15,10 @@
 // the transfer/session row; this just produces a socket or a clean failure.
 
 import net from 'net';
+import type tls from 'tls';
 
 import { dccListenBindHost, dccListenPortRange } from './dccConfig.js';
+import { dccSecureContext, secureAcceptedDccSocket } from './dccTls.js';
 
 // Ports currently bound by a live listener. A port is reserved the instant its
 // server starts listening and released when the listener closes, so two
@@ -49,11 +51,35 @@ export function resetDccListeners(): void {
   inUse.clear();
 }
 
+/** `accepted` rejected because the owner called `close()`: nothing to report,
+ *  whoever closed it said why. Every other rejection is the peer's or the
+ *  port's — a timeout (DccListenerTimeoutError), a bind failure, or for a
+ *  secure listener a handshake the peer failed (#1157) — and the owner has to
+ *  say so, because the one-shot listener is gone and the peer can't retry. */
+export class DccListenerClosedError extends Error {
+  constructor() {
+    super('DCC listener closed');
+    this.name = 'DccListenerClosedError';
+  }
+}
+
+/** `accepted` rejected because no peer connected within the armed window. */
+export class DccListenerTimeoutError extends Error {
+  constructor() {
+    super('DCC offer timed out — peer never connected');
+    this.name = 'DccListenerTimeoutError';
+  }
+}
+
 export interface DccListenHandle {
   /** The bound port — advertise this to the peer. */
   port: number;
   /** Resolves with the first inbound socket (server closed to further conns at
-   *  that point), or rejects on timeout / bind failure / close(). */
+   *  that point). Rejects with DccListenerClosedError on close(), with
+   *  DccListenerTimeoutError when no peer came, or with the bind error. For a
+   *  `secure` listener, the socket is a TLSSocket with its handshake done, and
+   *  a peer whose handshake fails or stalls rejects it with the reason
+   *  (#1157): the peer connected, so that one is worth telling the user. */
   accepted: Promise<net.Socket>;
   /** Tear down: stop listening, release the port, and reject `accepted` if still
    *  pending. Idempotent — safe to call after the socket was already handed off. */
@@ -73,6 +99,10 @@ export interface DccListenOptions {
    *  reply). A mismatch is dropped and we keep waiting — hardening against a
    *  third party racing to grab an advertised port. Null disables the check. */
   expectPeerHost?: string | null;
+  /** Secure DCC (#1157): the accepted connection is the TLS server side,
+   *  presenting the instance's self-signed certificate; `accepted` resolves
+   *  once the handshake is done. */
+  secure?: boolean;
 }
 
 // Collapse IPv4-mapped IPv6 (::ffff:1.2.3.4) so a dual-stack listener's reported
@@ -89,6 +119,16 @@ function normalizeAddr(addr: string | undefined): string {
  * The returned handle's `port` is ready to advertise the moment this resolves.
  */
 export function openDccListener(opts: DccListenOptions = {}): Promise<DccListenHandle> {
+  // The certificate is in hand BEFORE the port binds, so the TLS wrap happens
+  // in the accept itself and no byte the peer sends is read in the clear.
+  if (opts.secure) return dccSecureContext().then((ctx) => bindDccListener(opts, ctx));
+  return bindDccListener(opts, null);
+}
+
+function bindDccListener(
+  opts: DccListenOptions,
+  secureContext: tls.SecureContext | null,
+): Promise<DccListenHandle> {
   const range = dccListenPortRange();
   if (!range) {
     return Promise.reject(new Error('DCC active listening is not configured'));
@@ -155,7 +195,7 @@ export function openDccListener(opts: DccListenOptions = {}): Promise<DccListenH
         timer = setTimeout(() => {
           if (settled) return;
           settled = true;
-          acceptReject(new Error('DCC offer timed out — peer never connected'));
+          acceptReject(new DccListenerTimeoutError());
           release();
           try {
             server.close();
@@ -166,13 +206,26 @@ export function openDccListener(opts: DccListenOptions = {}): Promise<DccListenH
         timer.unref?.();
       };
 
+      // The accepted socket while its TLS handshake runs (#1157). ⚠ `settled`
+      // is set at the TCP accept, so without this a close() during the
+      // handshake (a cancel, a teardown) left the handshake running and
+      // `accepted` resolving seconds later for an owner that had let go, which
+      // opened the chat the user had just cancelled.
+      let handshaking: net.Socket | null = null;
+      let closedByOwner = false;
+
       const handle: DccListenHandle = {
         port,
         accepted,
         close: () => {
           if (!settled) {
             settled = true;
-            acceptReject(new Error('DCC listener closed'));
+            acceptReject(new DccListenerClosedError());
+          }
+          if (handshaking) {
+            closedByOwner = true;
+            handshaking.destroy();
+            handshaking = null;
           }
           release();
           try {
@@ -223,6 +276,20 @@ export function openDccListener(opts: DccListenOptions = {}): Promise<DccListenH
           server.close();
         } catch {
           /* ignore */
+        }
+        if (secureContext) {
+          handshaking = sock;
+          secureAcceptedDccSocket(sock, secureContext).then(
+            (secured) => {
+              handshaking = null;
+              acceptResolve(secured);
+            },
+            (err: Error) => {
+              handshaking = null;
+              acceptReject(closedByOwner ? new DccListenerClosedError() : err);
+            },
+          );
+          return;
         }
         acceptResolve(sock);
       });

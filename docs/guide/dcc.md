@@ -128,23 +128,43 @@ server. It opens in a buffer named `=nick`.
   `/dcc chat <nick>` accepts it, for up to 10 minutes.
 - `/dcc close chat <nick>` ends it.
 
+## Secure DCC
+
+A DCC connection is plain TCP, so anyone on the path can read it. KVIrc's
+secure DCC puts the same chat or file transfer inside TLS, and Lurker speaks
+it: `/dcc chat -secure <nick>` and `/dcc send -secure <nick> [<file>]` offer
+one, and an offer that arrives this way is taken this way. The toast, the
+status line and the row in the DCC window say "secure". Everything else is the
+same, including `-passive`.
+
+Two things to know:
+
+- **Only KVIrc does both.** ZNC's `schat` module does secure chat. Other
+  clients either show the offer as something they don't understand or ignore
+  it. Two Lurker servers can talk to each other securely.
+- **It stops eavesdropping, not impersonation.** Neither side checks who the
+  other is; KVIrc has no certificate at all by default. Lurker's side uses the
+  same self-signed certificate as its bouncer. Someone who can intercept the
+  connection itself could still sit in the middle. For that, the IRC network's
+  own TLS and services are no help either: DCC never goes through the server.
+
 ## /dcc commands
 
 The `<id>` below is a transfer's, as `/dcc list` shows it.
 
-| Command                                | What it does                                        |
-| -------------------------------------- | --------------------------------------------------- |
-| `/dcc` or `/dcc list`                  | Open the DCC window and list transfers, with ids    |
-| `/dcc files`                           | List your kept files, with ids for `/dcc send`      |
-| `/dcc accept <id>`, `/dcc reject <id>` | Answer an offer                                     |
-| `/dcc cancel <id>`                     | Stop a transfer                                     |
-| `/dcc retry <id>`                      | Ask a bot for a failed pack again                   |
-| `/dcc download <id>`                   | Download a received file                            |
-| `/dcc delete <id>`                     | Delete a transfer's file from the server            |
-| `/dcc clear [<id>]`                    | Clear finished transfers from the list (files stay) |
-| `/dcc send [-passive] <nick> [<file>]` | Send a file                                         |
-| `/dcc chat [-passive] <nick>`          | Offer a chat                                        |
-| `/dcc close chat <nick>`               | End a chat                                          |
+| Command                                          | What it does                                        |
+| ------------------------------------------------ | --------------------------------------------------- |
+| `/dcc` or `/dcc list`                            | Open the DCC window and list transfers, with ids    |
+| `/dcc files`                                     | List your kept files, with ids for `/dcc send`      |
+| `/dcc accept <id>`, `/dcc reject <id>`           | Answer an offer                                     |
+| `/dcc cancel <id>`                               | Stop a transfer                                     |
+| `/dcc retry <id>`                                | Ask a bot for a failed pack again                   |
+| `/dcc download <id>`                             | Download a received file                            |
+| `/dcc delete <id>`                               | Delete a transfer's file from the server            |
+| `/dcc clear [<id>]`                              | Clear finished transfers from the list (files stay) |
+| `/dcc send [-passive] [-secure] <nick> [<file>]` | Send a file; `-secure` over TLS                     |
+| `/dcc chat [-passive] [-secure] <nick>`          | Offer a chat; `-secure` over TLS                    |
+| `/dcc close chat <nick>`                         | End a chat                                          |
 
 ## Things to know
 

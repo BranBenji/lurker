@@ -850,7 +850,7 @@ class IrcManager extends EventEmitter {
     networkId: number,
     nick: string,
     file: { id: number; path: string; name: string; size: number },
-    opts: { passive?: boolean } = {},
+    opts: { passive?: boolean; secure?: boolean } = {},
   ): { transferId: number } | { status: number; error: string } {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return { status: 409, error: 'network not connected' };
@@ -864,7 +864,7 @@ class IrcManager extends EventEmitter {
     userId: number,
     networkId: number,
     nick: string,
-    opts: { passive?: boolean } = {},
+    opts: { passive?: boolean; secure?: boolean } = {},
   ): boolean {
     const conn = this.getConnection(userId, networkId);
     if (!conn) return false;

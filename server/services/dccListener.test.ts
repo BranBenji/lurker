@@ -6,7 +6,15 @@
 import '../test-utils/isolateDb.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import net from 'net';
-import { openDccListener, activeDccListenerCount, resetDccListeners } from './dccListener.js';
+import tls from 'tls';
+import {
+  DccListenerClosedError,
+  DccListenerTimeoutError,
+  openDccListener,
+  activeDccListenerCount,
+  resetDccListeners,
+} from './dccListener.js';
+import { tlsDial } from '../test-utils/dccTlsPeer.js';
 
 // ⚠⚠ Below 32768, deliberately. A fixed test port must sit OUTSIDE the OS
 // ephemeral range, which the kernel hands out as the LOCAL port of every
@@ -72,6 +80,7 @@ describe('openDccListener', () => {
   it('rejects accepted on timeout and releases the port', async () => {
     const handle = await openDccListener({ timeoutMs: 120 });
     await expect(handle.accepted).rejects.toThrow(/timed out/);
+    await expect(handle.accepted).rejects.toBeInstanceOf(DccListenerTimeoutError);
     expect(activeDccListenerCount()).toBe(0);
   });
 
@@ -170,6 +179,46 @@ describe('openDccListener', () => {
     const client = await connect(handle.port);
     await expect(handle.accepted).rejects.toThrow(/timed out/);
     client.destroy();
+  });
+
+  // Secure DCC (#1157): the listener is the TLS server, and `accepted` is the
+  // socket once the peer's handshake is done, so the engines never see a byte
+  // of it in the clear.
+  it('secure: resolves accepted with a TLS socket once the handshake is done', async () => {
+    const handle = await openDccListener({ timeoutMs: 2000, secure: true });
+    const client = await tlsDial(handle.port);
+    const server = await handle.accepted;
+    expect(server).toBeInstanceOf(tls.TLSSocket);
+    const got = new Promise<string>((res) => server.once('data', (d) => res(d.toString())));
+    client.write('ping');
+    expect(await got).toBe('ping');
+    server.destroy();
+    client.destroy();
+    expect(activeDccListenerCount()).toBe(0);
+  });
+
+  // ⚠ `settled` is set at the TCP accept, so a close() during the handshake
+  // must still reach the owner as a close — and stop the handshake — or the
+  // chat the user just cancelled opens seconds later.
+  it('secure: close() during the handshake rejects accepted as closed, and drops the peer', async () => {
+    const handle = await openDccListener({ timeoutMs: 2000, secure: true });
+    const client = await connect(handle.port); // connected, no ClientHello yet
+    const dropped = new Promise<void>((r) => client.once('close', () => r()));
+    await new Promise((r) => setTimeout(r, 30));
+    handle.close();
+    await expect(handle.accepted).rejects.toBeInstanceOf(DccListenerClosedError);
+    await dropped;
+    expect(activeDccListenerCount()).toBe(0);
+  });
+
+  it('secure: a peer that fails the handshake rejects accepted', async () => {
+    const handle = await openDccListener({ timeoutMs: 2000, secure: true });
+    const client = await connect(handle.port);
+    client.write('plain text, no ClientHello\r\n');
+    client.on('error', () => {});
+    await expect(handle.accepted).rejects.toThrow(/TLS handshake failed/);
+    client.destroy();
+    expect(activeDccListenerCount()).toBe(0);
   });
 
   it('accepts a connection matching expectPeerHost', async () => {

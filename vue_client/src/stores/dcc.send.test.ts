@@ -87,7 +87,7 @@ describe('sending from the Files tab', () => {
     await dcc.sendPicked(3);
     expect(h.api).toHaveBeenCalledWith('/api/dcc/send', {
       method: 'POST',
-      body: { networkId: 1, nick: 'bob', fileId: 3, passive: true },
+      body: { networkId: 1, nick: 'bob', fileId: 3, passive: true, secure: false },
     });
     expect(dcc.pick).toBeNull();
     // The send shows in the same DCC window, under in progress.

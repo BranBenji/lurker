@@ -453,7 +453,8 @@ function applyEvent(event: any): boolean {
         key,
         toasts.push({
           kind: 'notify',
-          title: `DCC chat from ${from}`,
+          // A secure (TLS) chat says so: it is what the peer asked for (#1157).
+          title: `${event.secure ? 'Secure DCC chat' : 'DCC chat'} from ${from}`,
           body: event.passive
             ? `${from} wants to chat directly (they're firewalled, so this server listens)`
             : `${from} wants to chat directly`,
@@ -467,8 +468,12 @@ function applyEvent(event: any): boolean {
               tone: 'good',
               onClick: () => {
                 dccOfferToasts.delete(key);
+                // ⚠ Accepting what the toast SHOWED. A peer can replace a
+                // pending SCHAT with a plain CHAT before the new event reaches
+                // this tab; asking for `secure` makes the server refuse rather
+                // than open in the clear the chat this toast called secure.
                 void useDccStore()
-                  .openChat(networkId, from)
+                  .openChat(networkId, from, false, !!event.secure)
                   .then(() => buffers.activate(networkId, `=${from}`))
                   .catch(() => {});
               },

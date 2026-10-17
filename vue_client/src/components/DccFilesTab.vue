@@ -421,6 +421,8 @@ function offerLine(t: DccTransfer): string {
     `from ${t.peer_nick}`,
     networkName(t.network_id),
     t.advertised_size > 0 ? formatBytes(t.advertised_size) : '',
+    // An SSEND (#1157): the peer asked for TLS, so the row says so.
+    t.secure ? 'secure' : '',
     formatRelative(t.created_at),
   ]);
 }
@@ -442,12 +444,16 @@ function rowLine(t: DccTransfer): string {
     case 'verifying':
       return 'checking the checksum';
     case 'offered':
-      return `offered to ${t.peer_nick}, waiting for them to accept`;
+      return joinMeta([
+        `offered to ${t.peer_nick}, waiting for them to accept`,
+        t.secure ? 'secure' : '',
+      ]);
     case 'receiving':
     case 'sending':
       return joinMeta([
         t.pack != null ? `#${t.pack}` : '',
         t.direction === 'send' ? `to ${t.peer_nick}` : '',
+        t.secure ? 'secure' : '',
         t.attempt === 2 ? 'second try' : '',
       ]);
     case 'stalled':

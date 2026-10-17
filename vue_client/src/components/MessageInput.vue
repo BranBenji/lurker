@@ -2652,14 +2652,15 @@ const COMMANDS_LINES = [
   '      e.g. /xdcc addl Ginpachi-Sensei 29 32   ·   /xdcc rmp Ginpachi-Sensei 31',
   '  /dcc send <nick> [<file>] — send one of your files; with no file, pick or upload one',
   '      the file is its name or its id from /dcc files; -passive asks them to listen',
-  "      (it's passive anyway when this server can't listen)",
-  '      e.g. /dcc send bob   ·   /dcc send bob holiday.mkv   ·   /dcc send -passive bob 12',
+  "      (it's passive anyway when this server can't listen); -secure sends over TLS (SSEND)",
+  '      e.g. /dcc send bob   ·   /dcc send bob holiday.mkv   ·   /dcc send -secure bob 12',
   '  /dcc retry <id>        — ask again for a queued pack that failed, next in its queue',
   '  /dcc clear [<id>]      — take finished transfers off the list; your files stay',
   '      one holding a partial download needs /dcc delete <id> first',
   '  /dcc chat <nick>       — open a direct peer-to-peer chat, in a =nick buffer',
   '      also accepts an offer someone made you; /dcc close chat <nick> ends or declines',
-  '      e.g. /dcc chat bob   ·   /dcc chat -passive bob   ·   /dcc close chat bob',
+  '      -passive asks them to listen; -secure chats over TLS (SCHAT, as KVIrc does)',
+  '      e.g. /dcc chat bob   ·   /dcc chat -secure bob   ·   /dcc close chat bob',
   '  /set <key> <value…>    — change a setting; /set (or /set ?) lists all keys',
   '  /get <key>             — read a setting back (output in the system buffer)',
   '  /theme [list]          — theme presets: apply/save/delete <name>, mode [single|system]',
@@ -2997,9 +2998,9 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
     }
     // Without -passive, the server still makes it passive when it can't listen
     // (#1154).
-    const passive = cmd.passive;
+    const { passive, secure } = cmd;
     if (cmd.file === null) {
-      dcc.openToSend({ networkId, nick: cmd.nick, passive });
+      dcc.openToSend({ networkId, nick: cmd.nick, passive, secure });
       localInfo(networkId, target, `/dcc send: pick a file to send to ${cmd.nick}, or upload one`);
       return;
     }
@@ -3009,7 +3010,7 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
         localInfo(networkId, target, `/dcc send: no file "${cmd.file}" — see /dcc files`);
         return;
       }
-      await dcc.sendFile(networkId, cmd.nick, f.id, passive);
+      await dcc.sendFile(networkId, cmd.nick, f.id, passive, secure);
       localInfo(networkId, target, `/dcc send: offered "${f.name}" to ${cmd.nick}`);
     } catch (e: any) {
       localInfo(networkId, target, `/dcc send: ${e?.message || 'failed'}`);
@@ -3030,7 +3031,7 @@ async function runDcc(argLine: string, networkId: number | null, target: string)
     }
     if (cmd.kind === 'chat') {
       try {
-        await dcc.openChat(networkId, cmd.nick, cmd.passive);
+        await dcc.openChat(networkId, cmd.nick, cmd.passive, cmd.secure);
         // The `=nick` buffer materializes from the server's first notice, so
         // activate by target — it may not exist locally for another tick.
         buffers.activate(networkId, `=${cmd.nick}`);
