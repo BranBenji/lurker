@@ -352,12 +352,6 @@ export class E2eManager {
     }
   }
 
-  /** Auto-initiate a handshake with `peerHandle` after we received ciphertext we
-   *  couldn't read (a missing key), mirroring repartee's auto-KEYREQ on
-   *  DecryptOutcome::MissingKey (events.rs). Returns the KEYREQ body to NOTICE to
-   *  the sender, or null when the OUTGOING rate limiter says wait, when the peer
-   *  is revoked (don't chase someone we cut off), or on a crypto/identity error.
-   *  Rate-limiting here is what stops a multi-chunk message from firing N KEYREQs. */
   /** Whether autoHandshakeBody would make a KEYREQ for `peerHandle` now, so
    *  the send can be queued and the body built when it goes (#1149): the
    *  outgoing limiter is then charged, and the pending secret created, at
@@ -373,6 +367,12 @@ export class E2eManager {
     }
   }
 
+  /** Auto-initiate a handshake with `peerHandle` after we received ciphertext we
+   *  couldn't read (a missing key), mirroring repartee's auto-KEYREQ on
+   *  DecryptOutcome::MissingKey (events.rs). Returns the KEYREQ body to NOTICE to
+   *  the sender, or null when the OUTGOING rate limiter says wait, when the peer
+   *  is revoked (don't chase someone we cut off), or on a crypto/identity error.
+   *  Rate-limiting here is what stops a multi-chunk message from firing N KEYREQs. */
   autoHandshakeBody(
     userId: number,
     networkId: number,

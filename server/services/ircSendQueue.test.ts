@@ -339,6 +339,35 @@ describe('every timer starts at send', () => {
     }
   });
 
+  it('a restore step gives its slot back after the cap, its requests still going later', () => {
+    process.env.LURKER_RESTORE_STEP_SLOT_CAP_MS = '100';
+    process.env.LURKER_RESTORE_QUIET_MS = '10000';
+    try {
+      const { conn, lines } = backlog({ join: ['#a', '#b'] });
+      const priv = conn as unknown as {
+        onEnginePhase(phase: string, info: Record<string, unknown>): void;
+        restoreStep: { key: string } | null;
+        restoreQuiet: Map<string, { until: number }>;
+      };
+      priv.onEnginePhase('restored', {});
+      expect(priv.restoreStep?.key).toBe('#a');
+      // #a's requests wait behind the budget; the cap moves the walk on.
+      vi.advanceTimersByTime(100);
+      expect(lines).not.toContain('NAMES #a');
+      expect(priv.restoreStep?.key).toBe('#b');
+      // They still go, and their replies are the restore's: the quiet window
+      // moves with the last of them.
+      while (lines.at(-1) !== 'MODE #a') vi.advanceTimersByTime(2000);
+      // Refreshed at that send (the window set when the restore began, 10 s
+      // from then, is long past).
+      expect(priv.restoreQuiet.get('#a')?.until).toBeGreaterThan(Date.now() + 9_000);
+      conn.dispose();
+    } finally {
+      delete process.env.LURKER_RESTORE_STEP_SLOT_CAP_MS;
+      delete process.env.LURKER_RESTORE_QUIET_MS;
+    }
+  });
+
   it('a send is attributed a rejection only once it has gone', () => {
     const { conn, lines, published } = backlog();
     conn.say('bob', 'hi');
@@ -417,6 +446,22 @@ describe('what the user sees', () => {
         text: 'not sent (connection dropped): PRIVMSG carol :typed raw',
       }),
     ]);
+    conn.dispose();
+  });
+
+  it('reports what was still waiting when the app lets go of an engine-held socket', () => {
+    // An engine-mode shutdown detaches; the socket lives on in the engine but
+    // the queue dies with this process, so its lines are reported, not lost.
+    const { conn, published } = backlog();
+    conn.say('#c', 'held');
+    conn.detach();
+    expect(published).toContainEqual(
+      expect.objectContaining({
+        type: 'error',
+        target: '#c',
+        text: 'not sent (connection dropped): held',
+      }),
+    );
     conn.dispose();
   });
 
@@ -517,6 +562,59 @@ describe('lanes', () => {
     (conn as unknown as { currentNick: string }).currentNick = 'bob';
     vi.advanceTimersByTime(2000);
     expect(lines.at(-1)).toBe('MODE bob');
+    conn.dispose();
+  });
+
+  it('an auto-KEYREQ that never goes says so: no body, or dropped', () => {
+    const { conn } = backlog();
+    type Thunk = (
+      n: string,
+      k: string,
+      c: string,
+      b: () => string | null,
+      to: undefined,
+      nothingSent: () => void,
+    ) => void;
+    const send = (conn as unknown as { sendHandshakeThunk: Thunk }).sendHandshakeThunk.bind(conn);
+    const said: string[] = [];
+    send(
+      'carol',
+      'KEYREQ',
+      '#x',
+      () => null,
+      undefined,
+      () => said.push('no body'),
+    );
+    vi.advanceTimersByTime(2000);
+    expect(said).toEqual(['no body']);
+    // Behind the budget again, so it waits, and goes with the socket.
+    conn.say('#c', 'one');
+    conn.say('#c', 'two');
+    send(
+      'dave',
+      'KEYREQ',
+      '#x',
+      () => 'RPEE2E KEYREQ v=1',
+      undefined,
+      () => said.push('dropped'),
+    );
+    conn.client.emit('close');
+    expect(said).toEqual(['no body', 'dropped']);
+    conn.dispose();
+  });
+
+  it('a NOTICE or a /me never arms an XDCC request; a PRIVMSG does', () => {
+    const { conn } = backlog();
+    const arm = vi
+      .spyOn(conn as unknown as { maybeArmDcc(t: string, x: string): void }, 'maybeArmDcc')
+      .mockImplementation(() => {});
+    conn.notice('bot', 'xdcc send #5');
+    conn.action('bot', 'xdcc send #5');
+    vi.advanceTimersByTime(4000);
+    expect(arm).not.toHaveBeenCalled();
+    conn.say('bot', 'xdcc send #5');
+    vi.advanceTimersByTime(2000);
+    expect(arm).toHaveBeenCalledWith('bot', 'xdcc send #5');
     conn.dispose();
   });
 

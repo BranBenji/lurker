@@ -405,6 +405,27 @@ export class ReplyRouter {
   private dispatch(query: Query): void {
     if (query.asker === null) return;
     if (this.answerFromCache(query)) return;
+    // Lurker's own query of the kind this one would wait for, still in the
+    // queue (the low lane, #1149): it steps aside, so a client's WHO after a
+    // join goes ahead of the away-sync WHO waiting behind a paste, and Lurker's
+    // waits behind the client's instead. Only one still in the queue: one on
+    // the wire is being answered.
+    const aside =
+      query.asker === 'lurker'
+        ? []
+        : this.wire.filter(
+            (other) => !other.sent && other.asker === 'lurker' && this.blocks(other, query),
+          );
+    for (const other of aside) {
+      other.written?.cancel();
+      other.written = null;
+      this.takeOffWire(other);
+    }
+    this.dispatchNow(query);
+    for (const other of aside) this.dispatch(other);
+  }
+
+  private dispatchNow(query: Query): void {
     if (this.mustWait(query)) {
       this.waiting.push(query);
       return;
@@ -446,11 +467,16 @@ export class ReplyRouter {
   // channel, whose reply then answers it from cache.
   private mustWait(query: Query): boolean {
     const ahead = this.settle ? [...this.wire, this.settle.query] : this.wire;
-    if (WAITS.has(query.form)) return ahead.some((other) => other.form === query.form);
+    return ahead.some((other) => this.blocks(other, query));
+  }
+
+  // Whether `query` waits for `other`: its kind, or a client's MODE #chan
+  // behind one asking about that channel.
+  private blocks(other: Query, query: Query): boolean {
+    if (WAITS.has(query.form)) return other.form === query.form;
     if (query.form === 'mode' && isClient(query.asker)) {
-      const channel = this.opts.fold(query.channel);
-      return ahead.some(
-        (other) => other.form === 'mode' && this.opts.fold(other.channel) === channel,
+      return (
+        other.form === 'mode' && this.opts.fold(other.channel) === this.opts.fold(query.channel)
       );
     }
     return false;

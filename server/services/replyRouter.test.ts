@@ -116,6 +116,42 @@ describe('a socket that dies with a query still queued', () => {
   });
 });
 
+describe("Lurker's own query still in the queue", () => {
+  it("steps aside for a client's query of its kind, and waits behind it instead", () => {
+    // The away-sync WHO waits in the low lane behind a paste; a bouncer
+    // client's WHO for the same channel must not wait that out.
+    const held = new Map<string, () => void>();
+    const writes: string[] = [];
+    const router = new ReplyRouter({
+      write: (line, onSent) => {
+        const text = typeof line === 'function' ? line() : line;
+        writes.push(text);
+        held.set(text, () => onSent?.(performance.now()));
+        return { cancel: () => held.delete(text) };
+      },
+      canSend: () => true,
+      fold: (name) => name.toLowerCase(),
+      isJoined: () => true,
+      ownNick: () => 'me',
+      listModes: () => new Set('beIq'.split('')),
+      prefixModes: () => new Set(['o', 'v']),
+    });
+    const client = new Client();
+    router.send('lurker', 'WHO #c');
+    expect(writes).toEqual(['WHO #c']);
+    router.send(client, 'WHO #c');
+    // Lurker's was taken back out of the queue; the client's is in it.
+    expect(writes).toEqual(['WHO #c', 'WHO #c']);
+    expect(held.size).toBe(1);
+    held.get('WHO #c')!();
+    const line = ':irc.test 315 me #c :End of /WHO list.';
+    const msg = ircLineParser(line)!;
+    expect(router.noteServerLine(line, msg.command, msg.params, 'irc.test')).toBe(client);
+    // And now Lurker's goes.
+    expect(writes).toEqual(['WHO #c', 'WHO #c', 'WHO #c']);
+  });
+});
+
 describe('what waits its turn', () => {
   it('holds a second WHO until the first ends', () => {
     const { router, writes, hear } = setup();

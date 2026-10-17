@@ -298,6 +298,12 @@ const RESTORE_QUIET_MS = 10_000;
 // LURKER_RESTORE_STEP_DEADLINE_MS overrides it, read per step, so a test of the
 // fallback does not have to sit through it.
 const RESTORE_STEP_DEADLINE_MS = 10_000;
+// How long a step may hold its restoreGate slot while its requests wait their
+// turn in the queue (#1149). The deadline above counts from the last request
+// going; behind a long paste that is later than now, and the slot, shared by
+// every connection in the process, must come back regardless. Past this the
+// walk moves on; the requests still go, and their replies are the restore's.
+const RESTORE_STEP_SLOT_CAP_MS = 60_000;
 // The terminal reply of each request a restore step makes. Indexed by an
 // arbitrary numeric, so the value is `| undefined` — that is what makes the
 // `if (!reply) return` guard in noteRestoreReply type-honest for the numerics
@@ -2891,14 +2897,20 @@ export class IrcConnection {
             // the pending secret created then, not while it waits its turn.
             const ctx = contextKey(eventTarget as string, handle);
             const channel = eventTarget as string;
+            const peer = eventNick;
             this.sendHandshakeThunk(
               eventNick,
               'KEYREQ',
               ctx,
               () =>
                 e2eManager.autoHandshakeBody(this.network.user_id, this.network.id, ctx, handle),
-              // To the nick the peer has when it goes; a peer who left gets nothing.
+              // To the nick the peer has when it goes, or the one they spoke
+              // as when the member list can't say (right after a restore).
               () => this.nickForHandle(channel, handle),
+              // "Establishing…" was said at once, as before the queue. If no
+              // KEYREQ goes after all (the limiter charged meanwhile, the peer
+              // revoked, dropped with the socket), the manual hint instead.
+              () => this.surfaceE2eDecryptIssue(channel, peer, 'missing-key', false, true),
             );
             handshaking = true;
           }
@@ -6019,15 +6031,23 @@ export class IrcConnection {
       // a backlog that is later than now, and a deadline counted from here
       // would move the walk on with nothing asked. The quiet window moves with
       // it, so the replies still print as the restore's and not as history.
+      // Until then the step holds its slot for at most RESTORE_STEP_SLOT_CAP_MS.
+      const moveOn = () => {
+        this.restoreTimer = null;
+        if (!this.disposed && this.state === 'connected') this.drainRestoreQueue();
+      };
+      this.restoreTimer = setTimeout(
+        moveOn,
+        Math.max(1, reconnectEnvInt('LURKER_RESTORE_STEP_SLOT_CAP_MS', RESTORE_STEP_SLOT_CAP_MS)),
+      );
       let owed = 3;
       const sent = () => {
-        if (--owed > 0 || this.restoreStep !== step) return;
+        if (--owed > 0) return;
         this.refreshRestoreQuiet(name.toLowerCase(), true);
+        if (this.restoreStep !== step) return;
+        if (this.restoreTimer) clearTimeout(this.restoreTimer);
         this.restoreTimer = setTimeout(
-          () => {
-            this.restoreTimer = null;
-            if (!this.disposed && this.state === 'connected') this.drainRestoreQueue();
-          },
+          moveOn,
           Math.max(1, reconnectEnvInt('LURKER_RESTORE_STEP_DEADLINE_MS', RESTORE_STEP_DEADLINE_MS)),
         );
       };
@@ -6215,6 +6235,12 @@ export class IrcConnection {
   detach(): void {
     this.intentionalDisconnect = true;
     this.clearReconnectTimer();
+    // What waits in the queue dies with this process, not with the socket the
+    // engine keeps: told now (a "not sent" row, a DCC offer's cleanup), since
+    // the 'close' this detach brings keeps the queue for a re-attach that
+    // never comes (#1149). Not flushed: the engine would write it all at
+    // once, which is the flood the queue exists to prevent.
+    this.sendPacer.drop();
     const t = this.engineTransport;
     if (t && t.isConnected()) t.detach();
     else this.setState('disconnected', {}, { log: DETACHED_LOG });
@@ -6294,7 +6320,7 @@ export class IrcConnection {
   // with its socket instead (#1149), after the user was told it was sent.
   say(target: string, text: string, tags?: Record<string, string> | null, hooks?: SendHooks): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
-    this.writeLine('PRIVMSG', target, text, tags, this.userLineHooks(target, text, hooks));
+    this.writeLine('PRIVMSG', target, text, tags, this.userLineHooks(target, text, hooks, true));
   }
   action(
     target: string,
@@ -6321,16 +6347,24 @@ export class IrcConnection {
   // What every line the user sends does when it goes (the send is noted then,
   // so a rejection numeric is attributed by the wire's clock) and when it is
   // dropped with its socket (the row said it was sent; say it was not).
-  private userLineHooks(target: string, text: string, hooks?: SendHooks): WriteOptions {
+  private userLineHooks(
+    target: string,
+    text: string,
+    hooks?: SendHooks,
+    armDcc = false,
+  ): WriteOptions {
     return {
       onSent: () => {
         this.noteUserSend(target);
-        // An `xdcc send` arms its request once the bot has been asked (#1149).
+        // An `xdcc send` arms its request once the bot has been asked (#1149):
+        // a PRIVMSG's, as before the queue; a NOTICE or a /me never asked one.
         // Never let a DB hiccup in arming break the user's actual message.
-        try {
-          this.maybeArmDcc(target, text);
-        } catch {
-          /* arming is best-effort */
+        if (armDcc) {
+          try {
+            this.maybeArmDcc(target, text);
+          } catch {
+            /* arming is best-effort */
+          }
         }
         hooks?.onSent?.();
       },
@@ -9385,13 +9419,15 @@ export class IrcConnection {
   // As sendHandshakeReply, for a body made when the line goes (the auto
   // KEYREQ); `null` from `build` sends nothing. `to`, if given, names the nick
   // when the line goes (the peer may have changed nick while it waited); null
-  // from it falls back to `nick`.
+  // from it falls back to `nick`. `nothingSent` hears of a line that never
+  // went: no body, or dropped.
   private sendHandshakeThunk(
     nick: string,
     kind: string,
     channel: string,
     build: () => string | null,
     to?: () => string | null,
+    nothingSent?: () => void,
   ): void {
     if (this.disposed) return;
     const key = `${foldTargetFor(this.network.id, nick)} ${kind} c=${channel}`;
@@ -9402,11 +9438,20 @@ export class IrcConnection {
         // by (right after a restore), the nick they spoke as.
         const target = (to ? to() : null) ?? nick;
         const body = build();
-        if (!body) return null;
+        if (!body) {
+          nothingSent?.();
+          return null;
+        }
         e2eDbg(() => `→ NOTICE ${target}: ${body.slice(0, 140)}`);
         return this.handshakeLine(target, body);
       },
-      { key, onDropped: () => e2eDbg(() => `handshake to ${nick} dropped before it was sent`) },
+      {
+        key,
+        onDropped: () => {
+          e2eDbg(() => `handshake to ${nick} dropped before it was sent`);
+          nothingSent?.();
+        },
+      },
     );
   }
 
@@ -9439,12 +9484,14 @@ export class IrcConnection {
     nick: string | undefined,
     kind: 'missing-key' | 'rejected' | 'replay' | 'cleartext',
     handshaking = false,
+    // Said even inside the dedupe window: a correction of what was just said.
+    force = false,
   ): void {
     if (kind === 'replay' || kind === 'cleartext') return;
     const who = nick || 'peer';
     const key = `${channel.toLowerCase()}:${who.toLowerCase()}:${kind}`;
     const now = Date.now();
-    if (now - (this.e2eHintAt.get(key) ?? 0) < 5000) return;
+    if (!force && now - (this.e2eHintAt.get(key) ?? 0) < 5000) return;
     // Bound the map (a churn of distinct peers shouldn't grow it forever).
     if (this.e2eHintAt.size > 500) this.e2eHintAt.clear();
     this.e2eHintAt.set(key, now);

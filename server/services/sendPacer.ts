@@ -184,7 +184,7 @@ export class SendPacer {
    */
   write(item: string | (() => Built), opts: WriteOptions = {}): SendHandle {
     if (this.disposed) {
-      opts.onDropped?.();
+      if (opts.onDropped) this.guarded('an onDropped hook', opts.onDropped);
       return { cancel: () => false };
     }
     const entry: Entry = {
@@ -229,7 +229,7 @@ export class SendPacer {
         keyed = this.keyed();
       }
       if (this.disposed) {
-        opts.onDropped?.();
+        if (opts.onDropped) this.guarded('an onDropped hook', opts.onDropped);
         return { cancel: () => false };
       }
     }
@@ -242,7 +242,7 @@ export class SendPacer {
   /** Send `lines` back to back, as one unit, and charge for all of them after. */
   unit(lines: string[], opts: WriteOptions = {}): SendHandle {
     if (this.disposed || lines.length === 0) {
-      opts.onDropped?.();
+      if (opts.onDropped) this.guarded('an onDropped hook', opts.onDropped);
       return { cancel: () => false };
     }
     const entry: Entry = {
@@ -306,7 +306,9 @@ export class SendPacer {
   }
 
   /** The connection is gone for good. Set before the items are told, so a
-   *  write from an onDropped is dropped too, not sent. */
+   *  write from an onDropped is dropped too, not sent. The depth is reported
+   *  empty here and now, if it was not: there is no later tick for it, and a
+   *  status bar left at "12 waiting" through a reconnect would stay there. */
   dispose(): void {
     this.disposed = true;
     this.drop();
@@ -314,6 +316,10 @@ export class SendPacer {
     this.depthReport = null;
     if (this.emptyHold) clearTimeout(this.emptyHold);
     this.emptyHold = null;
+    if (this.reportedDepth !== 0 && this.opts.onDepth) {
+      this.reportedDepth = 0;
+      this.guarded('the depth report', () => this.opts.onDepth!(0));
+    }
   }
 
   private handle(entry: Entry): SendHandle {
@@ -345,16 +351,17 @@ export class SendPacer {
     return root;
   }
 
-  // A line's own onDropped, and the item it came from's, once each.
+  // A line's own onDropped, and the item it came from's, once each. Guarded:
+  // one hook that throws (a DB write) must not leave the rest untold.
   private tellDropped(entry: Entry, told: Set<Entry>): void {
     if (!told.has(entry)) {
       told.add(entry);
-      entry.onDropped?.();
+      if (entry.onDropped) this.guarded('an onDropped hook', entry.onDropped);
     }
     for (let o = entry.origin; o; o = o.origin) {
       if (told.has(o)) continue;
       told.add(o);
-      o.onDropped?.();
+      if (o.onDropped) this.guarded('an onDropped hook', o.onDropped);
     }
   }
 
@@ -405,8 +412,12 @@ export class SendPacer {
     try {
       built = entry.build!();
     } catch (err) {
-      console.warn('[irc] send: an item failed to build and was skipped:', err);
-      built = null;
+      // Told as dropped: the sender hears "not sent" rather than nothing, and
+      // a router query doesn't sit on the wire unsent for good.
+      console.warn('[irc] send: an item failed to build and was dropped:', err);
+      this.noteDepth();
+      this.tellDropped(entry, new Set());
+      return;
     }
     const items = built === null ? [] : Array.isArray(built) ? built : [built];
     if (items.length === 0) {
@@ -456,7 +467,8 @@ export class SendPacer {
     try {
       built = entry.build();
     } catch (err) {
-      console.warn('[irc] send: an item failed to build and was skipped:', err);
+      console.warn('[irc] send: an item failed to build and was dropped:', err);
+      this.tellDropped(entry, new Set());
       return;
     }
     const items = built === null ? [] : Array.isArray(built) ? built : [built];

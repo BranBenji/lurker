@@ -386,6 +386,15 @@ describe('SendPacer', () => {
       expect(depths).toEqual([3, 2, 0]);
     });
 
+    it('reports empty at once on dispose, with no tick left to do it', () => {
+      fill();
+      pacer.write(SHORT);
+      vi.advanceTimersByTime(1);
+      expect(depths).toEqual([1]);
+      pacer.dispose();
+      expect(depths).toEqual([1, 0]);
+    });
+
     it('reports empty once the queue has stayed empty EMPTY_HOLD_MS', () => {
       fill();
       pacer.write(SHORT);
@@ -451,6 +460,38 @@ describe('SendPacer', () => {
   });
 
   describe('hooks that throw', () => {
+    it('a throwing onDropped leaves the rest told', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      fill();
+      const told: string[] = [];
+      pacer.write('PRIVMSG #c :a', {
+        onDropped: () => {
+          throw new Error('SQLITE_BUSY');
+        },
+      });
+      pacer.write('PRIVMSG #c :b', { onDropped: () => told.push('b') });
+      pacer.drop();
+      expect(told).toEqual(['b']);
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
+
+    it('a thunk whose build throws is told it was dropped', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      fill();
+      const told: string[] = [];
+      pacer.write(
+        () => {
+          throw new Error('keyring');
+        },
+        { onDropped: () => told.push('thunk') },
+      );
+      vi.advanceTimersByTime(2000);
+      expect(told).toEqual(['thunk']);
+      expect(pacer.pending).toBe(0);
+      warn.mockRestore();
+    });
+
     it('a throwing onSent or send does not stop the queue', () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       fill();
