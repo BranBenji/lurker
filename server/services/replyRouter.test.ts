@@ -722,3 +722,37 @@ describe('MODE #chan from cache', () => {
     expect(writes).toEqual(['MODE #c']);
   });
 });
+
+describe('the wire is in the order lines went', () => {
+  it('a reply goes to the oldest query that has GONE, not the oldest handed over', () => {
+    // The connection's queue has lanes (sendPacer.ts): Lurker's own query waits
+    // in `low`, a client's goes ahead of it. The 403 is the client's.
+    const held = new Map<string, () => void>();
+    const priorities: Array<string | undefined> = [];
+    const router = new ReplyRouter({
+      write: (line, onSent, _onDropped, priority) => {
+        const text = typeof line === 'function' ? line() : line;
+        priorities.push(priority);
+        held.set(text, () => onSent?.(performance.now()));
+        return { cancel: () => false };
+      },
+      canSend: () => true,
+      fold: (name) => name.toLowerCase(),
+      isJoined: () => true,
+      ownNick: () => 'me',
+      listModes: () => new Set('beIq'.split('')),
+      prefixModes: () => new Set(['o', 'v']),
+      timeoutMs: 30_000,
+      settleMs: 1_000,
+    });
+    const client = new Client();
+    router.send('lurker', 'MODE #c');
+    router.send(client, 'TOPIC #c');
+    expect(priorities).toEqual(['low', undefined]);
+    held.get('TOPIC #c')!();
+    held.get('MODE #c')!();
+    const line = ':irc.example.test 403 me #c :No such channel';
+    const msg = ircLineParser(line)!;
+    expect(router.noteServerLine(line, msg.command, msg.params, 'irc.example.test')).toBe(client);
+  });
+});

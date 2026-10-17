@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // The per-connection outbound queue (#1149): the burst budget, order, the
-// bypasses, thunks, units, barriers, cancel, onSent/onDropped, hold and drop.
+// lanes, the bypasses, thunks, units, cancel, onSent/onDropped, hold and drop.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { SendPacer, lineCostMs, BURST_BUDGET_MS } from './sendPacer.js';
+import { SendPacer, lineCostMs, BURST_BUDGET_MS, EMPTY_HOLD_MS } from './sendPacer.js';
 
 const SHORT = 'PRIVMSG #c :hi'; // 16 bytes with CRLF: 2 s
 const LONG = `PRIVMSG #c :${'x'.repeat(284)}`; // 298 bytes with CRLF: 4 s
@@ -384,6 +384,116 @@ describe('SendPacer', () => {
       pacer.drop();
       vi.advanceTimersByTime(1);
       expect(depths).toEqual([3, 2, 0]);
+    });
+
+    it('reports empty once the queue has stayed empty EMPTY_HOLD_MS', () => {
+      fill();
+      pacer.write(SHORT);
+      vi.advanceTimersByTime(1);
+      expect(depths).toEqual([1]);
+      vi.advanceTimersByTime(2000);
+      expect(sent).toHaveLength(6);
+      vi.advanceTimersByTime(EMPTY_HOLD_MS - 1);
+      expect(depths).toEqual([1]);
+      vi.advanceTimersByTime(1);
+      expect(depths).toEqual([1, 0]);
+    });
+
+    it('a line written during the hold is a rise, not a blink', () => {
+      fill();
+      pacer.write(SHORT);
+      vi.advanceTimersByTime(2000);
+      expect(sent).toHaveLength(6);
+      pacer.write(SHORT);
+      pacer.write(SHORT);
+      vi.advanceTimersByTime(1);
+      expect(depths).toEqual([1, 2]);
+      vi.advanceTimersByTime(2000);
+      expect(depths).toEqual([1, 2, 1]);
+      vi.advanceTimersByTime(2000);
+      expect(sent).toHaveLength(8);
+      expect(depths).toEqual([1, 2, 1]);
+      vi.advanceTimersByTime(EMPTY_HOLD_MS);
+      expect(depths).toEqual([1, 2, 1, 0]);
+    });
+  });
+
+  // The budget spent, so the next line waits 2 s.
+  function fill(): void {
+    for (let i = 0; i < 5; i++) pacer.write(`PRIVMSG #f :${i}`);
+    expect(sent).toHaveLength(5);
+  }
+
+  describe('lanes', () => {
+    it('sends high before normal before low while lines wait, in order within a lane', () => {
+      fill();
+      pacer.write('WHO #a', { priority: 'low' });
+      pacer.write('PRIVMSG #c :1');
+      pacer.write('JOIN #b', { priority: 'high' });
+      pacer.write('PRIVMSG #c :2');
+      pacer.write('WHO #b', { priority: 'low' });
+      const went: string[] = [];
+      for (let i = 0; i < 5; i++) {
+        vi.advanceTimersByTime(2000);
+        went.push(sent.at(-1)!);
+      }
+      expect(went).toEqual(['JOIN #b', 'PRIVMSG #c :1', 'PRIVMSG #c :2', 'WHO #a', 'WHO #b']);
+      expect(pacer.pending).toBe(0);
+    });
+
+    it("what a thunk makes waits in the thunk's lane", () => {
+      fill();
+      pacer.write(() => ['WHO #a', 'WHO #b'], { priority: 'low' });
+      vi.advanceTimersByTime(2000);
+      // The thunk ran: its first line went, its second waits, still low.
+      expect(sent.at(-1)).toBe('WHO #a');
+      pacer.write('PRIVMSG #c :1');
+      vi.advanceTimersByTime(2000);
+      expect(sent.at(-1)).toBe('PRIVMSG #c :1');
+      vi.advanceTimersByTime(2000);
+      expect(sent.at(-1)).toBe('WHO #b');
+    });
+
+    it('a keyed item replaces its predecessor where it stands, in its lane', () => {
+      fill();
+      pacer.write('NOTICE p :one', { key: 'p', priority: 'low' });
+      pacer.write('JOIN #b', { priority: 'high' });
+      pacer.write('NOTICE p :two', { key: 'p' });
+      expect(pacer.pending).toBe(2);
+      vi.advanceTimersByTime(2000);
+      expect(sent.at(-1)).toBe('JOIN #b');
+      vi.advanceTimersByTime(2000);
+      expect(sent.at(-1)).toBe('NOTICE p :two');
+      expect(sent).not.toContain('NOTICE p :one');
+    });
+
+    it('the keyed cap drops the oldest keyed item, whichever lane it waits in', () => {
+      fill();
+      const dropped: string[] = [];
+      pacer.write('NOTICE a :1', { key: 'a', priority: 'low', onDropped: () => dropped.push('a') });
+      pacer.write('NOTICE b :2', { key: 'b', onDropped: () => dropped.push('b') });
+      pacer.write('NOTICE c :3', {
+        key: 'c',
+        priority: 'high',
+        onDropped: () => dropped.push('c'),
+      });
+      expect(dropped).toEqual(['a']);
+      expect(pacer.pending).toBe(2);
+      vi.advanceTimersByTime(2000);
+      expect(sent.at(-1)).toBe('NOTICE c :3');
+      vi.advanceTimersByTime(2000);
+      expect(sent.at(-1)).toBe('NOTICE b :2');
+    });
+
+    it('cancel takes an item out of whichever lane it waits in', () => {
+      fill();
+      const low = pacer.write('WHO #a', { priority: 'low' });
+      const high = pacer.write('JOIN #b', { priority: 'high' });
+      expect(low.cancel()).toBe(true);
+      expect(high.cancel()).toBe(true);
+      expect(pacer.pending).toBe(0);
+      vi.advanceTimersByTime(4000);
+      expect(sent).toHaveLength(5);
     });
   });
 });

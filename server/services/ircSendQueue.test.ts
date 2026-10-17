@@ -11,6 +11,7 @@
 import '../test-utils/isolateDb.js';
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { IrcConnection } from './ircConnection.js';
+import { EMPTY_HOLD_MS } from './sendPacer.js';
 import type { ReplyClient } from './replyRouter.js';
 import { e2eManager } from './e2e/manager.js';
 import { createUser } from '../db/users.js';
@@ -272,10 +273,11 @@ describe('every timer starts at send', () => {
     conn.dispose();
   });
 
-  it('what the registered handler itself writes queues behind held lines, and is charged', () => {
+  it('what the registered handler itself writes is charged, its connect commands ahead of held chat', () => {
     // Our 'registered' handler runs before the framework marks the connection
     // registered, so without its own flag the connect commands it runs would
-    // bypass the queue, overtake what is held, and go uncharged.
+    // bypass the queue and go uncharged. They go in the high lane, ahead of
+    // the chat that was held (sendPacer.ts).
     const { conn, lines, registered } = backlog();
     conn.say('#c', 'held');
     registered(false);
@@ -283,17 +285,20 @@ describe('every timer starts at send', () => {
     conn.network.connect_commands = 'PRIVMSG NickServ :IDENTIFY pw\nWAIT 5\nJOIN #a';
     (conn.client as unknown as { options: unknown }).options = { ping_interval: 0 };
     conn.client.connection.addReadBuffer(':irc.example.test 001 alice :Welcome');
-    // Nothing the handler wrote overtook the held line.
+    // The handler's lag PING went at once (unpaced, charged); nothing else
+    // did: the IDENTIFY queued, in the high lane, ahead of the held chat.
+    expect(lines.at(-1)).toMatch(/^PING lurker-lag-/);
+    vi.advanceTimersByTime(1999);
     expect(lines).not.toContain('PRIVMSG NickServ :IDENTIFY pw');
-    // The held line first, then the IDENTIFY, each charged; the JOIN 5 s
-    // after the IDENTIFY went.
-    vi.advanceTimersByTime(2000);
-    const from = lines.indexOf('PRIVMSG #c :held');
-    expect(from).toBeGreaterThan(-1);
-    vi.advanceTimersByTime(2000);
-    expect(lines.indexOf('PRIVMSG NickServ :IDENTIFY pw')).toBeGreaterThan(from);
-    expect(lines).not.toContain('JOIN #a');
-    vi.advanceTimersByTime(4999);
+    vi.advanceTimersByTime(1);
+    expect(lines.at(-1)).toBe('PRIVMSG NickServ :IDENTIFY pw');
+    // Charged: the held line goes 2 s later, not at once.
+    vi.advanceTimersByTime(1999);
+    expect(lines).not.toContain('PRIVMSG #c :held');
+    vi.advanceTimersByTime(1);
+    expect(lines.at(-1)).toBe('PRIVMSG #c :held');
+    // The JOIN 5 s after the IDENTIFY went.
+    vi.advanceTimersByTime(2999);
     expect(lines).not.toContain('JOIN #a');
     vi.advanceTimersByTime(1);
     expect(lines.at(-1)).toBe('JOIN #a');
@@ -428,8 +433,40 @@ describe('what the user sees', () => {
     vi.advanceTimersByTime(2000);
     expect(published.at(-1)).toMatchObject({ type: 'send-queue', waiting: 1 });
     vi.advanceTimersByTime(2000);
+    // The last line went; empty is reported once it has stayed empty 2 s, so
+    // a walk that sends one line at a time doesn't blink.
+    expect(published.at(-1)).toMatchObject({ type: 'send-queue', waiting: 1 });
+    vi.advanceTimersByTime(EMPTY_HOLD_MS);
     expect(published.at(-1)).toMatchObject({ type: 'send-queue', waiting: 0 });
     expect(conn.snapshot().sendQueueWaiting).toBe(0);
+    conn.dispose();
+  });
+});
+
+describe('lanes', () => {
+  it("the autojoin's JOIN goes ahead of chat waiting; a user's /join waits its turn", () => {
+    const { conn, lines } = backlog();
+    conn.say('#c', 'one');
+    conn.join('#auto', undefined, 'high');
+    conn.join('#mine');
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('JOIN #auto');
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('PRIVMSG #c :one');
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('JOIN #mine');
+    conn.dispose();
+  });
+
+  it("Lurker's own MODE after a join waits behind what the user says", () => {
+    const { conn, lines } = backlog();
+    conn.client.user.nick = 'alice';
+    conn.client.emit('join', { channel: '#x', nick: 'alice' });
+    conn.say('#c', 'hi');
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('PRIVMSG #c :hi');
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('MODE #x');
     conn.dispose();
   });
 });

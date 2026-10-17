@@ -52,6 +52,8 @@ export type Asker = 'lurker' | 'user' | ReplyClient;
  */
 export type ReplyOwner = Asker | 'unasked' | 'nobody';
 
+import type { SendPriority } from './sendPacer.js';
+
 /** A line handed to the connection's queue, which can be taken back before it goes. */
 export interface Written {
   cancel(): boolean;
@@ -66,6 +68,7 @@ export interface ReplyRouterOptions {
     line: string | (() => string),
     onSent?: (at: number) => void,
     onDropped?: () => void,
+    priority?: SendPriority,
   ): Written | void;
   /** Whether a query can go out now. One that can't ends at once. */
   canSend(): boolean;
@@ -255,6 +258,7 @@ interface Query extends Spec {
   written: Written | null;
   onSent: ((at: number) => void) | undefined;
   onDropped: (() => void) | undefined;
+  priority: SendPriority | undefined;
 }
 
 interface Settle {
@@ -304,7 +308,8 @@ export class ReplyRouter {
    * Send a line for `asker`. A query may wait its turn, and `build`, if given,
    * makes the line when it goes out; anything else is written at once.
    * `onSent` runs when the line has gone (#1149): a timer that waits on the
-   * reply starts there.
+   * reply starts there. Lurker's own queries wait in the queue's `low` lane,
+   * behind what the user says, unless `priority` says otherwise.
    */
   send(
     asker: Asker,
@@ -312,10 +317,12 @@ export class ReplyRouter {
     build?: () => string,
     onSent?: (at: number) => void,
     onDropped?: () => void,
+    priority?: SendPriority,
   ): void {
+    const lane = priority ?? (asker === 'lurker' ? 'low' : undefined);
     const found = this.classify(line);
     if (!found) {
-      this.opts.write(line, onSent, onDropped);
+      this.opts.write(line, onSent, onDropped, lane);
       return;
     }
     this.dispatch({
@@ -329,6 +336,7 @@ export class ReplyRouter {
       written: null,
       onSent,
       onDropped,
+      priority: lane,
     });
   }
 
@@ -415,10 +423,19 @@ export class ReplyRouter {
         query.sent = true;
         query.written = null;
         query.heardAt = Date.now();
-        if (this.wire.includes(query)) this.armTimeout(query, this.timeoutMs());
+        // To the back: the wire is in the order lines went, which, with the
+        // queue's lanes, is not the order they were handed to it. A reply
+        // goes to the oldest SENT query it can answer (claim).
+        const index = this.wire.indexOf(query);
+        if (index !== -1) {
+          this.wire.splice(index, 1);
+          this.wire.push(query);
+          this.armTimeout(query, this.timeoutMs());
+        }
         query.onSent?.(at);
       },
       query.onDropped,
+      query.priority,
     );
     // A line with nothing ahead of it has gone by now.
     if (!query.sent) query.written = written ?? null;

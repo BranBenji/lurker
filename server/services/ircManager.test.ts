@@ -423,6 +423,26 @@ describe('planChannelRejoins', () => {
     expect(planChannelRejoins(joined)).toContainEqual({ channels: '#secret', keys: 'hunter2' });
   });
 
+  it("the autojoin's JOIN goes in the queue's high lane, ahead of chat (#1149)", () => {
+    const user = createUser('irc-autojoin-lane');
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'irc.example.invalid',
+      port: 6697,
+      tls: true,
+      nick: 'a',
+    })!;
+    const conn = ircManager.startNetwork(user.id, net.id, { deferrable: true })!;
+    conn.client.join = vi.fn<(channel: string, key?: string) => void>();
+    ircManager.joinChannel(user.id, net.id, '#home');
+    conn.client.user.nick = 'a';
+    conn.client.emit('join', { channel: '#home', nick: 'a' }); // the echo lands
+    const join = vi.spyOn(conn, 'join');
+    (conn.client as unknown as { options: unknown }).options = { ping_interval: 0 };
+    conn.client.emit('registered', { nick: 'a' });
+    expect(join).toHaveBeenCalledWith('#home', undefined, 'high');
+  });
+
   it('partChannel does not create a row for a channel we have none for', () => {
     // /part takes an arbitrary argument and is not gated on membership, so it
     // must not conjure a channels row for a channel we were never in.

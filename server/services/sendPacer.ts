@@ -32,9 +32,23 @@
 // is still wanted when its turn comes (`live`: a withdrawn DCC offer sends
 // nothing).
 //
-// Order is absolute, with the bypasses above. There are no priorities: a REKEY
-// is a NOTICE and the message that needs it a PRIVMSG, and the one must reach
-// the wire before the other.
+// Three lanes, and order is absolute within each: `high` goes before `normal`
+// before `low` whenever a line waits at all. What the user wrote goes in the
+// order they wrote it (`normal`, the default: chat, CTCP, DCC, their own
+// commands, and every E2E line, since a REKEY is a NOTICE and the message
+// that needs it a PRIVMSG, and the one must reach the wire before the other).
+// What chat may not overtake goes first (`high`: the connect commands, the
+// autojoin, a nick change), so a message typed into a channel never overtakes
+// the JOIN that puts us there, nor the IDENTIFY before it. Lurker's own
+// questions and bookkeeping go last (`low`: the MODE and WHO after a join, the
+// restore walk's NAMES/TOPIC/MODE, MONITOR, AWAY), so a paste or a reply isn't
+// stuck behind a minute of refreshing names, nor behind the presence list a
+// re-attach rebuilds. Only what must precede chat is `high`: eight MONITOR and
+// AWAY lines there held a re-attach's chat 16 s.
+// HexChat sends WHO and MODE queries after everything else and PRIVMSG/NOTICE
+// after the rest; WeeChat and irssi send their polls (ISON, channel sync)
+// last; Halloy sends what the user typed first. With nothing waiting, which
+// is the usual state, the lanes never show.
 
 const BASE_COST_MS = 2000;
 const COST_PER_100_BYTES_MS = 1000;
@@ -43,6 +57,15 @@ export const BURST_BUDGET_MS = 10_000;
 /** The most keyed items (handshake replies) allowed to wait at once. */
 const DEFAULT_MAX_KEYED = 20;
 const UNPACED = /^(?:@\S+ )?(?:PING|PONG|QUIT)\b/i;
+/** How long the queue stays empty before it is reported empty: the connect
+ *  walk and a restore send one line at a time, each waiting its 2 s alone, and
+ *  "1 waiting" blinking once per line reads as a fault. A rise is reported at
+ *  once. */
+export const EMPTY_HOLD_MS = 2000;
+
+/** Which lane an item waits in; see the header. */
+export type SendPriority = 'high' | 'normal' | 'low';
+const LANES: readonly SendPriority[] = ['high', 'normal', 'low'];
 
 /** What one line of `bytes` (CRLF included) advances the server's clock by.
  *  `LURKER_SEND_PACING=0` makes every line free: a test seam, for tests that
@@ -70,6 +93,8 @@ export interface Line {
 export type Built = string | Line | (() => Built) | Array<string | Line | (() => Built)> | null;
 
 export interface WriteOptions {
+  /** The lane the item waits in; `normal` unless said. */
+  priority?: SendPriority;
   /** A keyed item replaces a queued item with the same key where it stands,
    *  and at most `maxKeyed` keyed items wait: a handshake reply to a peer. */
   key?: string;
@@ -92,7 +117,8 @@ export interface SendPacerOptions {
   send: (line: string) => void;
   /** Whether the connection is registered and can take a line. */
   ready: () => boolean;
-  /** How many items wait, whenever that changes (coalesced per tick). */
+  /** How many items wait, whenever that changes (coalesced per tick; an
+   *  empty queue is reported once it has stayed empty EMPTY_HOLD_MS). */
   onDepth?: (waiting: number) => void;
   /** Monotonic ms; injectable for tests. */
   now?: () => number;
@@ -100,6 +126,9 @@ export interface SendPacerOptions {
 }
 
 interface Entry {
+  priority: SendPriority;
+  /** Arrival order, across lanes: the keyed cap drops the oldest. */
+  seq?: number;
   text?: string;
   build?: () => Built;
   unit?: string[];
@@ -121,7 +150,7 @@ function lazyLine(line: Line): () => Built {
 }
 
 export class SendPacer {
-  private readonly queue: Entry[] = [];
+  private readonly lanes: Record<SendPriority, Entry[]> = { high: [], normal: [], low: [] };
   private timer: ReturnType<typeof setTimeout> | null = null;
   private draining = false;
   private disposed = false;
@@ -130,6 +159,10 @@ export class SendPacer {
   private since = 0;
   private reportedDepth = 0;
   private depthReport: ReturnType<typeof setImmediate> | null = null;
+  private emptyHold: ReturnType<typeof setTimeout> | null = null;
+  /** Set by drop(): the next empty report goes without the hold. */
+  private emptyAtOnce = false;
+  private seq = 0;
   private readonly now: () => number;
   private readonly maxKeyed: number;
 
@@ -149,6 +182,8 @@ export class SendPacer {
       return { cancel: () => false };
     }
     const entry: Entry = {
+      priority: opts.priority ?? 'normal',
+      seq: this.seq++,
       ...(typeof item === 'string' ? { text: item } : { build: item }),
       key: opts.key,
       live: opts.live,
@@ -171,24 +206,28 @@ export class SendPacer {
       return { cancel: () => false };
     }
     if (entry.key !== undefined) {
-      const at = this.queue.findIndex((q) => q.key === entry.key);
-      if (at !== -1) {
-        this.queue[at] = entry;
+      for (const lane of LANES) {
+        const at = this.lanes[lane].findIndex((q) => q.key === entry.key);
+        if (at === -1) continue;
+        // Where its predecessor stood, as old as it was.
+        entry.priority = lane;
+        entry.seq = this.lanes[lane][at].seq;
+        this.lanes[lane][at] = entry;
         return this.handle(entry);
       }
       // The oldest keyed item goes to make room. Its onDropped may write
       // again, so the room is checked again, until there is some.
-      let keyed = this.queue.filter((q) => q.key !== undefined);
+      let keyed = this.keyed();
       while (keyed.length >= this.maxKeyed && !this.disposed) {
         this.remove(keyed[0], true);
-        keyed = this.queue.filter((q) => q.key !== undefined);
+        keyed = this.keyed();
       }
       if (this.disposed) {
         opts.onDropped?.();
         return { cancel: () => false };
       }
     }
-    this.queue.push(entry);
+    this.lanes[entry.priority].push(entry);
     this.noteDepth();
     this.drain();
     return this.handle(entry);
@@ -200,12 +239,17 @@ export class SendPacer {
       opts.onDropped?.();
       return { cancel: () => false };
     }
-    const entry: Entry = { unit: lines, onSent: opts.onSent, onDropped: opts.onDropped };
+    const entry: Entry = {
+      priority: opts.priority ?? 'normal',
+      unit: lines,
+      onSent: opts.onSent,
+      onDropped: opts.onDropped,
+    };
     if (!this.opts.ready()) {
       this.sendAtOnce(entry);
       return { cancel: () => false };
     }
-    this.queue.push(entry);
+    this.lanes[entry.priority].push(entry);
     this.noteDepth();
     this.drain();
     return this.handle(entry);
@@ -213,7 +257,22 @@ export class SendPacer {
 
   /** Items waiting. */
   get pending(): number {
-    return this.queue.length;
+    return this.lanes.high.length + this.lanes.normal.length + this.lanes.low.length;
+  }
+
+  // The next item to go: the first of the first lane with any.
+  private head(): Entry | undefined {
+    for (const lane of LANES) {
+      if (this.lanes[lane].length) return this.lanes[lane][0];
+    }
+    return undefined;
+  }
+
+  // The keyed items waiting, oldest first.
+  private keyed(): Entry[] {
+    return LANES.flatMap((lane) => this.lanes[lane].filter((q) => q.key !== undefined)).sort(
+      (a, b) => a.seq! - b.seq!,
+    );
   }
 
   /** Try again: the connection came (back) up. */
@@ -224,9 +283,10 @@ export class SendPacer {
   /** A new socket: what waited was meant for the old one, and the server
    *  charges the new one from nothing. Every dropped item is told. */
   drop(): void {
-    const dropped = this.queue.splice(0);
+    const dropped = LANES.flatMap((lane) => this.lanes[lane].splice(0));
     this.since = 0;
     this.clearTimer();
+    this.emptyAtOnce = true;
     this.noteDepth();
     const told = new Set<Entry>();
     for (const entry of dropped) this.tellDropped(entry, told);
@@ -239,6 +299,8 @@ export class SendPacer {
     this.drop();
     if (this.depthReport) clearImmediate(this.depthReport);
     this.depthReport = null;
+    if (this.emptyHold) clearTimeout(this.emptyHold);
+    this.emptyHold = null;
   }
 
   private handle(entry: Entry): SendHandle {
@@ -248,9 +310,12 @@ export class SendPacer {
   // The item and everything it expanded to.
   private remove(entry: Entry, dropped: boolean): boolean {
     const taken: Entry[] = [];
-    for (let i = this.queue.length - 1; i >= 0; i--) {
-      const q = this.queue[i];
-      if (q === entry || this.rootOf(q) === entry) taken.unshift(...this.queue.splice(i, 1));
+    for (const lane of LANES) {
+      const queue = this.lanes[lane];
+      for (let i = queue.length - 1; i >= 0; i--) {
+        const q = queue[i];
+        if (q === entry || this.rootOf(q) === entry) taken.unshift(...queue.splice(i, 1));
+      }
     }
     if (taken.length === 0) return false;
     this.noteDepth();
@@ -284,10 +349,9 @@ export class SendPacer {
     if (this.timer || this.draining) return;
     this.draining = true;
     try {
-      while (this.queue.length) {
+      for (let head = this.head(); head; head = this.head()) {
         // Held until the connection is back; resume() picks it up.
         if (!this.opts.ready()) return;
-        const head = this.queue[0];
         // The line goes when its own charge still fits under the budget: the
         // server's clock never runs more than BURST_BUDGET_MS ahead of real
         // time by our count. A thunk is run once the shortest line would fit,
@@ -300,7 +364,7 @@ export class SendPacer {
           this.schedule(over);
           return;
         }
-        this.queue.shift();
+        this.lanes[head.priority].shift();
         if (head.build) {
           this.expand(head);
           continue;
@@ -315,7 +379,7 @@ export class SendPacer {
     }
   }
 
-  // A thunk's items take its place at the head, each paced on its own. The
+  // A thunk's items take its place at the head of its lane, each paced on its
   // item's own onSent follows its last line; its onDropped fires once if any
   // of them is dropped (tellDropped); cancel() takes them all (remove).
   private expand(entry: Entry): void {
@@ -333,14 +397,16 @@ export class SendPacer {
     }
     const last = items.length - 1;
     const expanded: Entry[] = items.map((item, i) => {
-      const own: Entry =
-        typeof item === 'function'
+      const own: Entry = {
+        priority: entry.priority,
+        ...(typeof item === 'function'
           ? { build: item }
           : typeof item === 'string'
             ? { text: item }
             : typeof item.text === 'function'
               ? { build: lazyLine(item), onDropped: item.onDropped }
-              : { text: item.text, onSent: item.onSent, onDropped: item.onDropped };
+              : { text: item.text, onSent: item.onSent, onDropped: item.onDropped }),
+      };
       own.origin = entry;
       if (i === last && entry.onSent) {
         const sent = own.onSent;
@@ -351,7 +417,7 @@ export class SendPacer {
       }
       return own;
     });
-    this.queue.unshift(...expanded);
+    this.lanes[entry.priority].unshift(...expanded);
     this.noteDepth();
   }
 
@@ -374,11 +440,13 @@ export class SendPacer {
       return;
     }
     const items = built === null ? [] : Array.isArray(built) ? built : [built];
+    const priority = entry.priority;
     for (const item of items) {
-      if (typeof item === 'function') this.sendAtOnce({ build: item });
-      else if (typeof item === 'string') this.sendNow({ text: item }, false);
-      else if (typeof item.text === 'function') this.sendAtOnce({ build: lazyLine(item) });
-      else this.sendNow({ text: item.text, onSent: item.onSent }, false);
+      if (typeof item === 'function') this.sendAtOnce({ priority, build: item });
+      else if (typeof item === 'string') this.sendNow({ priority, text: item }, false);
+      else if (typeof item.text === 'function')
+        this.sendAtOnce({ priority, build: lazyLine(item) });
+      else this.sendNow({ priority, text: item.text, onSent: item.onSent }, false);
     }
     if (items.length) entry.onSent?.(this.now());
   }
@@ -419,12 +487,30 @@ export class SendPacer {
   }
 
   // Depth changes with every line; report once per tick, and only a change.
+  // Empty is reported once it has held EMPTY_HOLD_MS (a rise in between is
+  // reported instead), except that drop() reports it at once: what waited is
+  // gone, not sent.
   private noteDepth(): void {
     if (!this.opts.onDepth || this.depthReport) return;
     this.depthReport = setImmediate(() => {
       this.depthReport = null;
       const depth = this.pending;
+      const atOnce = this.emptyAtOnce;
+      this.emptyAtOnce = false;
+      if ((depth > 0 || atOnce) && this.emptyHold) {
+        clearTimeout(this.emptyHold);
+        this.emptyHold = null;
+      }
       if (depth === this.reportedDepth) return;
+      if (depth === 0 && !atOnce) {
+        this.emptyHold ??= setTimeout(() => {
+          this.emptyHold = null;
+          if (this.pending > 0 || this.reportedDepth === 0) return;
+          this.reportedDepth = 0;
+          this.opts.onDepth?.(0);
+        }, EMPTY_HOLD_MS);
+        return;
+      }
       this.reportedDepth = depth;
       this.opts.onDepth?.(depth);
     });

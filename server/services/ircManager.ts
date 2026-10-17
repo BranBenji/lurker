@@ -600,7 +600,7 @@ class IrcManager extends EventEmitter {
           text: `Auto-joining ${names.length} ${names.length === 1 ? 'channel' : 'channels'}: ${names.join(', ')}`,
         });
       }
-      for (const op of planChannelRejoins(joined)) connRef.join(op.channels, op.keys);
+      for (const op of planChannelRejoins(joined)) connRef.join(op.channels, op.keys, 'high');
     };
     conn.client.on('registered', () => {
       if (connRef.restoring) connRef.onceRestored(() => rejoin(true));

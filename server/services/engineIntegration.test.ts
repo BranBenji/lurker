@@ -534,11 +534,22 @@ describe('IrcConnection through the engine', () => {
       for (let i = 0; i < 7; i++) ircManager.send(userId, network.id, '#stay', `burst ${i}`);
       await until(() => bursts(sentBefore).length >= 5, 5000, 'the burst went');
       expect(bursts(sentBefore).length).toBeLessThan(7);
+      const atLoss = sentBy('lurk').length;
       EngineLink.shared().simulateLoss();
       await until(() => conn.state !== 'connected', 5000, 'noticed the loss');
       await until(() => conn.state === 'connected', 8000, 'reattached');
       await until(() => bursts(sentBefore).length === 7, 8000, 'the held lines went');
       expect(bursts(sentBefore)).toEqual(Array.from({ length: 7 }, (_, i) => `burst ${i}`));
+      // Ahead of the re-attach's presence bookkeeping: MONITOR waits in the
+      // low lane (sendPacer.ts). With it in high, the chat waited 16 s here.
+      const after = () => sentBy('lurk').slice(atLoss);
+      await until(
+        () => after().some((l) => l.startsWith('MONITOR ')),
+        8000,
+        'the presence list was rebuilt',
+      );
+      const monitor = after().findIndex((l) => l.startsWith('MONITOR '));
+      expect(after().findIndex((l) => l.includes('burst 5'))).toBeLessThan(monitor);
 
       // The socket dies with lines waiting: the engine dials again, and what
       // waited is dropped and reported where it was going.

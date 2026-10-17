@@ -104,7 +104,7 @@ import { CTCP_TAG, WIRE_PREFIX } from './e2e/constants.js';
 import { e2eDbg } from './e2e/debug.js';
 import { RateLimiter } from './e2e/rateLimiter.js';
 import { SendPacer } from './sendPacer.js';
-import type { Line, WriteOptions } from './sendPacer.js';
+import type { Line, SendPriority, WriteOptions } from './sendPacer.js';
 import type { LineHooks } from './ircManager.js';
 import {
   buildCtcpReply,
@@ -1106,6 +1106,9 @@ export class IrcConnection {
   private sendQueueWaiting = 0;
   // True while the queue is writing a line, so the write hook lets it through.
   private sendingNow = false;
+  /** The lane for lines irc-framework itself writes meanwhile (sendPacer.ts):
+   *  set around a client.join() or changeNick() that is Lurker's own doing. */
+  private writePriority: SendPriority | undefined;
   // A 001 has been seen on this socket: set as our 'registered' handler
   // starts, ahead of the framework's own flag; cleared with the socket.
   private sawRegistered = false;
@@ -1272,7 +1275,9 @@ export class IrcConnection {
       onDepth: (waiting) => this.publishSendQueue(waiting),
     });
     connection.write = (data: string, callback?: () => void) =>
-      callback || this.sendingNow ? write(data, callback) : this.sendPacer.write(data);
+      callback || this.sendingNow
+        ? write(data, callback)
+        : this.sendPacer.write(data, { priority: this.writePriority });
     // Lines held while the link was down go once the connection is registered
     // again (an engine re-attach). Hooked here, not in our 'registered'
     // handler: the command handler emits 'all' (which that handler is) before
@@ -1327,9 +1332,10 @@ export class IrcConnection {
     this.useMonitor = false;
     this.monitorLimit = 0;
     this.pendingMonitorSeed = false;
+    // Presence bookkeeping: behind chat, with the other polls (sendPacer.ts).
     this.monitor = new MonitorList((line) => {
       try {
-        this.client.raw(line);
+        this.withPriority('low', () => this.client.raw(line));
       } catch (_) {
         /* ignore */
       }
@@ -1361,7 +1367,8 @@ export class IrcConnection {
     this.unsendableTargets = new Set();
     this.lastUserSendAt = new Map();
     this.replies = new ReplyRouter({
-      write: (line, onSent, onDropped) => this.sendPacer.write(line, { onSent, onDropped }),
+      write: (line, onSent, onDropped, priority) =>
+        this.sendPacer.write(line, { onSent, onDropped, priority }),
       canSend: () => this.state === 'connected',
       fold: (name) => foldTargetFor(this.network.id, name),
       isJoined: (channel) => this.isChannelJoined(channel),
@@ -2283,7 +2290,7 @@ export class IrcConnection {
         return;
       }
       try {
-        this.client.changeNick(next);
+        this.withPriority('high', () => this.client.changeNick(next));
       } catch (_) {
         /* ignore */
       }
@@ -2380,7 +2387,7 @@ export class IrcConnection {
         const target = this.regainNick.toLowerCase();
         if (nicks.some((n) => typeof n === 'string' && n.toLowerCase() === target)) {
           try {
-            this.client.changeNick(this.regainNick);
+            this.withPriority('high', () => this.client.changeNick(this.regainNick!));
           } catch (_) {
             /* ignore */
           }
@@ -4498,7 +4505,7 @@ export class IrcConnection {
         for (const line of commands.split(/\r?\n/)) this.applyRawMonitor(line);
       }
       try {
-        this.client.raw('MONITOR C');
+        this.withPriority('low', () => this.client.raw('MONITOR C'));
       } catch (_) {
         /* ignore */
       }
@@ -5407,7 +5414,8 @@ export class IrcConnection {
   }
 
   // How many lines wait in the outbound queue (#1149), as the status bar's
-  // "N waiting". Published on change, coalesced per tick by the queue.
+  // "N waiting". Published on change, coalesced per tick by the queue, which
+  // reports empty only once it has stayed empty 2 s (EMPTY_HOLD_MS).
   publishSendQueue(waiting: number): void {
     this.sendQueueWaiting = waiting;
     this.publish({
@@ -6207,7 +6215,9 @@ export class IrcConnection {
     });
   }
 
-  join(channel: string, key?: string): void {
+  /** `priority` is `high` for a JOIN that is Lurker's own doing (the autojoin),
+   *  which then goes ahead of whatever chat waits (sendPacer.ts). */
+  join(channel: string, key?: string, priority?: SendPriority): void {
     // Only a string is a valid channel key. Guard against a non-string sneaking
     // in from an untrusted ws/HTTP join payload — irc-framework's raw serialiser
     // calls .match() on the last arg, so a numeric key throws a TypeError that,
@@ -6226,7 +6236,20 @@ export class IrcConnection {
     // close would PART a channel we had left. That is #967 again, from the
     // guard meant to prevent it. We are in it, so membership already answers.
     this.noteJoinSent(channel);
-    this.client.join(channel, typeof key === 'string' ? key : undefined);
+    this.withPriority(priority, () =>
+      this.client.join(channel, typeof key === 'string' ? key : undefined),
+    );
+  }
+
+  // Lines irc-framework writes during `fn` wait in `priority`'s lane.
+  private withPriority(priority: SendPriority | undefined, fn: () => void): void {
+    const was = this.writePriority;
+    this.writePriority = priority;
+    try {
+      fn();
+    } finally {
+      this.writePriority = was;
+    }
   }
   part(channel: string, reason?: string): void {
     this.notePartSent(channel);
@@ -10656,12 +10679,21 @@ export class IrcConnection {
           if (this.takeRawMonitor(line)) continue;
           lastSent = false;
           onLastSent = null;
-          this.replies.send('user', line, undefined, () => {
-            lastSent = true;
-            const next = onLastSent;
-            onLastSent = null;
-            next?.();
-          });
+          this.replies.send(
+            'user',
+            line,
+            undefined,
+            () => {
+              lastSent = true;
+              const next = onLastSent;
+              onLastSent = null;
+              next?.();
+            },
+            undefined,
+            // Ahead of chat, with the autojoin: IDENTIFY before JOIN, both
+            // before anything a client says meanwhile.
+            'high',
+          );
         } catch (_) {
           /* ignore */
         }
