@@ -103,6 +103,7 @@ import { contextKey, isChannelContext } from './e2e/context.js';
 import { CTCP_TAG, WIRE_PREFIX } from './e2e/constants.js';
 import { e2eDbg } from './e2e/debug.js';
 import { RateLimiter } from './e2e/rateLimiter.js';
+import { SendPacer } from './sendPacer.js';
 import {
   buildCtcpReply,
   CTCP_ANSWER_SETTINGS,
@@ -1086,11 +1087,8 @@ export class IrcConnection {
   // bucket. Reuses the same limiter the E2E handshake path uses for the
   // identical inbound-flood threat.
   ctcpLimiter: RateLimiter;
-  // Outbound RPE2E handshake NOTICEs waiting their turn, and when the next may
-  // go (sendHandshakeReply, #1149).
-  private readonly handshakeQueue: { nick: string; body: string }[] = [];
-  private handshakeTimer: ReturnType<typeof setTimeout> | null = null;
-  private handshakeReadyAt = 0;
+  // Every outbound line, in order, paced for long ones (sendPacer.ts, #1149).
+  private readonly sendPacer: SendPacer;
   // Outstanding outbound CTCP requests we sent, so a reply routes back to the
   // buffer the /ctcp was issued from. Key = `${nick-lc} ${TYPE}` → a FIFO queue
   // of issuing buffers, so two concurrent same-type queries to one nick route
@@ -1226,6 +1224,17 @@ export class IrcConnection {
     // pitfall the enable_chghost note on the connect() call documents. Mirrors
     // The Lounge, which uses the same library the same way. See services/ctcp.ts.
     this.client = new IRC.Client();
+    // The one outbound path (#1149): client.raw, irc-framework's CAP and PING
+    // handlers and our writeLine all end in connection.write. A write with a
+    // callback is QUIT's on the way out, which goes as it is.
+    const connection = this.client.connection;
+    const write = connection.write.bind(connection);
+    this.sendPacer = new SendPacer({
+      send: (line) => write(line),
+      ready: () => connection.connected && !!connection.registered,
+    });
+    connection.write = (data: string, callback?: () => void) =>
+      callback ? write(data, callback) : this.sendPacer.write(data);
     this.client.requestCap('message-tags');
     // extended-monitor (IRCv3): asks the server to relay away-notify (and the
     // other notify caps irc-framework already negotiates) for nicks on our
@@ -1976,6 +1985,8 @@ export class IrcConnection {
     });
 
     on('registered', (event: Record<string, unknown>) => {
+      // Lines held while the link was down go now (an engine re-attach).
+      this.sendPacer.resume();
       this.userModes.clear();
       this.lagMs = null;
       this.selfUser = null;
@@ -2132,7 +2143,9 @@ export class IrcConnection {
       // would drop the new socket's first probes. Reset both (#263).
       this.ctcpOutstanding.clear();
       this.ctcpLimiter = new RateLimiter();
-      this.dropHandshakes();
+      // The socket is gone, and what waited was meant for it. With an engine,
+      // only our link may be gone: the engine says which (onEnginePhase).
+      if (!engineConfigured()) this.sendPacer.drop();
       this.stopLagPinger();
       this.cancelPendingConnectCommands();
       this.resetRestoreState();
@@ -5670,6 +5683,8 @@ export class IrcConnection {
     switch (phase) {
       case 'dialing':
         this.resetRestoreState();
+        // A new socket: what waited was meant for the one that died.
+        this.sendPacer.drop();
         // A new socket. Anything we still think we are in belonged to one that
         // died while our link to the engine was down, so 'socket close' never
         // saw it go.
@@ -8956,47 +8971,21 @@ export class IrcConnection {
 
   // A handshake line (KEYREQ, KEYRSP, REKEY) goes to the peer as a CTCP-framed
   // NOTICE. It's protocol noise, so unlike notice() it never echoes into a
-  // buffer or touches presence/idle tracking.
-  //
-  // Paced (#1149): these come in bursts (every peer KEYREQs us at once when
-  // we first speak encrypted; a rotation REKEYs every recipient), each line a
-  // few hundred bytes, and IRCnet's ircd counts a second per 100 bytes against
-  // a ~1000-byte input buffer, so a handful back to back is "Excess Flood".
-  // The first goes at once; after a line of 100 bytes or more the next waits
-  // 2 s plus 1 s per 100 bytes, irssi's rule for the same problem
-  // (irc_server_send_data). Only these lines are queued; the user's own sends
-  // go straight out, as before.
-  sendHandshakeReply(nick: string, body: string): void {
-    if (this.disposed) return;
-    this.handshakeQueue.push({ nick, body });
-    this.drainHandshakes();
-  }
-
-  private drainHandshakes(): void {
-    if (this.handshakeTimer || this.disposed) return;
-    for (let next = this.handshakeQueue[0]; next; next = this.handshakeQueue[0]) {
-      const wait = this.handshakeReadyAt - Date.now();
-      if (wait > 0) {
-        this.handshakeTimer = setTimeout(() => {
-          this.handshakeTimer = null;
-          this.drainHandshakes();
-        }, wait);
-        return;
-      }
-      this.handshakeQueue.shift();
-      const text = `\x01${next.body}\x01`;
-      e2eDbg(() => `→ NOTICE ${next.nick}: ${next.body.slice(0, 140)}`);
-      this.client.notice(next.nick, text);
-      const bytes = Buffer.byteLength(`NOTICE ${next.nick} :${text}\r\n`);
-      this.handshakeReadyAt = bytes < 100 ? 0 : Date.now() + (2 + Math.floor(bytes / 100)) * 1000;
-    }
-  }
-
-  // Lines meant for a socket that's gone: the peer asks again on the next.
-  private dropHandshakes(): void {
-    this.handshakeQueue.length = 0;
-    if (this.handshakeTimer) clearTimeout(this.handshakeTimer);
-    this.handshakeTimer = null;
+  // buffer or touches presence/idle tracking. It goes through the pacer like
+  // every line (#1149), keyed by peer, kind and channel: a newer one to the same
+  // peer for the same channel replaces a queued one rather than queueing a
+  // second, and a backlog of them is capped, so a burst of KEYREQs (clones
+  // included) can't hold up everything else. Written whole, not through
+  // notice(), whose 350-byte split would cut a long one in two unframed halves.
+  sendHandshakeReply(nick: string, body: string): boolean {
+    if (this.disposed) return false;
+    const words = body.split(' ');
+    const channel = words.find((w) => w.startsWith('c=')) ?? '';
+    const key = `${nick.toLowerCase()} ${words[1] ?? ''} ${channel}`;
+    e2eDbg(() => `→ NOTICE ${nick}: ${body.slice(0, 140)}`);
+    const queued = this.sendPacer.write(`NOTICE ${nick} :\x01${body}\x01`, key);
+    if (!queued) e2eDbg(() => `handshake to ${nick} dropped: too many waiting`);
+    return queued;
   }
 
   // Surface a manager-emitted handshake notice (session established, TOFU
@@ -9222,7 +9211,10 @@ export class IrcConnection {
           info(`couldn't build a handshake (is your identity available?)`, 'warn');
           return;
         }
-        this.sendHandshakeReply(nick, body);
+        if (!this.sendHandshakeReply(nick, body)) {
+          info(`too many handshakes waiting to go out; try again shortly`, 'warn');
+          return;
+        }
         info(`handshake sent to ${nick} on ${chan} — waiting for their key…`);
         return;
       }
@@ -10187,7 +10179,7 @@ export class IrcConnection {
     this.endPassiveDccListens();
     this.disposed = true;
     this.clearReconnectTimer();
-    this.dropHandshakes();
+    this.sendPacer.drop();
     this.stopLagPinger();
     this.cancelPendingConnectCommands();
     for (const pending of this.dccPendingResume.values()) {

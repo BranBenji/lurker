@@ -36,6 +36,24 @@ beforeAll(() => {
   createNetwork(2, { name: 'n', host: 'h', port: 6697, tls: true, nick: 'bob' }); // network id 2
 });
 
+// Handshakes go out through the connection's pacer (#1149), not client.notice:
+// catch them at the transport, as (target, text) for the assertions below.
+function captureNotices(conn: IrcConnection, notice: (target: string, text: string) => void): void {
+  const c = conn.client.connection as unknown as {
+    connected: boolean;
+    registered: number | false;
+    transport: unknown;
+  };
+  c.connected = true;
+  c.registered = Date.now();
+  c.transport = {
+    writeLine: (line: string) => {
+      const m = /^NOTICE (\S+) :([\s\S]*)$/.exec(line);
+      if (m) notice(m[1], m[2]);
+    },
+  };
+}
+
 function makeConn(): IrcConnection {
   return new IrcConnection({
     network: {
@@ -149,7 +167,7 @@ describe('rekey distribution ship (flushE2eRekeys)', () => {
     const conn = makeConn();
     conn.publish = vi.fn<(event: unknown) => void>();
     const notice = vi.fn<(target: string, text: string) => void>();
-    conn.client.notice = notice;
+    captureNotices(conn, notice);
     // A JOIN populates membership so the recipient handle resolves to a nick.
     // Ours first: someone else's JOIN only reaches us for a channel we are in
     // (#908).
@@ -171,7 +189,7 @@ describe('rekey distribution ship (flushE2eRekeys)', () => {
     const conn = makeConn();
     conn.publish = vi.fn<(event: unknown) => void>();
     const notice = vi.fn<(target: string, text: string) => void>();
-    conn.client.notice = notice;
+    captureNotices(conn, notice);
     // No JOIN for the target handle → it can't be resolved to a nick.
     vi.spyOn(e2eManager, 'takePendingRekeySends').mockReturnValue([
       { channel: '#gone', targetHandle: 'x@left.host', body: 'RPEE2E REKEY v=1 c=#gone' },
@@ -219,7 +237,7 @@ describe('inbound decrypt (c.on message)', () => {
     const notice = vi.fn<(target: string, text: string) => void>();
     conn.publish = publish;
     conn.publishEphemeral = publishEphemeral;
-    conn.client.notice = notice;
+    captureNotices(conn, notice);
     vi.spyOn(e2eManager, 'decryptIncoming').mockReturnValue({ kind: 'missing-key' });
 
     // Fresh handle so the outgoing rate limiter (shared singleton) lets the
@@ -387,7 +405,7 @@ describe('handshake transport (c.on ctcp response)', () => {
   it('answers a real KEYREQ with a CTCP-framed KEYRSP NOTICE to the sender', () => {
     const conn = makeConn();
     const notice = vi.fn<(target: string, text: string) => void>();
-    conn.client.notice = notice;
+    captureNotices(conn, notice);
     conn.publishEphemeral = vi.fn<(event: unknown) => void>();
     e2eManager.setChannelConfig(1, 1, '#hs', true, 'auto-accept');
 
@@ -431,7 +449,7 @@ describe('handshake transport (c.on ctcp response)', () => {
   it('ignores a non-RPEE2E CTCP response without replying', () => {
     const conn = makeConn();
     const notice = vi.fn<(target: string, text: string) => void>();
-    conn.client.notice = notice;
+    captureNotices(conn, notice);
 
     conn.client.emit('ctcp response', {
       nick: 'someone',
@@ -468,7 +486,7 @@ describe('/e2e command dispatch (runE2eCommand)', () => {
     const conn = makeConn();
     conn.publishEphemeral = vi.fn<(event: unknown) => void>();
     const notice = vi.fn<(target: string, text: string) => void>();
-    conn.client.notice = notice;
+    captureNotices(conn, notice);
     conn.runE2eCommand('#cmd', 'handshake carol');
     expect(notice).toHaveBeenCalled();
     const [target, line] = notice.mock.calls[0];
@@ -751,11 +769,12 @@ describe('handshake NOTICE pacing (#1149)', () => {
   const GAP_MS = 4000;
 
   function paced() {
-    vi.useFakeTimers();
+    // The pacer keeps time on the monotonic clock.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
     const conn = makeConn();
     conn.publish = vi.fn<(event: unknown) => void>();
     const notice = vi.fn<(target: string, text: string) => void>();
-    conn.client.notice = notice;
+    captureNotices(conn, notice);
     return { conn, notice };
   }
 
@@ -784,6 +803,30 @@ describe('handshake NOTICE pacing (#1149)', () => {
     try {
       conn.sendHandshakeReply('bob', 'RPEE2E REKEY v=1 c=#x');
       conn.sendHandshakeReply('carol', 'RPEE2E REKEY v=1 c=#x');
+      expect(notice).toHaveBeenCalledTimes(2);
+    } finally {
+      conn.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  // A rotation queues a REKEY per peer, then the message goes out under the new
+  // key: every REKEY must reach the wire first, or that peer can't decrypt it.
+  it("keeps a rotation's REKEYs ahead of the message that needs them", () => {
+    const { conn, notice } = paced();
+    const lines: string[] = [];
+    const c = conn.client.connection as unknown as { transport: { writeLine(l: string): void } };
+    const toNotice = c.transport.writeLine;
+    c.transport.writeLine = (l) => {
+      lines.push(l.split(' ').slice(0, 2).join(' '));
+      toNotice(l);
+    };
+    try {
+      conn.sendHandshakeReply('bob', LONG.replace('KEYRSP', 'REKEY'));
+      conn.sendHandshakeReply('carol', LONG.replace('KEYRSP', 'REKEY'));
+      conn.say('#x', `${WIRE} ciphertext`);
+      vi.advanceTimersByTime(GAP_MS * 3);
+      expect(lines).toEqual(['NOTICE bob', 'NOTICE carol', 'PRIVMSG #x']);
       expect(notice).toHaveBeenCalledTimes(2);
     } finally {
       conn.dispose();
