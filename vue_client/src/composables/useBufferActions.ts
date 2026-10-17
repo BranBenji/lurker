@@ -177,8 +177,13 @@ export function useBufferActions(): BufferActionsAPI {
         },
       );
       // The DCC section, as on the nick menu (#1085, #1157). A `=nick` chat's
-      // peer is the nick, as for the profile above.
-      items.push(...dccActionItems(networkId, peerNick));
+      // peer is the nick, as for the profile above. Not on a DM with yourself:
+      // the server ignores its own offer, leaving a `=nick` buffer and a
+      // listener waiting on nobody. Same self test as the member list's.
+      const selfNick = networks.states[networkId]?.nick;
+      if (!selfNick || selfNick.toLowerCase() !== peerNick.toLowerCase()) {
+        items.push(...dccActionItems(networkId, peerNick));
+      }
     }
     // Close drops the buffer entirely — for a channel that also PARTs it, for
     // a DM it just stops tracking the peer. Both are reversible (rejoin /
