@@ -465,8 +465,13 @@ const dccChatSecure = computed(() => {
 });
 const peerStatusLabel = computed(() => {
   if (dccChatDown.value) {
-    const peer = dccChatPeer(active.value!.target);
-    return `DCC chat with ${peer} is not connected — /dcc chat ${peer} to start a new one`;
+    const a = active.value!;
+    const peer = dccChatPeer(a.target);
+    // A secure chat suggests a secure re-offer (#1157): `/dcc chat` alone
+    // would start the next one in the clear.
+    return networks.wasDccChatSecure(a.networkId, a.target)
+      ? `Secure DCC chat with ${peer} is not connected — /dcc chat -secure ${peer} to start a new one`
+      : `DCC chat with ${peer} is not connected — /dcc chat ${peer} to start a new one`;
   }
   const peer = peerForActive.value;
   if (!peer) return '';

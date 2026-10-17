@@ -20,8 +20,11 @@ export interface DccActionOptions {
   before?: () => void;
 }
 
-/** The chat and send entries for `nick`, each gated on the account's grant.
- *  Empty when DCC is off or the account has neither grant. */
+/** The DCC section of a menu on `nick`: a divider, a "DCC" heading, and the
+ *  chat and send entries, each pair gated on the account's grant. Empty when
+ *  DCC is off or the account has neither grant, so a caller can spread it in
+ *  unconditionally. The section ends where the menu does, or at the caller's
+ *  next divider. */
 export function dccActionItems(
   networkId: number,
   nick: string,
@@ -65,5 +68,5 @@ export function dccActionItems(
       { label: 'Secure Send File (DCC)…', icon: LockIcon, onClick: send(true) },
     );
   }
-  return items;
+  return items.length ? [{ divider: true }, { heading: 'DCC' }, ...items] : [];
 }

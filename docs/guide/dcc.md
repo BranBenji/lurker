@@ -140,7 +140,8 @@ entries in the same menus, and `/dcc chat -secure <nick>` and
 that arrives this way is taken this way. The toast, the status line and the
 row in the DCC window say "secure"; a secure chat's connected line names the
 TLS version and cipher, and its buffer shows a lock in the status bar for as
-long as it is up. Everything else is the same, including `-passive`.
+long as it is up. The send button at the top of that buffer sends securely
+too. Everything else is the same, including `-passive`.
 
 Two things to know:
 

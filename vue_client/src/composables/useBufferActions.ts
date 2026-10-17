@@ -176,8 +176,8 @@ export function useBufferActions(): BufferActionsAPI {
           onClick: () => nickNotes.openEditor(networkId, peerNick),
         },
       );
-      // As on the nick menu (#1085, #1157). A `=nick` chat's peer is the
-      // nick, as for the profile above.
+      // The DCC section, as on the nick menu (#1085, #1157). A `=nick` chat's
+      // peer is the nick, as for the profile above.
       items.push(...dccActionItems(networkId, peerNick));
     }
     // Close drops the buffer entirely — for a channel that also PARTs it, for

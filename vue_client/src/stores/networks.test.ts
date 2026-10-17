@@ -91,19 +91,32 @@ describe('DCC chat state — secure sessions', () => {
     expect(s.isDccChatSecure(1, '=alice')).toBe(false);
   });
 
-  it('forgets the secure mark when the session ends', () => {
+  // The lock is for a live session; the memory of its kind outlives it, so
+  // the "not connected" line can suggest the same kind again.
+  it('remembers an ended session was secure, until a plain one replaces it', () => {
     const s = useNetworksStore();
     s.applyDccChatState(1, 'bob', true, true);
-    s.applyDccChatState(1, 'Bob', false);
+    s.applyDccChatState(1, 'Bob', false, true);
     expect(s.states[1]!.dccChats).toEqual([]);
-    expect(s.states[1]!.dccSecureChats).toEqual([]);
     expect(s.isDccChatSecure(1, '=bob')).toBe(false);
+    expect(s.wasDccChatSecure(1, '=bob')).toBe(true);
+    s.applyDccChatState(1, 'bob', true);
+    expect(s.wasDccChatSecure(1, '=bob')).toBe(false);
   });
 
-  // A stale secure entry with no live session behind it is not a secure chat.
-  it('reads secure only for a live session', () => {
+  // The snapshot lists only LIVE secure sessions, and replaces the state: the
+  // memory of an ended one has to be carried over by hand.
+  it('keeps the memory across a snapshot, unless it shows a plain session now', () => {
     const s = useNetworksStore();
-    s.states[1] = { networkId: 1, channels: [], dccChats: [], dccSecureChats: ['bob'] };
-    expect(s.isDccChatSecure(1, '=bob')).toBe(false);
+    s.applyDccChatState(1, 'bob', true, true);
+    s.applyDccChatState(1, 'bob', false, true);
+    s.applySnapshot([{ networkId: 1, channels: [], dccChats: [], dccSecureChats: [] }]);
+    expect(s.wasDccChatSecure(1, '=bob')).toBe(true);
+    s.applySnapshot([{ networkId: 1, channels: [], dccChats: ['bob'], dccSecureChats: [] }]);
+    expect(s.wasDccChatSecure(1, '=bob')).toBe(false);
+    // And a live secure one in the snapshot is not listed twice.
+    s.applyDccChatState(1, 'bob', false, true);
+    s.applySnapshot([{ networkId: 1, channels: [], dccChats: ['bob'], dccSecureChats: ['bob'] }]);
+    expect(s.states[1]!.dccSecureChats).toEqual(['bob']);
   });
 });

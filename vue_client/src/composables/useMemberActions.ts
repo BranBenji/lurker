@@ -156,8 +156,6 @@ export function useMemberActions(): MemberActionsAPI {
         icon: MailIcon,
         onClick: () => buffers.activate(ctx.networkId, nick),
       });
-      // Chat and send over DCC start from the person (#1085, #1157).
-      items.push(...dccActionItems(ctx.networkId, nick));
     }
     items.push({
       label: hasNote ? 'Edit Note…' : 'Add Note…',
@@ -200,6 +198,9 @@ export function useMemberActions(): MemberActionsAPI {
         icon: BanIcon,
         onClick: () => ctx.onIgnore(member),
       });
+      // Chat and send over DCC start from the person (#1085, #1157): its own
+      // section, as the Notifications ladder is on a buffer.
+      items.push(...dccActionItems(ctx.networkId, nick));
     }
 
     // Channel-operator actions, gated on the current user's own modes in this

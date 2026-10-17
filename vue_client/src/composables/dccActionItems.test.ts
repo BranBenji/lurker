@@ -58,6 +58,22 @@ describe('dccActionItems', () => {
     });
   });
 
+  // A section of its own, like the Notifications ladder: a divider, a heading,
+  // then the pairs in order. Nothing at all without a grant, so a caller can
+  // spread it in unconditionally.
+  it('is a headed section, or nothing', () => {
+    expect(dccActionItems(1, 'alice').map((i) => i.heading ?? i.label ?? '|')).toEqual([
+      '|',
+      'DCC',
+      'Chat (DCC)',
+      'Secure Chat (DCC)',
+      'Send File (DCC)…',
+      'Secure Send File (DCC)…',
+    ]);
+    useDccStore().account = { chat: false, receive: true, send: false };
+    expect(dccActionItems(1, 'alice')).toEqual([]);
+  });
+
   it('picks a file for a send, plain or secure', () => {
     item('Send File (DCC)…').onClick?.();
     expect(useDccStore().pick).toMatchObject({ networkId: 1, nick: 'alice', secure: false });

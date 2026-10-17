@@ -105,4 +105,13 @@ describe('StatusBar — secure DCC chat', () => {
     expect(ended.find('.seg.secure').exists()).toBe(false);
     expect(statusText(ended)).toContain('not connected');
   });
+
+  // `/dcc chat bob` after a secure chat would start the next one in the clear.
+  it('suggests a secure re-offer once a secure chat has ended', () => {
+    const w = mountOn('=bob', { state: 'connected', dccChats: [], dccSecureChats: ['bob'] });
+    expect(statusText(w)).toBe(
+      'Secure DCC chat with bob is not connected — /dcc chat -secure bob to start a new one',
+    );
+    expect(w.find('.peer-status').classes()).toContain('offline');
+  });
 });

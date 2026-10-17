@@ -431,11 +431,13 @@ function openMoreMenu(e: MouseEvent) {
   if (!isOffline.value && !isSelf.value) {
     items.push({ label: 'Ignore…', icon: BanIcon, onClick: onIgnore });
   }
-  // From the person, as on the nick menu (#1085, #1157).
+  // The DCC section, as on the nick menu (#1085, #1157); the entries after it
+  // are their own group.
   if (!isOffline.value && !isSelf.value) {
-    items.push(
-      ...dccActionItems(props.networkId, props.nick, { before: () => whoisStore.closeViewer() }),
-    );
+    const section = dccActionItems(props.networkId, props.nick, {
+      before: () => whoisStore.closeViewer(),
+    });
+    if (section.length) items.push(...section, { divider: true });
   }
   if (!isSelf.value) {
     // What it says is what it does, however long the menu stays open (#1136).
