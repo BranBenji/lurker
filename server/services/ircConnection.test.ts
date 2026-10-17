@@ -536,7 +536,8 @@ describe('client certificate refusals', () => {
   });
 });
 
-describe('tls certificate trust setting', () => {
+// What connect() hands irc-framework, and the network's system lines.
+describe('connect options', () => {
   function makeConn(trusted_certificates: number): IrcConnection {
     return new IrcConnection({
       network: {
@@ -590,6 +591,15 @@ describe('tls certificate trust setting', () => {
     expect(untrustedConnect).toHaveBeenCalledWith(
       expect.objectContaining({ tls: true, rejectUnauthorized: false }),
     );
+  });
+
+  it("waits 5 minutes for a silent server, not irc-framework's 2 (#1146)", () => {
+    const conn = makeConn(1);
+    conn.publish = vi.fn<(event: unknown) => void>();
+    const connect = vi.fn<(options: ConnectOptions) => void>();
+    conn.client.connect = connect;
+    conn.connect();
+    expect(connect).toHaveBeenCalledWith(expect.objectContaining({ ping_timeout: 300 }));
   });
 
   it('logNet writes a system line scoped to the network and stamped with its id (#355)', async () => {
@@ -2923,7 +2933,7 @@ describe('auto-reconnect controller', () => {
     vi.useFakeTimers();
     const { conn, events } = makeConn('rc-ban-blackhole');
     conn.client.emit('irc error', { error: 'irc', reason: 'Closing Link: nick[u@h] (Z-Lined)' });
-    vi.advanceTimersByTime(120 * 1000); // irc-framework's ping timeout scale
+    vi.advanceTimersByTime(300 * 1000); // the ping timeout's scale (#1146)
     conn.client.emit('close', true);
     vi.runAllTimers();
     expect(conn.connect).not.toHaveBeenCalled();

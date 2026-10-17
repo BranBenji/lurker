@@ -34,6 +34,10 @@ declare module 'irc-framework' {
     client_certificate?: { certificate: string; private_key: string };
     auto_reconnect?: boolean;
     auto_reconnect_max_retries?: number;
+    /** Seconds between our PINGs (default 30). */
+    ping_interval?: number;
+    /** Seconds without a line from the server before giving up (default 120). */
+    ping_timeout?: number;
     enable_chghost?: boolean;
     enable_setname?: boolean;
     enable_echomessage?: boolean;

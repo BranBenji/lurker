@@ -10,7 +10,7 @@
 // short backoff — the engine being briefly unreachable is not the same as the
 // IRC sockets being gone, and the transports get a chance to re-attach. It also
 // heartbeats: a half-open link (a NAT entry expired under an engine on another
-// host) is noticed in seconds, not when irc-framework's 120 s ping timeout
+// host) is noticed in seconds, not when the 5-minute IRC ping timeout
 // misreads the silence as an IRC disconnect.
 //
 // Two failures are terminal and turn engine mode OFF for the life of the

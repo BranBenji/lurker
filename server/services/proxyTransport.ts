@@ -27,8 +27,9 @@ import NetTransport from 'irc-framework/src/transports/net.js';
 import { dialThroughProxy, ProxyDialError } from '../utils/proxyDial.js';
 import type { ProxyConfig } from '../../shared/proxy.js';
 
-// irc-framework's own dial budget, matched so a proxied connection gives up on
-// the same schedule as a direct one.
+// How long a proxied dial gets: irc-framework's direct-dial budget at its
+// default ping settings (30 + 120 s). A direct dial now gets 330 s (#1146); a
+// proxy hop that hasn't answered in 2.5 minutes isn't going to.
 const DEFAULT_DIAL_TIMEOUT_MS = 150_000;
 
 // The transport's own state enum, which is module-private in the source. Only
