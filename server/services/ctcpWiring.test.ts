@@ -13,6 +13,7 @@
 import '../test-utils/isolateDb.js';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IrcConnection } from './ircConnection.js';
+import { stubCtcpRequest } from '../test-utils/ctcpStub.js';
 import { setAttachedIrcClientCounter } from './attachedIrcClients.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
@@ -63,13 +64,15 @@ function makeConn(): IrcConnection {
   });
 }
 
-// Spy the wire + publish seams on a freshly-built connection.
+// Spy the wire + publish seams on a freshly-built connection. Connected: a
+// query goes out only then, and a command is read as it goes out (#1149).
 function harness() {
   const conn = makeConn();
+  conn.state = 'connected';
   const ctcpRequest = vi.fn<(target: string, type: string, ...p: string[]) => void>();
   const ctcpResponse = vi.fn<(target: string, type: string, ...p: string[]) => void>();
   const publishEphemeral = vi.fn<(event: Record<string, unknown>) => void>();
-  conn.client.ctcpRequest = ctcpRequest;
+  stubCtcpRequest(conn, ctcpRequest);
   conn.client.ctcpResponse = ctcpResponse;
   conn.publishEphemeral = publishEphemeral;
   // Where each ctcp line went and what it said — all any assertion here reads.

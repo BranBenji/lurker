@@ -28,6 +28,7 @@ export default defineConfig({
           // another branch's suite inside this one's report.
           exclude: ['**/node_modules/**', 'vue_client/**', '.claude/**'],
           environment: 'node',
+          setupFiles: ['./server/test-utils/setup.ts'],
         },
       },
       './vue_client/vitest.config.ts',

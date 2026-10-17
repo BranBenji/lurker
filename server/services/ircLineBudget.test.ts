@@ -14,6 +14,7 @@ import { ircLineParser } from 'irc-framework';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import { FakeIrcd } from '../test-utils/fakeIrcd.js';
+
 import { until } from '../test-utils/until.js';
 
 type Ev = Record<string, unknown>;

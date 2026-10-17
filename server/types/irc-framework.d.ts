@@ -155,6 +155,13 @@ declare module 'irc-framework' {
     connection: {
       end(): void;
       connected: boolean;
+      /** Date.now() at registration, false before it and after a close. */
+      registered: number | false;
+      /** Sets `registered`; called by the framework's own 'registered' listener. */
+      registeredSuccessfully(): void;
+      /** Every outbound line goes through here (client.raw, the CAP and PING
+       *  handlers). The callback is QUIT's, before end(). */
+      write(data: string, callback?: () => void): unknown;
       /** Feed one raw inbound line through the parser and handlers (tests). */
       addReadBuffer(line: string): void;
     };

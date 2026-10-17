@@ -352,6 +352,21 @@ export class E2eManager {
     }
   }
 
+  /** Whether autoHandshakeBody would make a KEYREQ for `peerHandle` now, so
+   *  the send can be queued and the body built when it goes (#1149): the
+   *  outgoing limiter is then charged, and the pending secret created, at
+   *  send time. */
+  wouldAutoHandshake(userId: number, networkId: number, peerHandle: string): boolean {
+    try {
+      if (keyring.getPeerByHandle(userId, networkId, peerHandle)?.globalStatus === 'revoked') {
+        return false;
+      }
+      return this.rateLimiter.canSendOutgoing(this.rlKey(userId, networkId, peerHandle));
+    } catch {
+      return false;
+    }
+  }
+
   /** Auto-initiate a handshake with `peerHandle` after we received ciphertext we
    *  couldn't read (a missing key), mirroring repartee's auto-KEYREQ on
    *  DecryptOutcome::MissingKey (events.rs). Returns the KEYREQ body to NOTICE to
@@ -814,6 +829,41 @@ export class E2eManager {
   }
 
   // ─── encrypt / decrypt ───────────────────────────────────────────────────────
+
+  /** What encryptOutgoing would say about `plaintext` for `channel` before any
+   *  key is touched: `disabled` (send plaintext), `ok`, or `error` with why (a
+   *  message too long to chunk). The send path checks this when the message is
+   *  queued and encrypts when it goes (#1149), so the user hears "not sent" at
+   *  once for what can be known at once. */
+  checkOutgoing(
+    userId: number,
+    networkId: number,
+    channel: string,
+    plaintext: string,
+  ): { kind: 'disabled' } | { kind: 'ok' } | { kind: 'error'; reason: string } {
+    const cfg = keyring.getChannelConfig(userId, networkId, channel);
+    if (!cfg || !cfg.enabled) return { kind: 'disabled' };
+    try {
+      splitPlaintext(plaintext);
+    } catch (e) {
+      return { kind: 'error', reason: (e as Error).message };
+    }
+    return { kind: 'ok' };
+  }
+
+  /** Make sure `channel` has its outgoing key, generating one (and, for a
+   *  pending rotation, queueing the REKEYs) now, so the REKEYs can go ahead of
+   *  a message that is encrypted only once they have (#1149). False on an
+   *  identity or crypto failure, which encryptOutgoing then reports. */
+  prepareOutgoing(userId: number, networkId: number, channel: string): boolean {
+    try {
+      this.getOrGenerateOutgoingKey(userId, networkId, channel);
+      return true;
+    } catch (err) {
+      console.warn(`e2e prepare ${channel}: ${(err as Error).message}`);
+      return false;
+    }
+  }
 
   /** Encrypt `plaintext` for `channel`. `disabled` means the caller may send
    *  plaintext; `error` means E2E is on but encryption failed — the caller must
@@ -1342,6 +1392,23 @@ export class E2eManager {
     } catch (err) {
       console.warn(`e2e takePendingRekeySends: ${(err as Error).message}`);
       return [];
+    }
+  }
+
+  /** A REKEY taken by takePendingRekeySends that never reached the wire (its
+   *  socket died first, #1149) goes back to the front of the queue: the
+   *  outgoing session already has the new key, and a peer who never got it
+   *  reports authentication failure, which nothing recovers from. */
+  putBackRekeySend(userId: number, networkId: number, send: PendingRekeySend): void {
+    try {
+      const key = this.tenantKey(userId, networkId);
+      const queue = this.pendingRekey.get(key) ?? [];
+      if (!queue.some((s) => s.channel === send.channel && s.targetHandle === send.targetHandle)) {
+        queue.unshift(send);
+      }
+      this.pendingRekey.set(key, queue);
+    } catch (err) {
+      console.warn(`e2e putBackRekeySend: ${(err as Error).message}`);
     }
   }
 

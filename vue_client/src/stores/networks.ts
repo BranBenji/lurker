@@ -68,6 +68,10 @@ export interface NetworkState {
   // retire an offer toast whose offer disappeared while this tab was offline.
   dccChatOffers?: string[];
   lagMs?: number | null;
+  // Lines waiting in the network's outbound queue (#1149): a paste or a
+  // handshake burst the server would otherwise kill us for, going out paced.
+  // Seeded by the snapshot, kept current by `send-queue` frames.
+  sendQueueWaiting?: number;
   // Advertised draft/multiline limits when the network negotiated the cap,
   // else null/absent. Drives the composer's multiline-aware SPLIT/FLOOD hint
   // and upload-as-.txt gate. Refreshed by the snapshot pushed on connect. (#381)
@@ -410,6 +414,14 @@ export const useNetworksStore = defineStore('networks', {
       this.states[event.networkId] = {
         ...existing,
         lagMs: typeof v === 'number' ? v : null,
+      };
+    },
+    applySendQueue(event: any) {
+      const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };
+      const v = event.waiting;
+      this.states[event.networkId] = {
+        ...existing,
+        sendQueueWaiting: typeof v === 'number' ? v : 0,
       };
     },
   },

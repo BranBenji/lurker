@@ -429,11 +429,13 @@ describe('server-time + msgid persistence (real publish)', () => {
 describe('ircManager optimistic-publish gating', () => {
   function fakeConn(overrides: Record<string, unknown> = {}) {
     const say = vi.fn<(target: string, text: string) => void>();
+    const sayEncrypted = vi.fn<(target: string, text: string) => void>();
     const action = vi.fn<(target: string, text: string) => void>();
     const notice = vi.fn<(target: string, text: string) => void>();
     const publish = vi.fn<(event: unknown) => void>();
     const conn = {
       say,
+      sayEncrypted,
       action,
       notice,
       publish,
@@ -450,7 +452,7 @@ describe('ircManager optimistic-publish gating', () => {
       actionChunks: (_target: string, text: string) => splitAction(text),
       ...overrides,
     } as unknown as IrcConnection;
-    return { conn, say, action, notice, publish };
+    return { conn, say, sayEncrypted, action, notice, publish };
   }
 
   it('send/action/notice write the wire but skip the optimistic publish when echo is active', () => {
@@ -459,10 +461,11 @@ describe('ircManager optimistic-publish gating', () => {
     ircManager.send(userId, networkId, '#gate', 'hi');
     ircManager.action(userId, networkId, '#gate', 'waves');
     ircManager.notice(userId, networkId, '#gate', 'psst');
-    // The third argument is a reply's tags — none here.
-    expect(say).toHaveBeenCalledWith('#gate', 'hi', null);
-    expect(action).toHaveBeenCalledWith('#gate', 'waves', null);
-    expect(notice).toHaveBeenCalledWith('#gate', 'psst');
+    // The third argument is a reply's tags — none here; the last, the
+    // sender's line hooks (#1149).
+    expect(say).toHaveBeenCalledWith('#gate', 'hi', null, undefined);
+    expect(action).toHaveBeenCalledWith('#gate', 'waves', null, undefined);
+    expect(notice).toHaveBeenCalledWith('#gate', 'psst', undefined);
     expect(publish).not.toHaveBeenCalled();
   });
 
@@ -479,7 +482,7 @@ describe('ircManager optimistic-publish gating', () => {
     const withEcho = fakeConn({ supportsMultiline: () => true, sendMultiline });
     vi.spyOn(ircManager, 'getConnection').mockReturnValue(withEcho.conn);
     ircManager.send(userId, networkId, '#gate', 'a\nb');
-    expect(sendMultiline).toHaveBeenCalledWith('#gate', 'a\nb', undefined);
+    expect(sendMultiline).toHaveBeenCalledWith('#gate', 'a\nb', undefined, undefined);
     expect(withEcho.publish).not.toHaveBeenCalled();
     vi.restoreAllMocks();
 
@@ -517,28 +520,31 @@ describe('ircManager optimistic-publish gating', () => {
   it('refuses an E2E send while not writable, without encrypting', () => {
     e2eManager.setChannelConfig(userId, networkId, '#e2eoffline', true, 'normal');
     const flushE2eRekeys = vi.fn<() => void>();
-    const { conn, say, publish } = fakeConn({ state: 'reconnecting', flushE2eRekeys });
+    const { conn, say, sayEncrypted, publish } = fakeConn({
+      state: 'reconnecting',
+      flushE2eRekeys,
+    });
     vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
     expect(ircManager.send(userId, networkId, '#e2eoffline', 'secret hello')).toBe(false);
     expect(say).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
     // ⚠⚠ This is the assertion that pins WHERE the gate sits. say/publish alone
-    // would still pass with the gate moved to just after encryptOutgoing() —
-    // which advances the ratchet and DRAINS the pending rekey queue into a dead
-    // socket, losing those rekeys for good. Only flushE2eRekeys catches that.
+    // would still pass with the gate moved to just after the message is
+    // queued — and sayEncrypted is what advances the ratchet and drains the
+    // pending rekey queue when the message's turn comes (#1149).
+    expect(sayEncrypted).not.toHaveBeenCalled();
     expect(flushE2eRekeys).not.toHaveBeenCalled();
   });
 
   it('the E2E branch keeps its optimistic plaintext publish even with echo active', () => {
     e2eManager.setChannelConfig(userId, networkId, '#e2egate', true, 'normal');
-    const { conn, say, publish } = fakeConn();
+    const { conn, say, sayEncrypted, publish } = fakeConn();
     vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
     ircManager.send(userId, networkId, '#e2egate', 'secret hello');
-    // Ciphertext on the wire, exactly one readable self bubble locally.
-    expect(say).toHaveBeenCalled();
-    for (const [, line] of say.mock.calls) {
-      expect(line.startsWith('+RPE2E01')).toBe(true);
-    }
+    // The encrypted path (its wire is pinned in ircE2eWiring.test.ts), and
+    // exactly one readable self bubble locally.
+    expect(sayEncrypted).toHaveBeenCalledWith('#e2egate', 'secret hello', undefined);
+    expect(say).not.toHaveBeenCalled();
     expect(publish).toHaveBeenCalledTimes(1);
     expect(publish.mock.calls[0][0]).toMatchObject({
       text: 'secret hello',
@@ -615,10 +621,9 @@ describe('ircManager optimistic-publish gating', () => {
     it('E2E', () => {
       const { conn, publish } = fakeConn(COLLIDED);
       vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
-      vi.spyOn(e2eManager, 'encryptOutgoing').mockReturnValue({
-        kind: 'encrypted',
-        lines: ['CIPHERTEXT'],
-      } as never);
+      // The branch is taken on the check; the encryption itself happens when
+      // the message's turn in the outbound queue comes (sayEncrypted, #1149).
+      vi.spyOn(e2eManager, 'checkOutgoing').mockReturnValue({ kind: 'ok' });
       try {
         ircManager.send(userId, networkId, '#gate', 'secret');
         expect(publish).toHaveBeenCalledTimes(1);

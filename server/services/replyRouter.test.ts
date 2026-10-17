@@ -28,8 +28,13 @@ function setup(
   const writes: string[] = [];
   const state = { connected: true };
   const joined = new Set((opts.joined ?? []).map((c) => c.toLowerCase()));
+  // A connection with nothing queued: the line goes at once (#1149).
   const router = new ReplyRouter({
-    write: (line) => writes.push(line),
+    write: (line, onSent) => {
+      writes.push(typeof line === 'function' ? line() : line);
+      onSent?.(performance.now());
+      return { cancel: () => false };
+    },
     canSend: () => state.connected,
     fold: (name) => name.toLowerCase(),
     isJoined: (channel) => joined.has(channel.toLowerCase()),
@@ -56,6 +61,96 @@ function fakeTimers(): void {
     toFake: ['setTimeout', 'clearTimeout', 'setImmediate', 'clearImmediate', 'Date'],
   });
 }
+
+describe('a client that detaches', () => {
+  it('takes its query out of the queue before it has gone, and frees what waited on it', () => {
+    // The connection holds the line: nothing goes until told.
+    const held: Array<() => void> = [];
+    const writes: string[] = [];
+    const router = new ReplyRouter({
+      write: (line, onSent) => {
+        const text = typeof line === 'function' ? line() : line;
+        const h = () => {
+          writes.push(text);
+          onSent?.(performance.now());
+        };
+        held.push(h);
+        return { cancel: () => held.splice(held.indexOf(h), 1).length > 0 };
+      },
+      canSend: () => true,
+      fold: (name) => name.toLowerCase(),
+      isJoined: () => true,
+      ownNick: () => 'me',
+      listModes: () => new Set('beIq'.split('')),
+      prefixModes: () => new Set(['o', 'v']),
+    });
+    const gone = new Client();
+    const stays = new Client();
+    router.send(gone, 'WHO #c');
+    router.send(stays, 'WHO #d');
+    expect(held).toHaveLength(1); // the second WHO waits for the first
+    router.dropClient(gone);
+    expect(held).toHaveLength(1);
+    held[0]();
+    expect(writes).toEqual(['WHO #d']);
+  });
+});
+
+describe('a socket that dies with a query still queued', () => {
+  it('tells the query it was dropped, as any line dropped with its socket', () => {
+    // A user's /whois behind a paste: reset() takes it out of the queue, and
+    // the sender hears "not sent" through onDropped, as a PRIVMSG's does.
+    const router = new ReplyRouter({
+      write: () => ({ cancel: () => true }),
+      canSend: () => true,
+      fold: (name) => name.toLowerCase(),
+      isJoined: () => true,
+      ownNick: () => 'me',
+      listModes: () => new Set('beIq'.split('')),
+      prefixModes: () => new Set(['o', 'v']),
+    });
+    const dropped: string[] = [];
+    router.send('user', 'WHOIS bob', undefined, undefined, () => dropped.push('WHOIS bob'));
+    router.reset();
+    expect(dropped).toEqual(['WHOIS bob']);
+  });
+});
+
+describe("Lurker's own query still in the queue", () => {
+  it("steps aside for a client's query of its kind, and waits behind it instead", () => {
+    // The away-sync WHO waits in the low lane behind a paste; a bouncer
+    // client's WHO for the same channel must not wait that out.
+    const held = new Map<string, () => void>();
+    const writes: string[] = [];
+    const router = new ReplyRouter({
+      write: (line, onSent) => {
+        const text = typeof line === 'function' ? line() : line;
+        writes.push(text);
+        held.set(text, () => onSent?.(performance.now()));
+        return { cancel: () => held.delete(text) };
+      },
+      canSend: () => true,
+      fold: (name) => name.toLowerCase(),
+      isJoined: () => true,
+      ownNick: () => 'me',
+      listModes: () => new Set('beIq'.split('')),
+      prefixModes: () => new Set(['o', 'v']),
+    });
+    const client = new Client();
+    router.send('lurker', 'WHO #c');
+    expect(writes).toEqual(['WHO #c']);
+    router.send(client, 'WHO #c');
+    // Lurker's was taken back out of the queue; the client's is in it.
+    expect(writes).toEqual(['WHO #c', 'WHO #c']);
+    expect(held.size).toBe(1);
+    held.get('WHO #c')!();
+    const line = ':irc.test 315 me #c :End of /WHO list.';
+    const msg = ircLineParser(line)!;
+    expect(router.noteServerLine(line, msg.command, msg.params, 'irc.test')).toBe(client);
+    // And now Lurker's goes.
+    expect(writes).toEqual(['WHO #c', 'WHO #c', 'WHO #c']);
+  });
+});
 
 describe('what waits its turn', () => {
   it('holds a second WHO until the first ends', () => {
@@ -681,5 +776,39 @@ describe('MODE #chan from cache', () => {
     hear(MODE_IS);
     router.send('user', 'MODE #c');
     expect(writes).toEqual(['MODE #c']);
+  });
+});
+
+describe('the wire is in the order lines went', () => {
+  it('a reply goes to the oldest query that has GONE, not the oldest handed over', () => {
+    // The connection's queue has lanes (sendPacer.ts): Lurker's own query waits
+    // in `low`, a client's goes ahead of it. The 403 is the client's.
+    const held = new Map<string, () => void>();
+    const priorities: Array<string | undefined> = [];
+    const router = new ReplyRouter({
+      write: (line, onSent, _onDropped, priority) => {
+        const text = typeof line === 'function' ? line() : line;
+        priorities.push(priority);
+        held.set(text, () => onSent?.(performance.now()));
+        return { cancel: () => false };
+      },
+      canSend: () => true,
+      fold: (name) => name.toLowerCase(),
+      isJoined: () => true,
+      ownNick: () => 'me',
+      listModes: () => new Set('beIq'.split('')),
+      prefixModes: () => new Set(['o', 'v']),
+      timeoutMs: 30_000,
+      settleMs: 1_000,
+    });
+    const client = new Client();
+    router.send('lurker', 'MODE #c');
+    router.send(client, 'TOPIC #c');
+    expect(priorities).toEqual(['low', undefined]);
+    held.get('TOPIC #c')!();
+    held.get('MODE #c')!();
+    const line = ':irc.example.test 403 me #c :No such channel';
+    const msg = ircLineParser(line)!;
+    expect(router.noteServerLine(line, msg.command, msg.params, 'irc.example.test')).toBe(client);
   });
 });

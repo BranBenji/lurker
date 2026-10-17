@@ -46,6 +46,10 @@
           peerStatusLabel
         }}</span>
         <span v-if="lagLabel && !compact" class="seg lag" :class="lagClass">{{ lagLabel }}</span>
+        <!-- Lines still to go out on this network (#1149): a long paste or a
+             handshake burst is sent paced rather than all at once, and this is
+             the only sign of where it is. -->
+        <span v-if="queueLabel" class="seg queue" :title="queueTitle">{{ queueLabel }}</span>
         <span v-if="uploadLabel" class="seg upload" :class="{ failed: uploads.failedAt }">{{
           uploadLabel
         }}</span>
@@ -522,6 +526,18 @@ const lagClass = computed(() => {
   return '';
 });
 
+const queueWaiting = computed(() => {
+  const a = active.value;
+  if (!a) return 0;
+  return networks.states[a.networkId]?.sendQueueWaiting ?? 0;
+});
+const queueLabel = computed(() => (queueWaiting.value > 0 ? `${queueWaiting.value} waiting` : ''));
+const queueTitle = computed(() =>
+  queueWaiting.value > 0
+    ? `${queueWaiting.value} ${queueWaiting.value === 1 ? 'line' : 'lines'} still to send — spaced out so the server doesn't drop the connection for flooding`
+    : '',
+);
+
 // Clock lives in the status bar now. Same 1s tick + same format setting as
 // the input bar used to have, so existing look.bar.time_format keeps working.
 const tsFormat = computed(() => settings.effective('look.bar.time_format') as string);
@@ -774,6 +790,9 @@ function onToggleUploadMenu() {
 }
 .seg.lag {
   color: var(--fg-muted);
+}
+.seg.queue {
+  color: var(--warn);
 }
 .seg.lag.warn {
   color: var(--warn);

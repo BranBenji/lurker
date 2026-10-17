@@ -52,9 +52,22 @@ export type Asker = 'lurker' | 'user' | ReplyClient;
  */
 export type ReplyOwner = Asker | 'unasked' | 'nobody';
 
+import type { SendHandle, SendPriority } from './sendPacer.js';
+
+/** A line handed to the connection's queue, which can be taken back before it goes. */
+export type Written = SendHandle;
+
 export interface ReplyRouterOptions {
-  /** Put a line on the wire. */
-  write(line: string): void;
+  /**
+   * Put a line on the wire: now, or in its turn behind what waits (#1149). A
+   * function makes the line when it goes. `onSent` runs once it has gone.
+   */
+  write(
+    line: string | (() => string),
+    onSent?: (at: number) => void,
+    onDropped?: () => void,
+    priority?: SendPriority,
+  ): Written | void;
   /** Whether a query can go out now. One that can't ends at once. */
   canSend(): boolean;
   /** The network's case fold, for channel names and nicks. */
@@ -237,6 +250,13 @@ interface Query extends Spec {
   timer: ReturnType<typeof setTimeout> | null;
   // Whether any of its reply has come. A 301 counts for a WHOIS only after that.
   started: boolean;
+  // Whether the line has gone. Until then no reply can be its, its timeout
+  // isn't running, and `written` takes it back out of the queue.
+  sent: boolean;
+  written: Written | null;
+  onSent: ((at: number) => void) | undefined;
+  onDropped: (() => void) | undefined;
+  priority: SendPriority | undefined;
 }
 
 interface Settle {
@@ -285,11 +305,22 @@ export class ReplyRouter {
   /**
    * Send a line for `asker`. A query may wait its turn, and `build`, if given,
    * makes the line when it goes out; anything else is written at once.
+   * `onSent` runs when the line has gone (#1149): a timer that waits on the
+   * reply starts there. Lurker's own queries wait in the queue's `low` lane,
+   * behind what the user says, unless `priority` says otherwise.
    */
-  send(asker: Asker, line: string, build?: () => string): void {
+  send(
+    asker: Asker,
+    line: string,
+    build?: () => string,
+    onSent?: (at: number) => void,
+    onDropped?: () => void,
+    priority?: SendPriority,
+  ): void {
+    const lane = priority ?? (asker === 'lurker' ? 'low' : undefined);
     const found = this.classify(line);
     if (!found) {
-      this.opts.write(line);
+      this.opts.write(line, onSent, onDropped, lane);
       return;
     }
     this.dispatch({
@@ -299,6 +330,11 @@ export class ReplyRouter {
       heardAt: 0,
       timer: null,
       started: false,
+      sent: false,
+      written: null,
+      onSent,
+      onDropped,
+      priority: lane,
     });
   }
 
@@ -329,7 +365,14 @@ export class ReplyRouter {
     // The query waiting on the line after its error counts too: that 318 or 315
     // never came.
     const ended = [...(this.settle ? [this.settle.query] : []), ...this.wire, ...this.waiting];
-    for (const query of this.wire) if (query.timer) clearTimeout(query.timer);
+    for (const query of this.wire) {
+      if (query.timer) clearTimeout(query.timer);
+      // Still in the queue: it must not go out on the next socket, where its
+      // reply would be nobody's. Its sender is told, as of any line dropped
+      // with its socket (a user's /whois behind a paste: "not sent").
+      if (query.written?.cancel()) query.onDropped?.();
+      query.written = null;
+    }
     if (this.settle?.timer) clearTimeout(this.settle.timer);
     this.wire = [];
     this.waiting = [];
@@ -338,16 +381,51 @@ export class ReplyRouter {
     for (const query of ended) this.abort(query);
   }
 
-  /** A client detached. Its waiting queries go, and replies to one on the wire go nowhere. */
+  /** A client detached. Its waiting queries go, one still in the queue goes
+   *  with them, and replies to one on the wire go nowhere. */
   dropClient(client: ReplyClient): void {
     this.waiting = this.waiting.filter((query) => query.asker !== client);
-    for (const query of this.wire) if (query.asker === client) query.asker = null;
+    let released = false;
+    const queries = this.wire.slice();
+    for (const query of queries) {
+      if (query.asker !== client) continue;
+      if (!query.sent) {
+        query.written?.cancel();
+        query.written = null;
+        this.takeOffWire(query);
+        released = true;
+      } else {
+        query.asker = null;
+      }
+    }
     if (this.settle?.query.asker === client) this.settle.query.asker = null;
+    if (released) this.releaseWaiting();
   }
 
   private dispatch(query: Query): void {
     if (query.asker === null) return;
     if (this.answerFromCache(query)) return;
+    // Lurker's own query of the kind this one would wait for, still in the
+    // queue (the low lane, #1149): it steps aside, so a client's WHO after a
+    // join goes ahead of the away-sync WHO waiting behind a paste, and Lurker's
+    // waits behind the client's instead. Only one still in the queue: one on
+    // the wire is being answered.
+    const aside =
+      query.asker === 'lurker'
+        ? []
+        : this.wire.filter(
+            (other) => !other.sent && other.asker === 'lurker' && this.blocks(other, query),
+          );
+    for (const other of aside) {
+      other.written?.cancel();
+      other.written = null;
+      this.takeOffWire(other);
+    }
+    this.dispatchNow(query);
+    for (const other of aside) this.dispatch(other);
+  }
+
+  private dispatchNow(query: Query): void {
     if (this.mustWait(query)) {
       this.waiting.push(query);
       return;
@@ -356,10 +434,31 @@ export class ReplyRouter {
       this.abort(query);
       return;
     }
-    query.heardAt = Date.now();
+    // On the wire from here, so what follows it waits its turn; its timeout
+    // runs from when it has actually gone, which behind a backlog is later.
     this.wire.push(query);
-    this.armTimeout(query, this.timeoutMs());
-    this.opts.write(query.build());
+    const written = this.opts.write(
+      query.build,
+      (at) => {
+        query.sent = true;
+        query.written = null;
+        query.heardAt = Date.now();
+        // To the back: the wire is in the order lines went, which, with the
+        // queue's lanes, is not the order they were handed to it. A reply
+        // goes to the oldest SENT query it can answer (claim).
+        const index = this.wire.indexOf(query);
+        if (index !== -1) {
+          this.wire.splice(index, 1);
+          this.wire.push(query);
+          this.armTimeout(query, this.timeoutMs());
+        }
+        query.onSent?.(at);
+      },
+      query.onDropped,
+      query.priority,
+    );
+    // A line with nothing ahead of it has gone by now.
+    if (!query.sent) query.written = written ?? null;
   }
 
   // Whether a query waits for one already out, or for the line that may still
@@ -368,11 +467,16 @@ export class ReplyRouter {
   // channel, whose reply then answers it from cache.
   private mustWait(query: Query): boolean {
     const ahead = this.settle ? [...this.wire, this.settle.query] : this.wire;
-    if (WAITS.has(query.form)) return ahead.some((other) => other.form === query.form);
+    return ahead.some((other) => this.blocks(other, query));
+  }
+
+  // Whether `query` waits for `other`: its kind, or a client's MODE #chan
+  // behind one asking about that channel.
+  private blocks(other: Query, query: Query): boolean {
+    if (WAITS.has(query.form)) return other.form === query.form;
     if (query.form === 'mode' && isClient(query.asker)) {
-      const channel = this.opts.fold(query.channel);
-      return ahead.some(
-        (other) => other.form === 'mode' && this.opts.fold(other.channel) === channel,
+      return (
+        other.form === 'mode' && this.opts.fold(other.channel) === this.opts.fold(query.channel)
       );
     }
     return false;
@@ -430,6 +534,8 @@ export class ReplyRouter {
   private claim(command: string, params: string[]): ReplyOwner | undefined {
     if (this.wire.length === 0) return undefined;
     for (const query of this.wire) {
+      // A reply to a line that hasn't gone yet can't be.
+      if (!query.sent) continue;
       const role = this.roleOf(query, command, params);
       if (!role) continue;
       query.heardAt = Date.now();
@@ -438,6 +544,7 @@ export class ReplyRouter {
       return query.asker ?? 'nobody';
     }
     for (const query of this.wire) {
+      if (!query.sent) continue;
       if (!this.isErrorFor(query, command, params)) continue;
       this.finish(query, this.endAfterError(query));
       return query.asker ?? 'nobody';

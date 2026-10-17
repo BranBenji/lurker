@@ -29,6 +29,7 @@ import { getDccTransfer, failInterruptedDccSends } from '../db/dccTransfers.js';
 import { encodeDccAddress } from './dcc.js';
 import { invalidateCasemappingCache } from '../db/buffers.js';
 import { IrcConnection } from './ircConnection.js';
+import { stubCtcpRequest } from '../test-utils/ctcpStub.js';
 import { activeDccListenerCount, resetDccListeners } from './dccListener.js';
 
 // Below 32768 (see dccChatWiring.test.ts), and apart from the other DCC test
@@ -116,7 +117,7 @@ function harness(networkFields: Record<string, unknown> = {}) {
   const ctcpResponse = vi.fn<(target: string, type: string, ...p: string[]) => void>();
   const ephemeral: Array<Record<string, unknown>> = [];
   const frames: Array<Record<string, unknown>> = [];
-  conn.client.ctcpRequest = ctcpRequest;
+  stubCtcpRequest(conn, ctcpRequest);
   conn.client.ctcpResponse = ctcpResponse;
   // DCC status lines are stored lines in the peer's DM (#1085).
   conn.publish = (event: Record<string, unknown>) => {

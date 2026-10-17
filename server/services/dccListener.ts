@@ -58,11 +58,16 @@ export interface DccListenHandle {
   /** Tear down: stop listening, release the port, and reject `accepted` if still
    *  pending. Idempotent — safe to call after the socket was already handed off. */
   close(): void;
+  /** (Re)start the wait for the peer: `ms` from now, it times out. For a
+   *  listener opened with `timeoutMs: null`, called once its advertisement has
+   *  actually gone out (#1149). */
+  armTimeout(ms: number): void;
 }
 
 export interface DccListenOptions {
-  /** Auto-close + reject if no peer connects within this window. */
-  timeoutMs?: number;
+  /** Auto-close + reject if no peer connects within this window. Null: not
+   *  until `armTimeout` says so. */
+  timeoutMs?: number | null;
   /** When set, only accept a connection whose remote address matches this host
    *  (the peer we made the offer to, learned from its ident/host or a passive
    *  reply). A mismatch is dropped and we keep waiting — hardening against a
@@ -89,7 +94,7 @@ export function openDccListener(opts: DccListenOptions = {}): Promise<DccListenH
     return Promise.reject(new Error('DCC active listening is not configured'));
   }
   const bind = dccListenBindHost();
-  const timeoutMs = opts.timeoutMs ?? 120_000;
+  const timeoutMs = opts.timeoutMs === undefined ? 120_000 : opts.timeoutMs;
   const expect = opts.expectPeerHost ? normalizeAddr(opts.expectPeerHost) : null;
 
   // Candidate ports: the whole range minus what's already bound, tried from a
@@ -145,6 +150,22 @@ export function openDccListener(opts: DccListenOptions = {}): Promise<DccListenH
         }
       };
 
+      const arm = (ms: number): void => {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          acceptReject(new Error('DCC offer timed out — peer never connected'));
+          release();
+          try {
+            server.close();
+          } catch {
+            /* ignore */
+          }
+        }, ms);
+        timer.unref?.();
+      };
+
       const handle: DccListenHandle = {
         port,
         accepted,
@@ -159,6 +180,9 @@ export function openDccListener(opts: DccListenOptions = {}): Promise<DccListenH
           } catch {
             /* already closing */
           }
+        },
+        armTimeout: (ms) => {
+          if (!settled) arm(ms);
         },
       };
 
@@ -206,18 +230,7 @@ export function openDccListener(opts: DccListenOptions = {}): Promise<DccListenH
       server.listen(port, bind, () => {
         inUse.add(port);
         reserved = true;
-        timer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          acceptReject(new Error('DCC offer timed out — peer never connected'));
-          release();
-          try {
-            server.close();
-          } catch {
-            /* ignore */
-          }
-        }, timeoutMs);
-        timer.unref?.();
+        if (timeoutMs !== null) arm(timeoutMs);
         resolveHandle(handle);
       });
     };

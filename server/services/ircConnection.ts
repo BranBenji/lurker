@@ -79,7 +79,12 @@ import type { ModeSpec } from '../../shared/channelModes.js';
 import type { ModeChange } from '../../shared/modes.js';
 import { registerIdent, unregisterIdent, isIdentdEnabled, isOidentdFileEnabled } from './identd.js';
 import { EngineLink, engineConfigured, engineConnectionId } from './engineLink.js';
-import { ENGINE_CLOSE, EngineTransport, engineCloseCode } from './engineTransport.js';
+import {
+  ENGINE_CLOSE,
+  EngineTransport,
+  engineCloseCode,
+  swallowedWhileRestoring,
+} from './engineTransport.js';
 import type { EnginePhase, EnginePhaseInfo } from './engineTransport.js';
 import {
   reattachAbandoned,
@@ -103,6 +108,9 @@ import { contextKey, isChannelContext } from './e2e/context.js';
 import { CTCP_TAG, WIRE_PREFIX } from './e2e/constants.js';
 import { e2eDbg } from './e2e/debug.js';
 import { RateLimiter } from './e2e/rateLimiter.js';
+import { SendPacer } from './sendPacer.js';
+import type { Line, SendPriority, WriteOptions } from './sendPacer.js';
+import type { LineHooks } from './ircManager.js';
 import {
   buildCtcpReply,
   CTCP_ANSWER_SETTINGS,
@@ -290,6 +298,12 @@ const RESTORE_QUIET_MS = 10_000;
 // LURKER_RESTORE_STEP_DEADLINE_MS overrides it, read per step, so a test of the
 // fallback does not have to sit through it.
 const RESTORE_STEP_DEADLINE_MS = 10_000;
+// How long a step may hold its restoreGate slot while its requests wait their
+// turn in the queue (#1149). The deadline above counts from the last request
+// going; behind a long paste that is later than now, and the slot, shared by
+// every connection in the process, must come back regardless. Past this the
+// walk moves on; the requests still go, and their replies are the restore's.
+const RESTORE_STEP_SLOT_CAP_MS = 60_000;
 // The terminal reply of each request a restore step makes. Indexed by an
 // arbitrary numeric, so the value is `| undefined` — that is what makes the
 // `if (!reply) return` guard in noteRestoreReply type-honest for the numerics
@@ -328,6 +342,9 @@ const PASSIVE_DCC_TIMEOUT_MS = 120_000;
 // Bound the dial to a peer's advertised address so an unreachable one fails
 // promptly instead of hanging until the OS SYN timeout (~1-2 minutes).
 const DCC_CHAT_CONNECT_TIMEOUT_MS = 15_000;
+// How long an offered chat's listener waits for the peer, from when the offer
+// has gone out.
+const DCC_CHAT_LISTEN_WAIT_MS = 120_000;
 
 // How long an unsolicited inbound chat offer stays acceptable. Generous, because
 // the cost of a stale one is only a dial that fails — but not unbounded, so a
@@ -366,6 +383,17 @@ const XDCC_ACKED_TTL_MS = 12 * 3_600_000;
 const ENDED_PASSIVE_SEND_MEMORY_MS = 60 * 60_000;
 
 // A file we've offered and the peer hasn't connected for yet (#1086).
+// A RESUME out to a sender, awaiting its ACCEPT. `timer` runs from when the
+// RESUME went out, null while it waits in the queue.
+interface PendingResume {
+  transferId: number;
+  nick: string;
+  offer: DccSend;
+  destPath: string;
+  startOffset: number;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
 interface DccSendOffer {
   transferId: number;
   nick: string;
@@ -385,7 +413,7 @@ interface DccSendOffer {
   resumeAt: number;
   /** A passive offer's dial to the receiver's reply, while it connects. */
   dial: net.Socket | null;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | null;
 }
 
 const NON_PERSISTED_TYPES = new Set([
@@ -397,6 +425,7 @@ const NON_PERSISTED_TYPES = new Set([
   'away-state',
   'channel-modes',
   'lag',
+  'send-queue',
   'peer-presence',
   // RPE2E status lines are transient echoes (like /help output), surfaced via
   // publishEphemeral — never write them to history (#382).
@@ -550,6 +579,13 @@ interface AwayState {
 // Events emitted internally toward wsHub. The shape is open-ended because
 // different event types carry very different fields. We keep `type` and the
 // common fields typed; the rest is spread dynamically.
+/** What a caller wants to know about one line it sends (#1149): that it
+ *  went, or that it was dropped with its socket. */
+export interface SendHooks {
+  onSent?: () => void;
+  onDropped?: () => void;
+}
+
 interface IrcEvent {
   type: string;
   target?: string;
@@ -917,21 +953,11 @@ export class IrcConnection {
   // Passive chat offers awaiting the peer's reverse reply, keyed by our token.
   private readonly pendingPassiveChats = new Map<
     number,
-    { nick: string; timer: ReturnType<typeof setTimeout> }
+    { nick: string; timer: ReturnType<typeof setTimeout> | null }
   >();
   // Resumes awaiting the sender's DCC ACCEPT, keyed by nick|filename. Each holds
   // a timeout so a bot that never accepts fails the transfer cleanly.
-  private readonly dccPendingResume = new Map<
-    string,
-    {
-      transferId: number;
-      nick: string;
-      offer: DccSend;
-      destPath: string;
-      startOffset: number;
-      timer: ReturnType<typeof setTimeout>;
-    }
-  >();
+  private readonly dccPendingResume = new Map<string, PendingResume>();
   useMonitor: boolean;
   monitorLimit: number;
   // The last modeSpec sent as a `mode-spec` frame, as JSON (#727).
@@ -972,7 +998,6 @@ export class IrcConnection {
   // shows in place of `~username` (#643).
   private identdIdent: string | null = null;
   disposed: boolean;
-  connectCommandTimer: ReturnType<typeof setTimeout> | null;
   lagMs: number | null;
   lagPingTimer: ReturnType<typeof setInterval> | null;
   lagPendingToken: string | null;
@@ -1086,6 +1111,22 @@ export class IrcConnection {
   // bucket. Reuses the same limiter the E2E handshake path uses for the
   // identical inbound-flood threat.
   ctcpLimiter: RateLimiter;
+  // Every outbound line, in order, paced by what the server charges for them
+  // (sendPacer.ts, #1149). `sendQueueWaiting` mirrors its depth for snapshots.
+  private readonly sendPacer: SendPacer;
+  private sendQueueWaiting = 0;
+  // True while the queue is writing a line, so the write hook lets it through.
+  private sendingNow = false;
+  /** The lane for lines irc-framework itself writes meanwhile (sendPacer.ts):
+   *  set around a client.join() or changeNick() that is Lurker's own doing. */
+  private writePriority: SendPriority | undefined;
+  // A 001 has been seen on this socket: set as our 'registered' handler
+  // starts, ahead of the framework's own flag; cleared with the socket.
+  private sawRegistered = false;
+  // The timer for the next WAIT-delayed connect command, and a sequence that
+  // outdates a run cut short (close, dispose, a re-run).
+  private connectCommandTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectCommandSeq = 0;
   // Outstanding outbound CTCP requests we sent, so a reply routes back to the
   // buffer the /ctcp was issued from. Key = `${nick-lc} ${TYPE}` → a FIFO queue
   // of issuing buffers, so two concurrent same-type queries to one nick route
@@ -1221,6 +1262,52 @@ export class IrcConnection {
     // pitfall the enable_chghost note on the connect() call documents. Mirrors
     // The Lounge, which uses the same library the same way. See services/ctcp.ts.
     this.client = new IRC.Client();
+    // The one outbound path (#1149): client.raw, irc-framework's CAP and PING
+    // handlers and our writeLine all end in connection.write. A write with a
+    // callback is QUIT's on the way out, which goes as it is.
+    const connection = this.client.connection;
+    const write = connection.write.bind(connection);
+    this.sendPacer = new SendPacer({
+      // Through client.raw, the one method everything outbound already shares
+      // (and the one tests observe); the flag lets it past the queue below.
+      send: (line) => {
+        this.sendingNow = true;
+        try {
+          this.client.raw(line);
+        } finally {
+          this.sendingNow = false;
+        }
+      },
+      // Registered by the framework's flag, or by our own: our 'registered'
+      // handler runs before the framework sets its flag, and what the handler
+      // writes (the connect commands, the autojoin, MODE, AWAY) must queue
+      // and be charged, not bypass as the registration burst does.
+      ready: () => connection.connected && (!!connection.registered || this.sawRegistered),
+      // Through an engine restore the replayed 001 registers the Client while
+      // the transport still swallows registration commands; a held NICK keeps
+      // waiting until the 'restored' phase. Only that kind: the replay's own
+      // reconcile PARTs mid-restore, and chat goes.
+      holding: (line) => this.restoring && line !== undefined && swallowedWhileRestoring(line),
+      onDepth: (waiting) => this.publishSendQueue(waiting),
+    });
+    connection.write = (data: string, callback?: () => void) =>
+      callback || this.sendingNow
+        ? write(data, callback)
+        : this.sendPacer.write(data, { priority: this.writePriority });
+    // Lines held while the link was down go once the connection is registered
+    // again (an engine re-attach). Hooked here, not in our 'registered'
+    // handler: the command handler emits 'all' (which that handler is) before
+    // the named event, and it is the named listener that marks the connection
+    // registered (client.js, commands.on('registered')), so a resume from the
+    // handler would find the connection not ready and send nothing.
+    // Not during an engine restore: the replayed 001 registers the Client
+    // while the transport still swallows registration commands, and a held
+    // `NICK` would be swallowed with them. The 'restored' phase resumes.
+    const registered = connection.registeredSuccessfully.bind(connection);
+    connection.registeredSuccessfully = () => {
+      registered();
+      if (!this.restoring) this.sendPacer.resume();
+    };
     this.client.requestCap('message-tags');
     // extended-monitor (IRCv3): asks the server to relay away-notify (and the
     // other notify caps irc-framework already negotiates) for nicks on our
@@ -1261,18 +1348,16 @@ export class IrcConnection {
     this.useMonitor = false;
     this.monitorLimit = 0;
     this.pendingMonitorSeed = false;
+    // Presence bookkeeping: behind chat, with the other polls (sendPacer.ts).
     this.monitor = new MonitorList((line) => {
       try {
-        this.client.raw(line);
+        this.withPriority('low', () => this.client.raw(line));
       } catch (_) {
         /* ignore */
       }
     });
     this.isupportComplete = false;
     this.disposed = false;
-    // Pending timer for the next WAIT-delayed connect command. Cleared on
-    // close/dispose so we never call client.raw() after the socket is gone.
-    this.connectCommandTimer = null;
     this.lagMs = null;
     this.lagPingTimer = null;
     this.lagPendingToken = null;
@@ -1298,13 +1383,8 @@ export class IrcConnection {
     this.unsendableTargets = new Set();
     this.lastUserSendAt = new Map();
     this.replies = new ReplyRouter({
-      write: (line) => {
-        try {
-          this.client.raw(line);
-        } catch (_) {
-          /* ignore */
-        }
-      },
+      write: (line, onSent, onDropped, priority) =>
+        this.sendPacer.write(line, { onSent, onDropped, priority }),
       canSend: () => this.state === 'connected',
       fold: (name) => foldTargetFor(this.network.id, name),
       isJoined: (channel) => this.isChannelJoined(channel),
@@ -1971,6 +2051,8 @@ export class IrcConnection {
     });
 
     on('registered', (event: Record<string, unknown>) => {
+      // First, before anything here writes: the queue reads it (sawRegistered).
+      this.sawRegistered = true;
       this.userModes.clear();
       this.lagMs = null;
       this.selfUser = null;
@@ -2127,6 +2209,12 @@ export class IrcConnection {
       // would drop the new socket's first probes. Reset both (#263).
       this.ctcpOutstanding.clear();
       this.ctcpLimiter = new RateLimiter();
+      // The socket is gone, and what waited was meant for it: dropped, and
+      // each line's sender told. Unless the engine still holds the socket and
+      // only our link to it is gone (engineSocketAlive): then the lines wait
+      // for the re-attach, and a redial drops them (onEnginePhase 'dialing').
+      this.sawRegistered = false;
+      if (!this.engineSocketAlive) this.sendPacer.drop();
       this.stopLagPinger();
       this.cancelPendingConnectCommands();
       this.resetRestoreState();
@@ -2218,7 +2306,7 @@ export class IrcConnection {
         return;
       }
       try {
-        this.client.changeNick(next);
+        this.withPriority('high', () => this.client.changeNick(next));
       } catch (_) {
         /* ignore */
       }
@@ -2315,7 +2403,7 @@ export class IrcConnection {
         const target = this.regainNick.toLowerCase();
         if (nicks.some((n) => typeof n === 'string' && n.toLowerCase() === target)) {
           try {
-            this.client.changeNick(this.regainNick);
+            this.withPriority('high', () => this.client.changeNick(this.regainNick!));
           } catch (_) {
             /* ignore */
           }
@@ -2799,17 +2887,32 @@ export class IrcConnection {
           // sides turn it on, with no manual /e2e handshake. The KEYREQ goes back
           // to the sender's nick as a CTCP NOTICE.
           let handshaking = false;
-          if (outcome.kind === 'missing-key' && handle && eventNick) {
-            const body = e2eManager.autoHandshakeBody(
-              this.network.user_id,
-              this.network.id,
-              contextKey(eventTarget as string, handle),
-              handle,
+          if (
+            outcome.kind === 'missing-key' &&
+            handle &&
+            eventNick &&
+            e2eManager.wouldAutoHandshake(this.network.user_id, this.network.id, handle)
+          ) {
+            // Built when it goes (#1149): the outgoing limiter is charged and
+            // the pending secret created then, not while it waits its turn.
+            const ctx = contextKey(eventTarget as string, handle);
+            const channel = eventTarget as string;
+            const peer = eventNick;
+            this.sendHandshakeThunk(
+              eventNick,
+              'KEYREQ',
+              ctx,
+              () =>
+                e2eManager.autoHandshakeBody(this.network.user_id, this.network.id, ctx, handle),
+              // To the nick the peer has when it goes, or the one they spoke
+              // as when the member list can't say (right after a restore).
+              () => this.nickForHandle(channel, handle),
+              // "Establishing…" was said at once, as before the queue. If no
+              // KEYREQ goes after all (the limiter charged meanwhile, the peer
+              // revoked, dropped with the socket), the manual hint instead.
+              () => this.surfaceE2eDecryptIssue(channel, peer, 'missing-key', false, true),
             );
-            if (body) {
-              this.sendHandshakeReply(eventNick, body);
-              handshaking = true;
-            }
+            handshaking = true;
           }
           this.surfaceE2eDecryptIssue(eventTarget as string, eventNick, outcome.kind, handshaking);
           if (eventNick) this.markPeerEvent(eventNick, 'online');
@@ -4431,7 +4534,7 @@ export class IrcConnection {
         for (const line of commands.split(/\r?\n/)) this.applyRawMonitor(line);
       }
       try {
-        this.client.raw('MONITOR C');
+        this.withPriority('low', () => this.client.raw('MONITOR C'));
       } catch (_) {
         /* ignore */
       }
@@ -5339,6 +5442,18 @@ export class IrcConnection {
     });
   }
 
+  // How many lines wait in the outbound queue (#1149), as the status bar's
+  // "N waiting". Published on change, coalesced per tick by the queue, which
+  // reports empty only once it has stayed empty 2 s (EMPTY_HOLD_MS).
+  publishSendQueue(waiting: number): void {
+    this.sendQueueWaiting = waiting;
+    this.publish({
+      type: 'send-queue',
+      target: this.serverTarget(),
+      waiting,
+    });
+  }
+
   // Periodic PING with a `lurker-lag-<sent>` token. PONG echoes the token back
   // so the matching pong handler can compute roundtrip even when the server
   // is also ponging unrelated PINGs we didn't send. Cleared on disconnect.
@@ -5664,6 +5779,8 @@ export class IrcConnection {
     switch (phase) {
       case 'dialing':
         this.resetRestoreState();
+        // A new socket: what waited was meant for the one that died.
+        this.sendPacer.drop();
         // A new socket. Anything we still think we are in belonged to one that
         // died while our link to the engine was down, so 'socket close' never
         // saw it go.
@@ -5702,6 +5819,9 @@ export class IrcConnection {
       }
       case 'restored': {
         this.restoring = false;
+        // Lines held across the link drop go now that the transport has
+        // stopped swallowing registration commands.
+        this.sendPacer.resume();
         // A synthesised JOIN gets none of what a real one is volunteered — no
         // 353/366, no 332, and the join handler's MODE is skipped on a restore —
         // so ask, one channel at a time, each waiting for the last one's
@@ -5716,7 +5836,7 @@ export class IrcConnection {
           mode: true,
           topic: false,
         });
-        this.rawQuiet('MODE', this.currentNick);
+        this.requestOwnModes(() => this.refreshRestoreQuiet('*', false));
         // The network's away state, sent again. This socket missed any change
         // made while the link was down, or while no process was attached, and
         // nothing here knows what it was last told. The 305/306 is Lurker's.
@@ -5902,20 +6022,38 @@ export class IrcConnection {
       // Keyed by the network's own fold: the replies echo the channel as the
       // server spells it, which on an rfc1459 network is not a toLowerCase
       // away.
-      this.restoreStep = {
+      const step = {
         key: foldTargetFor(this.network.id, name),
-        owed: new Set(['names', 'topic', 'mode']),
+        owed: new Set<RestoreReply>(['names', 'topic', 'mode']),
       };
-      this.rawQuiet('NAMES', name);
-      this.rawQuiet('TOPIC', name);
-      this.rawQuiet('MODE', name);
+      this.restoreStep = step;
+      // The step's clock starts when its last request has gone (#1149): behind
+      // a backlog that is later than now, and a deadline counted from here
+      // would move the walk on with nothing asked. The quiet window moves with
+      // it, so the replies still print as the restore's and not as history.
+      // Until then the step holds its slot for at most RESTORE_STEP_SLOT_CAP_MS.
+      const moveOn = () => {
+        this.restoreTimer = null;
+        if (!this.disposed && this.state === 'connected') this.drainRestoreQueue();
+      };
       this.restoreTimer = setTimeout(
-        () => {
-          this.restoreTimer = null;
-          if (!this.disposed && this.state === 'connected') this.drainRestoreQueue();
-        },
-        Math.max(1, reconnectEnvInt('LURKER_RESTORE_STEP_DEADLINE_MS', RESTORE_STEP_DEADLINE_MS)),
+        moveOn,
+        Math.max(1, reconnectEnvInt('LURKER_RESTORE_STEP_SLOT_CAP_MS', RESTORE_STEP_SLOT_CAP_MS)),
       );
+      let owed = 3;
+      const sent = () => {
+        if (--owed > 0) return;
+        this.refreshRestoreQuiet(name.toLowerCase(), true);
+        if (this.restoreStep !== step) return;
+        if (this.restoreTimer) clearTimeout(this.restoreTimer);
+        this.restoreTimer = setTimeout(
+          moveOn,
+          Math.max(1, reconnectEnvInt('LURKER_RESTORE_STEP_DEADLINE_MS', RESTORE_STEP_DEADLINE_MS)),
+        );
+      };
+      this.rawQuiet('NAMES', name, sent);
+      this.rawQuiet('TOPIC', name, sent);
+      this.rawQuiet('MODE', name, sent);
     } catch (err) {
       console.warn(
         `[irc] restore: step for ${name} on network ${this.network.id} threw; skipping it:`,
@@ -5923,6 +6061,17 @@ export class IrcConnection {
       );
       this.drainRestoreQueue();
     }
+  }
+
+  // A restore request has just gone out: its replies are quiet for the window
+  // from now, not from when the restore began.
+  private refreshRestoreQuiet(key: string, topic: boolean): void {
+    if (!this.restoreQuiet.has(key)) return;
+    this.restoreQuiet.set(key, {
+      until: Date.now() + reconnectEnvInt('LURKER_RESTORE_QUIET_MS', RESTORE_QUIET_MS),
+      mode: true,
+      topic,
+    });
   }
 
   // A server line naming the in-flight step's channel: retire the reply it is,
@@ -5985,8 +6134,20 @@ export class IrcConnection {
 
   // A restore's own request. Its reply is Lurker's, so it reaches neither the
   // server buffer nor a bouncer client (replyRouter.ts).
-  private rawQuiet(command: string, arg: string): void {
-    this.replies.send('lurker', `${command} ${arg}`);
+  private rawQuiet(command: string, arg: string, onSent?: () => void): void {
+    this.replies.send('lurker', `${command} ${arg}`, undefined, onSent);
+  }
+
+  // The restore's `MODE <nick>`, asking about the nick we have when it goes: a
+  // NICK goes ahead of it (sendPacer.ts, the high lane), and one built with
+  // the old nick would ask about someone else and get a 502.
+  private requestOwnModes(onSent?: () => void): void {
+    this.replies.send(
+      'lurker',
+      `MODE ${this.currentNick}`,
+      () => `MODE ${this.currentNick}`,
+      onSent,
+    );
   }
 
   // The away-sync WHO, as irc-framework's who() sends it: WHOX where the network
@@ -6074,6 +6235,12 @@ export class IrcConnection {
   detach(): void {
     this.intentionalDisconnect = true;
     this.clearReconnectTimer();
+    // What waits in the queue dies with this process, not with the socket the
+    // engine keeps: told now (a "not sent" row, a DCC offer's cleanup), since
+    // the 'close' this detach brings keeps the queue for a re-attach that
+    // never comes (#1149). Not flushed: the engine would write it all at
+    // once, which is the flood the queue exists to prevent.
+    this.sendPacer.drop();
     const t = this.engineTransport;
     if (t && t.isConnected()) t.detach();
     else this.setState('disconnected', {}, { log: DETACHED_LOG });
@@ -6103,7 +6270,9 @@ export class IrcConnection {
     });
   }
 
-  join(channel: string, key?: string): void {
+  /** `priority` is `high` for a JOIN that is Lurker's own doing (the autojoin),
+   *  which then goes ahead of whatever chat waits (sendPacer.ts). */
+  join(channel: string, key?: string, priority?: SendPriority): void {
     // Only a string is a valid channel key. Guard against a non-string sneaking
     // in from an untrusted ws/HTTP join payload — irc-framework's raw serialiser
     // calls .match() on the last arg, so a numeric key throws a TypeError that,
@@ -6122,7 +6291,20 @@ export class IrcConnection {
     // close would PART a channel we had left. That is #967 again, from the
     // guard meant to prevent it. We are in it, so membership already answers.
     this.noteJoinSent(channel);
-    this.client.join(channel, typeof key === 'string' ? key : undefined);
+    this.withPriority(priority, () =>
+      this.client.join(channel, typeof key === 'string' ? key : undefined),
+    );
+  }
+
+  // Lines irc-framework writes during `fn` wait in `priority`'s lane.
+  private withPriority(priority: SendPriority | undefined, fn: () => void): void {
+    const was = this.writePriority;
+    this.writePriority = priority;
+    try {
+      fn();
+    } finally {
+      this.writePriority = was;
+    }
   }
   part(channel: string, reason?: string): void {
     this.notePartSent(channel);
@@ -6134,29 +6316,143 @@ export class IrcConnection {
   // sender chose, an attached bouncer client's among them (#1041), and its
   // lines and their echoes no longer matched.
   // `tags`: client-only tags for this line — a reply's (replyTags).
-  say(target: string, text: string, tags?: Record<string, string> | null): void {
+  // `hooks.onSent` runs when the line has gone; `hooks.onDropped` when it went
+  // with its socket instead (#1149), after the user was told it was sent.
+  say(target: string, text: string, tags?: Record<string, string> | null, hooks?: SendHooks): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
-    this.noteUserSend(target);
-    this.writeLine('PRIVMSG', target, text, tags);
-    // Arm AFTER the send, and never let a DB hiccup in arming break delivery of
-    // the user's actual message.
-    try {
-      this.maybeArmDcc(target, text);
-    } catch {
-      /* arming is best-effort */
-    }
+    this.writeLine('PRIVMSG', target, text, tags, this.userLineHooks(target, text, hooks, true));
   }
-  action(target: string, text: string, tags?: Record<string, string> | null): void {
+  action(
+    target: string,
+    text: string,
+    tags?: Record<string, string> | null,
+    hooks?: SendHooks,
+  ): void {
     if (isDmTargetName(target)) this.trackDmPeer(target);
-    this.noteUserSend(target);
-    this.writeLine('PRIVMSG', target, `\x01ACTION ${text}\x01`, tags);
+    this.writeLine(
+      'PRIVMSG',
+      target,
+      `\x01ACTION ${text}\x01`,
+      tags,
+      this.userLineHooks(target, `/me ${text}`, hooks),
+    );
   }
-  notice(target: string, text: string): void {
+  notice(target: string, text: string, hooks?: SendHooks): void {
     // Unlike say/action we don't trackDmPeer here: outgoing NOTICEs mirror the
     // inbound rule (NOTICEs don't establish a tracked DM peer), so notice-ing a
     // service or bot doesn't spin up presence tracking for it.
-    this.noteUserSend(target);
-    this.writeLine('NOTICE', target, text, null);
+    this.writeLine('NOTICE', target, text, null, this.userLineHooks(target, text, hooks));
+  }
+
+  // What every line the user sends does when it goes (the send is noted then,
+  // so a rejection numeric is attributed by the wire's clock) and when it is
+  // dropped with its socket (the row said it was sent; say it was not).
+  private userLineHooks(
+    target: string,
+    text: string,
+    hooks?: SendHooks,
+    armDcc = false,
+  ): WriteOptions {
+    return {
+      onSent: () => {
+        this.noteUserSend(target);
+        // An `xdcc send` arms its request once the bot has been asked (#1149):
+        // a PRIVMSG's, as before the queue; a NOTICE or a /me never asked one.
+        // Never let a DB hiccup in arming break the user's actual message.
+        if (armDcc) {
+          try {
+            this.maybeArmDcc(target, text);
+          } catch {
+            /* arming is best-effort */
+          }
+        }
+        hooks?.onSent?.();
+      },
+      onDropped: () => {
+        this.reportNotSent(target, text);
+        hooks?.onDropped?.();
+      },
+    };
+  }
+
+  // An E2E message, encrypted when its turn comes (#1149): the chunks carry a
+  // timestamp the receiver reads against a window, so a message queued behind
+  // a backlog is stamped when it goes, not when it was typed. One item, one
+  // msgid: the REKEYs a lazy rotation queues inside encryptOutgoing go out
+  // first, in this item's place, and the chunks follow, each paced. The
+  // ciphertext is noted as each chunk goes, so the message handler can
+  // recognise its echo; the send is noted with the last. E2E turned off while
+  // it waited is a "not sent", never a plaintext fallback.
+  sayEncrypted(target: string, text: string, hooks?: LineHooks): void {
+    const uid = this.network.user_id;
+    const nid = this.network.id;
+    const ctx = contextKey(target, '');
+    // Said once: by the encrypt step, or by the drop.
+    let reported = false;
+    const notSent = (why: string) => {
+      if (reported) return;
+      reported = true;
+      this.publish({ type: 'error', target, text: `not sent (${why}): ${text}` });
+      hooks?.dropped?.(text);
+    };
+    this.sendPacer.write(
+      () => {
+        if (this.disposed) return null;
+        // Off by the time it goes: nothing is prepared, no key made, no REKEY
+        // queued for a channel the user has turned E2E off on.
+        if (e2eManager.checkOutgoing(uid, nid, ctx, text).kind === 'disabled') {
+          notSent('encryption is off');
+          return null;
+        }
+        // The key first: a pending rotation makes a new one and queues its
+        // REKEYs, which go ahead, each to the nick its peer has when it goes.
+        // The chunks are made only once the REKEYs have, so their timestamp
+        // is read inside the receiver's window however many there were.
+        if (!e2eManager.prepareOutgoing(uid, nid, ctx)) {
+          notSent('encryption failed: internal error');
+          return null;
+        }
+        const encrypt = () => {
+          if (this.disposed) return null;
+          const outcome = e2eManager.encryptOutgoing(uid, nid, ctx, text);
+          if (outcome.kind !== 'encrypted') {
+            notSent(
+              outcome.kind === 'error'
+                ? `encryption failed: ${outcome.reason}`
+                : 'encryption is off',
+            );
+            return null;
+          }
+          e2eDbg(() => `outbound ${target}: encrypted (${outcome.lines.length} line(s))`);
+          const last = outcome.lines.length - 1;
+          return outcome.lines.map((line, i) => ({
+            text: this.wireLine('PRIVMSG', target, line),
+            onSent: () => {
+              this.noteSentCiphertext(line);
+              if (i === last) {
+                this.noteUserSend(target);
+                hooks?.sent?.(text);
+              }
+            },
+          }));
+        };
+        const rekeys: Line[] = this.e2eRekeyLines().map((r) => ({
+          text: r.build,
+          onDropped: r.onDropped,
+        }));
+        return [...rekeys, encrypt];
+      },
+      { onDropped: () => notSent('connection dropped') },
+    );
+  }
+
+  // A line the user was told went out, and then went with its socket (#1149).
+  // Said where the line was going, as a 404 is, with the text so it can be
+  // sent again. Nothing when the connection is being disposed: there is no one
+  // left to tell, and the apps' own not-connected affordance covers the rest.
+  private reportNotSent(target: string, text: string): void {
+    if (this.disposed) return;
+    this.publish({ type: 'error', target, text: `not sent (connection dropped): ${text}` });
   }
 
   // One PRIVMSG/NOTICE line, written where irc-framework's sendMessage writes
@@ -6173,10 +6469,20 @@ export class IrcConnection {
     target: string,
     text: string,
     tags: Record<string, string> | null | undefined,
+    opts?: WriteOptions,
   ): void {
+    this.sendPacer.write(this.wireLine(command, target, text, tags), opts);
+  }
+
+  private wireLine(
+    command: string,
+    target: string,
+    text: string,
+    tags?: Record<string, string> | null,
+  ): string {
     const tagged = tags && Object.keys(tags).length ? `@${IRC.MessageTags.encode(tags)} ` : '';
     // eslint-disable-next-line no-control-regex
-    this.client.raw(`${tagged}${command} ${target} :${text}`.replace(/[\u000d\u000a\u0000]/g, ''));
+    return `${tagged}${command} ${target} :${text}`.replace(/[\u000d\u000a\u0000]/g, '');
   }
 
   // --- Line budget (#1043) ---------------------------------------------------
@@ -6744,8 +7050,9 @@ export class IrcConnection {
     for (const row of nextXdccRequests(this.network.user_id, this.network.id)) {
       if (row.pack == null) continue;
       markXdccRequested(row.id);
-      this.sendXdccRequest(row.peer_nick, row.trigger_text || xdccTrigger(row.pack));
-      this.armXdccTimer({ ...row, bot_acked_at: null });
+      this.sendXdccRequest(row.peer_nick, row.trigger_text || xdccTrigger(row.pack), () =>
+        this.armXdccTimer({ ...row, bot_acked_at: null }),
+      );
       this.publishDcc(row.id);
     }
   }
@@ -6761,10 +7068,17 @@ export class IrcConnection {
   // The request goes out as the user's own line in the bot's DM, as if typed:
   // the same write, and the same local copy unless echo-message brings the
   // network's. Not through say(), which would arm it a second time.
-  private sendXdccRequest(bot: string, text: string): void {
+  // `onSent` starts the request's clock (#1149): behind a backlog the bot has
+  // not been asked yet.
+  private sendXdccRequest(bot: string, text: string, onSent?: () => void): void {
     this.trackDmPeer(bot);
-    this.noteUserSend(bot);
-    this.writeLine('PRIVMSG', bot, text, null);
+    this.writeLine('PRIVMSG', bot, text, null, {
+      onSent: () => {
+        this.noteUserSend(bot);
+        onSent?.();
+      },
+      onDropped: () => this.reportNotSent(bot, text),
+    });
     if (this.echoActive()) return;
     this.publish({
       type: 'message',
@@ -6893,7 +7207,7 @@ export class IrcConnection {
     for (const [key, pending] of this.dccPendingResume) {
       const row = getDccTransfer(this.network.user_id, pending.transferId);
       if (row?.pack == null) continue;
-      clearTimeout(pending.timer);
+      if (pending.timer) clearTimeout(pending.timer);
       this.dccPendingResume.delete(key);
       markDccFailed(pending.transferId, pending.startOffset, 'interrupted by a reconnect');
       this.publishDcc(pending.transferId);
@@ -7223,22 +7537,43 @@ export class IrcConnection {
     if (prior) {
       // A newer resume for the same file supersedes the prior one — leave its row
       // resumable (stalled) rather than orphaning it forever in 'receiving'.
-      clearTimeout(prior.timer);
+      if (prior.timer) clearTimeout(prior.timer);
       updateDccTransferState(prior.transferId, 'stalled', 'superseded by a newer resume');
     }
-    const timer = setTimeout(() => {
+    const notAccepted = () => {
       this.dccPendingResume.delete(key);
       markDccFailed(transferId, startOffset, 'resume not accepted by sender');
       this.dccLine(nick, `DCC: "${offer.filename}" — sender did not accept resume`);
       this.publishDcc(transferId);
-    }, 15_000);
-    this.dccPendingResume.set(key, { transferId, nick, offer, destPath, startOffset, timer });
+    };
+    // No clock until the RESUME has gone (#1149): a wait behind a backlog is
+    // not the sender's.
+    const pending: PendingResume = { transferId, nick, offer, destPath, startOffset, timer: null };
+    this.dccPendingResume.set(key, pending);
     // For a passive offer, before we answer it: HexDroid waits only 100 ms
     // after our answer for a resume (IrcViewModel.kt:10704).
-    this.client.ctcpRequest(
+    this.writeCtcp(
       nick,
       'DCC',
       buildDccResume(offer.filename, offer.port, startOffset, offer.passive ? offer.token : null),
+      {
+        live: () => this.dccPendingResume.get(key) === pending,
+        // The sender's 15 s run from when the RESUME has gone (#1149).
+        onSent: () => {
+          if (this.dccPendingResume.get(key) !== pending) return;
+          pending.timer = setTimeout(notAccepted, 15_000);
+        },
+        onDropped: () => {
+          if (this.dccPendingResume.get(key) !== pending) return;
+          this.dccPendingResume.delete(key);
+          markDccFailed(transferId, startOffset, 'connection dropped before the resume was sent');
+          this.dccLine(
+            nick,
+            `DCC: "${offer.filename}" — connection dropped before RESUME was sent`,
+          );
+          this.publishDcc(transferId);
+        },
+      },
     );
   }
 
@@ -7341,7 +7676,7 @@ export class IrcConnection {
     // BEFORE consuming the pending entry — a stray/mismatched ACCEPT must not clear
     // the timer or fail a still-valid pending resume.
     if (accept.port !== pending.offer.port) return;
-    clearTimeout(pending.timer);
+    if (pending.timer) clearTimeout(pending.timer);
     this.dccPendingResume.delete(key);
     // We asked to resume from exactly our partial's size; the sender must echo it.
     // Any other position (a buggy or malicious ACCEPT) would mean appending at the
@@ -7402,7 +7737,8 @@ export class IrcConnection {
       this.publishDcc(transferId);
       this.dccLine(nick, line);
     };
-    openDccListener({ timeoutMs: PASSIVE_DCC_RECEIVE_WAIT_MS }).then(
+    // The wait for the sender starts when our answer has gone (#1149).
+    openDccListener({ timeoutMs: null }).then(
       (handle) => {
         if (!ours()) {
           handle.close();
@@ -7430,7 +7766,20 @@ export class IrcConnection {
           return;
         }
         entry.handle = handle;
-        this.client.ctcpRequest(nick, 'DCC', body);
+        this.writeCtcp(nick, 'DCC', body, {
+          live: ours,
+          onSent: () => {
+            if (ours()) handle.armTimeout(PASSIVE_DCC_RECEIVE_WAIT_MS);
+          },
+          onDropped: () => {
+            if (!ours()) return;
+            fail(
+              'the connection dropped',
+              `DCC: couldn't answer ${nick}'s offer of "${offer.filename}": the connection dropped`,
+            );
+            handle.close();
+          },
+        });
         this.dccLine(
           nick,
           `DCC: accepted "${offer.filename}" (${formatBytes(offer.size)}) from ${nick}, ` +
@@ -7751,7 +8100,7 @@ export class IrcConnection {
   private clearPendingResume(transferId: number): void {
     for (const [key, pending] of this.dccPendingResume) {
       if (pending.transferId !== transferId) continue;
-      clearTimeout(pending.timer);
+      if (pending.timer) clearTimeout(pending.timer);
       this.dccPendingResume.delete(key);
       return;
     }
@@ -7814,8 +8163,7 @@ export class IrcConnection {
       passive,
       token,
     });
-    const timer = setTimeout(() => this.expireDccSend(transferId), DCC_SEND_OFFER_TTL_MS);
-    timer.unref?.();
+    // The offer's five minutes start when it has gone out (armDccSendExpiry).
     const offer: DccSendOffer = {
       transferId,
       nick,
@@ -7828,12 +8176,16 @@ export class IrcConnection {
       port: 0,
       resumeAt: 0,
       dial: null,
-      timer,
+      timer: null,
     };
     this.dccSendOffers.set(transferId, offer);
     this.publishDcc(transferId);
     if (token !== null) {
-      this.client.ctcpRequest(nick, 'DCC', buildDccSendPassive(wireName, file.size, token));
+      this.writeCtcp(nick, 'DCC', buildDccSendPassive(wireName, file.size, token), {
+        live: () => this.dccSendOffers.get(transferId) === offer,
+        onSent: () => this.armDccSendExpiry(offer),
+        onDropped: () => this.dropDccSendOffer(offer),
+      });
       this.dccLine(
         nick,
         `DCC: offered "${file.name}" (${formatBytes(file.size)}) to ${nick} (passive) — ` +
@@ -7849,7 +8201,7 @@ export class IrcConnection {
   private listenForDccSend(offer: DccSendOffer): void {
     // The listener outlasts the offer a little, so the offer's own timer is
     // what expires it and says so.
-    openDccListener({ timeoutMs: DCC_SEND_OFFER_TTL_MS + 10_000 }).then(
+    openDccListener({ timeoutMs: null }).then(
       (handle) => {
         if (this.dccSendOffers.get(offer.transferId) !== offer) {
           handle.close(); // withdrawn while the port was binding
@@ -7874,7 +8226,17 @@ export class IrcConnection {
         }
         offer.listener = handle;
         offer.port = handle.port;
-        this.client.ctcpRequest(offer.nick, 'DCC', body);
+        this.writeCtcp(offer.nick, 'DCC', body, {
+          live: () => this.dccSendOffers.get(offer.transferId) === offer,
+          // The offer's five minutes, and the listener's, run from when the
+          // offer has gone (#1149).
+          onSent: () => {
+            if (this.dccSendOffers.get(offer.transferId) !== offer) return;
+            this.armDccSendExpiry(offer);
+            handle.armTimeout(DCC_SEND_OFFER_TTL_MS + 10_000);
+          },
+          onDropped: () => this.dropDccSendOffer(offer),
+        });
         this.dccLine(
           offer.nick,
           `DCC: offered "${offer.name}" (${formatBytes(offer.size)}) to ${offer.nick} — ` +
@@ -7929,10 +8291,13 @@ export class IrcConnection {
       return;
     }
     offer.resumeAt = r.position;
-    this.client.ctcpRequest(
+    // Withdrawn or expired before its turn: the receiver is not told to resume
+    // what no longer exists (#1149).
+    this.writeCtcp(
       offer.nick,
       'DCC',
       buildDccAccept(offer.wireName, r.port, r.position, r.token !== null ? offer.token : null),
+      { live: () => this.dccSendOffers.get(offer.transferId) === offer },
     );
   }
 
@@ -8047,12 +8412,26 @@ export class IrcConnection {
     this.dccLine(offer.nick, `DCC: ${offer.nick} didn't accept "${offer.name}" within 5 minutes`);
   }
 
+  // The offer's five minutes, from when it actually went out (#1149).
+  private armDccSendExpiry(offer: DccSendOffer): void {
+    if (offer.timer) clearTimeout(offer.timer);
+    offer.timer = setTimeout(() => this.expireDccSend(offer.transferId), DCC_SEND_OFFER_TTL_MS);
+    offer.timer.unref?.();
+  }
+
+  // The offer went with its socket before it was sent (#1149).
+  private dropDccSendOffer(offer: DccSendOffer): void {
+    if (!this.endDccSendOffer(offer, 'failed', 'connection dropped before the offer was sent'))
+      return;
+    this.dccLine(offer.nick, `DCC: couldn't offer "${offer.name}" — the connection dropped first`);
+  }
+
   // The peer connected: the offer is over and the send begins. False when the
   // offer already ended (withdrawn, expired, declined).
   private takeDccSendOffer(offer: DccSendOffer): boolean {
     if (this.dccSendOffers.get(offer.transferId) !== offer) return false;
     this.dccSendOffers.delete(offer.transferId);
-    clearTimeout(offer.timer);
+    if (offer.timer) clearTimeout(offer.timer);
     offer.listener?.close();
     return true;
   }
@@ -8065,7 +8444,7 @@ export class IrcConnection {
   ): boolean {
     if (this.dccSendOffers.get(offer.transferId) !== offer) return false;
     this.dccSendOffers.delete(offer.transferId);
-    clearTimeout(offer.timer);
+    if (offer.timer) clearTimeout(offer.timer);
     offer.listener?.close();
     offer.dial?.destroy();
     if (offer.token !== null) {
@@ -8178,6 +8557,26 @@ export class IrcConnection {
   // cancel and teardown remove it, and the resolution re-checks it — along with
   // the link, which a CTCP offer or reverse reply needs and which can drop in
   // the gap too.
+  // What a chat offer's line does when it goes: start the listener's wait for
+  // the peer (#1149). Dropped with its socket, the listener closes, quietly:
+  // the map entry goes first, so the close reads as a cancel.
+  private dccChatOfferHooks(
+    handle: DccListenHandle,
+    nick: string,
+  ): WriteOptions & { live: () => boolean } {
+    return {
+      live: () => this.dccChatListeners.has(handle),
+      onSent: () => {
+        if (this.dccChatListeners.has(handle)) handle.armTimeout(DCC_CHAT_LISTEN_WAIT_MS);
+      },
+      onDropped: () => {
+        if (!this.dccChatListeners.delete(handle)) return;
+        handle.close();
+        this.dccChatNotice(nick, `DCC chat offer to ${nick} not sent: the connection dropped.`);
+      },
+    };
+  }
+
   private openDccChatListener(nick: string): Promise<DccListenHandle | null> {
     const key = nick.toLowerCase();
     const request = {};
@@ -8187,7 +8586,8 @@ export class IrcConnection {
       if (current) this.dccListenerRequests.delete(key);
       return current;
     };
-    return openDccListener().then(
+    // The wait for the peer starts when the offer has gone (dccChatOfferHooks).
+    return openDccListener({ timeoutMs: null }).then(
       (handle) => {
         const current = settle();
         if (current && !this.disposed && this.state === 'connected') return handle;
@@ -8384,7 +8784,7 @@ export class IrcConnection {
           return;
         }
         this.dccChatListeners.set(handle, nick);
-        this.client.ctcpRequest(nick, 'DCC', body);
+        this.writeCtcp(nick, 'DCC', body, this.dccChatOfferHooks(handle, nick));
         this.dccChatNotice(nick, `Offered a DCC chat to ${nick} — waiting for them to connect…`);
         handle.accepted
           .then((socket) => {
@@ -8431,20 +8831,37 @@ export class IrcConnection {
       this.dccChatNotice(nick, 'DCC chat: external host is misconfigured.');
       return;
     }
-    this.client.ctcpRequest(nick, 'DCC', body);
+    const expire = () => {
+      if (this.pendingPassiveChats.delete(token)) {
+        this.dccChatNotice(nick, `Passive DCC chat offer to ${nick} timed out.`);
+      }
+    };
+    // No clock until the offer has gone (#1149).
+    const pending: { nick: string; timer: ReturnType<typeof setTimeout> | null } = {
+      nick,
+      timer: null,
+    };
+    this.pendingPassiveChats.set(token, pending);
+    this.writeCtcp(nick, 'DCC', body, {
+      live: () => this.pendingPassiveChats.get(token) === pending,
+      // The peer's two minutes run from when the offer has gone.
+      onSent: () => {
+        if (this.pendingPassiveChats.get(token) !== pending) return;
+        pending.timer = setTimeout(expire, PASSIVE_DCC_TIMEOUT_MS);
+        pending.timer.unref?.();
+      },
+      onDropped: () => {
+        if (this.pendingPassiveChats.get(token) !== pending) return;
+        this.pendingPassiveChats.delete(token);
+        this.dccChatNotice(nick, `DCC chat offer to ${nick} not sent: the connection dropped.`);
+      },
+    });
     this.dccChatNotice(
       nick,
       `Offered a passive DCC chat to ${nick} — waiting for them to connect back… ` +
         '(passive chat only works if their client supports it: irssi, HexChat and repartee do; ' +
         'WeeChat and HexDroid do not.)',
     );
-    const timer = setTimeout(() => {
-      if (this.pendingPassiveChats.delete(token)) {
-        this.dccChatNotice(nick, `Passive DCC chat offer to ${nick} timed out.`);
-      }
-    }, PASSIVE_DCC_TIMEOUT_MS);
-    timer.unref?.();
-    this.pendingPassiveChats.set(token, { nick, timer });
   }
 
   /**
@@ -8476,7 +8893,7 @@ export class IrcConnection {
     if (ours && offer.token !== null) {
       const pending = this.pendingPassiveChats.get(offer.token);
       if (pending) {
-        clearTimeout(pending.timer);
+        if (pending.timer) clearTimeout(pending.timer);
         this.pendingPassiveChats.delete(offer.token);
         this.dialDccChat(nick, offer.host, offer.port);
         return;
@@ -8517,7 +8934,7 @@ export class IrcConnection {
     // <nick>` accepts, exactly as it does in irssi.
     const key = nick.toLowerCase();
     const prior = this.pendingInboundChats.get(key);
-    if (prior) clearTimeout(prior.timer);
+    if (prior?.timer) clearTimeout(prior.timer);
     const timer = setTimeout(() => {
       if (this.clearPendingInboundChat(key)) {
         // Ephemeral, and to the server buffer: the prompt never created a
@@ -8557,7 +8974,7 @@ export class IrcConnection {
   private clearPendingInboundChat(key: string): { nick: string; offer: DccChatOffer } | null {
     const pending = this.pendingInboundChats.get(key);
     if (!pending) return null;
-    clearTimeout(pending.timer);
+    if (pending.timer) clearTimeout(pending.timer);
     this.pendingInboundChats.delete(key);
     this.publishEphemeral({
       type: 'dcc-chat-offer-closed',
@@ -8601,7 +9018,7 @@ export class IrcConnection {
             return;
           }
           this.dccChatListeners.set(handle, nick);
-          this.client.ctcpRequest(nick, 'DCC', body);
+          this.writeCtcp(nick, 'DCC', body, this.dccChatOfferHooks(handle, nick));
           this.dccChatNotice(nick, `${nick} wants to DCC chat — waiting for them to connect…`);
           handle.accepted
             .then((socket) => {
@@ -8793,7 +9210,7 @@ export class IrcConnection {
     let cancelledOutgoing = this.dccListenerRequests.delete(key);
     for (const [token, pending] of this.pendingPassiveChats) {
       if (pending.nick.toLowerCase() !== key) continue;
-      clearTimeout(pending.timer);
+      if (pending.timer) clearTimeout(pending.timer);
       this.pendingPassiveChats.delete(token);
       cancelledOutgoing = true;
     }
@@ -8834,7 +9251,9 @@ export class IrcConnection {
   private endDccChatHandshakes(): void {
     const dropped = this.pendingDccChatOffers();
     for (const key of this.pendingInboundChats.keys()) this.clearPendingInboundChat(key);
-    for (const pending of this.pendingPassiveChats.values()) clearTimeout(pending.timer);
+    for (const pending of this.pendingPassiveChats.values()) {
+      if (pending.timer) clearTimeout(pending.timer);
+    }
     this.pendingPassiveChats.clear();
     this.dccListenerRequests.clear(); // an offer still binding is a handshake too
     for (const nick of dropped) {
@@ -8877,7 +9296,9 @@ export class IrcConnection {
     this.dccListenerRequests.clear(); // binds in flight resolve, see this, and release
     for (const handle of this.dccChatListeners.keys()) handle.close();
     this.dccChatListeners.clear();
-    for (const pending of this.pendingPassiveChats.values()) clearTimeout(pending.timer);
+    for (const pending of this.pendingPassiveChats.values()) {
+      if (pending.timer) clearTimeout(pending.timer);
+    }
     this.pendingPassiveChats.clear();
   }
 
@@ -8915,11 +9336,26 @@ export class IrcConnection {
   // the command was typed in: the local echo lands there and the reply routes
   // back to it. A bare PING gets an epoch-ms payload so the reply yields a
   // round-trip latency.
+  // A CTCP request line as irc-framework's ctcpRequest builds it, through the
+  // outbound queue (#1149). `live` is asked when the line's turn comes: an
+  // offer withdrawn while it waited sends nothing.
+  private writeCtcp(
+    target: string,
+    type: string,
+    payload: string | null | (() => string),
+    opts: WriteOptions = {},
+  ): void {
+    const line = (p: string | null) =>
+      this.wireLine('PRIVMSG', target, `\x01${p ? `${type} ${p}` : type}\x01`);
+    this.sendPacer.write(
+      typeof payload === 'function' ? () => line(payload()) : line(payload),
+      opts,
+    );
+  }
+
   sendCtcpRequest(issuingTarget: string, target: string, type: string, args: string): void {
     if (this.disposed) return;
     const issuing = issuingTarget || this.serverTarget();
-    const now = Date.now();
-    const seq = ++this.moveSeq;
     // A CTCP type is a single token on the wire — parseCtcp splits the inbound
     // side at the first space. Only the web client's own /ctcp guarantees that
     // shape; iOS and MCP hand us whatever was typed, and a type of "PING FOO"
@@ -8932,29 +9368,95 @@ export class IrcConnection {
     const t = (sp === -1 ? trimmedType : trimmedType.slice(0, sp)).toUpperCase();
     const spilled = sp === -1 ? '' : trimmedType.slice(sp + 1).trim();
     let payload = [spilled, args.trim()].filter(Boolean).join(' ');
-    if (t === 'PING' && !payload) payload = String(now);
-    // Real enough for the rejection handler to surface a 531, but not a
-    // conversation: the outcome belongs in `issuing`, not in a new query.
-    this.noteUserSend(target, false);
-    if (payload) this.client.ctcpRequest(target, t, payload);
-    else this.client.ctcpRequest(target, t);
-    this.pruneCtcpOutstanding(now);
-    const key = this.ctcpKey(target, t);
-    const queue = this.ctcpOutstanding.get(key) ?? [];
-    queue.push({ issuingTarget: issuing, sentAt: now, seq });
-    this.ctcpOutstanding.set(key, queue);
+    // A bare PING's payload is the time it went, read back from the reply as
+    // the round trip: made when the line goes (#1149).
+    const built = t === 'PING' && !payload ? () => String(Date.now()) : payload || null;
+    this.writeCtcp(target, t, built, {
+      // Recorded as the request goes (#1149): its reply window and its place
+      // among the user's moves on this nick are the wire's, not the queue's.
+      onSent: () => {
+        const sentAt = Date.now();
+        const seq = ++this.moveSeq;
+        // Real enough for the rejection handler to surface a 531, but not a
+        // conversation: the outcome belongs in `issuing`, not in a new query.
+        this.noteUserSend(target, false);
+        this.pruneCtcpOutstanding(sentAt);
+        const key = this.ctcpKey(target, t);
+        const queue = this.ctcpOutstanding.get(key) ?? [];
+        queue.push({ issuingTarget: issuing, sentAt, seq });
+        this.ctcpOutstanding.set(key, queue);
+      },
+      onDropped: () =>
+        this.surfaceCtcp(issuing, `CTCP ${t} to ${target} not sent: the connection dropped`),
+    });
     this.surfaceCtcp(issuing, `→ CTCP ${t} to ${target}`);
   }
 
   // --- RPE2E (#382) ----------------------------------------------------------
 
-  // A handshake reply (KEYRSP/reciprocal KEYREQ) goes back to the initiator as a
-  // CTCP-framed NOTICE. It's protocol noise, so unlike notice() it never echoes
-  // into a buffer or touches presence/idle tracking.
+  // A handshake reply (KEYREQ, KEYRSP) goes to the peer as a CTCP-framed
+  // NOTICE. It's protocol noise, so unlike notice() it never echoes into a
+  // buffer or touches presence/idle tracking. It goes through the queue like
+  // every line (#1149), keyed by peer, kind and channel: a newer one to the same
+  // peer for the same channel replaces a queued one rather than queueing a
+  // second, and a backlog of them is capped (the oldest goes), so a burst of
+  // KEYREQs (clones included) can't hold up everything else. A REKEY is not a
+  // reply and never keyed or capped: see flushE2eRekeys. Written whole, not
+  // through notice(), whose 350-byte split would cut a long one in two
+  // unframed halves.
   sendHandshakeReply(nick: string, body: string): void {
     if (this.disposed) return;
+    const words = body.split(' ');
+    const channel = words.find((w) => w.startsWith('c=')) ?? '';
+    const key = `${foldTargetFor(this.network.id, nick)} ${words[1] ?? ''} ${channel}`;
     e2eDbg(() => `→ NOTICE ${nick}: ${body.slice(0, 140)}`);
-    this.client.notice(nick, `\x01${body}\x01`);
+    this.sendPacer.write(this.handshakeLine(nick, body), {
+      key,
+      onDropped: () => e2eDbg(() => `handshake to ${nick} dropped before it was sent`),
+    });
+  }
+
+  // As sendHandshakeReply, for a body made when the line goes (the auto
+  // KEYREQ); `null` from `build` sends nothing. `to`, if given, names the nick
+  // when the line goes (the peer may have changed nick while it waited); null
+  // from it falls back to `nick`. `nothingSent` hears of a line that never
+  // went: no body, or dropped.
+  private sendHandshakeThunk(
+    nick: string,
+    kind: string,
+    channel: string,
+    build: () => string | null,
+    to?: () => string | null,
+    nothingSent?: () => void,
+  ): void {
+    if (this.disposed) return;
+    const key = `${foldTargetFor(this.network.id, nick)} ${kind} c=${channel}`;
+    this.sendPacer.write(
+      () => {
+        if (this.disposed) return null;
+        // The peer just spoke, so with no member list to resolve the handle
+        // by (right after a restore), the nick they spoke as.
+        const target = (to ? to() : null) ?? nick;
+        const body = build();
+        if (!body) {
+          nothingSent?.();
+          return null;
+        }
+        e2eDbg(() => `→ NOTICE ${target}: ${body.slice(0, 140)}`);
+        return this.handshakeLine(target, body);
+      },
+      {
+        key,
+        onDropped: () => {
+          e2eDbg(() => `handshake to ${nick} dropped before it was sent`);
+          nothingSent?.();
+        },
+      },
+    );
+  }
+
+  private handshakeLine(nick: string, body: string): string {
+    return `NOTICE ${nick} :\x01${body}\x01`;
   }
 
   // Surface a manager-emitted handshake notice (session established, TOFU
@@ -8982,12 +9484,14 @@ export class IrcConnection {
     nick: string | undefined,
     kind: 'missing-key' | 'rejected' | 'replay' | 'cleartext',
     handshaking = false,
+    // Said even inside the dedupe window: a correction of what was just said.
+    force = false,
   ): void {
     if (kind === 'replay' || kind === 'cleartext') return;
     const who = nick || 'peer';
     const key = `${channel.toLowerCase()}:${who.toLowerCase()}:${kind}`;
     const now = Date.now();
-    if (now - (this.e2eHintAt.get(key) ?? 0) < 5000) return;
+    if (!force && now - (this.e2eHintAt.get(key) ?? 0) < 5000) return;
     // Bound the map (a churn of distinct peers shouldn't grow it forever).
     if (this.e2eHintAt.size > 500) this.e2eHintAt.clear();
     this.e2eHintAt.set(key, now);
@@ -9036,15 +9540,34 @@ export class IrcConnection {
   // is dropped (they re-handshake on next ciphertext if they return).
   flushE2eRekeys(): void {
     if (this.disposed) return;
-    const sends = e2eManager.takePendingRekeySends(this.network.user_id, this.network.id);
-    for (const s of sends) {
-      const nick = this.nickForHandle(s.channel, s.targetHandle);
-      if (!nick) {
-        e2eDbg(() => `rekey drop: no nick for ${s.targetHandle} on ${s.channel}`);
-        continue;
-      }
-      this.sendHandshakeReply(nick, s.body);
-    }
+    for (const r of this.e2eRekeyLines()) this.sendPacer.write(r.build, { onDropped: r.onDropped });
+  }
+
+  // The queued REKEYs as queue items, in order, each resolving its nick when
+  // it goes: a peer who changed nick while the line waited gets it under the
+  // new one, and a peer who left gets nothing (#1149). Never keyed and never
+  // capped: a rotation's REKEYs are one ordered group, and the message
+  // encrypted under the new key is only readable by a peer who got theirs. One
+  // dropped with its socket goes back to the manager's queue for the next
+  // send: the session already has the new key, and a peer without it reports
+  // authentication failure, which nothing recovers from.
+  private e2eRekeyLines(): Array<{ build: () => string | null; onDropped: () => void }> {
+    const uid = this.network.user_id;
+    const nid = this.network.id;
+    const sends = e2eManager.takePendingRekeySends(uid, nid);
+    return sends.map((s) => ({
+      build: () => {
+        if (this.disposed) return null;
+        const nick = this.nickForHandle(s.channel, s.targetHandle);
+        if (!nick) {
+          e2eDbg(() => `rekey drop: no nick for ${s.targetHandle} on ${s.channel}`);
+          return null;
+        }
+        e2eDbg(() => `→ NOTICE ${nick}: ${s.body.slice(0, 140)}`);
+        return this.handshakeLine(nick, s.body);
+      },
+      onDropped: () => e2eManager.putBackRekeySend(uid, nid, s),
+    }));
   }
 
   // Dispatch a `/e2e …` subcommand. All output is ephemeral status routed to the
@@ -9561,23 +10084,45 @@ export class IrcConnection {
   // `tags` (a reply's) go on the first batch's BATCH line, where the spec puts
   // a multiline message's client-only tags; a paste that needs several batches
   // is several messages, and only the first is the reply.
-  sendMultiline(target: string, text: string, tags?: Record<string, string> | null): string[] {
+  // Each batch is one unit of the outbound queue (#1149): its lines go back
+  // to back, since the message shows for no one until `BATCH -`, and the
+  // queue charges for all of them after.
+  sendMultiline(
+    target: string,
+    text: string,
+    tags?: Record<string, string> | null,
+    hooks?: LineHooks,
+  ): string[] {
     if (isDmTargetName(target)) this.trackDmPeer(target);
-    this.noteUserSend(target);
     const limits = this.multilineLimits();
     if (!limits) return [];
     const echoes: string[] = [];
     let batchTags = tags ? IRC.MessageTags.encode(tags) : '';
+    // eslint-disable-next-line no-control-regex
+    const clean = (line: string) => line.replace(/[\u000d\u000a\u0000]/g, '');
     for (const batch of partitionMultiline(text, limits, this.textBudget('PRIVMSG', target))) {
       const ref = randomBytes(8).toString('hex');
-      this.raw(`${batchTags ? `@${batchTags} ` : ''}BATCH +${ref} draft/multiline ${target}`);
+      const lines = [
+        clean(`${batchTags ? `@${batchTags} ` : ''}BATCH +${ref} draft/multiline ${target}`),
+      ];
       batchTags = '';
       for (const line of batch) {
         const tag = line.concat ? `batch=${ref};draft/multiline-concat` : `batch=${ref}`;
-        this.raw(`@${tag} PRIVMSG ${target} :${line.content}`);
+        lines.push(clean(`@${tag} PRIVMSG ${target} :${line.content}`));
       }
-      this.raw(`BATCH -${ref}`);
-      echoes.push(reassembleMultiline(batch));
+      lines.push(`BATCH -${ref}`);
+      const echo = reassembleMultiline(batch);
+      echoes.push(echo);
+      this.sendPacer.unit(lines, {
+        onSent: () => {
+          this.noteUserSend(target);
+          hooks?.sent?.(echo);
+        },
+        onDropped: () => {
+          this.reportNotSent(target, echo);
+          hooks?.dropped?.(echo);
+        },
+      });
     }
     return echoes;
   }
@@ -9775,15 +10320,24 @@ export class IrcConnection {
     // eslint-disable-next-line no-control-regex
     const clean = line.replace(/[\u000d\u000a\u0000]/g, '');
     if (this.takeRawMonitor(clean)) return;
-    // Read it before it goes out, so a 401 bouncing back off it can be placed
-    // in the channel it was aimed at (#434). Cheap and total: this is the one
-    // path every slash command and member-menu action takes.
-    this.noteOutgoingCommand(clean);
     // A raw JOIN/PART changes membership just as join()/part() do, and nothing
-    // else would record it.
+    // else would record it. Recorded as intent, at write: the close that
+    // would drop the line forgets the membership with it.
     this.noteRawMembership(clean);
     // A query waits its turn, and its reply goes to `asker` (replyRouter.ts).
-    this.replies.send(asker, clean);
+    // The command is read as it goes out, so a 401 bouncing back off it can be
+    // placed in the channel it was aimed at (#434) and "the user's last move
+    // on this nick" is the wire's order, not the queue's (#1149). Cheap and
+    // total: this is the one path every slash command and member-menu action
+    // takes. The user's own line dropped with its socket is said so in the
+    // server buffer, which is where a raw line reports.
+    this.replies.send(
+      asker,
+      clean,
+      undefined,
+      () => this.noteOutgoingCommand(clean),
+      asker === 'user' ? () => this.reportNotSent(this.serverTarget(), clean) : undefined,
+    );
   }
   // Whether the network negotiated IRCv3 message-tags. Client-only tags
   // (+typing, +draft/react, …) and TAGMSG only mean anything to a server that
@@ -10143,12 +10697,15 @@ export class IrcConnection {
     for (const receiver of this.dccReceivers.values()) receiver.cancel();
     this.dccReceivers.clear();
     this.endPassiveDccListens();
+    // Before the disposed flag: a queued user line is reported as not sent,
+    // which publish() refuses once the connection counts as gone.
+    this.sendPacer.dispose();
     this.disposed = true;
     this.clearReconnectTimer();
     this.stopLagPinger();
     this.cancelPendingConnectCommands();
     for (const pending of this.dccPendingResume.values()) {
-      clearTimeout(pending.timer);
+      if (pending.timer) clearTimeout(pending.timer);
       // The row is mid-resume ('receiving') with no receiver to fail it — mark it
       // stalled so it isn't orphaned and can be resumed on reconnect.
       updateDccTransferState(pending.transferId, 'stalled', 'interrupted while awaiting resume');
@@ -10166,12 +10723,16 @@ export class IrcConnection {
       clearTimeout(this.connectCommandTimer);
       this.connectCommandTimer = null;
     }
+    this.connectCommandSeq++;
   }
 
   // Parse and execute connect_commands sequentially. Lines matching
-  // `WAIT <seconds>` (case-insensitive, integer seconds, 1–600) schedule a
-  // delay before the next line; everything else is sent verbatim via raw().
-  // Cancels itself if the socket drops mid-sequence.
+  // `WAIT <seconds>` (case-insensitive, integer seconds, 1–600) hold the lines
+  // after them for that long after the line before actually went out (#1149):
+  // the wait is a timer started from that line's send, and only the connect
+  // commands wait on it, not the rest of the queue. Everything else is sent
+  // verbatim via raw(). Cancels itself if the socket drops mid-sequence, and a
+  // line dropped with its socket never starts the wait after it.
   runConnectCommands(): void {
     this.cancelPendingConnectCommands();
     const raw = this.network.connect_commands;
@@ -10181,20 +10742,46 @@ export class IrcConnection {
       .map((l) => l.trim())
       .filter((l) => l.length > 0);
     if (!lines.length) return;
+    const seq = this.connectCommandSeq;
     let index = 0;
+    // When the last command written went, or what to do once it has.
+    let lastSent = true;
+    let onLastSent: (() => void) | null = null;
     const runNext = () => {
       this.connectCommandTimer = null;
-      if (this.disposed || this.state !== 'connected') return;
+      if (this.disposed || this.state !== 'connected' || seq !== this.connectCommandSeq) return;
       while (index < lines.length) {
         const line = lines[index++];
         const waitMatch = /^WAIT\s+(\d+)\s*$/i.exec(line);
         if (waitMatch) {
           const seconds = Math.max(1, Math.min(600, parseInt(waitMatch[1], 10)));
-          this.connectCommandTimer = setTimeout(runNext, seconds * 1000);
+          const arm = () => {
+            if (seq !== this.connectCommandSeq) return;
+            this.connectCommandTimer = setTimeout(runNext, seconds * 1000);
+          };
+          if (lastSent) arm();
+          else onLastSent = arm;
           return;
         }
         try {
-          if (!this.takeRawMonitor(line)) this.replies.send('user', line);
+          if (this.takeRawMonitor(line)) continue;
+          lastSent = false;
+          onLastSent = null;
+          this.replies.send(
+            'user',
+            line,
+            undefined,
+            () => {
+              lastSent = true;
+              const next = onLastSent;
+              onLastSent = null;
+              next?.();
+            },
+            undefined,
+            // Ahead of chat, with the autojoin: IDENTIFY before JOIN, both
+            // before anything a client says meanwhile.
+            'high',
+          );
         } catch (_) {
           /* ignore */
         }
@@ -10215,6 +10802,9 @@ export class IrcConnection {
       nick: this.currentNick || this.network.nick,
       userModes: [...this.userModes].join(''),
       lagMs: this.lagMs,
+      // Lines waiting in the outbound queue (#1149), kept current by
+      // `send-queue` frames.
+      sendQueueWaiting: this.sendQueueWaiting,
       // Negotiated draft/multiline limits (or null) so the composer can gate its
       // split/flood hint and upload-as-.txt prompt on what will actually go on
       // the wire. Computed post-registration, which is when this snapshot is

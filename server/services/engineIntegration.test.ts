@@ -515,6 +515,64 @@ describe('IrcConnection through the engine', () => {
     expect(conn.isChannelJoined('#stay')).toBe(true);
   }, 20000);
 
+  // #1149: the outbound queue. Lines waiting when the app↔engine link drops
+  // are held for the socket, which the engine still has, and go out in order
+  // on re-attach. Lines waiting when the socket itself dies go with it, and
+  // the buffer they were for says so.
+  it('holds queued lines across a link loss, and reports those dropped with the socket', async () => {
+    const conn = ircManager.getConnection(userId, network.id)!;
+    expect(conn.state).toBe('connected');
+    process.env.LURKER_SEND_PACING = '1';
+    try {
+      const bursts = (from: number) =>
+        sentBy('lurk')
+          .slice(from)
+          .filter((l) => l.includes('burst '))
+          .map((l) => l.slice(l.indexOf('burst ')));
+      const sentBefore = sentBy('lurk').length;
+      // Five short lines fill the 10 s budget; the next two wait their turn.
+      for (let i = 0; i < 7; i++) ircManager.send(userId, network.id, '#stay', `burst ${i}`);
+      await until(() => bursts(sentBefore).length >= 5, 5000, 'the burst went');
+      expect(bursts(sentBefore).length).toBeLessThan(7);
+      const atLoss = sentBy('lurk').length;
+      EngineLink.shared().simulateLoss();
+      await until(() => conn.state !== 'connected', 5000, 'noticed the loss');
+      await until(() => conn.state === 'connected', 8000, 'reattached');
+      await until(() => bursts(sentBefore).length === 7, 8000, 'the held lines went');
+      expect(bursts(sentBefore)).toEqual(Array.from({ length: 7 }, (_, i) => `burst ${i}`));
+      // Ahead of the re-attach's presence bookkeeping: MONITOR waits in the
+      // low lane (sendPacer.ts). With it in high, the chat waited 16 s here.
+      const after = () => sentBy('lurk').slice(atLoss);
+      await until(
+        () => after().some((l) => l.startsWith('MONITOR ')),
+        8000,
+        'the presence list was rebuilt',
+      );
+      const monitor = after().findIndex((l) => l.startsWith('MONITOR '));
+      expect(after().findIndex((l) => l.includes('burst 5'))).toBeLessThan(monitor);
+
+      // The socket dies with lines waiting: the engine dials again, and what
+      // waited is dropped and reported where it was going.
+      const rowsBefore = rows().length;
+      for (let i = 0; i < 8; i++) ircManager.send(userId, network.id, '#stay', `again ${i}`);
+      ircd.drop('lurk');
+      await until(
+        () =>
+          rows()
+            .slice(rowsBefore)
+            .some(
+              (r) =>
+                r.type === 'error' && !!r.text?.startsWith('not sent (connection dropped): again '),
+            ),
+        15000,
+        'the dropped lines were reported',
+      );
+      await until(() => conn.state === 'connected', 15000, 'registered on the new socket');
+    } finally {
+      process.env.LURKER_SEND_PACING = '0';
+    }
+  }, 60000);
+
   // The window Copilot's review on #829 pointed at: reconcileEngine checks the
   // link is ready at the top of its loop, but the link can die inside it. A
   // bare send() would drop the close on the floor and the paused account would

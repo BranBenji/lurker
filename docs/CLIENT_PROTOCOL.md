@@ -387,6 +387,7 @@ One per network inside `kind:'snapshot'` (`ircConnection.snapshot()`,
 ```
 { networkId, state,                    // 'connecting'|'connected'|'reconnecting'|'disconnected'
   nick, userModes, lagMs,
+  sendQueueWaiting,                   // lines still to go out, paced (#1149); `send-queue` keeps it current
   multilineLimits,
   modeSpec: { list, always, onSet, flags, prefix: [ { mode, symbol } ],
               maxModes, topicLen },
@@ -828,44 +829,45 @@ a v1 client.
 Also the `type` of rows inside `backlog`/`history` `events[]`. **P** = persisted
 (has `id`, advances the cursor); **E** = ephemeral (no `id`).
 
-| `type`                        | P/E | Extra fields / meaning                                                        |
-| ----------------------------- | --- | ----------------------------------------------------------------------------- |
-| `message`                     | P   | PRIVMSG (`kind:'privmsg'` in stored rows)                                     |
-| `action`                      | P   | `/me`                                                                         |
-| `notice`                      | P   | `mirrored:true` on the `:server:` copy of a notice to a closed/absent DM      |
-| `join`                        | P   | `account?`                                                                    |
-| `part` / `quit`               | P   | `text` = reason                                                               |
-| `kick`                        | P   | `kicked`, `text`                                                              |
-| `nick`                        | P   | `newNick`                                                                     |
-| `own-nick`                    | E   | your nick changed — `nick` is the new one                                     |
-| `mode`                        | P   | `text`, `modes[]` — see §7.4 for the entry shape and `kind`                   |
-| `usermode`                    | E   | your user modes, whole string                                                 |
-| `topic`                       | P   | a topic _change_ (renders as a line); `nick` + `time` are its setter and time |
-| `channel-topic`               | E   | `topic, setBy, setAt` — 332/331/333: set state, render nothing                |
-| `channel-modes`               | E   | `modes` (full letter string), `modeParams`, `createdAt` — never the key       |
-| `mode-spec`                   | E   | `modeSpec` — the network's channel-mode vocabulary changed (§5.1)             |
-| `react-support`               | E   | the `canReact` family or `canReply` changed (§5.1)                            |
-| `line-budget`                 | E   | `userhostBytes` — the bytes ahead of your text on each line changed (§5.1)    |
-| `channel-joined`              | E   | **you** are in the channel — the materialization signal (§9.1)                |
-| `channel-parted`              | E   | you left, were removed, or lost the connection — mark parted, keep history    |
-| `join-error`                  | E   | join failed — `text`, `reason`; do **not** create a buffer                    |
-| `names`                       | E   | `members[…]` — full nicklist replace                                          |
-| `member-update`               | E   | `member{…}` — single-nick patch (away/account/host changes)                   |
-| `invite`                      | E/P | you were invited (`channel`, `from`) / op-visibility variant                  |
-| `state`                       | E   | network `state` + `nick` on connect — drive the connection indicator          |
-| `motd`                        | P   | MOTD **and all otherwise-unclassified server text** (§7.3)                    |
-| `error`                       | P   | server error text; `unknownCommand?` for 421s                                 |
-| `system`                      | P\* | system-buffer line; severity in `level: info\|warn\|error`, not in `type`     |
-| `away-state`                  | E   | your own away state per network                                               |
-| `peer-presence`               | E   | `nick, state ∈ online\|offline\|away\|back, stateAt, awayMessage, cameOnline` |
-| `typing`                      | E   | `nick, state ∈ active\|paused\|done`                                          |
-| `lag`                         | E   | `lagMs`                                                                       |
-| `whois_result`                | E   | `whois{…}` — a WHOIS reply, **no `target`**. See §7.5                         |
-| `ctcp`                        | E   | CTCP request/reply status text                                                |
-| `dcc`                         | P   | what happened to a DCC transfer or the XDCC queue, in the peer's DM (`text`)  |
-| `chghost`                     | P   | `newIdent, newHost` — render only; the nicklist patch rides `member-update`   |
-| `e2e`                         | E   | RPE2E status, `level` + `text`                                                |
-| `chanlist-start/progress/end` | E   | `/LIST` refresh progress                                                      |
+| `type`                        | P/E | Extra fields / meaning                                                                                                                                                        |
+| ----------------------------- | --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `message`                     | P   | PRIVMSG (`kind:'privmsg'` in stored rows)                                                                                                                                     |
+| `action`                      | P   | `/me`                                                                                                                                                                         |
+| `notice`                      | P   | `mirrored:true` on the `:server:` copy of a notice to a closed/absent DM                                                                                                      |
+| `join`                        | P   | `account?`                                                                                                                                                                    |
+| `part` / `quit`               | P   | `text` = reason                                                                                                                                                               |
+| `kick`                        | P   | `kicked`, `text`                                                                                                                                                              |
+| `nick`                        | P   | `newNick`                                                                                                                                                                     |
+| `own-nick`                    | E   | your nick changed — `nick` is the new one                                                                                                                                     |
+| `mode`                        | P   | `text`, `modes[]` — see §7.4 for the entry shape and `kind`                                                                                                                   |
+| `usermode`                    | E   | your user modes, whole string                                                                                                                                                 |
+| `topic`                       | P   | a topic _change_ (renders as a line); `nick` + `time` are its setter and time                                                                                                 |
+| `channel-topic`               | E   | `topic, setBy, setAt` — 332/331/333: set state, render nothing                                                                                                                |
+| `channel-modes`               | E   | `modes` (full letter string), `modeParams`, `createdAt` — never the key                                                                                                       |
+| `mode-spec`                   | E   | `modeSpec` — the network's channel-mode vocabulary changed (§5.1)                                                                                                             |
+| `react-support`               | E   | the `canReact` family or `canReply` changed (§5.1)                                                                                                                            |
+| `line-budget`                 | E   | `userhostBytes` — the bytes ahead of your text on each line changed (§5.1)                                                                                                    |
+| `channel-joined`              | E   | **you** are in the channel — the materialization signal (§9.1)                                                                                                                |
+| `channel-parted`              | E   | you left, were removed, or lost the connection — mark parted, keep history                                                                                                    |
+| `join-error`                  | E   | join failed — `text`, `reason`; do **not** create a buffer                                                                                                                    |
+| `names`                       | E   | `members[…]` — full nicklist replace                                                                                                                                          |
+| `member-update`               | E   | `member{…}` — single-nick patch (away/account/host changes)                                                                                                                   |
+| `invite`                      | E/P | you were invited (`channel`, `from`) / op-visibility variant                                                                                                                  |
+| `state`                       | E   | network `state` + `nick` on connect — drive the connection indicator                                                                                                          |
+| `motd`                        | P   | MOTD **and all otherwise-unclassified server text** (§7.3)                                                                                                                    |
+| `error`                       | P   | server error text; `unknownCommand?` for 421s                                                                                                                                 |
+| `system`                      | P\* | system-buffer line; severity in `level: info\|warn\|error`, not in `type`                                                                                                     |
+| `away-state`                  | E   | your own away state per network                                                                                                                                               |
+| `peer-presence`               | E   | `nick, state ∈ online\|offline\|away\|back, stateAt, awayMessage, cameOnline`                                                                                                 |
+| `typing`                      | E   | `nick, state ∈ active\|paused\|done`                                                                                                                                          |
+| `lag`                         | E   | `lagMs`                                                                                                                                                                       |
+| `send-queue`                  | E   | `waiting` — lines still to go out on the network, paced (#1149); show as "N waiting". 0 comes once the queue has stayed empty 2 s, so a one-line-at-a-time walk doesn't blink |
+| `whois_result`                | E   | `whois{…}` — a WHOIS reply, **no `target`**. See §7.5                                                                                                                         |
+| `ctcp`                        | E   | CTCP request/reply status text                                                                                                                                                |
+| `dcc`                         | P   | what happened to a DCC transfer or the XDCC queue, in the peer's DM (`text`)                                                                                                  |
+| `chghost`                     | P   | `newIdent, newHost` — render only; the nicklist patch rides `member-update`                                                                                                   |
+| `e2e`                         | E   | RPE2E status, `level` + `text`                                                                                                                                                |
+| `chanlist-start/progress/end` | E   | `/LIST` refresh progress                                                                                                                                                      |
 
 \*`system` rows persist in their own table with their own id sequence — see §4.4.
 

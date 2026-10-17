@@ -12,6 +12,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
 import { setupTestDb } from '../test-utils/testApp.js';
+
 import { FakeIrcd, DEFAULT_CAPS } from '../test-utils/fakeIrcd.js';
 import { until } from '../test-utils/until.js';
 import { ircLineParser } from 'irc-framework';

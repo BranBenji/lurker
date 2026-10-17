@@ -15,6 +15,11 @@ A tour of the Lurker window and how messages are organized.
 
 - Message composition, drafts, and tab completion.
 - Saved messages and user notes.
+- **N waiting** in the status bar: lines still to send. Lurker spaces out a long
+  paste or a burst so the server doesn't drop the connection for flooding; a line
+  that never made it (the connection dropped first) is marked in its buffer. What
+  you type goes ahead of Lurker's own housekeeping (refreshing names and modes
+  after a join or a reconnect), and behind the join itself.
 
 ## Direct messages & presence
 

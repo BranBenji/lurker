@@ -17,6 +17,7 @@ import type { Network } from '../db/networks.js';
 import { countHighlightsNewer, listMessages, searchMessages } from '../db/messages.js';
 import type { MessageEvent } from '../db/messages.js';
 import { IrcConnection } from './ircConnection.js';
+
 import ignoreRulesService from './ignoreRulesService.js';
 import ircManager from './ircManager.js';
 import { maskToRuleInput } from './ignoreRuleInput.js';

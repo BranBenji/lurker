@@ -47,6 +47,12 @@ export class RateLimiter {
     }
   }
 
+  /** Whether allowOutgoing would say yes now, without recording anything. */
+  canSendOutgoing(key: string): boolean {
+    const ts = this.lastSent.get(key);
+    return ts === undefined || this.now() - ts >= OUTGOING_GAP_MS;
+  }
+
   /** True if sending a KEYREQ to `key` is allowed now; records the attempt. */
   allowOutgoing(key: string): boolean {
     const now = this.now();

@@ -9,7 +9,7 @@
 // Against a real IrcConnection on the fake ircd, with the real bouncer in
 // front. See bouncerHarness.ts.
 
-import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
 import { setupTestDb } from '../test-utils/testApp.js';
 import { FakeIrcd } from '../test-utils/fakeIrcd.js';
 import { until } from '../test-utils/until.js';
@@ -157,6 +157,43 @@ const BOLD = String.fromCharCode(2);
 const COLOR = String.fromCharCode(3);
 
 describe('a client that did not ask for echo-message', () => {
+  // #1149: the line waits its turn in the outbound queue, so its echo can come
+  // back long after it was relayed. The 30 s the bouncer remembers it for run
+  // from when it went out, or a late echo would read as someone else's.
+  it('never gets its own message back, however long it waited to go out', async () => {
+    const live = await seedLive();
+    const c = await attachIn(live, '#room');
+    // Hold the line as a backlog would: the manager's send is captured, not run.
+    const send = vi.spyOn(ircManager, 'send').mockReturnValue(true);
+    const mark = c.lines.length;
+    c.send('PRIVMSG #room :late words');
+    await until(() => send.mock.calls.length === 1, 5000, 'relayed to the manager');
+    const hooks = send.mock.calls[0][4]?.lineHooks;
+    send.mockRestore();
+    expect(hooks?.sent).toBeDefined();
+    // 31 s pass with it still waiting; then it goes, and its echo comes back.
+    const realNow = Date.now;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => realNow() + 31_000);
+    try {
+      hooks!.sent!('late words');
+      const conn = ircManager.getConnection(live.userId, live.networkId)!;
+      conn.publish({
+        type: 'message',
+        target: '#room',
+        nick: conn.currentNick,
+        text: 'late words',
+        kind: 'privmsg',
+        self: true,
+      });
+      await published(live, 'late words');
+      expect((await linesAfter(c, mark, '#room')).filter((l) => l.includes('late words'))).toEqual(
+        [],
+      );
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it('never gets its own plain message back', async () => {
     const live = await seedLive();
     const c = await attachIn(live, '#room');

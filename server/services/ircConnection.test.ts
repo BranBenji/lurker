@@ -31,6 +31,7 @@ import {
   resolveKeyModeChange,
   monitorLimitFromIsupport,
 } from './ircConnection.js';
+import { stubCtcpRequest } from '../test-utils/ctcpStub.js';
 import type { MonitorHolder } from './monitorList.js';
 import { createIdentdServer, unregisterIdent } from './identd.js';
 import connectScheduler from './connectScheduler.js';
@@ -1532,6 +1533,9 @@ describe('refused-message handler routing (#283)', () => {
     // fartboy?" must not put the whois miss back in the channel.
     const conn = makeConn();
     conn.upsertChannel('#anime');
+    // A query goes out only on a connected network, and a command is read as
+    // it goes out (#1149).
+    conn.state = 'connected';
     conn.client.raw = vi.fn<(line: string) => void>();
     const publish = vi.fn<(event: unknown) => void>();
     conn.publish = publish;
@@ -1675,7 +1679,7 @@ describe('refused-message handler routing (#283)', () => {
     // never started and split the exchange across two buffers.
     const conn = makeConn();
     conn.upsertChannel('#anime');
-    conn.client.ctcpRequest = vi.fn<(target: string, type: string, payload?: string) => void>();
+    stubCtcpRequest(conn, vi.fn<(target: string, type: string, payload?: string) => void>());
     const publish = vi.fn<(event: unknown) => void>();
     conn.publish = publish;
 
@@ -1695,7 +1699,7 @@ describe('refused-message handler routing (#283)', () => {
     // command's failure could land — and now joins its own echo and reply in the
     // issuing buffer. The assertion that matters is unchanged: not silenced.
     const conn = makeConn();
-    conn.client.ctcpRequest = vi.fn<(target: string, type: string, payload?: string) => void>();
+    stubCtcpRequest(conn, vi.fn<(target: string, type: string, payload?: string) => void>());
     const publish = vi.fn<(event: unknown) => void>();
     const publishEphemeral = vi.fn<(event: Record<string, unknown>) => void>();
     conn.publish = publish;
@@ -1939,7 +1943,7 @@ describe('refused-message handler routing (#283)', () => {
     // happens to use — and on ergo this is the one it uses.
     const conn = makeConn();
     conn.upsertChannel('#anime');
-    conn.client.ctcpRequest = vi.fn<(target: string, type: string, payload?: string) => void>();
+    stubCtcpRequest(conn, vi.fn<(target: string, type: string, payload?: string) => void>());
     const publish = vi.fn<(event: unknown) => void>();
     const publishEphemeral = vi.fn<(event: Record<string, unknown>) => void>();
     conn.publish = publish;

@@ -75,6 +75,12 @@ const RESTORE_MARK = '__lurker_restore__';
 // Outbound lines that belong to registration. While restoring they are answered
 // by the replay, never by the network.
 const SWALLOW = /^(CAP|NICK|USER|PASS|AUTHENTICATE)(\s|$)/;
+
+/** Whether `line`, written during a restore, would be swallowed rather than
+ *  sent: the outbound queue holds such a line until the restore ends (#1149). */
+export function swallowedWhileRestoring(line: string): boolean {
+  return SWALLOW.test(line);
+}
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 // After CONNECT goes out on a ready link, how long the engine has to say
 // dialing / attached / closed / error before the attempt is called off.

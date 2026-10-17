@@ -359,6 +359,9 @@ function applyEvent(event: any): boolean {
     case 'lag':
       networks.applyLag(event);
       break;
+    case 'send-queue':
+      networks.applySendQueue(event);
+      break;
     case 'usermode':
       networks.applyUserMode(event);
       break;
