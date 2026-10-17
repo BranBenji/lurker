@@ -15,8 +15,10 @@
 // the transfer/session row; this just produces a socket or a clean failure.
 
 import net from 'net';
+import type tls from 'tls';
 
 import { dccListenBindHost, dccListenPortRange } from './dccConfig.js';
+import { dccSecureContext, secureAcceptedDccSocket } from './dccTls.js';
 
 // Ports currently bound by a live listener. A port is reserved the instant its
 // server starts listening and released when the listener closes, so two
@@ -53,7 +55,9 @@ export interface DccListenHandle {
   /** The bound port — advertise this to the peer. */
   port: number;
   /** Resolves with the first inbound socket (server closed to further conns at
-   *  that point), or rejects on timeout / bind failure / close(). */
+   *  that point), or rejects on timeout / bind failure / close(). For a
+   *  `secure` listener, the socket is a TLSSocket with its handshake done, and
+   *  a peer whose handshake fails rejects it (#1157). */
   accepted: Promise<net.Socket>;
   /** Tear down: stop listening, release the port, and reject `accepted` if still
    *  pending. Idempotent — safe to call after the socket was already handed off. */
@@ -73,6 +77,10 @@ export interface DccListenOptions {
    *  reply). A mismatch is dropped and we keep waiting — hardening against a
    *  third party racing to grab an advertised port. Null disables the check. */
   expectPeerHost?: string | null;
+  /** Secure DCC (#1157): the accepted connection is the TLS server side,
+   *  presenting the instance's self-signed certificate; `accepted` resolves
+   *  once the handshake is done. */
+  secure?: boolean;
 }
 
 // Collapse IPv4-mapped IPv6 (::ffff:1.2.3.4) so a dual-stack listener's reported
@@ -89,6 +97,16 @@ function normalizeAddr(addr: string | undefined): string {
  * The returned handle's `port` is ready to advertise the moment this resolves.
  */
 export function openDccListener(opts: DccListenOptions = {}): Promise<DccListenHandle> {
+  // The certificate is in hand BEFORE the port binds, so the TLS wrap happens
+  // in the accept itself and no byte the peer sends is read in the clear.
+  if (opts.secure) return dccSecureContext().then((ctx) => bindDccListener(opts, ctx));
+  return bindDccListener(opts, null);
+}
+
+function bindDccListener(
+  opts: DccListenOptions,
+  secureContext: tls.SecureContext | null,
+): Promise<DccListenHandle> {
   const range = dccListenPortRange();
   if (!range) {
     return Promise.reject(new Error('DCC active listening is not configured'));
@@ -223,6 +241,10 @@ export function openDccListener(opts: DccListenOptions = {}): Promise<DccListenH
           server.close();
         } catch {
           /* ignore */
+        }
+        if (secureContext) {
+          secureAcceptedDccSocket(sock, secureContext).then(acceptResolve, acceptReject);
+          return;
         }
         acceptResolve(sock);
       });

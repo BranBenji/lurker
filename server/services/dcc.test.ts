@@ -80,6 +80,7 @@ describe('parseDcc — SEND (active)', () => {
       size: 1024,
       token: null,
       passive: false,
+      secure: false,
     });
   });
 
@@ -129,6 +130,7 @@ describe('parseDcc — SEND (passive/reverse)', () => {
       size: 1024,
       token: 42,
       passive: true,
+      secure: false,
     });
   });
 
@@ -150,6 +152,104 @@ describe('parseDcc — SEND (passive/reverse)', () => {
 describe('parseDcc — non-SEND subtypes', () => {
   it('reports an unknown subtype as unsupported, not invalid', () => {
     expect(parseDcc('FROBNICATE 1 2 3')).toEqual({ kind: 'unsupported', subtype: 'FROBNICATE' });
+  });
+});
+
+describe('parseDcc — secure DCC (#1157)', () => {
+  // KVIrc's spellings (libkvidcc.cpp:1475-1527): the same grammar, an `S` in
+  // front, and the connection in TLS.
+  it('reads SSEND as a SEND over TLS', () => {
+    expect(parseDcc('SSEND file.mkv 3232235777 50000 1024')).toMatchObject({
+      kind: 'send',
+      filename: 'file.mkv',
+      host: '192.168.1.1',
+      port: 50000,
+      size: 1024,
+      secure: true,
+    });
+    expect(parseDcc('ssend "my file.mkv" 3232235777 0 1024 7')).toMatchObject({
+      kind: 'send',
+      passive: true,
+      token: 7,
+      secure: true,
+    });
+  });
+
+  it('reads SCHAT as a CHAT over TLS', () => {
+    expect(parseDcc('SCHAT chat 3232235777 50000')).toMatchObject({
+      kind: 'chat',
+      host: '192.168.1.1',
+      port: 50000,
+      secure: true,
+    });
+  });
+
+  it('a plain SEND or CHAT is not secure', () => {
+    expect(parseDcc('SEND file.mkv 3232235777 50000 1024')).toMatchObject({ secure: false });
+    expect(parseDcc('CHAT chat 3232235777 50000')).toMatchObject({ secure: false });
+  });
+
+  // A turbo transfer has no ACKs; Lurker's receiver sends them and its sender
+  // waits for them. KVIrc reads the letters in either order (requests.cpp:487).
+  it('leaves a turbo transfer unsupported in every spelling, secure or not', () => {
+    for (const verb of ['TSEND', 'TSSEND', 'STSEND']) {
+      expect(parseDcc(`${verb} file.mkv 3232235777 50000 1024`)).toEqual({
+        kind: 'unsupported',
+        subtype: verb,
+      });
+    }
+  });
+
+  // RESUME and ACCEPT keep their names inside a secure transfer
+  // (DccFileTransfer.cpp:1298-1308), so a prefixed one is nobody's.
+  it('has no secure spelling of RESUME or ACCEPT', () => {
+    expect(parseDcc('SRESUME file.mkv 50000 100')).toEqual({
+      kind: 'unsupported',
+      subtype: 'SRESUME',
+    });
+    expect(parseDcc('SACCEPT file.mkv 50000 100')).toEqual({
+      kind: 'unsupported',
+      subtype: 'SACCEPT',
+    });
+  });
+
+  it('builds every offer and reply with the S in front, and nothing else changed', () => {
+    expect(buildDccSend('file.mkv', '192.168.1.1', 50000, 1024, true)).toBe(
+      'SSEND file.mkv 3232235777 50000 1024',
+    );
+    expect(buildDccSendPassive('file.mkv', 1024, 9, true)).toBe('SSEND file.mkv 16843009 0 1024 9');
+    expect(buildDccSendReply('my file.mkv', '203.0.113.5', 30001, 1024, 9, true)).toBe(
+      'SSEND "my file.mkv" 3405803781 30001 1024 9',
+    );
+    expect(buildDccChat('192.168.1.1', 30001, true)).toBe('SCHAT chat 3232235777 30001');
+    expect(buildDccChatPassive('1.1.1.1', 42, true)).toBe('SCHAT chat 16843009 0 42');
+    expect(buildDccChatReverse('203.0.113.5', 30002, 42, true)).toBe(
+      'SCHAT chat 3405803781 30002 42',
+    );
+    // RESUME and ACCEPT have no secure form to build.
+    expect(buildDccResume('file.mkv', 50000, 100, null)).toBe('RESUME file.mkv 50000 100');
+  });
+
+  it('round-trips a secure offer through the parser', () => {
+    expect(parseDcc(buildDccSend('file.mkv', '203.0.113.5', 30001, 1024, true)!)).toMatchObject({
+      kind: 'send',
+      host: '203.0.113.5',
+      secure: true,
+    });
+    expect(parseDcc(buildDccChatPassive('1.1.1.1', 7, true)!)).toMatchObject({
+      kind: 'chat',
+      passive: true,
+      token: 7,
+      secure: true,
+    });
+  });
+
+  it('says so in the offer line', () => {
+    const offer = parseDcc('SSEND file.mkv 3232235777 50000 1024');
+    expect(offer.kind).toBe('send');
+    expect(formatDccOfferLine('bob', offer as DccSend)).toBe(
+      'bob offered "file.mkv" (1.0 KB) via DCC SSEND (secure)',
+    );
   });
 });
 
@@ -467,6 +567,7 @@ describe('parseDcc — CHAT', () => {
       port: 5000,
       token: null,
       passive: false,
+      secure: false,
     });
   });
 

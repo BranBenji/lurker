@@ -28,6 +28,7 @@ import { stubCtcpRequest } from '../test-utils/ctcpStub.js';
 import ircManager from './ircManager.js';
 import { activeDccListenerCount, resetDccListeners } from './dccListener.js';
 import { resetDccChatHosts } from './dccChatSessions.js';
+import { startTlsPeer, tlsDial, type TlsPeer } from '../test-utils/dccTlsPeer.js';
 import { ensureOpen, isClosed } from '../db/buffers.js';
 import { closeBuffer } from './wsHub.js';
 
@@ -135,11 +136,11 @@ function harness() {
   const stateEvents = () =>
     ephemeral
       .filter((e) => e.type === 'dcc-chat-state')
-      .map((e) => ({ from: e.from, live: e.live }));
+      .map((e) => ({ from: e.from, live: e.live, secure: e.secure }));
   const offerEvents = () =>
     ephemeral.filter(
       (e) => e.type === 'dcc-chat-offer' || e.type === 'dcc-chat-offer-closed',
-    ) as Array<{ type: string; from: string; passive?: boolean }>;
+    ) as Array<{ type: string; from: string; passive?: boolean; secure?: boolean }>;
   const chatLines = () =>
     published.filter((e) => e.type === 'message' && e.kind === 'dcc-chat') as Array<{
       text: string;
@@ -1059,6 +1060,126 @@ describe('our own offer echoed back is not an offer', () => {
 // offline, if the session is disconnected". The client can't infer liveness —
 // sessions live on the server and survive a page reload — so the server
 // reports it: live events for changes, and the list itself in every snapshot.
+// Secure DCC (#1157): KVIrc's SCHAT, the same chat with the socket in TLS.
+// Whoever listens is the TLS server. The handshake itself is pinned in
+// dccTls.test.ts; these are the plumbing — the verb on the wire, which side
+// wraps, and that a secure offer never ends up in the clear.
+describe('secure DCC chat (SCHAT)', () => {
+  const tlsPeers: TlsPeer[] = [];
+  afterEach(() => {
+    for (const p of tlsPeers.splice(0)) p.close();
+  });
+
+  it('dials an SCHAT offer over TLS, to a KVIrc with no certificate, and carries lines', async () => {
+    enableDcc();
+    allowLoopback();
+    const h = harness();
+    const peer = await startTlsPeer({ anonymous: true });
+    tlsPeers.push(peer);
+
+    offerAndAccept(h.conn, 'bob', `SCHAT chat ${encodeDccAddress('127.0.0.1')} ${peer.port}`);
+    const sock = await peer.socket;
+    await waitFor(() => h.conn.hasDccChat('bob'));
+    expect(h.notices().at(-1)).toBe('Secure DCC chat with bob connected.');
+    expect(h.stateEvents().at(-1)).toEqual({ from: 'bob', live: true, secure: true });
+
+    sock.write('hello\r\n');
+    await waitFor(() => h.chatLines().length > 0);
+    expect(h.chatLines()[0]).toMatchObject({ text: 'hello', target: '=bob' });
+    const got = new Promise<string>((r) => sock.once('data', (d) => r(d.toString())));
+    expect(h.conn.dccChatSend('bob', 'hi back')).toBe(true);
+    expect(await got).toBe('hi back\r\n');
+    h.conn.closeDccChat('bob');
+  });
+
+  it('offers an SCHAT when asked, and is the TLS server for whoever connects', async () => {
+    enableDcc();
+    enableListening();
+    const h = harness();
+
+    h.conn.offerDccChat('bob', { secure: true });
+    await waitFor(() => h.lastOffer() !== null);
+    const m = /^SCHAT chat 3405803781 (\d+)$/.exec(h.lastOffer()!);
+    expect(m).not.toBeNull();
+    expect(h.notices().at(-1)).toMatch(/^Offered a secure DCC chat to bob/);
+
+    const client = await tlsDial(Number(m![1]));
+    await waitFor(() => h.conn.hasDccChat('bob'));
+    const got = new Promise<string>((r) => client.once('data', (d) => r(d.toString())));
+    expect(h.conn.dccChatSend('bob', 'over tls')).toBe(true);
+    expect(await got).toBe('over tls\r\n');
+    client.destroy();
+    h.conn.closeDccChat('bob');
+  });
+
+  // KVIrc reads whether the chat is TLS from the reply's verb
+  // (requests.cpp:356-358), so the answer has to keep the S.
+  it('answers a passive SCHAT with SCHAT, listening as the TLS server', async () => {
+    enableDcc();
+    enableListening();
+    const h = harness();
+
+    offerAndAccept(h.conn, 'bob', 'SCHAT chat 16843009 0 42');
+    await waitFor(() => h.lastOffer() !== null);
+    const m = /^SCHAT chat 3405803781 (\d+) 42$/.exec(h.lastOffer()!);
+    expect(m).not.toBeNull();
+
+    const client = await tlsDial(Number(m![1]));
+    await waitFor(() => h.conn.hasDccChat('bob'));
+    expect(h.notices().at(-1)).toBe('Secure DCC chat with bob connected.');
+    client.destroy();
+    h.conn.closeDccChat('bob');
+  });
+
+  it('refuses a plain CHAT answer to our secure passive offer, rather than connecting in the clear', async () => {
+    enableDcc();
+    allowLoopback();
+    const h = harness();
+    const peer = await startPeer();
+
+    h.conn.offerDccChat('bob', { passive: true, secure: true });
+    const m = /^SCHAT chat 16843009 0 (\d+)$/.exec(h.lastOffer()!);
+    expect(m).not.toBeNull();
+
+    offerFrom(h.conn, 'bob', `CHAT chat ${encodeDccAddress('127.0.0.1')} ${peer.port} ${m![1]}`);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(h.conn.hasDccChat('bob')).toBe(false);
+    expect(h.notices().at(-1)).toMatch(
+      /answered the secure DCC chat offer with a plain \(CHAT\) reply — not connecting/,
+    );
+    // The token was spent: the same answer again is nobody's.
+    offerFrom(h.conn, 'bob', `SCHAT chat ${encodeDccAddress('127.0.0.1')} ${peer.port} ${m![1]}`);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(h.conn.hasDccChat('bob')).toBe(false);
+  });
+
+  it('refuses a secure answer to a plain passive offer the same way', async () => {
+    enableDcc();
+    allowLoopback();
+    const h = harness();
+    const peer = await startTlsPeer();
+    tlsPeers.push(peer);
+
+    h.conn.offerDccChat('bob', { passive: true });
+    const token = h.lastOffer()!.split(' ')[4];
+    offerFrom(h.conn, 'bob', `SCHAT chat ${encodeDccAddress('127.0.0.1')} ${peer.port} ${token}`);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(h.conn.hasDccChat('bob')).toBe(false);
+    expect(h.notices().at(-1)).toMatch(/with a secure \(SCHAT\) reply — not connecting/);
+  });
+
+  it('flags a secure offer for the toast and in the status line', () => {
+    enableDcc();
+    const h = harness();
+    offerFrom(h.conn, 'bob', `SCHAT chat ${encodeDccAddress('203.0.113.9')} 5000`);
+    expect(h.offerEvents()[0]).toMatchObject({ type: 'dcc-chat-offer', from: 'bob', secure: true });
+    expect(h.ctcpLines()[0]).toMatch(/^bob wants to start a secure DCC chat/);
+    // A plain one stays plain.
+    offerFrom(h.conn, 'carol', `CHAT chat ${encodeDccAddress('203.0.113.9')} 5000`);
+    expect(h.offerEvents().at(-1)).toMatchObject({ from: 'carol', secure: false });
+  });
+});
+
 describe('the client is told whether a chat is live', () => {
   it('announces a session opening and closing', async () => {
     enableDcc();
@@ -1068,10 +1189,10 @@ describe('the client is told whether a chat is live', () => {
     offerAndAccept(h.conn, 'BoB', `CHAT chat ${encodeDccAddress('127.0.0.1')} ${peer.port}`);
     await peer.socket;
     await waitFor(() => h.conn.hasDccChat('BoB'));
-    expect(h.stateEvents()).toEqual([{ from: 'BoB', live: true }]);
+    expect(h.stateEvents()).toEqual([{ from: 'BoB', live: true, secure: false }]);
 
     h.conn.closeDccChat('BoB');
-    expect(h.stateEvents().at(-1)).toEqual({ from: 'BoB', live: false });
+    expect(h.stateEvents().at(-1)).toEqual({ from: 'BoB', live: false, secure: false });
   });
 
   it('announces the peer hanging up', async () => {
@@ -1084,7 +1205,7 @@ describe('the client is told whether a chat is live', () => {
     await waitFor(() => h.conn.hasDccChat('bob'));
     sock.end();
     await waitFor(() => h.stateEvents().some((e) => e.live === false));
-    expect(h.stateEvents().at(-1)).toEqual({ from: 'bob', live: false });
+    expect(h.stateEvents().at(-1)).toEqual({ from: 'bob', live: false, secure: false });
   });
 
   // ⚠⚠ The case a naive version gets wrong. A user-initiated disconnect drops

@@ -1560,6 +1560,12 @@ peer declined) or `cancelled`; a client that doesn't know a state shows it as
 it is. A send's `file_id` is the file it sends and its `received_bytes` what the
 peer has confirmed; it never has a `destination_path`.
 
+A row's `secure` is 1 when the transfer runs over TLS — KVIrc's `SSEND`, which
+is `SEND` with the connection wrapped in TLS and nothing else changed — and 0
+otherwise. A client shows it ("secure") so the user knows the peer asked for
+it; the same transfer controls apply. Nothing about the peer is verified: it
+is encryption, not identity.
+
 A transfer row's `network_id` is null once its network was deleted: the row,
 and any file it owns, stay the user's. A row has a file while its
 `destination_path` is non-null (never show the path itself); a resume moves a
@@ -1644,17 +1650,20 @@ row stays, with `file_deleted_at` set. 409 while the transfer is still active
 (cancel it first), and for a send, whose file is deleted under Files; 404 when
 there is no file. Needs no grant.
 
-`POST /send` (`{networkId, nick, fileId, passive?}`) offers one of the account's
+`POST /send` (`{networkId, nick, fileId, passive?, secure?}`) offers one of the account's
 files to a peer and returns `{transfer}`, `offered`. The rest arrives as
 `dcc-transfer` frames, and as `dcc` lines in the peer's DM. Active by
 default: the server listens on a port and the peer connects. `passive: true`
 asks the peer to listen and the server connects to them instead. The server
-makes the offer passive by itself when it can't listen (`canListen` false). 400
+makes the offer passive by itself when it can't listen (`canListen` false).
+`secure: true` offers an `SSEND`, the transfer over TLS; the row's `secure` is
+then 1. 400
 for a channel, 404 for a file that isn't the account's, 409 when the network
 isn't connected or goes through a proxy, and 410 when the file is gone from disk. A
 peer's RESUME is answered and the send starts where it asked.
 
-`POST /chat` (`{networkId, nick, passive?}`) opens a DCC CHAT; `POST /chat/close`
+`POST /chat` (`{networkId, nick, passive?, secure?}`) opens a DCC CHAT, over TLS
+(KVIrc's `SCHAT`) when `secure` is true; `POST /chat/close`
 (`{networkId, nick}`) ends one. Both return as soon as the offer is away — a DCC
 handshake takes as long as the peer takes to answer, so the outcome arrives as
 notices in the chat's own buffer rather than in the response. Closing the `=nick`
@@ -1689,11 +1698,16 @@ buffer.
 Three ephemeral events, each targeting the network's `:server:` buffer and naming
 the peer in `from` (not `target`), carry DCC chat state to a client:
 
-| Event                   | Fields            | Meaning                                                        |
-| ----------------------- | ----------------- | -------------------------------------------------------------- |
-| `dcc-chat-offer`        | `from`, `passive` | A peer offered a chat; nothing is dialled until accepted.      |
-| `dcc-chat-offer-closed` | `from`            | That offer is gone — accepted, declined, expired or torn down. |
-| `dcc-chat-state`        | `from`, `live`    | A session with `from` opened (`true`) or ended (`false`).      |
+| Event                   | Fields                      | Meaning                                                        |
+| ----------------------- | --------------------------- | -------------------------------------------------------------- |
+| `dcc-chat-offer`        | `from`, `passive`, `secure` | A peer offered a chat; nothing is dialled until accepted.      |
+| `dcc-chat-offer-closed` | `from`                      | That offer is gone — accepted, declined, expired or torn down. |
+| `dcc-chat-state`        | `from`, `live`, `secure`    | A session with `from` opened (`true`) or ended (`false`).      |
+
+`secure` is true for a chat over TLS (an `SCHAT`): the offer asked for it, or
+the session runs that way. A client says so where it names the chat. Accepting
+such an offer needs nothing extra — `POST /chat` for that peer takes it as
+offered.
 
 An offer surface should be retired on `dcc-chat-offer-closed` rather than on a
 timer, so it never outlives the offer it names. That event can be missed — the

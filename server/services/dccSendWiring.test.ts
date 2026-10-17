@@ -31,6 +31,7 @@ import { invalidateCasemappingCache } from '../db/buffers.js';
 import { IrcConnection } from './ircConnection.js';
 import { stubCtcpRequest } from '../test-utils/ctcpStub.js';
 import { activeDccListenerCount, resetDccListeners } from './dccListener.js';
+import { startTlsPeer, tlsDial, type TlsPeer } from '../test-utils/dccTlsPeer.js';
 
 // Below 32768 (see dccChatWiring.test.ts), and apart from the other DCC test
 // files' ranges, which can run in parallel.
@@ -170,9 +171,12 @@ const row = (id: number) => getDccTransfer(1, id)!;
 
 function offer(
   h: ReturnType<typeof harness>,
-  opts: { passive?: boolean; nick?: string } = {},
+  opts: { passive?: boolean; secure?: boolean; nick?: string } = {},
 ): number {
-  const result = h.conn.offerDccSend(file, opts.nick ?? 'bob', { passive: opts.passive });
+  const result = h.conn.offerDccSend(file, opts.nick ?? 'bob', {
+    passive: opts.passive,
+    secure: opts.secure,
+  });
   if (!('transferId' in result)) throw new Error(result.error);
   return result.transferId;
 }
@@ -612,6 +616,76 @@ describe('a passive offer', () => {
     } finally {
       setUserCapability(1, CAPABILITY_DCC_RECEIVE, false);
     }
+  });
+});
+
+// Secure DCC (#1157): KVIrc's SSEND, the same transfer with the socket in
+// TLS; RESUME, ACCEPT and the ACKs are unchanged inside it.
+describe('a secure offer (SSEND)', () => {
+  const tlsPeers: TlsPeer[] = [];
+  afterEach(() => {
+    for (const p of tlsPeers.splice(0)) p.close();
+  });
+
+  it('offers an SSEND on a listening port that is the TLS server, and sends the file', async () => {
+    enableSend();
+    enableListening();
+    const h = harness();
+    const id = offer(h, { secure: true });
+    expect(row(id)).toMatchObject({ state: 'offered', secure: 1 });
+    await waitFor(() => h.sent() !== null);
+    const m = /^SSEND my_file\.bin (\d+) (\d+) (\d+)$/.exec(h.sent()!);
+    expect(m).not.toBeNull();
+    expect(Number(m![3])).toBe(DATA.length);
+    expect(h.lines()).toContain(
+      'DCC: offered "my file.bin" (293.0 KB) to bob (secure) — waiting for them to accept…',
+    );
+
+    const sock = await tlsDial(Number(m![2]));
+    sockets.push(sock);
+    const got = await receive(sock, DATA.length);
+    expect(got.equals(DATA)).toBe(true);
+    await waitFor(() => row(id).state === 'completed');
+    expect(activeDccListenerCount()).toBe(0);
+  });
+
+  it('keeps the S on a passive offer, and dials the answer over TLS', async () => {
+    enableSend();
+    process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1';
+    const h = harness();
+    // The receiver listens with a certificate, as a KVIrc given one does.
+    const peer = await startTlsPeer();
+    tlsPeers.push(peer);
+    const id = offer(h, { passive: true, secure: true });
+    const m = /^SSEND my_file\.bin 16843009 0 (\d+) (\d+)$/.exec(h.sent()!);
+    expect(m).not.toBeNull();
+    expect(h.lines().at(-1)).toMatch(/\(passive, secure\)/);
+
+    h.from(
+      'bob',
+      `SSEND my_file.bin ${encodeDccAddress('127.0.0.1')} ${peer.port} ${DATA.length} ${m![2]}`,
+    );
+    const sock = await peer.socket;
+    const got = await receive(sock, DATA.length);
+    expect(got.equals(DATA)).toBe(true);
+    await waitFor(() => row(id).state === 'completed');
+  });
+
+  it('does not send in the clear when a plain SEND answers a secure offer', async () => {
+    enableSend();
+    process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1';
+    const h = harness();
+    const id = offer(h, { passive: true, secure: true });
+    const token = h.sent()!.split(' ').at(-1);
+    h.from(
+      'bob',
+      `SEND my_file.bin ${encodeDccAddress('127.0.0.1')} 24900 ${DATA.length} ${token}`,
+    );
+    expect(row(id).state).toBe('failed');
+    expect(row(id).error).toBe('bob answered the secure offer with a plain DCC SEND');
+    expect(h.lines().at(-1)).toBe(
+      'DCC: not sending "my file.bin" — bob answered the secure offer with a plain DCC SEND',
+    );
   });
 });
 

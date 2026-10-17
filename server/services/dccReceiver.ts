@@ -18,6 +18,7 @@ import fs from 'fs';
 import net from 'net';
 
 import { crc32Update } from './dcc.js';
+import { dialDccPeer } from './dccTls.js';
 
 export interface DccReceiveOptions {
   /** Decoded host from the offer (dotted-quad IPv4 or IPv6 literal). Unused
@@ -27,6 +28,9 @@ export interface DccReceiveOptions {
   /** A connection the sender already made to us, for a passive offer (#1145):
    *  we listened, they connected. Used instead of dialing host:port. */
   socket?: net.Socket;
+  /** An `SSEND` (#1157): the dial is wrapped in TLS. A provided socket is
+   *  already whatever the listener made it. */
+  secure?: boolean;
   /** Advertised total size in bytes; 0 means unknown (finish on clean close). */
   size: number;
   /** Absolute path to write to (already resolved + de-collided by the caller). */
@@ -65,7 +69,8 @@ export class DccReceiver {
   start(): void {
     const { host, port, idleTimeoutMs = 60_000 } = this.opts;
     const provided = this.opts.socket ?? null;
-    const sock = provided ?? net.connect({ host, port });
+    const dial = provided ? null : dialDccPeer(host, port, this.opts.secure === true);
+    const sock = provided ?? dial!.socket;
     this.socket = sock;
     sock.setTimeout(idleTimeoutMs);
     const onConnected = (): void => {
@@ -94,9 +99,10 @@ export class DccReceiver {
         if (!this.settled) sock.resume();
       });
     };
-    // A socket handed to us is connected already.
+    // A socket handed to us is connected already. A dialled one is ready at
+    // 'connect', or for TLS only once the handshake is done.
     if (provided) onConnected();
-    else sock.on('connect', onConnected);
+    else sock.on(dial!.ready, onConnected);
     // We never setEncoding, so chunk is always a Buffer at runtime; the event
     // type is widened to string|Buffer, so coerce defensively.
     sock.on('data', (chunk) => this.onData(typeof chunk === 'string' ? Buffer.from(chunk) : chunk));

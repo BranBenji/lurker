@@ -548,7 +548,7 @@ function peerTarget(
 
 /**
  * POST /api/dcc/chat — offer a DCC chat to a peer. Body: {networkId, nick,
- * passive?}. Returns as soon as the offer is sent; the outcome (connected,
+ * passive?, secure?}. Returns as soon as the offer is sent; the outcome (connected,
  * refused, timed out) lands in the `=nick` buffer, because a DCC handshake can
  * take as long as the peer takes to answer.
  */
@@ -556,7 +556,9 @@ router.post('/chat', needsChat, (req: Request, res: Response) => {
   const t = peerTarget(req, res);
   if (!t) return;
   const passive = req.body?.passive === true;
-  if (!ircManager.dccChatOpen(req.user!.id, t.networkId, t.nick, { passive })) {
+  // `secure` (#1157): KVIrc's SCHAT, the chat over TLS.
+  const secure = req.body?.secure === true;
+  if (!ircManager.dccChatOpen(req.user!.id, t.networkId, t.nick, { passive, secure })) {
     res.status(409).json({ error: 'network not connected' });
     return;
   }
@@ -565,7 +567,7 @@ router.post('/chat', needsChat, (req: Request, res: Response) => {
 
 /**
  * POST /api/dcc/send — offer one of the account's files to a peer (#1086).
- * Body: {networkId, nick, fileId, passive?}. Answers with the transfer as soon
+ * Body: {networkId, nick, fileId, passive?, secure?}. Answers with the transfer as soon
  * as the offer is out; it moves through offered → sending → completed (or ends
  * failed, rejected, cancelled) over the WS like any other.
  */
@@ -580,6 +582,8 @@ router.post('/send', needsSend, (req: Request, res: Response) => {
   }
   const result = ircManager.dccSendFile(req.user!.id, t.networkId, t.nick, file, {
     passive: req.body?.passive === true,
+    // `secure` (#1157): KVIrc's SSEND, the transfer over TLS.
+    secure: req.body?.secure === true,
   });
   if ('error' in result) {
     res.status(result.status).json({ error: result.error });

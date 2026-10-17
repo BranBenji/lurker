@@ -168,6 +168,7 @@ import { hasFreeSpaceFor } from '../utils/diskSpace.js';
 import { getDccStorageLimit } from '../db/dccStorageLimits.js';
 import { DccChat } from './dccChat.js';
 import { openDccListener, type DccListenHandle } from './dccListener.js';
+import { dialDccPeer } from './dccTls.js';
 import {
   dccChatHostFor,
   dccChatKey,
@@ -405,6 +406,8 @@ interface DccSendOffer {
   size: number;
   /** Set for a passive offer: the token the receiver's reply carries. */
   token: number | null;
+  /** An SSEND (#1157): the socket, dialled or accepted, is wrapped in TLS. */
+  secure: boolean;
   /** An active offer's listener, once bound, and its port (0 until then, and
    *  for a passive offer). */
   listener: DccListenHandle | null;
@@ -924,7 +927,7 @@ export class IrcConnection {
   // irssi's does) but cannot outlive the process, while the buffer and its
   // history persist — hence the once-per-peer notice in dccChatSend when a line
   // is typed into a chat this process no longer holds.
-  private readonly dccChats = new Map<string, { nick: string; chat: DccChat }>();
+  private readonly dccChats = new Map<string, { nick: string; chat: DccChat; secure: boolean }>();
   // Peers we've already told "that chat is gone" since their last live session,
   // so typing repeatedly into a dead `=nick` buffer doesn't repeat the notice.
   private readonly dccChatDeadWarned = new Set<string>();
@@ -953,7 +956,7 @@ export class IrcConnection {
   // Passive chat offers awaiting the peer's reverse reply, keyed by our token.
   private readonly pendingPassiveChats = new Map<
     number,
-    { nick: string; timer: ReturnType<typeof setTimeout> | null }
+    { nick: string; secure: boolean; timer: ReturnType<typeof setTimeout> | null }
   >();
   // Resumes awaiting the sender's DCC ACCEPT, keyed by nick|filename. Each holds
   // a timeout so a bot that never accepts fails the transfer cleanly.
@@ -7313,6 +7316,18 @@ export class IrcConnection {
       // The receiver answering our passive offer with where to connect.
       const ours = offer.passive ? undefined : this.passiveDccSendFor(nick, offer.token);
       if (ours) {
+        // ⚠ The answer must be the same kind of DCC as the offer (#1157). A
+        // plain SEND back to an SSEND means the peer's client doesn't do TLS
+        // (or something between rewrote the offer), and a file the user asked
+        // to send securely is not sent in the clear; the reverse would be a
+        // listener expecting a handshake our sender never starts.
+        if (offer.secure !== ours.secure) {
+          const theirs = offer.secure ? 'a secure DCC SSEND' : 'a plain DCC SEND';
+          const reason = `${nick} answered ${ours.secure ? 'the secure offer' : 'the offer'} with ${theirs}`;
+          this.endDccSendOffer(ours, 'failed', reason);
+          this.dccLine(ours.nick, `DCC: not sending "${ours.name}" — ${reason}`);
+          return;
+        }
         this.dialDccSend(ours, offer.host, offer.port);
         return;
       }
@@ -7340,6 +7355,7 @@ export class IrcConnection {
       state: 'pending_approval',
       passive: offer.passive,
       token: offer.token,
+      secure: offer.secure,
       peer_host: offer.host,
       peer_port: offer.port,
     });
@@ -7483,6 +7499,7 @@ export class IrcConnection {
       destination_path: destPath,
       passive: offer.passive,
       token: offer.token,
+      secure: offer.secure,
       crc_expected: expectedCrc,
       received_bytes: startOffset,
     });
@@ -7737,8 +7754,9 @@ export class IrcConnection {
       this.publishDcc(transferId);
       this.dccLine(nick, line);
     };
-    // The wait for the sender starts when our answer has gone (#1149).
-    openDccListener({ timeoutMs: null }).then(
+    // The wait for the sender starts when our answer has gone (#1149). An SSEND
+    // is taken over TLS, with us as its server (#1157).
+    openDccListener({ timeoutMs: null, secure: offer.secure }).then(
       (handle) => {
         if (!ours()) {
           handle.close();
@@ -7757,7 +7775,14 @@ export class IrcConnection {
         const host = dccExternalHost();
         const body =
           host && offer.token !== null
-            ? buildDccSendReply(offer.filename, host, handle.port, offer.size, offer.token)
+            ? buildDccSendReply(
+                offer.filename,
+                host,
+                handle.port,
+                offer.size,
+                offer.token,
+                offer.secure,
+              )
             : null;
         if (!body) {
           handle.close();
@@ -7838,6 +7863,7 @@ export class IrcConnection {
       host: offer.host,
       port: offer.port,
       socket,
+      secure: offer.secure,
       size: offer.size,
       destPath,
       startOffset,
@@ -8009,6 +8035,7 @@ export class IrcConnection {
       size: row.advertised_size,
       token: row.token,
       passive: row.passive === 1,
+      secure: row.secure === 1,
     });
   }
 
@@ -8124,7 +8151,7 @@ export class IrcConnection {
   offerDccSend(
     file: { id: number; path: string; name: string; size: number },
     nick: string,
-    opts: { passive?: boolean } = {},
+    opts: { passive?: boolean; secure?: boolean } = {},
   ): { transferId: number } | { status: number; error: string } {
     // The offer rides the IRC link, which drops a write silently during a
     // reconnect (see dccCanSendOffer).
@@ -8142,6 +8169,8 @@ export class IrcConnection {
     // asking (#1154). The line in the DM says "(passive)". Chat stays opt-in:
     // far fewer clients answer a passive chat offer.
     const passive = opts.passive === true || !dccActiveListenAvailable();
+    // Over TLS when asked (#1157): KVIrc's SSEND, which only KVIrc takes today.
+    const secure = opts.secure === true;
     // As the download route judges it: a file removed or replaced by hand.
     // HexChat refuses an offer of size 0 (dcc.c:2649), and Quassel fails on one.
     if (file.size === 0) return { status: 400, error: 'an empty file cannot be sent over DCC' };
@@ -8162,6 +8191,7 @@ export class IrcConnection {
       size: file.size,
       passive,
       token,
+      secure,
     });
     // The offer's five minutes start when it has gone out (armDccSendExpiry).
     const offer: DccSendOffer = {
@@ -8172,6 +8202,7 @@ export class IrcConnection {
       wireName,
       size: file.size,
       token,
+      secure,
       listener: null,
       port: 0,
       resumeAt: 0,
@@ -8181,15 +8212,16 @@ export class IrcConnection {
     this.dccSendOffers.set(transferId, offer);
     this.publishDcc(transferId);
     if (token !== null) {
-      this.writeCtcp(nick, 'DCC', buildDccSendPassive(wireName, file.size, token), {
+      this.writeCtcp(nick, 'DCC', buildDccSendPassive(wireName, file.size, token, secure), {
         live: () => this.dccSendOffers.get(transferId) === offer,
         onSent: () => this.armDccSendExpiry(offer),
         onDropped: () => this.dropDccSendOffer(offer),
       });
       this.dccLine(
         nick,
-        `DCC: offered "${file.name}" (${formatBytes(file.size)}) to ${nick} (passive) — ` +
-          'waiting for them to answer…',
+        `DCC: offered "${file.name}" (${formatBytes(file.size)}) to ${nick} (passive${
+          secure ? ', secure' : ''
+        }) — waiting for them to answer…`,
       );
     } else {
       this.listenForDccSend(offer);
@@ -8200,8 +8232,8 @@ export class IrcConnection {
   // Bind a port for an active offer, then send it.
   private listenForDccSend(offer: DccSendOffer): void {
     // The listener outlasts the offer a little, so the offer's own timer is
-    // what expires it and says so.
-    openDccListener({ timeoutMs: null }).then(
+    // what expires it and says so. An SSEND's port is a TLS server (#1157).
+    openDccListener({ timeoutMs: null, secure: offer.secure }).then(
       (handle) => {
         if (this.dccSendOffers.get(offer.transferId) !== offer) {
           handle.close(); // withdrawn while the port was binding
@@ -8216,7 +8248,9 @@ export class IrcConnection {
           return;
         }
         const host = dccExternalHost();
-        const body = host ? buildDccSend(offer.wireName, host, handle.port, offer.size) : null;
+        const body = host
+          ? buildDccSend(offer.wireName, host, handle.port, offer.size, offer.secure)
+          : null;
         if (!body) {
           handle.close();
           const reason = 'LURKER_DCC_EXTERNAL_HOST is not a usable address';
@@ -8239,8 +8273,9 @@ export class IrcConnection {
         });
         this.dccLine(
           offer.nick,
-          `DCC: offered "${offer.name}" (${formatBytes(offer.size)}) to ${offer.nick} — ` +
-            'waiting for them to accept…',
+          `DCC: offered "${offer.name}" (${formatBytes(offer.size)}) to ${offer.nick}${
+            offer.secure ? ' (secure)' : ''
+          } — waiting for them to accept…`,
         );
         handle.accepted.then(
           (socket) => {
@@ -8363,7 +8398,9 @@ export class IrcConnection {
       );
       return;
     }
-    const sock = net.connect({ host, port });
+    // Over TLS for an SSEND (#1157), ready only once the handshake is done;
+    // the connect timeout covers the handshake too.
+    const { socket: sock, ready } = dialDccPeer(host, port, offer.secure);
     offer.dial = sock;
     sock.setTimeout(DCC_CHAT_CONNECT_TIMEOUT_MS);
     const onTimeout = (): void => {
@@ -8377,7 +8414,7 @@ export class IrcConnection {
     };
     sock.once('timeout', onTimeout);
     sock.once('error', onError);
-    sock.once('connect', () => {
+    sock.once(ready, () => {
       // Past connect, the socket is the sender's.
       sock.setTimeout(0);
       sock.off('timeout', onTimeout);
@@ -8577,7 +8614,7 @@ export class IrcConnection {
     };
   }
 
-  private openDccChatListener(nick: string): Promise<DccListenHandle | null> {
+  private openDccChatListener(nick: string, secure: boolean): Promise<DccListenHandle | null> {
     const key = nick.toLowerCase();
     const request = {};
     this.dccListenerRequests.set(key, request);
@@ -8587,7 +8624,8 @@ export class IrcConnection {
       return current;
     };
     // The wait for the peer starts when the offer has gone (dccChatOfferHooks).
-    return openDccListener({ timeoutMs: null }).then(
+    // An SCHAT's port is a TLS server (#1157).
+    return openDccListener({ timeoutMs: null, secure }).then(
       (handle) => {
         const current = settle();
         if (current && !this.disposed && this.state === 'connected') return handle;
@@ -8672,12 +8710,13 @@ export class IrcConnection {
   // it can say so the way a DM says its peer is offline. Ephemeral: the current
   // state also rides every snapshot (ircManager.snapshotForUser), which is what
   // a reloaded tab reads — a live event alone would leave it guessing.
-  private publishDccChatState(nick: string, live: boolean): void {
+  private publishDccChatState(nick: string, live: boolean, secure = false): void {
     this.publishEphemeral({
       type: 'dcc-chat-state',
       target: this.serverTarget(),
       from: nick,
       live,
+      secure,
     });
   }
 
@@ -8722,7 +8761,7 @@ export class IrcConnection {
    * :1381), and HexDroid does the same. Silently degrading into that is worse
    * than refusing, so an unconfigured server says so instead.
    */
-  offerDccChat(nick: string, opts: { passive?: boolean } = {}): void {
+  offerDccChat(nick: string, opts: { passive?: boolean; secure?: boolean } = {}): void {
     // ⚠⚠ A peer, never a channel. The offer goes out as a CTCP to `nick`, so a
     // channel name here broadcasts it to everyone in the channel — and an
     // active offer also opens a listening port any of them can race for. All
@@ -8751,8 +8790,11 @@ export class IrcConnection {
       return;
     }
     if (!this.dccCanSendOffer(nick)) return;
+    // Over TLS when asked (#1157): KVIrc's SCHAT, which KVIrc and ZNC's schat
+    // module take.
+    const secure = opts.secure === true;
     if (opts.passive) {
-      this.offerPassiveDccChat(nick);
+      this.offerPassiveDccChat(nick, secure);
       return;
     }
     if (!dccActiveListenAvailable()) {
@@ -8774,10 +8816,10 @@ export class IrcConnection {
       );
       return;
     }
-    this.openDccChatListener(nick)
+    this.openDccChatListener(nick, secure)
       .then((handle) => {
         if (!handle) return;
-        const body = buildDccChat(externalHost, handle.port);
+        const body = buildDccChat(externalHost, handle.port, secure);
         if (body === null) {
           handle.close();
           this.dccChatNotice(nick, 'DCC chat: external host is misconfigured.');
@@ -8785,11 +8827,14 @@ export class IrcConnection {
         }
         this.dccChatListeners.set(handle, nick);
         this.writeCtcp(nick, 'DCC', body, this.dccChatOfferHooks(handle, nick));
-        this.dccChatNotice(nick, `Offered a DCC chat to ${nick} — waiting for them to connect…`);
+        this.dccChatNotice(
+          nick,
+          `Offered a ${secure ? 'secure ' : ''}DCC chat to ${nick} — waiting for them to connect…`,
+        );
         handle.accepted
           .then((socket) => {
             this.dccChatListeners.delete(handle);
-            this.startDccChat(nick, socket);
+            this.startDccChat(nick, socket, secure);
           })
           .catch((err) => {
             // ⚠ Gone already means someone removed it on purpose — /dcc close chat
@@ -8815,7 +8860,7 @@ export class IrcConnection {
   // advertise is a placeholder the peer is meant to ignore — irssi and repartee
   // both send 1.1.1.1 (16843009) here, so we match rather than HexChat's `199`,
   // which some receivers reject as unroutable.
-  private offerPassiveDccChat(nick: string): void {
+  private offerPassiveDccChat(nick: string, secure: boolean): void {
     const token = this.mintDccToken();
     if (token < 0) {
       this.dccChatNotice(nick, 'Too many passive DCC chat offers are already pending.');
@@ -8826,7 +8871,7 @@ export class IrcConnection {
     // real host only added a way to fail: a hostname in LURKER_DCC_EXTERNAL_HOST
     // can't be encoded, and made `-passive`, the mode meant for servers WITHOUT
     // a usable external address, refuse with "misconfigured".
-    const body = buildDccChatPassive(PASSIVE_DCC_FAKE_HOST, token);
+    const body = buildDccChatPassive(PASSIVE_DCC_FAKE_HOST, token, secure);
     if (body === null) {
       this.dccChatNotice(nick, 'DCC chat: external host is misconfigured.');
       return;
@@ -8837,10 +8882,8 @@ export class IrcConnection {
       }
     };
     // No clock until the offer has gone (#1149).
-    const pending: { nick: string; timer: ReturnType<typeof setTimeout> | null } = {
-      nick,
-      timer: null,
-    };
+    const pending: { nick: string; secure: boolean; timer: ReturnType<typeof setTimeout> | null } =
+      { nick, secure, timer: null };
     this.pendingPassiveChats.set(token, pending);
     this.writeCtcp(nick, 'DCC', body, {
       live: () => this.pendingPassiveChats.get(token) === pending,
@@ -8858,7 +8901,7 @@ export class IrcConnection {
     });
     this.dccChatNotice(
       nick,
-      `Offered a passive DCC chat to ${nick} — waiting for them to connect back… ` +
+      `Offered a passive${secure ? ', secure' : ''} DCC chat to ${nick} — waiting for them to connect back… ` +
         '(passive chat only works if their client supports it: irssi, HexChat and repartee do; ' +
         'WeeChat and HexDroid do not.)',
     );
@@ -8895,7 +8938,20 @@ export class IrcConnection {
       if (pending) {
         if (pending.timer) clearTimeout(pending.timer);
         this.pendingPassiveChats.delete(offer.token);
-        this.dialDccChat(nick, offer.host, offer.port);
+        // ⚠ The answer must be the kind of chat we offered (#1157): KVIrc
+        // answers an SCHAT with SCHAT (DccChatWindow.cpp:229). A plain CHAT back
+        // means their client doesn't do TLS, and a chat the user asked for
+        // securely is not opened in the clear; the reverse would be a TLS
+        // handshake against a listener that never starts one.
+        if (offer.secure !== pending.secure) {
+          this.dccChatNotice(
+            nick,
+            `${nick} answered the ${pending.secure ? 'secure ' : ''}DCC chat offer with ` +
+              `${offer.secure ? 'a secure (SCHAT)' : 'a plain (CHAT)'} reply — not connecting.`,
+          );
+          return;
+        }
+        this.dialDccChat(nick, offer.host, offer.port, offer.secure);
         return;
       }
     }
@@ -8951,7 +9007,7 @@ export class IrcConnection {
     // user accepts, which is also when irssi opens its window.
     this.routeCtcpStatus(
       event,
-      `${nick} wants to start a DCC chat — /dcc chat ${nick} to accept` +
+      `${nick} wants to start a ${offer.secure ? 'secure ' : ''}DCC chat — /dcc chat ${nick} to accept` +
         (offer.passive ? ' (they are firewalled, so this server would listen)' : ''),
     );
     // …and an actionable toast, the same shape a channel invite uses: ephemeral,
@@ -8964,6 +9020,7 @@ export class IrcConnection {
       target: this.serverTarget(),
       from: nick,
       passive: offer.passive,
+      secure: offer.secure,
     });
   }
 
@@ -9006,10 +9063,10 @@ export class IrcConnection {
       // placeholder (1.1.1.1 / 0.0.0.199) and the peer dials from its real,
       // often NAT'd, source — pinning would reject exactly the peers this path
       // exists for. This is JawshTheDark's fix from #528 (73c76fc4).
-      this.openDccChatListener(nick)
+      this.openDccChatListener(nick, offer.secure)
         .then((handle) => {
           if (!handle) return;
-          const body = buildDccChatReverse(externalHost, handle.port, token);
+          const body = buildDccChatReverse(externalHost, handle.port, token, offer.secure);
           if (body === null) {
             handle.close();
             // The active path reports this same condition; staying silent here
@@ -9023,7 +9080,7 @@ export class IrcConnection {
           handle.accepted
             .then((socket) => {
               this.dccChatListeners.delete(handle);
-              this.startDccChat(nick, socket);
+              this.startDccChat(nick, socket, offer.secure);
             })
             .catch((err) => {
               // ⚠ Gone already means someone removed it on purpose — /dcc close chat
@@ -9047,10 +9104,10 @@ export class IrcConnection {
         });
       return;
     }
-    this.dialDccChat(nick, offer.host, offer.port);
+    this.dialDccChat(nick, offer.host, offer.port, offer.secure);
   }
 
-  private dialDccChat(nick: string, host: string, port: number): void {
+  private dialDccChat(nick: string, host: string, port: number, secure: boolean): void {
     if (port === 0) return; // parseDcc refuses this; belt and braces
     if (!dccAllowPrivateHosts() && isBlockedDccHost(host)) {
       this.dccChatNotice(
@@ -9059,16 +9116,21 @@ export class IrcConnection {
       );
       return;
     }
-    this.dccChatNotice(nick, `Connecting to ${nick} at ${host}:${port} for DCC chat…`);
-    const sock = net.connect({ host, port });
+    this.dccChatNotice(
+      nick,
+      `Connecting to ${nick} at ${host}:${port} for ${secure ? 'secure ' : ''}DCC chat…`,
+    );
+    // Over TLS for an SCHAT (#1157), ready only once the handshake is done.
+    const { socket: sock, ready } = dialDccPeer(host, port, secure);
     // Bound the connect so an unreachable peer fails promptly and legibly
-    // instead of hanging until the OS SYN timeout (~1–2 minutes).
+    // instead of hanging until the OS SYN timeout (~1–2 minutes). It covers the
+    // TLS handshake too.
     sock.setTimeout(DCC_CHAT_CONNECT_TIMEOUT_MS);
     const onDialTimeout = (): void => {
       sock.destroy(new Error('connection timed out'));
     };
     sock.once('timeout', onDialTimeout);
-    sock.once('connect', () => {
+    sock.once(ready, () => {
       sock.setTimeout(0);
       // ⚠ These belong to the DIAL. Past connect the socket is DccChat's and it
       // does its own error handling, so leaving ours attached means a peer
@@ -9076,7 +9138,7 @@ export class IrcConnection {
       // check your port forwarding" paragraph that is nonsense by then.
       sock.off('timeout', onDialTimeout);
       sock.off('error', onDialError);
-      this.startDccChat(nick, sock);
+      this.startDccChat(nick, sock, secure);
     });
     const onDialError = (err: Error): void => {
       // DCC is peer-to-peer and Lurker runs on the SERVER, so the peer's
@@ -9094,7 +9156,7 @@ export class IrcConnection {
     sock.once('error', onDialError);
   }
 
-  private startDccChat(nick: string, socket: net.Socket): void {
+  private startDccChat(nick: string, socket: net.Socket, secure: boolean): void {
     const key = nick.toLowerCase();
     // ⚠ Glare: we can offer a chat AND accept theirs, so both halves complete
     // and a second socket arrives for a peer we're already chatting with. Keep
@@ -9123,15 +9185,15 @@ export class IrcConnection {
         }
       },
     });
-    this.dccChats.set(key, { nick, chat });
+    this.dccChats.set(key, { nick, chat, secure });
     this.dccChatDeadWarned.delete(key);
     // Reachable even after ircManager drops this connection from its map on a
     // user-initiated disconnect — the socket outlives the IRC link, as irssi's
     // does (dcc.c:300-312).
     registerDccChatHost(dccChatKey(this.network.user_id, this.network.id), this);
     chat.start();
-    this.dccChatNotice(nick, `DCC chat with ${nick} connected.`);
-    this.publishDccChatState(nick, true);
+    this.dccChatNotice(nick, `${secure ? 'Secure DCC chat' : 'DCC chat'} with ${nick} connected.`);
+    this.publishDccChatState(nick, true, secure);
   }
 
   // Drop `key` only if it still maps to `chat` — an identity check, not a bare

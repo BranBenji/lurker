@@ -30,6 +30,7 @@ import { encodeDccAddress } from './dcc.js';
 import { IrcConnection } from './ircConnection.js';
 import { stubCtcpRequest } from '../test-utils/ctcpStub.js';
 import { activeDccListenerCount, resetDccListeners } from './dccListener.js';
+import { tlsDial } from '../test-utils/dccTlsPeer.js';
 
 // Below 32768 (see dccChatWiring.test.ts), and apart from the other DCC test
 // files' ranges, which can run in parallel.
@@ -281,6 +282,38 @@ describe('a passive offer', () => {
     h.from('bob', `ACCEPT file.ext 0 ${have} 9`);
     await waitFor(() => h.sent().length === 2);
     expect(answeredPort(h.sent()[1], 'show.mkv', DATA.length, 9)).toBeGreaterThan(0);
+  });
+});
+
+// Secure DCC (#1157): a passive SSEND is answered with SSEND (KVIrc reads
+// the verb back, DccFileTransfer.cpp:2103-2115) and our port is its TLS
+// server.
+describe('a passive secure offer (SSEND)', () => {
+  it('is answered with SSEND, and the file comes in over TLS', async () => {
+    enable();
+    const h = harness();
+    h.from('bob', `SSEND "my show.mkv" 199 0 ${DATA.length} 5`);
+    const offered = onlyRow();
+    expect(offered).toMatchObject({ state: 'pending_approval', passive: 1, secure: 1 });
+    expect(h.lines()).toContain(
+      'DCC: bob offered "my show.mkv" (48.8 KB) via DCC SSEND (secure) (passive)',
+    );
+
+    h.conn.acceptPendingDcc(offered);
+    await waitFor(() => h.sent().length === 1);
+    const m = /^SSEND "my show\.mkv" (\d+) (\d+) (\d+) 5$/.exec(h.sent()[0]);
+    expect(m).not.toBeNull();
+    expect(m![1]).toBe(ADDR);
+    expect(Number(m![3])).toBe(DATA.length);
+
+    const sock = await tlsDial(Number(m![2]));
+    sockets.push(sock);
+    sock.write(DATA);
+    await waitFor(() => getDccTransfer(1, offered.id)?.state === 'completed');
+    const done = getDccTransfer(1, offered.id)!;
+    expect(done.secure).toBe(1);
+    expect(fs.readFileSync(done.destination_path!).equals(DATA)).toBe(true);
+    expect(activeDccListenerCount()).toBe(0);
   });
 });
 

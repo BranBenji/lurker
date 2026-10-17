@@ -6,7 +6,9 @@
 import '../test-utils/isolateDb.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import net from 'net';
+import tls from 'tls';
 import { openDccListener, activeDccListenerCount, resetDccListeners } from './dccListener.js';
+import { tlsDial } from '../test-utils/dccTlsPeer.js';
 
 // ⚠⚠ Below 32768, deliberately. A fixed test port must sit OUTSIDE the OS
 // ephemeral range, which the kernel hands out as the LOCAL port of every
@@ -170,6 +172,32 @@ describe('openDccListener', () => {
     const client = await connect(handle.port);
     await expect(handle.accepted).rejects.toThrow(/timed out/);
     client.destroy();
+  });
+
+  // Secure DCC (#1157): the listener is the TLS server, and `accepted` is the
+  // socket once the peer's handshake is done, so the engines never see a byte
+  // of it in the clear.
+  it('secure: resolves accepted with a TLS socket once the handshake is done', async () => {
+    const handle = await openDccListener({ timeoutMs: 2000, secure: true });
+    const client = await tlsDial(handle.port);
+    const server = await handle.accepted;
+    expect(server).toBeInstanceOf(tls.TLSSocket);
+    const got = new Promise<string>((res) => server.once('data', (d) => res(d.toString())));
+    client.write('ping');
+    expect(await got).toBe('ping');
+    server.destroy();
+    client.destroy();
+    expect(activeDccListenerCount()).toBe(0);
+  });
+
+  it('secure: a peer that fails the handshake rejects accepted', async () => {
+    const handle = await openDccListener({ timeoutMs: 2000, secure: true });
+    const client = await connect(handle.port);
+    client.write('plain text, no ClientHello\r\n');
+    client.on('error', () => {});
+    await expect(handle.accepted).rejects.toThrow(/TLS handshake failed/);
+    client.destroy();
+    expect(activeDccListenerCount()).toBe(0);
   });
 
   it('accepts a connection matching expectPeerHost', async () => {

@@ -453,7 +453,8 @@ function applyEvent(event: any): boolean {
         key,
         toasts.push({
           kind: 'notify',
-          title: `DCC chat from ${from}`,
+          // A secure (TLS) chat says so: it is what the peer asked for (#1157).
+          title: `${event.secure ? 'Secure DCC chat' : 'DCC chat'} from ${from}`,
           body: event.passive
             ? `${from} wants to chat directly (they're firewalled, so this server listens)`
             : `${from} wants to chat directly`,

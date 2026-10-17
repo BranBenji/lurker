@@ -67,6 +67,8 @@ export interface DccTransfer {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  /** 1 for a transfer over TLS, KVIrc's SSEND (#1157). */
+  secure?: number;
   /** When the user deleted the received file from the server (#1125). */
   file_deleted_at?: string | null;
   /** Non-null while this row owns a file on the server. Used only as that
@@ -108,6 +110,8 @@ export interface DccSendPick {
   networkId: number;
   nick: string;
   passive: boolean;
+  /** Over TLS, KVIrc's SSEND (#1157). Absent means plain. */
+  secure?: boolean;
 }
 
 /** What GET /api/dcc/config says this account may do. */
@@ -749,13 +753,14 @@ export const useDccStore = defineStore('dcc', {
       nick: string,
       fileId: number,
       passive = false,
+      secure = false,
     ): Promise<DccTransfer> {
       this.fileBusy[fileId] = true;
       delete this.fileError[fileId];
       try {
         const { transfer } = await api<{ transfer: DccTransfer }>('/api/dcc/send', {
           method: 'POST',
-          body: { networkId, nick, fileId, passive },
+          body: { networkId, nick, fileId, passive, secure },
         });
         this.applyTransfer(transfer);
         return transfer;
@@ -796,7 +801,13 @@ export const useDccStore = defineStore('dcc', {
     async sendPicked(fileId: number): Promise<DccTransfer | null> {
       const pick = this.pick;
       if (!pick) return null;
-      const transfer = await this.sendFile(pick.networkId, pick.nick, fileId, pick.passive);
+      const transfer = await this.sendFile(
+        pick.networkId,
+        pick.nick,
+        fileId,
+        pick.passive,
+        pick.secure === true,
+      );
       this.pick = null;
       return transfer;
     },
@@ -804,7 +815,7 @@ export const useDccStore = defineStore('dcc', {
     // "Send File (DCC)…" on a nick (#1085): pick a file for them. The server
     // makes it passive when it can't listen (#1154).
     openSendTo(networkId: number, nick: string): void {
-      this.openToSend({ networkId, nick, passive: false });
+      this.openToSend({ networkId, nick, passive: false, secure: false });
     },
 
     // `/dcc send <nick>` with no file: open Files to pick one, or upload one.
@@ -817,8 +828,13 @@ export const useDccStore = defineStore('dcc', {
     // outcome (connected, refused, timed out) arrives as notices in the `=nick`
     // buffer, which materializes from those notices, so there is nothing useful
     // to await here.
-    async openChat(networkId: number, nick: string, passive = false): Promise<void> {
-      await api('/api/dcc/chat', { method: 'POST', body: { networkId, nick, passive } });
+    async openChat(
+      networkId: number,
+      nick: string,
+      passive = false,
+      secure = false,
+    ): Promise<void> {
+      await api('/api/dcc/chat', { method: 'POST', body: { networkId, nick, passive, secure } });
     },
 
     async closeChat(networkId: number, nick: string): Promise<void> {

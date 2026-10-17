@@ -89,6 +89,28 @@ describe('dccTransfers', () => {
     expect(row.token).toBe(42);
   });
 
+  // Secure DCC (#1157): an accept or resume after a restart has to wrap its
+  // socket the way the offer asked, so the row remembers.
+  it('records a secure (SSEND) offer, and a plain one as plain', () => {
+    const secure = insertDccTransfer(userId, {
+      network_id: networkId,
+      peer_nick: 'kvirc-user',
+      filename: 'f.bin',
+      advertised_size: 10,
+      state: 'pending_approval',
+      secure: true,
+    });
+    expect(getDccTransfer(userId, secure)!.secure).toBe(1);
+    const plain = insertDccTransfer(userId, {
+      network_id: networkId,
+      peer_nick: 'bot',
+      filename: 'g.bin',
+      advertised_size: 10,
+      state: 'pending_approval',
+    });
+    expect(getDccTransfer(userId, plain)!.secure).toBe(0);
+  });
+
   it('collates peer_nick NOCASE so an offer matches the trigger regardless of casing', () => {
     insertDccTransfer(userId, {
       network_id: networkId,

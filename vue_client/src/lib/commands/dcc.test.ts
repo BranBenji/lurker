@@ -40,15 +40,33 @@ describe('parseDccCommand', () => {
       kind: 'send',
       nick: 'bob',
       passive: false,
+      secure: false,
       file: null,
     });
     expect(parseDccCommand('send -passive bob my holiday.mkv')).toEqual({
       kind: 'send',
       nick: 'bob',
       passive: true,
+      secure: false,
       file: 'my holiday.mkv',
     });
     expect(parseDccCommand('SEND bob 12')).toMatchObject({ nick: 'bob', file: '12' });
+  });
+
+  // KVIrc's `/dcc send -s`, spelled out like -passive (#1157).
+  it('parses -secure on send, alone or with -passive', () => {
+    expect(parseDccCommand('send -secure bob 12')).toMatchObject({
+      kind: 'send',
+      nick: 'bob',
+      passive: false,
+      secure: true,
+      file: '12',
+    });
+    expect(parseDccCommand('send -passive -Secure bob')).toMatchObject({
+      passive: true,
+      secure: true,
+      file: null,
+    });
   });
 
   it('refuses a send with no nick, an unknown option, or a channel', () => {
@@ -109,8 +127,18 @@ describe('parseDccCommand', () => {
   });
 
   it('parses /dcc chat <nick>', () => {
-    expect(parseDccCommand('chat alice')).toEqual({ kind: 'chat', nick: 'alice', passive: false });
-    expect(parseDccCommand('CHAT Bob')).toEqual({ kind: 'chat', nick: 'Bob', passive: false });
+    expect(parseDccCommand('chat alice')).toEqual({
+      kind: 'chat',
+      nick: 'alice',
+      passive: false,
+      secure: false,
+    });
+    expect(parseDccCommand('CHAT Bob')).toEqual({
+      kind: 'chat',
+      nick: 'Bob',
+      passive: false,
+      secure: false,
+    });
     expect(parseDccCommand('chat')).toMatchObject({ kind: 'error' });
   });
 
@@ -121,11 +149,27 @@ describe('parseDccCommand', () => {
       kind: 'chat',
       nick: 'alice',
       passive: true,
+      secure: false,
     });
     expect(parseDccCommand('chat alice -passive')).toEqual({
       kind: 'chat',
       nick: 'alice',
       passive: true,
+      secure: false,
+    });
+  });
+
+  // KVIrc's `/dcc chat -s` (#1157), spelled out like -passive; the two combine.
+  it('parses the -secure flag, alone or with -passive', () => {
+    expect(parseDccCommand('chat -secure alice')).toEqual({
+      kind: 'chat',
+      nick: 'alice',
+      passive: false,
+      secure: true,
+    });
+    expect(parseDccCommand('chat -passive -secure alice')).toMatchObject({
+      passive: true,
+      secure: true,
     });
   });
 
@@ -151,7 +195,12 @@ describe('parseDccCommand', () => {
   });
 
   it('still offers a chat to a peer who is genuinely nicked "close"', () => {
-    expect(parseDccCommand('chat close')).toEqual({ kind: 'chat', nick: 'close', passive: false });
+    expect(parseDccCommand('chat close')).toEqual({
+      kind: 'chat',
+      nick: 'close',
+      passive: false,
+      secure: false,
+    });
   });
 
   // ⚠⚠ QA: `/dcc close chat ami|shellter` answered "no live DCC chat" and left

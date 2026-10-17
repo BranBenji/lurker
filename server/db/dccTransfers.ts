@@ -75,6 +75,8 @@ export interface DccTransferRow {
   state: DccTransferState;
   passive: number;
   token: number | null;
+  /** 1 for a transfer over TLS, KVIrc's SSEND (#1157). */
+  secure: number;
   peer_host: string | null;
   peer_port: number | null;
   trigger_text: string | null;
@@ -113,6 +115,8 @@ export interface InsertDccTransferFields {
   state: DccTransferState;
   passive?: boolean;
   token?: number | null;
+  /** An SSEND: the transfer runs over TLS (#1157). */
+  secure?: boolean;
   /** The offer's decoded address + port, persisted so a pending_approval offer
    *  can be accepted (dialed) later. */
   peer_host?: string | null;
@@ -130,9 +134,9 @@ export interface InsertDccTransferFields {
 const insertStmt = db.prepare(`
   INSERT INTO dcc_transfers
     (user_id, network_id, peer_nick, filename, advertised_size, state,
-     passive, token, peer_host, peer_port, trigger_text, crc_expected,
+     passive, token, secure, peer_host, peer_port, trigger_text, crc_expected,
      pack, queue_seq, requested_at)
-  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 export function insertDccTransfer(userId: number, f: InsertDccTransferFields): number {
@@ -145,6 +149,7 @@ export function insertDccTransfer(userId: number, f: InsertDccTransferFields): n
     f.state,
     f.passive ? 1 : 0,
     f.token ?? null,
+    f.secure ? 1 : 0,
     f.peer_host ?? null,
     f.peer_port ?? null,
     f.trigger_text ?? null,
@@ -166,6 +171,8 @@ export interface InsertDccSendFields {
   size: number;
   passive: boolean;
   token: number | null;
+  /** An SSEND: the transfer runs over TLS (#1157). */
+  secure?: boolean;
 }
 
 /** Record a send we are about to offer (#1086), as `offered`. */
@@ -174,8 +181,8 @@ export function insertDccSend(userId: number, f: InsertDccSendFields): number {
     .prepare(
       `INSERT INTO dcc_transfers
          (user_id, network_id, peer_nick, direction, filename, advertised_size, state,
-          passive, token, file_id)
-       VALUES (?, ?, ?, 'send', ?, ?, 'offered', ?, ?, ?)`,
+          passive, token, secure, file_id)
+       VALUES (?, ?, ?, 'send', ?, ?, 'offered', ?, ?, ?, ?)`,
     )
     .run(
       userId,
@@ -185,6 +192,7 @@ export function insertDccSend(userId: number, f: InsertDccSendFields): number {
       f.size,
       f.passive ? 1 : 0,
       f.token,
+      f.secure ? 1 : 0,
       f.file_id,
     );
   return Number(info.lastInsertRowid);
@@ -618,6 +626,8 @@ export interface DccReceivingFields {
   destination_path: string;
   passive?: boolean;
   token?: number | null;
+  /** An SSEND: the transfer runs over TLS (#1157). */
+  secure?: boolean;
   /** CRC32 parsed from the offer filename (e.g. `[A1B2C3D4]`), null when absent. */
   crc_expected?: string | null;
   /** Bytes already on disk when resuming (so the row's progress starts there). */
@@ -646,7 +656,7 @@ export function markDccReceiving(id: number, f: DccReceivingFields): number[] {
   db.prepare(
     `UPDATE dcc_transfers
        SET state = 'receiving', filename = ?, advertised_size = ?, destination_path = ?,
-           passive = ?, token = ?, crc_expected = ?, received_bytes = ?, error = NULL,
+           passive = ?, token = ?, secure = ?, crc_expected = ?, received_bytes = ?, error = NULL,
            updated_at = datetime('now')
      WHERE id = ?`,
   ).run(
@@ -655,6 +665,7 @@ export function markDccReceiving(id: number, f: DccReceivingFields): number[] {
     f.destination_path,
     f.passive ? 1 : 0,
     f.token ?? null,
+    f.secure ? 1 : 0,
     f.crc_expected ?? null,
     f.received_bytes ?? 0,
     Number(id),
