@@ -8431,12 +8431,20 @@ export class IrcConnection {
     const { socket: sock, ready } = dialDccPeer(host, port, offer.secure);
     offer.dial = sock;
     sock.setTimeout(DCC_CHAT_CONNECT_TIMEOUT_MS);
+    // 'connect' is the TCP leg; a failure past it is the TLS handshake's, and
+    // "couldn't connect" would be the opposite of what happened.
+    let connected = false;
+    sock.once('connect', () => {
+      connected = true;
+    });
     const onTimeout = (): void => {
-      sock.destroy(new Error('connection timed out'));
+      sock.destroy(new Error(connected ? 'timed out' : 'connection timed out'));
     };
     const onError = (err: Error): void => {
       if (this.dccSendOffers.get(offer.transferId) !== offer) return;
-      const reason = `couldn't connect to ${host}:${port} — ${err.message}`;
+      const reason = connected
+        ? `connected to ${host}:${port}, but the TLS handshake failed — ${err.message}`
+        : `couldn't connect to ${host}:${port} — ${err.message}`;
       this.endDccSendOffer(offer, 'failed', reason);
       this.dccLine(offer.nick, `DCC: sending "${offer.name}" to ${offer.nick} failed — ${reason}`);
     };
@@ -9167,8 +9175,15 @@ export class IrcConnection {
     // instead of hanging until the OS SYN timeout (~1–2 minutes). It covers the
     // TLS handshake too.
     sock.setTimeout(DCC_CHAT_CONNECT_TIMEOUT_MS);
+    // A TLSSocket emits 'connect' when the TCP leg is up, before the handshake.
+    // Past it, a failure is the handshake's, and the reachability advice below
+    // would send the user chasing a port-forwarding problem they don't have.
+    let connected = false;
+    sock.once('connect', () => {
+      connected = true;
+    });
     const onDialTimeout = (): void => {
-      sock.destroy(new Error('connection timed out'));
+      sock.destroy(new Error(connected ? 'timed out' : 'connection timed out'));
     };
     sock.once('timeout', onDialTimeout);
     sock.once(ready, () => {
@@ -9182,6 +9197,13 @@ export class IrcConnection {
       this.startDccChat(nick, sock, secure);
     });
     const onDialError = (err: Error): void => {
+      if (connected) {
+        this.dccChatNotice(
+          nick,
+          `Connected to ${nick} at ${host}:${port}, but the TLS handshake failed — ${err.message}.`,
+        );
+        return;
+      }
       // DCC is peer-to-peer and Lurker runs on the SERVER, so the peer's
       // advertised address:port has to be reachable FROM the server. A refusal
       // here is usually a topology problem, not a Lurker one — say so, because

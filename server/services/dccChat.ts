@@ -31,7 +31,6 @@ import net from 'net';
 import { ACTION_WRAPPER_BYTES } from '../../shared/wireBudget.js';
 import { capText } from '../utils/capText.js';
 import { capUtf8 } from '../utils/capUtf8.js';
-import { dialDccPeer } from './dccTls.js';
 
 // Chosen to match irssi's MAX_CHARS_IN_LINE (line-split.c:32).
 const MAX_LINE_CHARS = 64 * 1024;
@@ -44,9 +43,6 @@ export interface DccChatOptions {
    *  or answering our passive offer's reverse reply). */
   host?: string;
   port?: number;
-  /** An `SCHAT` (#1157): the dial is wrapped in TLS. A provided socket is
-   *  already whatever the listener made it. */
-  secure?: boolean;
   /** A received line of chat text (already CRLF-stripped). */
   onLine?: (text: string) => void;
   /** The peer connected (only meaningful for the dial-out path). */
@@ -66,10 +62,8 @@ export class DccChat {
 
   start(): void {
     const provided = this.opts.socket ?? null;
-    const dial = provided
-      ? null
-      : dialDccPeer(this.opts.host as string, this.opts.port as number, this.opts.secure === true);
-    const sock = provided ?? dial!.socket;
+    const sock =
+      provided ?? net.connect({ host: this.opts.host as string, port: this.opts.port as number });
     this.socket = sock;
 
     const wire = (): void => {
@@ -82,9 +76,7 @@ export class DccChat {
     if (provided) {
       wire();
     } else {
-      // 'connect', or for TLS 'secureConnect': a TLSSocket emits 'connect' too,
-      // before the handshake, when nothing written is protected yet.
-      sock.on(dial!.ready, () => {
+      sock.on('connect', () => {
         this.opts.onConnect?.();
         wire();
       });

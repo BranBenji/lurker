@@ -1092,6 +1092,31 @@ describe('secure DCC chat (SCHAT)', () => {
     h.conn.closeDccChat('bob');
   });
 
+  // The dial's connect-failure notice tells the user to check their port
+  // forwarding. A peer that accepted the TCP connection and then failed the
+  // handshake is the opposite case, so the notice has to say so instead.
+  it('tells a failed handshake apart from an unreachable peer when dialling an SCHAT', async () => {
+    enableDcc();
+    allowLoopback();
+    const h = harness();
+    // Accepts, then hangs up before any handshake: a peer that connected.
+    const server = net.createServer((sock) => sock.destroy());
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const port = (server.address() as net.AddressInfo).port;
+    try {
+      offerAndAccept(h.conn, 'bob', `SCHAT chat ${encodeDccAddress('127.0.0.1')} ${port}`);
+      await waitFor(() => /handshake failed/.test(h.notices().at(-1) ?? ''));
+      const notice = h.notices().at(-1)!;
+      expect(notice).toMatch(
+        new RegExp(`^Connected to bob at 127\\.0\\.0\\.1:${port}, but the TLS handshake failed`),
+      );
+      expect(notice).not.toMatch(/port forwarded/);
+      expect(h.conn.hasDccChat('bob')).toBe(false);
+    } finally {
+      server.close();
+    }
+  });
+
   it('offers an SCHAT when asked, and is the TLS server for whoever connects', async () => {
     enableDcc();
     enableListening();
