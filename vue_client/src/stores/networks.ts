@@ -64,6 +64,9 @@ export interface NetworkState {
   // by every snapshot — including a disconnected network's, since a chat socket
   // outlives the IRC link — and kept current by `dcc-chat-state` events.
   dccChats?: string[];
+  // Of those, the sessions over TLS (an SCHAT, #1157): what the status bar's
+  // lock reads. Seeded and kept current the same way.
+  dccSecureChats?: string[];
   // Peers whose DCC chat offer to us is still awaiting an answer. Used to
   // retire an offer toast whose offer disappeared while this tab was offline.
   dccChatOffers?: string[];
@@ -208,6 +211,15 @@ export const useNetworksStore = defineStore('networks', {
       (networkId: number | string, target: string): boolean => {
         const peer = dccChatPeer(target).toLowerCase();
         return (state.states[networkId]?.dccChats ?? []).some((n) => n.toLowerCase() === peer);
+      },
+    // Whether that live session is over TLS (#1157).
+    isDccChatSecure:
+      (state) =>
+      (networkId: number | string, target: string): boolean => {
+        const peer = dccChatPeer(target).toLowerCase();
+        const s = state.states[networkId];
+        const live = (s?.dccChats ?? []).some((n) => n.toLowerCase() === peer);
+        return live && (s?.dccSecureChats ?? []).some((n) => n.toLowerCase() === peer);
       },
     activeBuffer(state): ActiveBuffer | null {
       if (!state.activeKey) return null;
@@ -401,12 +413,17 @@ export const useNetworksStore = defineStore('networks', {
       };
       this.states[networkId] = { ...existing, peerPresence };
     },
-    applyDccChatState(networkId: number | string, nick: string, live: boolean) {
+    applyDccChatState(networkId: number | string, nick: string, live: boolean, secure = false) {
       if (!networkId || !nick) return;
       const existing = this.states[networkId] || { networkId: Number(networkId), channels: [] };
       const lower = nick.toLowerCase();
       const others = (existing.dccChats ?? []).filter((n) => n.toLowerCase() !== lower);
-      this.states[networkId] = { ...existing, dccChats: live ? [...others, nick] : others };
+      const otherSecure = (existing.dccSecureChats ?? []).filter((n) => n.toLowerCase() !== lower);
+      this.states[networkId] = {
+        ...existing,
+        dccChats: live ? [...others, nick] : others,
+        dccSecureChats: live && secure ? [...otherSecure, nick] : otherSecure,
+      };
     },
     applyLag(event: any) {
       const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };

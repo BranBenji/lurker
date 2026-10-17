@@ -45,6 +45,14 @@
         <span v-if="peerStatusLabel" class="seg peer-status" :class="peerStatusClass">{{
           peerStatusLabel
         }}</span>
+        <!-- A DCC chat over TLS (#1157) says so for as long as it is up, since
+             the connected line that named the cipher scrolls away. -->
+        <span
+          v-if="dccChatSecure"
+          class="seg secure"
+          title="Secure DCC chat: this session is over TLS"
+          ><LockIcon role="img" aria-label="Secure" /><span v-if="!compact">secure</span></span
+        >
         <span v-if="lagLabel && !compact" class="seg lag" :class="lagClass">{{ lagLabel }}</span>
         <!-- Lines still to go out on this network (#1149): a long paste or a
              handshake burst is sent paced rather than all at once, and this is
@@ -243,6 +251,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   KeyboardIcon,
+  LockIcon,
   PaletteIcon,
   PaperclipIcon,
   ReplyIcon,
@@ -446,6 +455,13 @@ const dccChatDown = computed(() => {
   const a = active.value;
   if (!a || !isDccChatTarget(a.target)) return false;
   return !networks.isDccChatLive(a.networkId, a.target);
+});
+// The lock for a live chat over TLS. Live only: a dead secure chat is just a
+// dead chat, and the "not connected" line above already covers it.
+const dccChatSecure = computed(() => {
+  const a = active.value;
+  if (!a || !isDccChatTarget(a.target)) return false;
+  return networks.isDccChatSecure(a.networkId, a.target);
 });
 const peerStatusLabel = computed(() => {
   if (dccChatDown.value) {
@@ -704,6 +720,13 @@ function onToggleUploadMenu() {
 }
 .seg.dcc.muted {
   color: var(--fg-muted);
+}
+.seg.secure {
+  display: inline-flex;
+  align-items: center;
+  gap: 1ch;
+  color: var(--fg-muted);
+  flex-shrink: 0;
 }
 .seg.dcc .lucide,
 .seg.dcc .dcc-status,

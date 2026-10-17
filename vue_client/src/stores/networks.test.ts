@@ -75,3 +75,35 @@ describe('peerFor — a DCC chat target has no presence', () => {
     expect(store('disconnected').peerFor(1, 'bob')).toMatchObject({ state: 'offline' });
   });
 });
+
+// A chat over TLS (#1157) is marked as such for as long as it is live, from
+// the snapshot's `dccSecureChats` or the `dcc-chat-state` event's `secure`.
+describe('DCC chat state — secure sessions', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('marks a secure session live and secure, and a plain one live only', () => {
+    const s = useNetworksStore();
+    s.applyDccChatState(1, 'bob', true, true);
+    s.applyDccChatState(1, 'alice', true);
+    expect(s.isDccChatLive(1, '=bob')).toBe(true);
+    expect(s.isDccChatSecure(1, '=bob')).toBe(true);
+    expect(s.isDccChatLive(1, '=alice')).toBe(true);
+    expect(s.isDccChatSecure(1, '=alice')).toBe(false);
+  });
+
+  it('forgets the secure mark when the session ends', () => {
+    const s = useNetworksStore();
+    s.applyDccChatState(1, 'bob', true, true);
+    s.applyDccChatState(1, 'Bob', false);
+    expect(s.states[1]!.dccChats).toEqual([]);
+    expect(s.states[1]!.dccSecureChats).toEqual([]);
+    expect(s.isDccChatSecure(1, '=bob')).toBe(false);
+  });
+
+  // A stale secure entry with no live session behind it is not a secure chat.
+  it('reads secure only for a live session', () => {
+    const s = useNetworksStore();
+    s.states[1] = { networkId: 1, channels: [], dccChats: [], dccSecureChats: ['bob'] };
+    expect(s.isDccChatSecure(1, '=bob')).toBe(false);
+  });
+});

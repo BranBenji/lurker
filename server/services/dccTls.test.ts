@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   DCC_DIAL_CIPHERS,
   dccSecureContext,
+  describeDccTls,
   dialDccPeer,
   secureAcceptedDccSocket,
 } from './dccTls.js';
@@ -158,5 +159,32 @@ describe('secureAcceptedDccSocket', () => {
     const client = net.connect({ host: '127.0.0.1', port }, () => client.destroy());
     sockets.push(client);
     await expect(secured).rejects.toThrow(/disconnected during the TLS handshake/);
+  });
+});
+
+// The connected line names the suite, as KVIrc's does — the one fact about
+// the TLS worth a line, since nothing verified the other side.
+describe('describeDccTls', () => {
+  it('names the protocol and cipher of a TLS socket once the handshake is done', async () => {
+    const peer = await startTlsPeer({ anonymous: true });
+    peers.push(peer);
+    const { socket, ready: event } = dialDccPeer('127.0.0.1', peer.port, true);
+    sockets.push(socket);
+    await ready(socket, event);
+    expect(describeDccTls(socket)).toMatch(/^ \(TLSv1\.2, [A-Z0-9_-]+\)$/);
+  });
+
+  it('is empty for a plain socket', async () => {
+    const server = net.createServer();
+    servers.push(server);
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+    const { socket, ready: event } = dialDccPeer(
+      '127.0.0.1',
+      (server.address() as net.AddressInfo).port,
+      false,
+    );
+    sockets.push(socket);
+    await ready(socket, event);
+    expect(describeDccTls(socket)).toBe('');
   });
 });

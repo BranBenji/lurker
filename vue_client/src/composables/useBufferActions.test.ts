@@ -124,5 +124,27 @@ describe('useBufferActions', () => {
       grant(true);
       expect(sendItem('#lurker')).toBeUndefined();
     });
+
+    // The secure entry (#1157) picks the same way, for an SSEND.
+    it('has a secure twin that picks a file for an SSEND', () => {
+      grant(true);
+      useBufferActions()
+        .buildItems({ networkId: 1, target: 'alice' })
+        .find((i) => i.label === 'Secure Send File (DCC)…')!
+        .onClick?.();
+      expect(useDccStore().pick).toMatchObject({ networkId: 1, nick: 'alice', secure: true });
+    });
+
+    // The chat pair rides the same menu, on the chat grant (#1157).
+    it('offers a DCC chat, plain and secure, on the chat grant', () => {
+      useConfigStore().features.dcc = true;
+      useDccStore().account = { chat: true, receive: true, send: false };
+      const labels = useBufferActions()
+        .buildItems({ networkId: 1, target: 'alice' })
+        .map((i) => i.label);
+      expect(labels).toContain('Chat (DCC)');
+      expect(labels).toContain('Secure Chat (DCC)');
+      expect(labels).not.toContain('Send File (DCC)…');
+    });
   });
 });

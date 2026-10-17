@@ -1710,7 +1710,9 @@ chat; the server's own notices in the `=nick` buffer already do. Accepting such
 an offer needs nothing extra — `POST /chat` for that peer takes it as offered,
 while `POST /chat` with `secure: true` against a pending PLAIN offer is refused
 with a notice rather than opening the chat in the clear. The snapshot's
-`dccChats` carries nicks only.
+`dccChats` carries nicks only; the subset over TLS rides beside it as
+`dccSecureChats` (peer display nicks), so a reloaded client can still mark a
+live chat secure.
 
 An offer surface should be retired on `dcc-chat-offer-closed` rather than on a
 timer, so it never outlives the offer it names. That event can be missed — the

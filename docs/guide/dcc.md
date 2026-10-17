@@ -120,7 +120,9 @@ WeeChat and HexDroid don't.
 A DCC chat is a direct conversation with one person, not relayed by the IRC
 server. It opens in a buffer named `=nick`.
 
-- `/dcc chat <nick>` offers one. `/dcc chat -passive <nick>` asks the other
+- **Chat (DCC)** from someone's name in the member list, their profile's **⋯**
+  menu, or a DM's menu in the buffer list offers one; so does
+  `/dcc chat <nick>`. `/dcc chat -passive <nick>` asks the other
   side to listen instead. Only some clients handle that (irssi, HexChat and
   repartee do; WeeChat and HexDroid don't).
 - An offer someone sends you gets an **Accept**, **Decline** and **Later**
@@ -132,10 +134,13 @@ server. It opens in a buffer named `=nick`.
 
 A DCC connection is plain TCP, so anyone on the path can read it. KVIrc's
 secure DCC puts the same chat or file transfer inside TLS, and Lurker speaks
-it: `/dcc chat -secure <nick>` and `/dcc send -secure <nick> [<file>]` offer
-one, and an offer that arrives this way is taken this way. The toast, the
-status line and the row in the DCC window say "secure". Everything else is the
-same, including `-passive`.
+it: **Secure Chat (DCC)** and **Secure Send File (DCC)…** sit under the plain
+entries in the same menus, and `/dcc chat -secure <nick>` and
+`/dcc send -secure <nick> [<file>]` do the same from the keyboard. An offer
+that arrives this way is taken this way. The toast, the status line and the
+row in the DCC window say "secure"; a secure chat's connected line names the
+TLS version and cipher, and its buffer shows a lock in the status bar for as
+long as it is up. Everything else is the same, including `-passive`.
 
 Two things to know:
 

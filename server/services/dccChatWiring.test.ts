@@ -1080,8 +1080,21 @@ describe('secure DCC chat (SCHAT)', () => {
     offerAndAccept(h.conn, 'bob', `SCHAT chat ${encodeDccAddress('127.0.0.1')} ${peer.port}`);
     const sock = await peer.socket;
     await waitFor(() => h.conn.hasDccChat('bob'));
-    expect(h.notices().at(-1)).toBe('Secure DCC chat with bob connected.');
+    expect(h.notices().at(-1)).toMatch(
+      /^Secure DCC chat with bob connected \(TLSv1\.[23], [A-Z0-9_-]+\)\.$/,
+    );
     expect(h.stateEvents().at(-1)).toEqual({ from: 'bob', live: true, secure: true });
+    // A reloaded tab learns the same from the snapshot (#1157): the live list,
+    // and the subset over TLS.
+    const snap = ircManager.snapshotForUser(1) as Array<{
+      networkId: number;
+      dccChats: string[];
+      dccSecureChats: string[];
+    }>;
+    expect(snap.find((n) => n.networkId === 1)).toMatchObject({
+      dccChats: ['bob'],
+      dccSecureChats: ['bob'],
+    });
 
     sock.write('hello\r\n');
     await waitFor(() => h.chatLines().length > 0);
@@ -1151,7 +1164,9 @@ describe('secure DCC chat (SCHAT)', () => {
 
     const client = await tlsDial(Number(m![1]));
     await waitFor(() => h.conn.hasDccChat('bob'));
-    expect(h.notices().at(-1)).toBe('Secure DCC chat with bob connected.');
+    expect(h.notices().at(-1)).toMatch(
+      /^Secure DCC chat with bob connected \(TLSv1\.[23], [A-Z0-9_-]+\)\.$/,
+    );
     client.destroy();
     h.conn.closeDccChat('bob');
   });
@@ -1277,10 +1292,12 @@ describe('the client is told whether a chat is live', () => {
       networkId: number;
       state: string;
       dccChats: string[];
+      dccSecureChats: string[];
     }>;
     const net = snap.find((n) => n.networkId === 1)!;
     expect(net.state).toBe('disconnected'); // the synthesized, DB-built blob…
     expect(net.dccChats).toEqual(['bob']); // …still knows the chat is live
+    expect(net.dccSecureChats).toEqual([]); // a plain one
     h.conn.closeDccChat('bob');
   });
 

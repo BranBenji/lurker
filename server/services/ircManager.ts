@@ -1541,6 +1541,12 @@ class IrcManager extends EventEmitter {
         dccChats: dccChatHostsFor(dccChatKey(userId, networkId)).flatMap((h) =>
           h.liveDccChatPeers(),
         ),
+        // The subset over TLS (#1157), so a reloaded tab can still mark the
+        // chat secure. A second list, not a shape change: `dccChats` is a list
+        // of nicks to every client and stays one.
+        dccSecureChats: dccChatHostsFor(dccChatKey(userId, networkId)).flatMap((h) =>
+          h.liveSecureDccChatPeers(),
+        ),
         // Offers still awaiting an answer. The client's offer toast is sticky,
         // and a toast whose offer expired or was lost while the tab was
         // disconnected never gets the live close event — so it reconciles

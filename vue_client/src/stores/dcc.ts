@@ -349,6 +349,9 @@ export const useDccStore = defineStore('dcc', {
     // Whether this account can send a file over DCC (#1085): what offers
     // "Send File (DCC)…" on a nick.
     canSend: (s): boolean => useConfigStore().features.dcc && !!s.account?.send,
+    // Whether this account can offer a DCC chat: what offers "Chat (DCC)" on a
+    // nick. Accepting one someone offers is gated the same way, server-side.
+    canChat: (s): boolean => useConfigStore().features.dcc && !!s.account?.chat,
     // Whether the DCC button shows: DCC runs here, and the account has some
     // of it (a grant), or something from before a grant went.
     hasDcc(s): boolean {
@@ -814,9 +817,10 @@ export const useDccStore = defineStore('dcc', {
     },
 
     // "Send File (DCC)…" on a nick (#1085): pick a file for them. The server
-    // makes it passive when it can't listen (#1154).
-    openSendTo(networkId: number, nick: string): void {
-      this.openToSend({ networkId, nick, passive: false, secure: false });
+    // makes it passive when it can't listen (#1154). `secure` is the "Secure
+    // Send File" entry: an SSEND (#1157).
+    openSendTo(networkId: number, nick: string, secure = false): void {
+      this.openToSend({ networkId, nick, passive: false, secure });
     },
 
     // `/dcc send <nick>` with no file: open Files to pick one, or upload one.
