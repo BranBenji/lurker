@@ -136,8 +136,10 @@ A DCC connection is plain TCP, so anyone on the path can read it. KVIrc's
 secure DCC puts the same chat or file transfer inside TLS, and Lurker speaks
 it: **Secure Chat (DCC)** and **Secure Send File (DCC)…** sit under the plain
 entries in the same menus, and `/dcc chat -secure <nick>` and
-`/dcc send -secure <nick> [<file>]` do the same from the keyboard. An offer
-that arrives this way is taken this way. The toast, the status line and the
+`/dcc send -secure <nick> [<file>]` do the same from the keyboard. However
+the DCC window came to be picking a file, its prompt has a **secure** box, and
+so does a kept file's **Send to…**. An offer that arrives this way is taken
+this way. The toast, the status line and the
 row in the DCC window say "secure"; a secure chat's connected line names the
 TLS version and cipher, and its buffer shows a lock in the status bar for as
 long as it is up. The send button at the top of that buffer sends securely

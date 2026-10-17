@@ -20,6 +20,7 @@ vi.mock('../stores/config.js', () => ({
 import { dccActionItems } from './dccActionItems.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useDccStore } from '../stores/dcc.js';
+import { useNetworksStore } from '../stores/networks.js';
 import { useToastsStore } from '../stores/toasts.js';
 
 const item = (label: string) => dccActionItems(1, 'alice').find((i) => i.label === label)!;
@@ -81,12 +82,35 @@ describe('dccActionItems', () => {
     expect(useDccStore().pick).toMatchObject({ networkId: 1, nick: 'alice', secure: true });
   });
 
-  it("runs the caller's step first, so a modal can close itself", () => {
+  it("runs the caller's step, so a modal can close itself — after a chat request succeeds", async () => {
     const before = vi.fn<() => void>();
+    vi.spyOn(useBuffersStore(), 'activate').mockImplementation(() => {});
+    h.api.mockRejectedValue(new Error('network not connected'));
+    await dccActionItems(1, 'alice', { before })
+      .find((i) => i.label === 'Chat (DCC)')!
+      .onClick?.();
+    expect(before).not.toHaveBeenCalled(); // the modal stays for the toast
+    h.api.mockResolvedValue({});
+    await dccActionItems(1, 'alice', { before })
+      .find((i) => i.label === 'Chat (DCC)')!
+      .onClick?.();
+    expect(before).toHaveBeenCalledOnce();
+
+    // A send is a pick in the DCC window, so the step runs at once.
     dccActionItems(1, 'alice', { before })
       .find((i) => i.label === 'Send File (DCC)…')!
       .onClick?.();
-    expect(before).toHaveBeenCalledOnce();
+    expect(before).toHaveBeenCalledTimes(2);
     expect(useDccStore().pick).not.toBeNull();
+  });
+
+  // The server would only say "Already in a DCC chat"; the send pair stays.
+  it('drops the chat pair while a chat with that peer is live', () => {
+    useNetworksStore().applyDccChatState(1, 'Alice', true);
+    expect(
+      dccActionItems(1, 'alice')
+        .map((i) => i.label)
+        .filter(Boolean),
+    ).toEqual(['Send File (DCC)…', 'Secure Send File (DCC)…']);
   });
 });

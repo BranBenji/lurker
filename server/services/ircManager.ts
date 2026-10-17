@@ -1524,6 +1524,7 @@ class IrcManager extends EventEmitter {
     // the live-connection and offline branches so both shapes stay identical.
     const withExtras = <T extends { networkId: number }>(snap: T) => {
       const networkId = snap.networkId;
+      const chatHosts = dccChatHostsFor(dccChatKey(userId, networkId));
       return {
         ...snap,
         pinned: pinsByNetwork.get(networkId) || [],
@@ -1538,15 +1539,11 @@ class IrcManager extends EventEmitter {
         // then synthesized below from the DB. The session registry is what
         // still knows, so reading it here keeps a reloaded tab from showing a
         // live chat as disconnected.
-        dccChats: dccChatHostsFor(dccChatKey(userId, networkId)).flatMap((h) =>
-          h.liveDccChatPeers(),
-        ),
+        dccChats: chatHosts.flatMap((h) => h.liveDccChatPeers()),
         // The subset over TLS (#1157), so a reloaded tab can still mark the
         // chat secure. A second list, not a shape change: `dccChats` is a list
         // of nicks to every client and stays one.
-        dccSecureChats: dccChatHostsFor(dccChatKey(userId, networkId)).flatMap((h) =>
-          h.liveSecureDccChatPeers(),
-        ),
+        dccSecureChats: chatHosts.flatMap((h) => h.liveSecureDccChatPeers()),
         // Offers still awaiting an answer. The client's offer toast is sticky,
         // and a toast whose offer expired or was lost while the tab was
         // disconnected never gets the live close event — so it reconciles

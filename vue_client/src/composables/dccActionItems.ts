@@ -13,6 +13,7 @@ import { FileUpIcon, LockIcon, MessageSquareIcon } from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useDccStore } from '../stores/dcc.js';
+import { useNetworksStore } from '../stores/networks.js';
 import { useToastsStore } from '../stores/toasts.js';
 
 export interface DccActionOptions {
@@ -33,9 +34,11 @@ export function dccActionItems(
   const dcc = useDccStore();
   const items: ContextMenuItem[] = [];
   const chat = (secure: boolean) => async (): Promise<void> => {
-    opts.before?.();
     try {
       await dcc.openChat(networkId, nick, false, secure);
+      // Only now: a modal that closed itself before a failed request would
+      // leave the toast below as the only trace.
+      opts.before?.();
       // As `/dcc chat` does: the `=nick` buffer materializes from the server's
       // first notice, so activate by target — it may not exist for a tick.
       useBuffersStore().activate(networkId, `=${nick}`);
@@ -50,7 +53,9 @@ export function dccActionItems(
       });
     }
   };
-  if (dcc.canChat) {
+  // Not while a chat with them is up: the server would only answer "Already
+  // in a DCC chat", and the `=nick` buffer's own menu is where that shows.
+  if (dcc.canChat && !useNetworksStore().isDccChatLive(networkId, nick)) {
     items.push(
       { label: 'Chat (DCC)', icon: MessageSquareIcon, onClick: chat(false) },
       { label: 'Secure Chat (DCC)', icon: LockIcon, onClick: chat(true) },

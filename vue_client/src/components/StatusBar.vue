@@ -50,8 +50,10 @@
         <span
           v-if="dccChatSecure"
           class="seg secure"
+          role="img"
+          aria-label="Secure DCC chat"
           title="Secure DCC chat: this session is over TLS"
-          ><LockIcon role="img" aria-label="Secure" /><span v-if="!compact">secure</span></span
+          ><LockIcon aria-hidden="true" /><span v-if="!compact">secure</span></span
         >
         <span v-if="lagLabel && !compact" class="seg lag" :class="lagClass">{{ lagLabel }}</span>
         <!-- Lines still to go out on this network (#1149): a long paste or a
