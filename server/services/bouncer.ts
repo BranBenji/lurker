@@ -623,6 +623,10 @@ function filehostToken(userId: number): string | null {
   return `soju.im/FILEHOST=${base}/api/filehost`;
 }
 
+// How long an echo registered for a line that never went out, and was never
+// reported dropped, is remembered (see registerEcho).
+const UNSENT_ECHO_TTL_MS = 10 * 60_000;
+
 function isChannelName(target: string): boolean {
   return isChannelTarget(target);
 }
@@ -885,7 +889,7 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   // tabs still receive the echo. Keys are per wire chunk, and entries expire
   // after a short window so an unconsumed key (from the rare chunking-
   // mismatch cases) can't suppress an identical message sent much later.
-  private pendingEcho: Array<{ key: string; at: number }> = [];
+  private pendingEcho: Array<{ key: string; at: number; since: number }> = [];
   private onRawUpstream: ((event: { from_server: boolean; line: string }) => void) | null = null;
   private onUpstreamCaps: (() => void) | null = null;
   private regTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2906,7 +2910,14 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         continue;
       }
       const kind = isAction ? 'action' : msg.command === 'PRIVMSG' ? 'message' : 'notice';
-      for (const chunk of chunks) this.registerEcho(kind, target, chunk);
+      // On an E2E channel the self event carries the full body as ONE event,
+      // not one per wire chunk, so the chunks are not what comes back; an
+      // action or notice there is refused and echoes nothing.
+      const e2e =
+        isChannelName(target) &&
+        e2eManager.isChannelEnabled(this.userId, this.networkId, contextKey(target, ''));
+      const registered: string[] = [];
+      if (!e2e) for (const chunk of chunks) registered.push(this.registerEcho(kind, target, chunk));
       // Each echo's clock starts when its line has gone, which behind a
       // backlog is later than now (#1149); a line dropped with its socket has
       // no echo coming.
@@ -2914,17 +2925,23 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         sent: (line: string) => this.stampEcho(kind, target, line),
         dropped: (line: string) => this.forgetEcho(kind, target, line),
       };
+      let accepted: boolean;
       if (isAction) {
-        ircManager.action(this.userId, this.networkId, target, body, { replyTo, lineHooks });
+        accepted = ircManager.action(this.userId, this.networkId, target, body, {
+          replyTo,
+          lineHooks,
+        });
       } else if (msg.command === 'PRIVMSG') {
-        // On an E2E channel the self event carries the full body as ONE event
-        // (not per wire chunk), so register the whole text too when it split.
-        // The unmatched leftover key expires harmlessly (see pendingEcho).
-        if (chunks.length > 1) this.registerEcho('message', target, text);
-        ircManager.send(this.userId, this.networkId, target, text, { replyTo, lineHooks });
+        if (e2e) registered.push(this.registerEcho('message', target, text));
+        accepted = ircManager.send(this.userId, this.networkId, target, text, {
+          replyTo,
+          lineHooks,
+        });
       } else {
-        ircManager.notice(this.userId, this.networkId, target, text, { lineHooks });
+        accepted = ircManager.notice(this.userId, this.networkId, target, text, { lineHooks });
       }
+      // Refused (not writable, too long to encrypt): nothing is coming back.
+      if (!accepted) for (const key of registered) this.forgetEchoKey(key);
     }
   }
 
@@ -2943,11 +2960,15 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   }
 
   // `at` is 0 until the line has gone (stampEcho): the 30 s window counts
-  // from the wire, and a line still queued is never pruned.
-  private registerEcho(type: string, target: string, text: string): void {
+  // from the wire, and a line still queued is not pruned on it. A line that
+  // never goes and is never dropped either (a path that forgot to say) is
+  // pruned on `since`, generously, so it cannot swallow a later line forever.
+  private registerEcho(type: string, target: string, text: string): string {
     this.prunePendingEcho();
-    this.pendingEcho.push({ key: echoKey(type, target, text), at: 0 });
+    const key = echoKey(type, target, text);
+    this.pendingEcho.push({ key, at: 0, since: Date.now() });
     if (this.pendingEcho.length > 500) this.pendingEcho.splice(0, this.pendingEcho.length - 500);
+    return key;
   }
 
   private stampEcho(type: string, target: string, text: string): void {
@@ -2957,16 +2978,19 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   }
 
   private forgetEcho(type: string, target: string, text: string): void {
-    const key = echoKey(type, target, text);
+    this.forgetEchoKey(echoKey(type, target, text));
+  }
+
+  private forgetEchoKey(key: string): void {
     const idx = this.pendingEcho.findIndex((e) => e.key === key && e.at === 0);
     if (idx !== -1) this.pendingEcho.splice(idx, 1);
   }
 
   private prunePendingEcho(): void {
-    const cutoff = Date.now() - 30_000;
-    if (this.pendingEcho.some((e) => e.at !== 0 && e.at < cutoff)) {
-      this.pendingEcho = this.pendingEcho.filter((e) => e.at === 0 || e.at >= cutoff);
-    }
+    const now = Date.now();
+    const stale = (e: { at: number; since: number }) =>
+      e.at === 0 ? e.since < now - UNSENT_ECHO_TTL_MS : e.at < now - 30_000;
+    if (this.pendingEcho.some(stale)) this.pendingEcho = this.pendingEcho.filter((e) => !stale(e));
   }
 
   // Whether this client can render `:you PRIVMSG peer` self-messages in DMs.

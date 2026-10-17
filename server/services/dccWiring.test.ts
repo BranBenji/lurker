@@ -755,16 +755,26 @@ describe('arm-on-trigger + auto-accept', () => {
           received_bytes: 10_000,
         });
         updateDccTransferState(priorId, 'failed', 'interrupted');
-        // Five short lines fill the 10 s budget; what follows waits 2 s each.
+        // Five short lines fill the 10 s budget; three 400-byte ones (6 s
+        // each) follow, so what comes after them waits over 15 s.
         for (let i = 0; i < 5; i++) conn.say('#fill', `line ${i}`);
+        for (let i = 0; i < 3; i++) conn.say('#fill', 'x'.repeat(380));
         offer(50_001, 30_000); // the `xdcc send`, then the RESUME
         const waiting = listDccTransfers(1).find((t) => t.state === 'receiving')!;
         expect(resumeReq).not.toHaveBeenCalled();
-        vi.advanceTimersByTime(4000);
-        expect(resumeReq).toHaveBeenCalledTimes(1);
-        vi.advanceTimersByTime(14_999);
+        // 15 s on with the RESUME still waiting: the sender's clock has not
+        // started.
+        vi.advanceTimersByTime(15_000);
+        expect(resumeReq).not.toHaveBeenCalled();
         expect(listDccTransfers(1).find((t) => t.id === waiting.id)?.state).toBe('receiving');
-        vi.advanceTimersByTime(1);
+        // Then its turn comes, and the 15 s run from there.
+        for (let i = 0; i < 200 && resumeReq.mock.calls.length === 0; i++) {
+          vi.advanceTimersByTime(100);
+        }
+        expect(resumeReq).toHaveBeenCalledTimes(1);
+        vi.advanceTimersByTime(14_900);
+        expect(listDccTransfers(1).find((t) => t.id === waiting.id)?.state).toBe('receiving');
+        vi.advanceTimersByTime(100);
         expect(listDccTransfers(1).find((t) => t.id === waiting.id)).toMatchObject({
           state: 'failed',
           error: 'resume not accepted by sender',

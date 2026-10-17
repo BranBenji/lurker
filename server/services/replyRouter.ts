@@ -62,7 +62,11 @@ export interface ReplyRouterOptions {
    * Put a line on the wire: now, or in its turn behind what waits (#1149). A
    * function makes the line when it goes. `onSent` runs once it has gone.
    */
-  write(line: string | (() => string), onSent?: (at: number) => void): Written | void;
+  write(
+    line: string | (() => string),
+    onSent?: (at: number) => void,
+    onDropped?: () => void,
+  ): Written | void;
   /** Whether a query can go out now. One that can't ends at once. */
   canSend(): boolean;
   /** The network's case fold, for channel names and nicks. */
@@ -250,6 +254,7 @@ interface Query extends Spec {
   sent: boolean;
   written: Written | null;
   onSent: ((at: number) => void) | undefined;
+  onDropped: (() => void) | undefined;
 }
 
 interface Settle {
@@ -301,10 +306,16 @@ export class ReplyRouter {
    * `onSent` runs when the line has gone (#1149): a timer that waits on the
    * reply starts there.
    */
-  send(asker: Asker, line: string, build?: () => string, onSent?: (at: number) => void): void {
+  send(
+    asker: Asker,
+    line: string,
+    build?: () => string,
+    onSent?: (at: number) => void,
+    onDropped?: () => void,
+  ): void {
     const found = this.classify(line);
     if (!found) {
-      this.opts.write(line, onSent);
+      this.opts.write(line, onSent, onDropped);
       return;
     }
     this.dispatch({
@@ -317,6 +328,7 @@ export class ReplyRouter {
       sent: false,
       written: null,
       onSent,
+      onDropped,
     });
   }
 
@@ -362,11 +374,25 @@ export class ReplyRouter {
     for (const query of ended) this.abort(query);
   }
 
-  /** A client detached. Its waiting queries go, and replies to one on the wire go nowhere. */
+  /** A client detached. Its waiting queries go, one still in the queue goes
+   *  with them, and replies to one on the wire go nowhere. */
   dropClient(client: ReplyClient): void {
     this.waiting = this.waiting.filter((query) => query.asker !== client);
-    for (const query of this.wire) if (query.asker === client) query.asker = null;
+    let released = false;
+    const queries = this.wire.slice();
+    for (const query of queries) {
+      if (query.asker !== client) continue;
+      if (!query.sent) {
+        query.written?.cancel();
+        query.written = null;
+        this.takeOffWire(query);
+        released = true;
+      } else {
+        query.asker = null;
+      }
+    }
     if (this.settle?.query.asker === client) this.settle.query.asker = null;
+    if (released) this.releaseWaiting();
   }
 
   private dispatch(query: Query): void {
@@ -383,14 +409,19 @@ export class ReplyRouter {
     // On the wire from here, so what follows it waits its turn; its timeout
     // runs from when it has actually gone, which behind a backlog is later.
     this.wire.push(query);
-    query.written =
-      this.opts.write(query.build, (at) => {
+    const written = this.opts.write(
+      query.build,
+      (at) => {
         query.sent = true;
         query.written = null;
         query.heardAt = Date.now();
         if (this.wire.includes(query)) this.armTimeout(query, this.timeoutMs());
         query.onSent?.(at);
-      }) ?? null;
+      },
+      query.onDropped,
+    );
+    // A line with nothing ahead of it has gone by now.
+    if (!query.sent) query.written = written ?? null;
   }
 
   // Whether a query waits for one already out, or for the line that may still

@@ -1000,6 +1000,10 @@ class IrcManager extends EventEmitter {
       }
       // kind === 'disabled' → fall through to the normal plaintext send below.
     }
+    // The REKEYs a handshake's rotation queued (E2eManager.buildKeyRspAndReciprocal)
+    // go out with the next send to any channel, as they did before #1149; an
+    // E2E send drains them itself, ahead of its own chunks.
+    conn.flushE2eRekeys();
     // A multi-line compose rides draft/multiline batches where the server
     // supports the cap: it lands as one logical message per batch (the body is
     // partitioned to the server's limits, so a big paste is N messages, not N

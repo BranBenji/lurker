@@ -264,27 +264,91 @@ describe('SendPacer', () => {
     });
   });
 
-  describe('barriers', () => {
-    it('holds what follows for ms after the line before it went', () => {
-      pacer.write('JOIN #a');
-      pacer.barrier(5000);
-      pacer.write('JOIN #b');
-      expect(sent).toEqual(['JOIN #a']);
-      vi.advanceTimersByTime(4999);
-      expect(sent).toHaveLength(1);
-      vi.advanceTimersByTime(1);
-      expect(sent).toEqual(['JOIN #a', 'JOIN #b']);
-      expect(pacer.pending).toBe(0);
+  describe('liveness, nesting and re-entrancy', () => {
+    it('asks live() when the line is due, and sends nothing for a withdrawn one', () => {
+      let wanted = true;
+      for (let i = 0; i < 5; i++) pacer.write(SHORT);
+      pacer.write('PRIVMSG bob :\u0001DCC SEND f 1 2 3\u0001', { live: () => wanted });
+      pacer.write(SHORT);
+      wanted = false;
+      vi.advanceTimersByTime(2000);
+      expect(sent.at(-1)).toBe(SHORT);
+      expect(sent).toHaveLength(6);
     });
 
-    it('counts from its own creation when nothing went before it', () => {
-      vi.advanceTimersByTime(1000);
-      pacer.barrier(3000);
-      pacer.write('JOIN #b');
-      vi.advanceTimersByTime(2999);
-      expect(sent).toEqual([]);
-      vi.advanceTimersByTime(1);
-      expect(sent).toEqual(['JOIN #b']);
+    it('runs a thunk a thunk made at its own turn', () => {
+      let nick = 'carol';
+      for (let i = 0; i < 5; i++) pacer.write(SHORT);
+      pacer.write(() => [LONG, () => `NOTICE ${nick} :REKEY`]);
+      vi.advanceTimersByTime(2000);
+      // The outer thunk ran; its long line waits for the budget, and the
+      // thunk behind it has not run.
+      expect(sent).toHaveLength(5);
+      nick = 'carol2';
+      vi.advanceTimersByTime(2000);
+      expect(sent.slice(5)).toEqual([LONG]);
+      vi.advanceTimersByTime(2000);
+      expect(sent.slice(5)).toEqual([LONG, 'NOTICE carol2 :REKEY']);
+    });
+
+    it('makes a line whose text is a function when that line goes', () => {
+      let nick = 'carol';
+      const dropped = vi.fn<() => void>();
+      for (let i = 0; i < 5; i++) pacer.write(SHORT);
+      pacer.write(() => [LONG, { text: () => `NOTICE ${nick} :REKEY`, onDropped: dropped }]);
+      vi.advanceTimersByTime(4000);
+      expect(sent.slice(5)).toEqual([LONG]);
+      nick = 'carol2';
+      vi.advanceTimersByTime(2000);
+      expect(sent.at(-1)).toBe('NOTICE carol2 :REKEY');
+      expect(dropped).not.toHaveBeenCalled();
+    });
+
+    it('cancels what a thunk expanded to', () => {
+      for (let i = 0; i < 5; i++) pacer.write(SHORT);
+      const h = pacer.write(() => [LONG, LONG]);
+      vi.advanceTimersByTime(2000);
+      expect(sent).toHaveLength(5);
+      expect(h.cancel()).toBe(true);
+      vi.advanceTimersByTime(20_000);
+      expect(sent).toHaveLength(5);
+    });
+
+    it("tells an expanded line's own onDropped and its item's, once each", () => {
+      const log: string[] = [];
+      for (let i = 0; i < 5; i++) pacer.write(SHORT);
+      pacer.write(
+        () => [
+          { text: LONG, onDropped: () => log.push('rekey') },
+          { text: LONG, onDropped: () => log.push('chunk') },
+        ],
+        { onDropped: () => log.push('message') },
+      );
+      vi.advanceTimersByTime(2000);
+      pacer.drop();
+      expect(log.sort()).toEqual(['chunk', 'message', 'rekey']);
+    });
+
+    it('drops a write made from an onDropped during dispose', () => {
+      for (let i = 0; i < 5; i++) pacer.write(SHORT);
+      const dropped = vi.fn<() => void>();
+      pacer.write(SHORT, {
+        onDropped: () => pacer.write('PRIVMSG #c :from the grave', { onDropped: dropped }),
+      });
+      pacer.dispose();
+      expect(sent).toHaveLength(5);
+      expect(dropped).toHaveBeenCalledOnce();
+    });
+
+    it('keeps the keyed cap when an evicted item writes another from its onDropped', () => {
+      for (let i = 0; i < 5; i++) pacer.write(SHORT);
+      pacer.write('NOTICE bob :b', {
+        key: 'bob',
+        onDropped: () => pacer.write('NOTICE eric :e', { key: 'eric' }),
+      });
+      pacer.write('NOTICE carol :c', { key: 'carol' });
+      pacer.write('NOTICE dave :d', { key: 'dave' });
+      expect(pacer.pending).toBe(2);
     });
   });
 

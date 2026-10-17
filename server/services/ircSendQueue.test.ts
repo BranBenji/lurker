@@ -137,6 +137,9 @@ describe('resume on registration', () => {
     // What the framework's own 'registered' listener reads on a 001.
     (conn.client as unknown as { options: unknown }).options = { ping_interval: 0 };
     conn.client.connection.addReadBuffer(':irc.example.test 001 alice :Welcome');
+    // The handler's own lag PING went first and is charged: 2 s more.
+    expect(lines).not.toContain('PRIVMSG #c :held');
+    vi.advanceTimersByTime(2000);
     expect(lines).toContain('PRIVMSG #c :held');
     conn.dispose();
   });
@@ -157,6 +160,7 @@ describe('what is made at send time', () => {
 
   it('encrypts an E2E message when its turn comes, REKEYs first, and notes each chunk as it goes', () => {
     const { conn, lines } = backlog({ join: ['#x'], peers: ['carol'] });
+    const prepare = vi.spyOn(e2eManager, 'prepareOutgoing').mockReturnValue(true);
     const encrypt = vi
       .spyOn(e2eManager, 'encryptOutgoing')
       .mockReturnValue({ kind: 'encrypted', lines: ['+RPE2E01 one', '+RPE2E01 two'] });
@@ -165,23 +169,43 @@ describe('what is made at send time', () => {
     ]);
     const sent: string[] = [];
     conn.sayEncrypted('#x', 'secret', { sent: (t) => sent.push(t) });
-    expect(encrypt).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
     vi.advanceTimersByTime(2000);
-    expect(encrypt).toHaveBeenCalledOnce();
+    // The key is made and the REKEY goes; the chunks are made only after it.
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(encrypt).not.toHaveBeenCalled();
     expect(lines.slice(5)).toEqual(['NOTICE carol :\u0001RPEE2E REKEY v=1 c=#x\u0001']);
     expect(conn.consumeSentCiphertext('+RPE2E01 one')).toBe(false);
     vi.advanceTimersByTime(2000);
+    // Encrypted now, and the first chunk fits at once.
+    expect(encrypt).toHaveBeenCalledOnce();
     expect(lines.at(-1)).toBe('PRIVMSG #x :+RPE2E01 one');
     expect(conn.consumeSentCiphertext('+RPE2E01 one')).toBe(true);
+    expect(conn.consumeSentCiphertext('+RPE2E01 two')).toBe(false);
     expect(sent).toEqual([]);
     vi.advanceTimersByTime(2000);
     expect(lines.at(-1)).toBe('PRIVMSG #x :+RPE2E01 two');
+    expect(conn.consumeSentCiphertext('+RPE2E01 two')).toBe(true);
     expect(sent).toEqual(['secret']);
+    conn.dispose();
+  });
+
+  it('puts a REKEY dropped with its socket back for the next send', () => {
+    const { conn, lines } = backlog({ join: ['#x'], peers: ['carol'] });
+    const send = { channel: '#x', targetHandle: 'c@c.host', body: 'RPEE2E REKEY v=1 c=#x' };
+    vi.spyOn(e2eManager, 'takePendingRekeySends').mockReturnValue([send]);
+    const putBack = vi.spyOn(e2eManager, 'putBackRekeySend').mockImplementation(() => {});
+    conn.flushE2eRekeys();
+    // Still waiting its turn: the socket dies.
+    expect(lines).toHaveLength(5);
+    conn.client.emit('close');
+    expect(putBack).toHaveBeenCalledWith(1, 1, send);
     conn.dispose();
   });
 
   it('reports an E2E message not sent when encryption is off by the time it goes', () => {
     const { conn, lines, published } = backlog();
+    vi.spyOn(e2eManager, 'prepareOutgoing').mockReturnValue(true);
     vi.spyOn(e2eManager, 'encryptOutgoing').mockReturnValue({ kind: 'disabled' });
     vi.spyOn(e2eManager, 'takePendingRekeySends').mockReturnValue([]);
     conn.sayEncrypted('#x', 'secret');
@@ -237,8 +261,40 @@ describe('every timer starts at send', () => {
     conn.runConnectCommands();
     vi.advanceTimersByTime(2000);
     expect(lines.at(-1)).toBe('PRIVMSG NickServ :IDENTIFY pw');
+    // Only the connect commands wait on it; a line of the user's goes on.
+    conn.say('#c', 'meanwhile');
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('PRIVMSG #c :meanwhile');
+    vi.advanceTimersByTime(2999);
+    expect(lines.at(-1)).toBe('PRIVMSG #c :meanwhile');
+    vi.advanceTimersByTime(1);
+    expect(lines.at(-1)).toBe('JOIN #a');
+    conn.dispose();
+  });
+
+  it('what the registered handler itself writes queues behind held lines, and is charged', () => {
+    // Our 'registered' handler runs before the framework marks the connection
+    // registered, so without its own flag the connect commands it runs would
+    // bypass the queue, overtake what is held, and go uncharged.
+    const { conn, lines, registered } = backlog();
+    conn.say('#c', 'held');
+    registered(false);
+    vi.advanceTimersByTime(2000);
+    conn.network.connect_commands = 'PRIVMSG NickServ :IDENTIFY pw\nWAIT 5\nJOIN #a';
+    (conn.client as unknown as { options: unknown }).options = { ping_interval: 0 };
+    conn.client.connection.addReadBuffer(':irc.example.test 001 alice :Welcome');
+    // Nothing the handler wrote overtook the held line.
+    expect(lines).not.toContain('PRIVMSG NickServ :IDENTIFY pw');
+    // The held line first, then the IDENTIFY, each charged; the JOIN 5 s
+    // after the IDENTIFY went.
+    vi.advanceTimersByTime(2000);
+    const from = lines.indexOf('PRIVMSG #c :held');
+    expect(from).toBeGreaterThan(-1);
+    vi.advanceTimersByTime(2000);
+    expect(lines.indexOf('PRIVMSG NickServ :IDENTIFY pw')).toBeGreaterThan(from);
+    expect(lines).not.toContain('JOIN #a');
     vi.advanceTimersByTime(4999);
-    expect(lines.at(-1)).toBe('PRIVMSG NickServ :IDENTIFY pw');
+    expect(lines).not.toContain('JOIN #a');
     vi.advanceTimersByTime(1);
     expect(lines.at(-1)).toBe('JOIN #a');
     conn.dispose();
@@ -286,6 +342,16 @@ describe('every timer starts at send', () => {
     conn.dispose();
   });
 
+  it('a bare CTCP PING carries the time it went, so the reply reads as a round trip', () => {
+    const { conn, lines } = backlog();
+    conn.publishEphemeral = () => {};
+    const wrote = Date.now();
+    conn.sendCtcpRequest('#c', 'bob', 'PING', '');
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe(`PRIVMSG bob :\u0001PING ${wrote + 2000}\u0001`);
+    conn.dispose();
+  });
+
   it("a command's claim on a 401 is the wire's order, not the queue's", () => {
     const { conn, lines, published } = backlog();
     conn.upsertChannel('#anime');
@@ -330,12 +396,26 @@ describe('what the user sees', () => {
     const { conn, published } = backlog();
     conn.say('#c', 'going');
     conn.action('bob', 'waves');
+    conn.raw('PRIVMSG carol :typed raw');
     conn.client.emit('close');
     expect(published.filter((e) => e.type === 'error')).toEqual([
       expect.objectContaining({ target: '#c', text: 'not sent (connection dropped): going' }),
       expect.objectContaining({ target: 'bob', text: 'not sent (connection dropped): /me waves' }),
+      expect.objectContaining({
+        target: ':server:1',
+        text: 'not sent (connection dropped): PRIVMSG carol :typed raw',
+      }),
     ]);
     conn.dispose();
+  });
+
+  it('reports what was still waiting when the connection is disposed', () => {
+    const { conn, published } = backlog();
+    conn.say('#c', 'going');
+    conn.dispose();
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({ target: '#c', text: 'not sent (connection dropped): going' }),
+    ]);
   });
 
   it('publishes the queue depth as it changes, and carries it on the snapshot', () => {

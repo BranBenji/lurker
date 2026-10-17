@@ -12,24 +12,25 @@
 // buffer. Lurker keeps the same clock (`since`): a line costs 2 s + 1 s per
 // 100 bytes (irssi's constants, the pessimistic side of ircu's len/120, so an
 // estimate that drifts drifts safe), goes at once while its charge still fits
-// under 10 s, and waits for the charge to decay otherwise. HexChat paces every line
-// the same way (server.c, tcp_send_queue); irssi sends five at once and then
-// one per 2.2 s, WeeChat one per 2 s. Five short lines go at once, then one
-// every 2 s; a REKEY burst or a long paste is spread out instead of killed.
+// under 10 s, and waits for the charge to decay otherwise. HexChat paces every
+// line the same way (server.c, tcp_send_queue); irssi sends five at once and
+// then one per 2.2 s, WeeChat one per 2 s. Five short lines go at once, then
+// one every 2 s; a REKEY burst or a long paste is spread out instead of killed.
 //
 // Not paced: anything written before registration (the registration burst,
 // which an engine re-attach's transport swallows and a server gives grace),
-// and PING, PONG and QUIT, which waiting would only make wrong. They are still
-// charged, since the server charges them.
+// uncharged; and PING, PONG and QUIT, which waiting would only make wrong,
+// charged since the server charges them.
 //
 // An item is a line, a thunk that makes its line(s) when its turn comes (a
-// REKEY to a nick resolved at send time, an E2E message encrypted and
-// timestamped at send time), or a unit of lines that go back to back (a
-// draft/multiline batch). Every item can say what to do when it is sent
-// (`onSent`: every timer that waits on a reply starts there, not at write) and
-// when it goes with its socket (`onDropped`: a user line reported as sent is
-// reported again as not sent). A barrier holds everything after it for a
-// while after the line before it went (a connect command's WAIT).
+// REKEY to a nick resolved at send time, an E2E message encrypted at send
+// time), or a unit of lines that go back to back (a draft/multiline batch). A
+// thunk may make further thunks, each run at its own turn. Every item can say
+// what to do when it is sent (`onSent`: every timer that waits on a reply
+// starts there, not at write), when it goes with its socket (`onDropped`: a
+// user line reported as sent is reported again as not sent), and whether it
+// is still wanted when its turn comes (`live`: a withdrawn DCC offer sends
+// nothing).
 //
 // Order is absolute, with the bypasses above. There are no priorities: a REKEY
 // is a NOTICE and the message that needs it a PRIVMSG, and the one must reach
@@ -56,19 +57,24 @@ function costOf(line: string): number {
   return lineCostMs(Buffer.byteLength(line) + 2);
 }
 
-/** One line to send, with what to do once it has gone. */
+/** One line to send, with what to do once it has gone, or if it never does.
+ *  `text` may be made when the line goes (a REKEY to the nick its peer has
+ *  then); null then sends nothing. */
 export interface Line {
-  text: string;
+  text: string | (() => string | null);
   onSent?: (at: number) => void;
+  onDropped?: () => void;
 }
 
-/** What a thunk makes when its turn comes: a line, several, or nothing. */
-export type Built = string | Line | Array<string | Line> | null;
+/** What a thunk makes when its turn comes: lines, further thunks, or nothing. */
+export type Built = string | Line | (() => Built) | Array<string | Line | (() => Built)> | null;
 
 export interface WriteOptions {
   /** A keyed item replaces a queued item with the same key where it stands,
    *  and at most `maxKeyed` keyed items wait: a handshake reply to a peer. */
   key?: string;
+  /** Asked when the line's turn comes; false sends nothing. */
+  live?: () => boolean;
   /** Called right after the item's last line hits the socket. */
   onSent?: (at: number) => void;
   /** Called when the item is dropped with its socket, or over the keyed cap. */
@@ -76,7 +82,8 @@ export interface WriteOptions {
 }
 
 export interface SendHandle {
-  /** Take the item out before it goes. True if it was still waiting. */
+  /** Take the item, and whatever it expanded to, out before it goes. True if
+   *  any of it was still waiting. */
   cancel(): boolean;
 }
 
@@ -96,17 +103,21 @@ interface Entry {
   text?: string;
   build?: () => Built;
   unit?: string[];
-  /** A barrier: hold until `ms` after the later of the previous send and `at`. */
-  barrier?: { ms: number; at: number };
   key?: string;
+  live?: () => boolean;
   onSent?: (at: number) => void;
   onDropped?: () => void;
+  /** The item this one expanded from, for cancel(). */
+  origin?: Entry;
 }
 
-function toLines(built: Built): Line[] {
-  if (built === null) return [];
-  const list = Array.isArray(built) ? built : [built];
-  return list.map((l) => (typeof l === 'string' ? { text: l } : l));
+// A line whose text is made when it goes, as a thunk making that line.
+function lazyLine(line: Line): () => Built {
+  const make = line.text as () => string | null;
+  return () => {
+    const text = make();
+    return text === null ? null : { text, onSent: line.onSent };
+  };
 }
 
 export class SendPacer {
@@ -117,7 +128,6 @@ export class SendPacer {
   /** The server's clock for us, as far as we can tell: it reads us while this
    *  is less than BURST_BUDGET_MS ahead of now(). */
   private since = 0;
-  private lastSentAt = 0;
   private reportedDepth = 0;
   private depthReport: ReturnType<typeof setImmediate> | null = null;
   private readonly now: () => number;
@@ -138,10 +148,13 @@ export class SendPacer {
       opts.onDropped?.();
       return { cancel: () => false };
     }
-    const entry: Entry =
-      typeof item === 'string'
-        ? { text: item, key: opts.key, onSent: opts.onSent, onDropped: opts.onDropped }
-        : { build: item, key: opts.key, onSent: opts.onSent, onDropped: opts.onDropped };
+    const entry: Entry = {
+      ...(typeof item === 'string' ? { text: item } : { build: item }),
+      key: opts.key,
+      live: opts.live,
+      onSent: opts.onSent,
+      onDropped: opts.onDropped,
+    };
     // Before registration, straight out and uncharged. The held lines, if any,
     // were written to a registered connection and wait for it to come back;
     // this is the registration burst, which must reach the transport now (an
@@ -163,8 +176,17 @@ export class SendPacer {
         this.queue[at] = entry;
         return this.handle(entry);
       }
-      const keyed = this.queue.filter((q) => q.key !== undefined);
-      if (keyed.length >= this.maxKeyed) this.remove(keyed[0], true);
+      // The oldest keyed item goes to make room. Its onDropped may write
+      // again, so the room is checked again, until there is some.
+      let keyed = this.queue.filter((q) => q.key !== undefined);
+      while (keyed.length >= this.maxKeyed && !this.disposed) {
+        this.remove(keyed[0], true);
+        keyed = this.queue.filter((q) => q.key !== undefined);
+      }
+      if (this.disposed) {
+        opts.onDropped?.();
+        return { cancel: () => false };
+      }
     }
     this.queue.push(entry);
     this.noteDepth();
@@ -189,16 +211,9 @@ export class SendPacer {
     return this.handle(entry);
   }
 
-  /** Hold everything after this until `ms` after the line before it went. */
-  barrier(ms: number): void {
-    if (this.disposed) return;
-    this.queue.push({ barrier: { ms, at: this.now() } });
-    this.drain();
-  }
-
-  /** Items waiting (a barrier is not one). */
+  /** Items waiting. */
   get pending(): number {
-    return this.queue.reduce((n, q) => n + (q.barrier ? 0 : 1), 0);
+    return this.queue.length;
   }
 
   /** Try again: the connection came (back) up. */
@@ -211,16 +226,17 @@ export class SendPacer {
   drop(): void {
     const dropped = this.queue.splice(0);
     this.since = 0;
-    this.lastSentAt = 0;
     this.clearTimer();
     this.noteDepth();
-    for (const entry of dropped) entry.onDropped?.();
+    const told = new Set<Entry>();
+    for (const entry of dropped) this.tellDropped(entry, told);
   }
 
-  /** The connection is gone for good. */
+  /** The connection is gone for good. Set before the items are told, so a
+   *  write from an onDropped is dropped too, not sent. */
   dispose(): void {
-    this.drop();
     this.disposed = true;
+    this.drop();
     if (this.depthReport) clearImmediate(this.depthReport);
     this.depthReport = null;
   }
@@ -229,13 +245,39 @@ export class SendPacer {
     return { cancel: () => this.remove(entry, false) };
   }
 
+  // The item and everything it expanded to.
   private remove(entry: Entry, dropped: boolean): boolean {
-    const at = this.queue.indexOf(entry);
-    if (at === -1) return false;
-    this.queue.splice(at, 1);
+    const taken: Entry[] = [];
+    for (let i = this.queue.length - 1; i >= 0; i--) {
+      const q = this.queue[i];
+      if (q === entry || this.rootOf(q) === entry) taken.unshift(...this.queue.splice(i, 1));
+    }
+    if (taken.length === 0) return false;
     this.noteDepth();
-    if (dropped) entry.onDropped?.();
+    if (dropped) {
+      const told = new Set<Entry>();
+      for (const q of taken) this.tellDropped(q, told);
+    }
     return true;
+  }
+
+  private rootOf(entry: Entry): Entry {
+    let root = entry;
+    while (root.origin) root = root.origin;
+    return root;
+  }
+
+  // A line's own onDropped, and the item it came from's, once each.
+  private tellDropped(entry: Entry, told: Set<Entry>): void {
+    if (!told.has(entry)) {
+      told.add(entry);
+      entry.onDropped?.();
+    }
+    for (let o = entry.origin; o; o = o.origin) {
+      if (told.has(o)) continue;
+      told.add(o);
+      o.onDropped?.();
+    }
   }
 
   private drain(): void {
@@ -246,22 +288,12 @@ export class SendPacer {
         // Held until the connection is back; resume() picks it up.
         if (!this.opts.ready()) return;
         const head = this.queue[0];
-        const now = this.now();
-        if (head.barrier) {
-          const wait = Math.max(this.lastSentAt, head.barrier.at) + head.barrier.ms - now;
-          if (wait > 0) {
-            this.schedule(wait);
-            return;
-          }
-          this.queue.shift();
-          continue;
-        }
         // The line goes when its own charge still fits under the budget: the
         // server's clock never runs more than BURST_BUDGET_MS ahead of real
         // time by our count. A thunk is run once the shortest line would fit,
         // so what it builds is as fresh as it can be; a unit is admitted on
         // its first line and goes whole.
-        const ahead = this.since - now;
+        const ahead = this.since - this.now();
         const cost = head.build ? BASE_COST_MS : costOf(head.unit ? head.unit[0] : head.text!);
         const over = ahead + cost - BURST_BUDGET_MS;
         if (over > 0) {
@@ -274,6 +306,7 @@ export class SendPacer {
           continue;
         }
         this.noteDepth();
+        if (head.live && !head.live()) continue;
         if (head.unit) this.sendUnit(head);
         else this.sendNow(head, true);
       }
@@ -282,40 +315,42 @@ export class SendPacer {
     }
   }
 
-  // A thunk's lines take its place at the head, each paced on its own. The
+  // A thunk's items take its place at the head, each paced on its own. The
   // item's own onSent follows its last line; its onDropped fires once if any
-  // of them is dropped.
+  // of them is dropped (tellDropped); cancel() takes them all (remove).
   private expand(entry: Entry): void {
-    let lines: Line[];
+    let built: Built;
     try {
-      lines = toLines(entry.build!());
+      built = entry.build!();
     } catch (err) {
       console.warn('[irc] send: an item failed to build and was skipped:', err);
-      lines = [];
+      built = null;
     }
-    if (lines.length === 0) {
+    const items = built === null ? [] : Array.isArray(built) ? built : [built];
+    if (items.length === 0) {
       this.noteDepth();
       return;
     }
-    let told = false;
-    const onDropped = entry.onDropped
-      ? () => {
-          if (told) return;
-          told = true;
-          entry.onDropped!();
-        }
-      : undefined;
-    const expanded: Entry[] = lines.map((line, i) => ({
-      text: line.text,
-      onSent:
-        i === lines.length - 1 && entry.onSent
-          ? (at) => {
-              line.onSent?.(at);
-              entry.onSent!(at);
-            }
-          : line.onSent,
-      onDropped,
-    }));
+    const last = items.length - 1;
+    const expanded: Entry[] = items.map((item, i) => {
+      const own: Entry =
+        typeof item === 'function'
+          ? { build: item }
+          : typeof item === 'string'
+            ? { text: item }
+            : typeof item.text === 'function'
+              ? { build: lazyLine(item), onDropped: item.onDropped }
+              : { text: item.text, onSent: item.onSent, onDropped: item.onDropped };
+      own.origin = entry;
+      if (i === last && entry.onSent) {
+        const sent = own.onSent;
+        own.onSent = (at) => {
+          sent?.(at);
+          entry.onSent!(at);
+        };
+      }
+      return own;
+    });
     this.queue.unshift(...expanded);
     this.noteDepth();
   }
@@ -331,15 +366,21 @@ export class SendPacer {
       this.sendNow(entry, false);
       return;
     }
-    let lines: Line[];
+    let built: Built;
     try {
-      lines = toLines(entry.build());
+      built = entry.build();
     } catch (err) {
       console.warn('[irc] send: an item failed to build and was skipped:', err);
       return;
     }
-    for (const line of lines) this.sendNow({ text: line.text, onSent: line.onSent }, false);
-    if (lines.length) entry.onSent?.(this.now());
+    const items = built === null ? [] : Array.isArray(built) ? built : [built];
+    for (const item of items) {
+      if (typeof item === 'function') this.sendAtOnce({ build: item });
+      else if (typeof item === 'string') this.sendNow({ text: item }, false);
+      else if (typeof item.text === 'function') this.sendAtOnce({ build: lazyLine(item) });
+      else this.sendNow({ text: item.text, onSent: item.onSent }, false);
+    }
+    if (items.length) entry.onSent?.(this.now());
   }
 
   private sendNow(entry: Entry, charge: boolean): void {
@@ -363,7 +404,6 @@ export class SendPacer {
 
   private charge(cost: number, at: number): void {
     this.since = Math.max(this.since, at) + cost;
-    this.lastSentAt = at;
   }
 
   private schedule(wait: number): void {

@@ -33,6 +33,7 @@ function setup(
     write: (line, onSent) => {
       writes.push(typeof line === 'function' ? line() : line);
       onSent?.(performance.now());
+      return { cancel: () => false };
     },
     canSend: () => state.connected,
     fold: (name) => name.toLowerCase(),
@@ -60,6 +61,40 @@ function fakeTimers(): void {
     toFake: ['setTimeout', 'clearTimeout', 'setImmediate', 'clearImmediate', 'Date'],
   });
 }
+
+describe('a client that detaches', () => {
+  it('takes its query out of the queue before it has gone, and frees what waited on it', () => {
+    // The connection holds the line: nothing goes until told.
+    const held: Array<() => void> = [];
+    const writes: string[] = [];
+    const router = new ReplyRouter({
+      write: (line, onSent) => {
+        const text = typeof line === 'function' ? line() : line;
+        const h = () => {
+          writes.push(text);
+          onSent?.(performance.now());
+        };
+        held.push(h);
+        return { cancel: () => held.splice(held.indexOf(h), 1).length > 0 };
+      },
+      canSend: () => true,
+      fold: (name) => name.toLowerCase(),
+      isJoined: () => true,
+      ownNick: () => 'me',
+      listModes: () => new Set('beIq'.split('')),
+      prefixModes: () => new Set(['o', 'v']),
+    });
+    const gone = new Client();
+    const stays = new Client();
+    router.send(gone, 'WHO #c');
+    router.send(stays, 'WHO #d');
+    expect(held).toHaveLength(1); // the second WHO waits for the first
+    router.dropClient(gone);
+    expect(held).toHaveLength(1);
+    held[0]();
+    expect(writes).toEqual(['WHO #d']);
+  });
+});
 
 describe('what waits its turn', () => {
   it('holds a second WHO until the first ends', () => {
