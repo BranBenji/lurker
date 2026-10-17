@@ -15,9 +15,6 @@ import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import { FakeIrcd } from '../test-utils/fakeIrcd.js';
 
-// These send several long lines through a real connection; the outbound pacer
-// (#1149) would hold each back for seconds.
-process.env.LURKER_SEND_PACING = '0';
 import { until } from '../test-utils/until.js';
 
 type Ev = Record<string, unknown>;

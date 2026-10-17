@@ -1,0 +1,379 @@
+// Copyright (c) 2026 Brad Root
+// SPDX-License-Identifier: MPL-2.0
+
+// The outbound queue on a connection (#1149): what each timer that waits on a
+// reply does when its line waits behind a backlog, and what a line told it was
+// sent does when its socket goes. Each case builds a backlog (five short lines
+// fill the 10 s budget; the next waits 2 s) and then does the thing.
+
+// MUST be first — redirect DATABASE_PATH before the static imports below open
+// the real data/lurker.db.
+import '../test-utils/isolateDb.js';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
+import { IrcConnection } from './ircConnection.js';
+import type { ReplyClient } from './replyRouter.js';
+import { e2eManager } from './e2e/manager.js';
+import { createUser } from '../db/users.js';
+import { createNetwork } from '../db/networks.js';
+
+beforeAll(() => {
+  createUser('queue-alice'); // id 1
+  createNetwork(1, { name: 'n', host: 'h', port: 6697, tls: true, nick: 'alice' }); // network id 1
+});
+
+// Pacing is off for the suite (test-utils/setup.ts); this file is about it.
+beforeEach(() => {
+  process.env.LURKER_SEND_PACING = '1';
+  // The queue keeps time on the monotonic clock.
+  vi.useFakeTimers({
+    toFake: ['setTimeout', 'clearTimeout', 'setImmediate', 'clearImmediate', 'Date', 'performance'],
+  });
+});
+afterEach(() => {
+  process.env.LURKER_SEND_PACING = '0';
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+function makeConn(): IrcConnection {
+  return new IrcConnection({
+    network: {
+      client_cert: null,
+      client_key: null,
+      proxy_enabled: 0,
+      proxy_type: null,
+      proxy_host: null,
+      proxy_port: null,
+      proxy_username: null,
+      proxy_password: null,
+      id: 1,
+      user_id: 1,
+      name: 'n',
+      host: 'irc.example.test',
+      port: 6697,
+      tls: 1,
+      trusted_certificates: 1,
+      nick: 'alice',
+      username: null,
+      realname: null,
+      server_password: null,
+      autoconnect: 1,
+      sasl_account: null,
+      sasl_password: null,
+      connect_commands: null,
+      position: 0,
+      casemapping: null,
+      created_at: new Date().toISOString(),
+    },
+    onEvent: () => {},
+  });
+}
+
+interface Wire {
+  conn: IrcConnection;
+  lines: string[];
+  published: Array<Record<string, unknown>>;
+  /** The connection's registered flag, as a link drop and a 001 set it. */
+  registered(on: boolean): void;
+}
+
+// A registered connection with its wire captured, and short lines sent to
+// fill the 10 s budget, so the next line waits 2 s. `join` names channels we
+// are in; our own JOIN sends a line or two, which count toward the budget.
+function backlog(opts: { state?: string; join?: string[]; peers?: string[] } = {}): Wire {
+  const conn = makeConn();
+  conn.state = opts.state ?? 'connected';
+  const lines: string[] = [];
+  const published: Array<Record<string, unknown>> = [];
+  conn.publish = (event: Record<string, unknown>) => {
+    published.push(event);
+    return undefined;
+  };
+  const c = conn.client.connection as unknown as {
+    connected: boolean;
+    registered: number | false;
+    transport: unknown;
+  };
+  c.connected = true;
+  c.registered = Date.now();
+  c.transport = { writeLine: (line: string) => lines.push(line) };
+  if (opts.join) {
+    conn.client.user.nick = 'alice';
+    for (const channel of opts.join) {
+      conn.client.emit('join', { channel, nick: 'alice' });
+      for (const peer of opts.peers ?? []) {
+        conn.client.emit('join', {
+          channel,
+          nick: peer,
+          ident: peer[0],
+          hostname: `${peer[0]}.host`,
+        });
+      }
+    }
+  }
+  expect(lines.length).toBeLessThanOrEqual(5);
+  for (let i = lines.length; i < 5; i++) conn.say('#fill', `line ${i}`);
+  expect(lines).toHaveLength(5);
+  return {
+    conn,
+    lines,
+    published,
+    registered: (on) => {
+      c.registered = on ? Date.now() : false;
+    },
+  };
+}
+
+describe('resume on registration', () => {
+  it('sends the held lines once the framework has marked the connection registered', () => {
+    const { conn, lines, registered } = backlog();
+    conn.say('#c', 'held');
+    // The link drops before its turn: the line waits for the next
+    // registration, which the real 001 path delivers in the framework's
+    // order ('all' first, then the listener that sets `registered`).
+    registered(false);
+    vi.advanceTimersByTime(2000);
+    expect(lines).toHaveLength(5);
+    // What the framework's own 'registered' listener reads on a 001.
+    (conn.client as unknown as { options: unknown }).options = { ping_interval: 0 };
+    conn.client.connection.addReadBuffer(':irc.example.test 001 alice :Welcome');
+    expect(lines).toContain('PRIVMSG #c :held');
+    conn.dispose();
+  });
+});
+
+describe('what is made at send time', () => {
+  it('addresses a REKEY to the nick the peer has when it goes', () => {
+    const { conn, lines } = backlog({ join: ['#x'], peers: ['carol'] });
+    vi.spyOn(e2eManager, 'takePendingRekeySends').mockReturnValue([
+      { channel: '#x', targetHandle: 'c@c.host', body: 'RPEE2E REKEY v=1 c=#x' },
+    ]);
+    conn.flushE2eRekeys();
+    conn.client.emit('nick', { nick: 'carol', new_nick: 'carol2', ident: 'c', hostname: 'c.host' });
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('NOTICE carol2 :\u0001RPEE2E REKEY v=1 c=#x\u0001');
+    conn.dispose();
+  });
+
+  it('encrypts an E2E message when its turn comes, REKEYs first, and notes each chunk as it goes', () => {
+    const { conn, lines } = backlog({ join: ['#x'], peers: ['carol'] });
+    const encrypt = vi
+      .spyOn(e2eManager, 'encryptOutgoing')
+      .mockReturnValue({ kind: 'encrypted', lines: ['+RPE2E01 one', '+RPE2E01 two'] });
+    vi.spyOn(e2eManager, 'takePendingRekeySends').mockReturnValue([
+      { channel: '#x', targetHandle: 'c@c.host', body: 'RPEE2E REKEY v=1 c=#x' },
+    ]);
+    const sent: string[] = [];
+    conn.sayEncrypted('#x', 'secret', { sent: (t) => sent.push(t) });
+    expect(encrypt).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(2000);
+    expect(encrypt).toHaveBeenCalledOnce();
+    expect(lines.slice(5)).toEqual(['NOTICE carol :\u0001RPEE2E REKEY v=1 c=#x\u0001']);
+    expect(conn.consumeSentCiphertext('+RPE2E01 one')).toBe(false);
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('PRIVMSG #x :+RPE2E01 one');
+    expect(conn.consumeSentCiphertext('+RPE2E01 one')).toBe(true);
+    expect(sent).toEqual([]);
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('PRIVMSG #x :+RPE2E01 two');
+    expect(sent).toEqual(['secret']);
+    conn.dispose();
+  });
+
+  it('reports an E2E message not sent when encryption is off by the time it goes', () => {
+    const { conn, lines, published } = backlog();
+    vi.spyOn(e2eManager, 'encryptOutgoing').mockReturnValue({ kind: 'disabled' });
+    vi.spyOn(e2eManager, 'takePendingRekeySends').mockReturnValue([]);
+    conn.sayEncrypted('#x', 'secret');
+    vi.advanceTimersByTime(2000);
+    expect(lines).toHaveLength(5);
+    expect(published.at(-1)).toMatchObject({
+      type: 'error',
+      target: '#x',
+      text: 'not sent (encryption is off): secret',
+    });
+    conn.dispose();
+  });
+});
+
+describe('every timer starts at send', () => {
+  function client(): ReplyClient & { aborted: string[]; replies: string[] } {
+    return {
+      aborted: [],
+      replies: [],
+      replyFromCache() {},
+      replyAborted(numeric) {
+        this.aborted.push(numeric);
+      },
+      onReply(command) {
+        this.replies.push(command);
+      },
+    };
+  }
+
+  it("a query's timeout, and its claim on replies, count from when it went", () => {
+    const { conn, lines } = backlog();
+    const asker = client();
+    conn.raw('WHOIS bob', asker);
+    expect(lines).toHaveLength(5);
+    // A 311 for bob before the WHOIS has gone is nobody's: not this query's.
+    conn.client.connection.addReadBuffer(':irc.example.test 311 alice bob b b.host * :Bob');
+    expect(asker.replies).toEqual([]);
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('WHOIS bob');
+    conn.client.connection.addReadBuffer(':irc.example.test 311 alice bob b b.host * :Bob');
+    expect(asker.replies).toEqual(['311']);
+    // 30 s of silence from the send, not from the write.
+    vi.advanceTimersByTime(29_000);
+    expect(asker.aborted).toEqual([]);
+    vi.advanceTimersByTime(1001);
+    expect(asker.aborted).toEqual(['318']);
+    conn.dispose();
+  });
+
+  it('a WAIT between connect commands holds from when the line before it went', () => {
+    const { conn, lines } = backlog();
+    conn.network.connect_commands = 'PRIVMSG NickServ :IDENTIFY pw\nWAIT 5\nJOIN #a';
+    conn.runConnectCommands();
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('PRIVMSG NickServ :IDENTIFY pw');
+    vi.advanceTimersByTime(4999);
+    expect(lines.at(-1)).toBe('PRIVMSG NickServ :IDENTIFY pw');
+    vi.advanceTimersByTime(1);
+    expect(lines.at(-1)).toBe('JOIN #a');
+    conn.dispose();
+  });
+
+  it("a restore step's deadline and quiet window count from its last request", () => {
+    process.env.LURKER_RESTORE_STEP_DEADLINE_MS = '50';
+    process.env.LURKER_RESTORE_QUIET_MS = '10000';
+    try {
+      const { conn, lines } = backlog({ join: ['#a', '#b'] });
+      const priv = conn as unknown as {
+        onEnginePhase(phase: string, info: Record<string, unknown>): void;
+        restoreStep: { key: string } | null;
+        restoreQuiet: Map<string, { until: number }>;
+      };
+      priv.onEnginePhase('restored', {});
+      // The umode MODE, the AWAY, then #a's three requests, each waiting its
+      // turn.
+      expect(lines).toHaveLength(5);
+      while (lines.at(-1) !== 'MODE #a') vi.advanceTimersByTime(2000);
+      expect(lines.slice(-3)).toEqual(['NAMES #a', 'TOPIC #a', 'MODE #a']);
+      // The deadline has not run from the start of the step: it is #a's still.
+      expect(priv.restoreStep?.key).toBe('#a');
+      expect(priv.restoreQuiet.get('#a')?.until).toBe(Date.now() + 10_000);
+      vi.advanceTimersByTime(50);
+      expect(priv.restoreStep?.key).toBe('#b');
+      conn.dispose();
+    } finally {
+      delete process.env.LURKER_RESTORE_STEP_DEADLINE_MS;
+      delete process.env.LURKER_RESTORE_QUIET_MS;
+    }
+  });
+
+  it('a send is attributed a rejection only once it has gone', () => {
+    const { conn, lines, published } = backlog();
+    conn.say('bob', 'hi');
+    expect(conn.recentUserSend('bob')).toBe(false);
+    conn.client.emit('irc error', { error: 'cannot_send_to_user', nick: 'bob', reason: 'nope' });
+    expect(published.some((e) => e.type === 'error' && e.target === 'bob')).toBe(false);
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('PRIVMSG bob :hi');
+    expect(conn.recentUserSend('bob')).toBe(true);
+    conn.client.emit('irc error', { error: 'cannot_send_to_user', nick: 'bob', reason: 'nope' });
+    expect(published.some((e) => e.type === 'error' && e.target === 'bob')).toBe(true);
+    conn.dispose();
+  });
+
+  it("a command's claim on a 401 is the wire's order, not the queue's", () => {
+    const { conn, lines, published } = backlog();
+    conn.upsertChannel('#anime');
+    conn.say('bob', 'you there?');
+    conn.raw('KICK #anime bob');
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('PRIVMSG bob :you there?');
+    // The message went, the kick is still queued: a 401 now answers the message.
+    conn.client.emit('irc error', { error: 'no_such_nick', nick: 'bob' });
+    expect(published.some((e) => e.type === 'error' && e.target === '#anime')).toBe(false);
+    conn.dispose();
+  });
+});
+
+describe('units', () => {
+  it('sends a draft/multiline batch back to back and charges for it after', () => {
+    const { conn, lines } = backlog();
+    vi.spyOn(conn, 'multilineLimits').mockReturnValue({ maxBytes: 4096, maxLines: 100 });
+    conn.sendMultiline('#c', 'a\nb\nc');
+    conn.say('#c', 'after');
+    vi.advanceTimersByTime(2000);
+    const batch = lines.slice(5);
+    expect(batch[0]).toMatch(/^BATCH \+\w+ draft\/multiline #c$/);
+    expect(batch.slice(1, 4).map((l) => l.replace(/^@batch=\w+ /, ''))).toEqual([
+      'PRIVMSG #c :a',
+      'PRIVMSG #c :b',
+      'PRIVMSG #c :c',
+    ]);
+    expect(batch[4]).toMatch(/^BATCH -\w+$/);
+    expect(batch).toHaveLength(5);
+    // Five lines, 10 s: the line after waits for all of it.
+    vi.advanceTimersByTime(9999);
+    expect(lines).toHaveLength(10);
+    vi.advanceTimersByTime(1);
+    expect(lines.at(-1)).toBe('PRIVMSG #c :after');
+    conn.dispose();
+  });
+});
+
+describe('what the user sees', () => {
+  it('reports a line dropped with its socket in the buffer it was for', () => {
+    const { conn, published } = backlog();
+    conn.say('#c', 'going');
+    conn.action('bob', 'waves');
+    conn.client.emit('close');
+    expect(published.filter((e) => e.type === 'error')).toEqual([
+      expect.objectContaining({ target: '#c', text: 'not sent (connection dropped): going' }),
+      expect.objectContaining({ target: 'bob', text: 'not sent (connection dropped): /me waves' }),
+    ]);
+    conn.dispose();
+  });
+
+  it('publishes the queue depth as it changes, and carries it on the snapshot', () => {
+    const { conn, published } = backlog();
+    conn.say('#c', 'one');
+    conn.say('#c', 'two');
+    vi.advanceTimersByTime(1);
+    expect(published.at(-1)).toMatchObject({ type: 'send-queue', waiting: 2 });
+    expect(conn.snapshot().sendQueueWaiting).toBe(2);
+    vi.advanceTimersByTime(2000);
+    expect(published.at(-1)).toMatchObject({ type: 'send-queue', waiting: 1 });
+    vi.advanceTimersByTime(2000);
+    expect(published.at(-1)).toMatchObject({ type: 'send-queue', waiting: 0 });
+    expect(conn.snapshot().sendQueueWaiting).toBe(0);
+    conn.dispose();
+  });
+});
+
+describe('handshake replies', () => {
+  it('caps the replies waiting, dropping the oldest, and never a REKEY', () => {
+    const peers = Array.from({ length: 25 }, (_, i) => `p${i}`);
+    const { conn, lines } = backlog({ join: ['#x'], peers });
+    for (let i = 0; i < 25; i++)
+      conn.sendHandshakeReply(`peer${i}`, `RPEE2E KEYRSP v=1 c=#x n=${i}`);
+    vi.spyOn(e2eManager, 'takePendingRekeySends').mockReturnValue(
+      peers.map((p) => ({
+        channel: '#x',
+        targetHandle: `${p[0]}@${p[0]}.host`,
+        body: `RPEE2E REKEY v=1 c=#x n=${p}`,
+      })),
+    );
+    conn.flushE2eRekeys();
+    vi.advanceTimersByTime(2000 * 60);
+    const replies = lines.filter((l) => l.includes('KEYRSP'));
+    const rekeys = lines.filter((l) => l.includes('REKEY'));
+    expect(replies).toHaveLength(20);
+    expect(replies[0]).toContain('peer5 ');
+    expect(rekeys).toHaveLength(25);
+    conn.dispose();
+  });
+});

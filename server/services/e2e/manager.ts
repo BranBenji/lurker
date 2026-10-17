@@ -815,6 +815,27 @@ export class E2eManager {
 
   // ─── encrypt / decrypt ───────────────────────────────────────────────────────
 
+  /** What encryptOutgoing would say about `plaintext` for `channel` before any
+   *  key is touched: `disabled` (send plaintext), `ok`, or `error` with why (a
+   *  message too long to chunk). The send path checks this when the message is
+   *  queued and encrypts when it goes (#1149), so the user hears "not sent" at
+   *  once for what can be known at once. */
+  checkOutgoing(
+    userId: number,
+    networkId: number,
+    channel: string,
+    plaintext: string,
+  ): { kind: 'disabled' } | { kind: 'ok' } | { kind: 'error'; reason: string } {
+    const cfg = keyring.getChannelConfig(userId, networkId, channel);
+    if (!cfg || !cfg.enabled) return { kind: 'disabled' };
+    try {
+      splitPlaintext(plaintext);
+    } catch (e) {
+      return { kind: 'error', reason: (e as Error).message };
+    }
+    return { kind: 'ok' };
+  }
+
   /** Encrypt `plaintext` for `channel`. `disabled` means the caller may send
    *  plaintext; `error` means E2E is on but encryption failed — the caller must
    *  NOT fall back to plaintext (that would leak on an E2E channel). */

@@ -36,6 +36,7 @@ import { crc32Hex, crc32Update } from './dcc.js';
 import { setDccStorageLimit } from '../db/dccStorageLimits.js';
 import { forgetDccFile } from '../db/dccFiles.js';
 import { IrcConnection } from './ircConnection.js';
+import { stubCtcpRequest } from '../test-utils/ctcpStub.js';
 
 // Transfer rows reach the user's clients as `dcc-transfer` frames (#1084).
 const userFrame = vi.fn<(frame: Record<string, unknown>) => void>();
@@ -588,7 +589,7 @@ describe('arm-on-trigger + auto-accept', () => {
     const { conn } = harness();
     conn.client.say = vi.fn<(target: string, text: string) => void>();
     const resumeReq = vi.fn<(target: string, type: string, ...p: string[]) => void>();
-    conn.client.ctcpRequest = resumeReq;
+    stubCtcpRequest(conn, resumeReq);
 
     conn.say('bot', 'xdcc send #1');
     // Bot offers the full file; Lurker sees the partial and asks to resume.
@@ -649,7 +650,7 @@ describe('arm-on-trigger + auto-accept', () => {
       activeSender = sender;
       const { conn } = harness();
       conn.client.say = vi.fn<(target: string, text: string) => void>();
-      conn.client.ctcpRequest = vi.fn<(target: string, type: string, ...p: string[]) => void>();
+      stubCtcpRequest(conn, vi.fn<(target: string, type: string, ...p: string[]) => void>());
       conn.say('bot', 'xdcc send #1');
       conn.client.emit('ctcp request', {
         nick: 'bot',
@@ -695,7 +696,7 @@ describe('arm-on-trigger + auto-accept', () => {
       const { conn } = harness();
       conn.client.say = vi.fn<(target: string, text: string) => void>();
       const resumeReq = vi.fn<(target: string, type: string, ...p: string[]) => void>();
-      conn.client.ctcpRequest = resumeReq;
+      stubCtcpRequest(conn, resumeReq);
       const offer = (port: number, size: number) => {
         conn.say('bot', 'xdcc send #1');
         conn.client.emit('ctcp request', {
@@ -708,8 +709,79 @@ describe('arm-on-trigger + auto-accept', () => {
         const pending = listDccTransfers(1).find((t) => t.state === 'pending_approval');
         if (pending) conn.acceptPendingDcc(pending);
       };
-      return { resumeReq, offer, userDir: path.join(tmpDir, 'dcc-wire-alice') };
+      return { resumeReq, offer, userDir: path.join(tmpDir, 'dcc-wire-alice'), conn };
     }
+
+    // #1149: the RESUME waits its turn in the outbound queue, so the bot's
+    // 15 s to answer it run from when it went out, and a resume cancelled
+    // while it waited sends nothing.
+    it('gives the bot its 15 s from when the RESUME went out, and none for a cancelled one', () => {
+      const { resumeReq, offer, userDir, conn } = setup();
+      process.env.LURKER_SEND_PACING = '1';
+      vi.useFakeTimers({
+        toFake: [
+          'setTimeout',
+          'clearTimeout',
+          'setImmediate',
+          'clearImmediate',
+          'Date',
+          'performance',
+        ],
+      });
+      try {
+        // A registered connection, so lines queue; nothing reads its wire.
+        const c = conn.client.connection as unknown as {
+          connected: boolean;
+          registered: number | false;
+          transport: unknown;
+        };
+        c.connected = true;
+        c.registered = Date.now();
+        c.transport = { writeLine: () => {} };
+        fs.mkdirSync(userDir, { recursive: true });
+        const partialPath = path.join(userDir, 'show.mkv');
+        fs.writeFileSync(partialPath, makePayload(10_000));
+        const priorId = insertDccTransfer(1, {
+          network_id: 1,
+          peer_nick: 'bot',
+          filename: 'show.mkv',
+          advertised_size: 30_000,
+          state: 'requested',
+        });
+        markDccReceiving(priorId, {
+          filename: 'show.mkv',
+          advertised_size: 30_000,
+          destination_path: partialPath,
+          received_bytes: 10_000,
+        });
+        updateDccTransferState(priorId, 'failed', 'interrupted');
+        // Five short lines fill the 10 s budget; what follows waits 2 s each.
+        for (let i = 0; i < 5; i++) conn.say('#fill', `line ${i}`);
+        offer(50_001, 30_000); // the `xdcc send`, then the RESUME
+        const waiting = listDccTransfers(1).find((t) => t.state === 'receiving')!;
+        expect(resumeReq).not.toHaveBeenCalled();
+        vi.advanceTimersByTime(4000);
+        expect(resumeReq).toHaveBeenCalledTimes(1);
+        vi.advanceTimersByTime(14_999);
+        expect(listDccTransfers(1).find((t) => t.id === waiting.id)?.state).toBe('receiving');
+        vi.advanceTimersByTime(1);
+        expect(listDccTransfers(1).find((t) => t.id === waiting.id)).toMatchObject({
+          state: 'failed',
+          error: 'resume not accepted by sender',
+        });
+        // Cancelled before its turn: the RESUME never goes. The budget has
+        // decayed meanwhile, so fill it again first.
+        for (let i = 0; i < 5; i++) conn.say('#fill', `again ${i}`);
+        offer(50_001, 30_000);
+        const again = listDccTransfers(1).find((t) => t.state === 'receiving')!;
+        conn.cancelDcc(again.id);
+        vi.advanceTimersByTime(10_000);
+        expect(resumeReq).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+        process.env.LURKER_SEND_PACING = '0';
+      }
+    });
 
     it('leaves a file another receive is writing alone', async () => {
       const { resumeReq, offer, userDir } = setup();
@@ -812,7 +884,7 @@ describe('arm-on-trigger + auto-accept', () => {
     const { conn } = harness();
     conn.client.say = vi.fn<(target: string, text: string) => void>();
     const resumeReq = vi.fn<(target: string, type: string, ...p: string[]) => void>();
-    conn.client.ctcpRequest = resumeReq;
+    stubCtcpRequest(conn, resumeReq);
 
     conn.say('bot', 'xdcc send #1');
     // Bot offers the full file; Lurker sees the partial and asks to resume.
@@ -992,7 +1064,7 @@ describe('pending-offer actions (phase 2)', () => {
 
       const { conn } = harness();
       conn.client.say = vi.fn<(target: string, text: string) => void>();
-      conn.client.ctcpRequest = vi.fn<(target: string, type: string, ...p: string[]) => void>();
+      stubCtcpRequest(conn, vi.fn<(target: string, type: string, ...p: string[]) => void>());
 
       conn.say('bot', 'xdcc send #1'); // arm a fresh requested row
       conn.client.emit('ctcp request', {

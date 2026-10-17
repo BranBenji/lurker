@@ -2907,16 +2907,23 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       }
       const kind = isAction ? 'action' : msg.command === 'PRIVMSG' ? 'message' : 'notice';
       for (const chunk of chunks) this.registerEcho(kind, target, chunk);
+      // Each echo's clock starts when its line has gone, which behind a
+      // backlog is later than now (#1149); a line dropped with its socket has
+      // no echo coming.
+      const lineHooks = {
+        sent: (line: string) => this.stampEcho(kind, target, line),
+        dropped: (line: string) => this.forgetEcho(kind, target, line),
+      };
       if (isAction) {
-        ircManager.action(this.userId, this.networkId, target, body, { replyTo });
+        ircManager.action(this.userId, this.networkId, target, body, { replyTo, lineHooks });
       } else if (msg.command === 'PRIVMSG') {
         // On an E2E channel the self event carries the full body as ONE event
         // (not per wire chunk), so register the whole text too when it split.
         // The unmatched leftover key expires harmlessly (see pendingEcho).
         if (chunks.length > 1) this.registerEcho('message', target, text);
-        ircManager.send(this.userId, this.networkId, target, text, { replyTo });
+        ircManager.send(this.userId, this.networkId, target, text, { replyTo, lineHooks });
       } else {
-        ircManager.notice(this.userId, this.networkId, target, text);
+        ircManager.notice(this.userId, this.networkId, target, text, { lineHooks });
       }
     }
   }
@@ -2935,16 +2942,30 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     return findReplyParent(this.networkId, bufferId, msgid)?.id;
   }
 
+  // `at` is 0 until the line has gone (stampEcho): the 30 s window counts
+  // from the wire, and a line still queued is never pruned.
   private registerEcho(type: string, target: string, text: string): void {
     this.prunePendingEcho();
-    this.pendingEcho.push({ key: echoKey(type, target, text), at: Date.now() });
+    this.pendingEcho.push({ key: echoKey(type, target, text), at: 0 });
     if (this.pendingEcho.length > 500) this.pendingEcho.splice(0, this.pendingEcho.length - 500);
+  }
+
+  private stampEcho(type: string, target: string, text: string): void {
+    const key = echoKey(type, target, text);
+    const entry = this.pendingEcho.find((e) => e.key === key && e.at === 0);
+    if (entry) entry.at = Date.now();
+  }
+
+  private forgetEcho(type: string, target: string, text: string): void {
+    const key = echoKey(type, target, text);
+    const idx = this.pendingEcho.findIndex((e) => e.key === key && e.at === 0);
+    if (idx !== -1) this.pendingEcho.splice(idx, 1);
   }
 
   private prunePendingEcho(): void {
     const cutoff = Date.now() - 30_000;
-    if (this.pendingEcho.length && this.pendingEcho[0].at < cutoff) {
-      this.pendingEcho = this.pendingEcho.filter((e) => e.at >= cutoff);
+    if (this.pendingEcho.some((e) => e.at !== 0 && e.at < cutoff)) {
+      this.pendingEcho = this.pendingEcho.filter((e) => e.at === 0 || e.at >= cutoff);
     }
   }
 

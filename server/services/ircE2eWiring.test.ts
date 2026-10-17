@@ -13,7 +13,7 @@
 // MUST be first — redirect DATABASE_PATH before the static imports below open
 // the real data/lurker.db.
 import '../test-utils/isolateDb.js';
-import { describe, it, expect, vi, beforeAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { IrcConnection } from './ircConnection.js';
 import ircManager from './ircManager.js';
 import { e2eManager } from './e2e/manager.js';
@@ -36,9 +36,11 @@ beforeAll(() => {
   createNetwork(2, { name: 'n', host: 'h', port: 6697, tls: true, nick: 'bob' }); // network id 2
 });
 
-// Handshakes go out through the connection's pacer (#1149), not client.notice:
-// catch them at the transport, as (target, text) for the assertions below.
-function captureNotices(conn: IrcConnection, notice: (target: string, text: string) => void): void {
+// Every line goes out through the connection's queue (#1149), not
+// client.notice or client.say: catch them at the transport of a connection
+// that reads as registered. Returns every line written, in order.
+function captureWire(conn: IrcConnection, onLine?: (line: string) => void): string[] {
+  const lines: string[] = [];
   const c = conn.client.connection as unknown as {
     connected: boolean;
     registered: number | false;
@@ -48,10 +50,19 @@ function captureNotices(conn: IrcConnection, notice: (target: string, text: stri
   c.registered = Date.now();
   c.transport = {
     writeLine: (line: string) => {
-      const m = /^NOTICE (\S+) :([\s\S]*)$/.exec(line);
-      if (m) notice(m[1], m[2]);
+      lines.push(line);
+      onLine?.(line);
     },
   };
+  return lines;
+}
+
+// Handshakes, as (target, text) for the assertions below.
+function captureNotices(conn: IrcConnection, notice: (target: string, text: string) => void): void {
+  captureWire(conn, (line) => {
+    const m = /^NOTICE (\S+) :([\s\S]*)$/.exec(line);
+    if (m) notice(m[1], m[2]);
+  });
 }
 
 function makeConn(): IrcConnection {
@@ -90,32 +101,24 @@ function makeConn(): IrcConnection {
 
 describe('outbound encrypt (ircManager.send)', () => {
   it('puts +RPE2E01 chunks on the wire but publishes the plaintext with an e2e flag', () => {
-    const say = vi.fn<(target: string, text: string) => void>();
+    // A real connection with its wire captured: the message is encrypted when
+    // its turn in the outbound queue comes (sayEncrypted, #1149), which with
+    // nothing ahead of it is at once.
+    const conn = makeConn();
+    conn.state = 'connected'; // the writable gate (#809) refuses anything else
+    const wire = captureWire(conn);
     const publish = vi.fn<(event: unknown) => void>();
-    const fakeConn = {
-      say,
-      publish,
-      client: { user: { nick: 'alice' } },
-      supportsMultiline: () => false,
-      echoActive: () => false,
-      state: 'connected', // the writable gate (#809) refuses anything else
-      noteSentCiphertext: () => {},
-      flushE2eRekeys: () => {},
-      // The send path splits through the connection's line budget (#1043).
-      sayChunks: (_command: string, _target: string, text: string) => splitSay(text),
-      actionChunks: (_target: string, text: string) => splitAction(text),
-    } as unknown as IrcConnection;
-    vi.spyOn(ircManager, 'getConnection').mockReturnValue(fakeConn);
+    conn.publish = publish;
+    vi.spyOn(ircManager, 'getConnection').mockReturnValue(conn);
     e2eManager.setChannelConfig(1, 1, '#enc', true, 'normal');
 
     const ok = ircManager.send(1, 1, '#enc', 'hello world');
     expect(ok).toBe(true);
 
     // Every wire line is ciphertext, never the cleartext.
-    expect(say).toHaveBeenCalled();
-    for (const [target, line] of say.mock.calls) {
-      expect(target).toBe('#enc');
-      expect(line.startsWith(WIRE)).toBe(true);
+    expect(wire.length).toBeGreaterThan(0);
+    for (const line of wire) {
+      expect(line.startsWith(`PRIVMSG #enc :${WIRE}`)).toBe(true);
       expect(line).not.toContain('hello world');
     }
     // The sender sees exactly one readable bubble, flagged encrypted.
@@ -152,8 +155,9 @@ describe('outbound encrypt (ircManager.send)', () => {
 
     ircManager.send(1, 1, '#plain', 'hello world');
 
-    // The third argument is a reply's tags — none here.
-    expect(say).toHaveBeenCalledWith('#plain', 'hello world', null);
+    // The third argument is a reply's tags — none here; the fourth, the
+    // sender's line hooks (#1149).
+    expect(say).toHaveBeenCalledWith('#plain', 'hello world', null, undefined);
     expect(publish).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'message', target: '#plain', text: 'hello world' }),
     );
@@ -396,7 +400,7 @@ describe('egress refuses cleartext actions/notices on an E2E channel (#2)', () =
 
     ircManager.action(1, 1, '#plainchan', 'waves');
 
-    expect(action).toHaveBeenCalledWith('#plainchan', 'waves', null);
+    expect(action).toHaveBeenCalledWith('#plainchan', 'waves', null, undefined);
     vi.restoreAllMocks();
   });
 });
@@ -760,13 +764,21 @@ describe('/e2e forget + literal-handle resolution (departed peers)', () => {
 
 // #1149: handshake NOTICEs burst (every peer KEYREQs us at once; a rotation
 // REKEYs every recipient), and IRCnet kills a client for a handful of long
-// lines back to back. The first goes at once; after a line of 100+ bytes the
-// next waits 2 s + 1 s per 100 bytes, as irssi paces.
+// lines back to back. Each line is charged 2 s + 1 s per 100 bytes against a
+// 10 s budget (sendPacer.ts): two of these fit at once, the third waits.
 describe('handshake NOTICE pacing (#1149)', () => {
   // `NOTICE bob :\x01…\x01\r\n` around a 280-byte body is 296 bytes, and
   // `NOTICE carol :…` 298: 2 s + 2 s each.
   const LONG = `RPEE2E KEYRSP ${'x'.repeat(266)}`;
   const GAP_MS = 4000;
+
+  // Pacing is off for the suite (test-utils/setup.ts); these are about it.
+  beforeEach(() => {
+    process.env.LURKER_SEND_PACING = '1';
+  });
+  afterEach(() => {
+    process.env.LURKER_SEND_PACING = '0';
+  });
 
   function paced() {
     // The pacer keeps time on the monotonic clock.
@@ -778,20 +790,22 @@ describe('handshake NOTICE pacing (#1149)', () => {
     return { conn, notice };
   }
 
-  it('sends the first at once and spaces long lines by their length', () => {
+  it('sends what fits the budget at once and spaces the rest by their length', () => {
     const { conn, notice } = paced();
     try {
       conn.sendHandshakeReply('bob', LONG);
       conn.sendHandshakeReply('carol', LONG);
       conn.sendHandshakeReply('dave', LONG);
-      expect(notice.mock.calls.map((c) => c[0])).toEqual(['bob']);
-      vi.advanceTimersByTime(GAP_MS - 1);
-      expect(notice).toHaveBeenCalledTimes(1);
-      vi.advanceTimersByTime(1);
+      conn.sendHandshakeReply('erin', LONG);
       expect(notice.mock.calls.map((c) => c[0])).toEqual(['bob', 'carol']);
-      vi.advanceTimersByTime(GAP_MS);
+      // 8 s charged; dave's 4 s fits once 2 s have decayed, erin's 4 s later.
+      vi.advanceTimersByTime(1999);
+      expect(notice).toHaveBeenCalledTimes(2);
+      vi.advanceTimersByTime(1);
       expect(notice.mock.calls.map((c) => c[0])).toEqual(['bob', 'carol', 'dave']);
-      expect(notice.mock.calls[2][1]).toBe(`${CTCP}${LONG}${CTCP}`);
+      vi.advanceTimersByTime(GAP_MS);
+      expect(notice.mock.calls.map((c) => c[0])).toEqual(['bob', 'carol', 'dave', 'erin']);
+      expect(notice.mock.calls[3][1]).toBe(`${CTCP}${LONG}${CTCP}`);
     } finally {
       conn.dispose();
       vi.useRealTimers();
@@ -839,9 +853,10 @@ describe('handshake NOTICE pacing (#1149)', () => {
     try {
       conn.sendHandshakeReply('bob', LONG);
       conn.sendHandshakeReply('carol', LONG);
+      conn.sendHandshakeReply('dave', LONG);
       conn.client.emit('close');
-      vi.advanceTimersByTime(GAP_MS * 2);
-      expect(notice.mock.calls.map((c) => c[0])).toEqual(['bob']);
+      vi.advanceTimersByTime(GAP_MS * 3);
+      expect(notice.mock.calls.map((c) => c[0])).toEqual(['bob', 'carol']);
     } finally {
       conn.dispose();
       vi.useRealTimers();

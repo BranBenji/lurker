@@ -18,9 +18,6 @@ import { countHighlightsNewer, listMessages, searchMessages } from '../db/messag
 import type { MessageEvent } from '../db/messages.js';
 import { IrcConnection } from './ircConnection.js';
 
-// These send several long lines through a real connection; the outbound pacer
-// (#1149) would hold each back for seconds.
-process.env.LURKER_SEND_PACING = '0';
 import ignoreRulesService from './ignoreRulesService.js';
 import ircManager from './ircManager.js';
 import { maskToRuleInput } from './ignoreRuleInput.js';

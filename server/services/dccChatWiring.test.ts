@@ -24,6 +24,7 @@ import {
 } from '../db/userCapabilities.js';
 import { encodeDccAddress } from './dcc.js';
 import { IrcConnection } from './ircConnection.js';
+import { stubCtcpRequest } from '../test-utils/ctcpStub.js';
 import ircManager from './ircManager.js';
 import { activeDccListenerCount, resetDccListeners } from './dccListener.js';
 import { resetDccChatHosts } from './dccChatSessions.js';
@@ -110,7 +111,7 @@ function harness() {
   const raw = vi.fn<(line: string) => void>();
   const published: Array<Record<string, unknown>> = [];
   const ephemeral: Array<Record<string, unknown>> = [];
-  conn.client.ctcpRequest = ctcpRequest;
+  stubCtcpRequest(conn, ctcpRequest);
   conn.client.say = say;
   conn.raw = raw;
   conn.publish = (event: Record<string, unknown>) => {
@@ -1132,11 +1133,12 @@ describe('review: chats that outlive their connection', () => {
       return undefined;
     };
     conn.publishEphemeral = () => {};
-    conn.client.ctcpRequest = vi.fn<(t: string, type: string, ...p: string[]) => void>();
+    const ctcpRequest = vi.fn<(t: string, type: string, ...p: string[]) => void>();
+    stubCtcpRequest(conn, ctcpRequest);
     conn.client.say = vi.fn<(t: string, text: string) => void>();
     const notices = () =>
       published.filter((e) => e.type === 'notice').map((e) => String(e.text ?? ''));
-    return { conn, notices };
+    return { conn, notices, ctcpRequest };
   }
 
   async function liveChatThenDisconnect(h: ReturnType<typeof harness>) {
@@ -1179,7 +1181,7 @@ describe('review: chats that outlive their connection', () => {
 
     fresh.conn.offerDccChat('bob');
     expect(fresh.notices().at(-1)).toMatch(/Already in a DCC chat with bob/);
-    expect(fresh.conn.client.ctcpRequest).not.toHaveBeenCalled();
+    expect(fresh.ctcpRequest).not.toHaveBeenCalled();
     ircManager.dccChatClose(1, 1, 'bob');
   });
 

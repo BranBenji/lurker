@@ -28,8 +28,12 @@ function setup(
   const writes: string[] = [];
   const state = { connected: true };
   const joined = new Set((opts.joined ?? []).map((c) => c.toLowerCase()));
+  // A connection with nothing queued: the line goes at once (#1149).
   const router = new ReplyRouter({
-    write: (line) => writes.push(line),
+    write: (line, onSent) => {
+      writes.push(typeof line === 'function' ? line() : line);
+      onSent?.(performance.now());
+    },
     canSend: () => state.connected,
     fold: (name) => name.toLowerCase(),
     isJoined: (channel) => joined.has(channel.toLowerCase()),

@@ -3,6 +3,7 @@
 
 import { EventEmitter } from 'events';
 import { IrcConnection } from './ircConnection.js';
+import type { SendHooks } from './ircConnection.js';
 import {
   EngineLink,
   engineConfigured,
@@ -147,6 +148,22 @@ function awayStateFromRow(row: AwayStateRow | null) {
 function awayWhere(networks: Network[]): string {
   if (networks.length === 1) return ` on ${networks[0].name}`;
   return networks.length > 1 ? ` on ${networks.length} networks` : '';
+}
+
+/**
+ * What a sender wants to know about each wire line of a message (#1149): that
+ * it went (`sent`), or that it was dropped with its socket (`dropped`). The
+ * text is the line's body as the sender's chunking cut it — what the bouncer
+ * keys its echoes by — or, for an E2E message, the whole plaintext.
+ */
+export interface LineHooks {
+  sent?: (text: string) => void;
+  dropped?: (text: string) => void;
+}
+
+function lineHooks(hooks: LineHooks | undefined, text: string): SendHooks | undefined {
+  if (!hooks) return undefined;
+  return { onSent: () => hooks.sent?.(text), onDropped: () => hooks.dropped?.(text) };
 }
 
 // Plan the JOINs for auto-rejoin on (re)registration. A tight loop of single
@@ -907,7 +924,7 @@ class IrcManager extends EventEmitter {
     networkId: number,
     target: string,
     text: string,
-    opts: { replyTo?: number } = {},
+    opts: { replyTo?: number; lineHooks?: LineHooks } = {},
   ): boolean {
     // ⚠⚠ A `=nick` buffer is a DCC CHAT, not IRC. Its text rides a TCP socket we
     // own and must NEVER reach the wire as a target. This is THE chokepoint for
@@ -942,27 +959,22 @@ class IrcManager extends EventEmitter {
 
     // RPE2E: on an encryption-enabled channel, transmit ciphertext chunks on the
     // wire but show the SENDER the readable plaintext locally (one bubble, lock
-    // flag). encryptOutgoing handles its own chunking, so this path bypasses the
-    // multiline/splitSay plumbing entirely. 'disabled' falls through to plaintext;
-    // 'error' must NOT fall through (that would leak cleartext on an E2E channel).
+    // flag). The chunking is the manager's own, so this path bypasses the
+    // multiline/splitSay plumbing entirely. 'disabled' falls through to
+    // plaintext; 'error' must NOT fall through (that would leak cleartext on an
+    // E2E channel). Checked here, encrypted when the message's turn in the
+    // outbound queue comes (sayEncrypted, #1149): the timestamp in each chunk
+    // is read by the receiver against a window, and a message queued behind a
+    // backlog would otherwise be stamped before it was sent.
     if (isChannelContext(target)) {
-      const outcome = e2eManager.encryptOutgoing(userId, networkId, contextKey(target, ''), text);
-      e2eDbg(
-        () =>
-          `outbound ${target}: ${outcome.kind}` +
-          (outcome.kind === 'encrypted' ? ` (${outcome.lines.length} line(s))` : ''),
-      );
-      // A lazy rotation (from /e2e revoke or /e2e rotate) regenerates the key
-      // inside encryptOutgoing and queues a REKEY for each remaining trusted
-      // peer; ship them now, while this channel's membership is current. Safe on
-      // every outcome kind — the queue is empty unless a rotation actually fired.
-      conn.flushE2eRekeys();
-      if (outcome.kind === 'error') {
+      const check = e2eManager.checkOutgoing(userId, networkId, contextKey(target, ''), text);
+      e2eDbg(() => `outbound ${target}: ${check.kind}`);
+      if (check.kind === 'error') {
         conn.publishEphemeral({
           type: 'e2e',
           level: 'warn',
           target,
-          text: `not sent — encryption failed: ${outcome.reason}`,
+          text: `not sent — encryption failed: ${check.reason}`,
         });
         // Return false so the composer surfaces a send-failure toast and KEEPS
         // the text (vs clearing it), instead of relying only on the easily-missed
@@ -973,15 +985,8 @@ class IrcManager extends EventEmitter {
       }
       // No reply tags here: a tag is cleartext, and which line a message on an
       // encrypted channel answers is itself something the wire shouldn't show.
-      if (outcome.kind === 'encrypted') {
-        for (const line of outcome.lines) {
-          conn.say(target, line);
-          // Registered so the message handler can recognize (and drop) the
-          // echo-message reflection of our own ciphertext by content — see
-          // consumeSentCiphertext. Unconditional: echoActive() can flip
-          // between here and the echo's arrival.
-          conn.noteSentCiphertext(line);
-        }
+      if (check.kind === 'ok') {
+        conn.sayEncrypted(target, text, opts.lineHooks);
         conn.publish({
           type: 'message',
           target,
@@ -1017,7 +1022,7 @@ class IrcManager extends EventEmitter {
     const reply = this.replyFor(conn, userId, networkId, target, opts.replyTo);
     if (hasInteriorNewline(text) && conn.supportsMultiline()) {
       const nick = conn.currentNick;
-      const echoes = conn.sendMultiline(target, text, reply?.tags);
+      const echoes = conn.sendMultiline(target, text, reply?.tags, opts.lineHooks);
       if (!adoptEcho) {
         echoes.forEach((echo, i) => {
           conn.publish({
@@ -1036,7 +1041,7 @@ class IrcManager extends EventEmitter {
     const chunks = conn.sayChunks('PRIVMSG', target, text);
     chunks.forEach((chunk, i) => {
       const first = i === 0 && reply;
-      conn.say(target, chunk, first ? reply.tags : null);
+      conn.say(target, chunk, first ? reply.tags : null, lineHooks(opts.lineHooks, chunk));
       if (adoptEcho) return;
       conn.publish({
         type: 'message',
@@ -1097,7 +1102,7 @@ class IrcManager extends EventEmitter {
     networkId: number,
     target: string,
     text: string,
-    opts: { replyTo?: number } = {},
+    opts: { replyTo?: number; lineHooks?: LineHooks } = {},
   ): boolean {
     // ⚠⚠ A `=nick` buffer is a DCC CHAT, not IRC. Its text rides a TCP socket we
     // own and must NEVER reach the wire as a target. This is THE chokepoint for
@@ -1125,7 +1130,7 @@ class IrcManager extends EventEmitter {
     const chunks = conn.actionChunks(target, text);
     chunks.forEach((chunk, i) => {
       const first = i === 0 && reply;
-      conn.action(target, chunk, first ? reply.tags : null);
+      conn.action(target, chunk, first ? reply.tags : null, lineHooks(opts.lineHooks, chunk));
       if (adoptEcho) return;
       conn.publish({
         type: 'action',
@@ -1145,7 +1150,13 @@ class IrcManager extends EventEmitter {
   // own NOTICEs (the cap covers PRIVMSG/NOTICE/TAGMSG alike), so the local
   // self copy is published only where the cap is absent — exactly like
   // send/action, and splits the same way: NOTICE shares PRIVMSG's line budget.
-  notice(userId: number, networkId: number, target: string, text: string): boolean {
+  notice(
+    userId: number,
+    networkId: number,
+    target: string,
+    text: string,
+    opts: { lineHooks?: LineHooks } = {},
+  ): boolean {
     // ⚠⚠ A `=nick` buffer is a DCC CHAT, not IRC. Its text rides a TCP socket we
     // own and must NEVER reach the wire as a target. This is THE chokepoint for
     // that: the composer (wsHub `send`), the MCP `send_message` verb — which
@@ -1169,7 +1180,7 @@ class IrcManager extends EventEmitter {
     const adoptEcho = conn.echoActive();
     const chunks = conn.sayChunks('NOTICE', target, text);
     for (const chunk of chunks) {
-      conn.notice(target, chunk);
+      conn.notice(target, chunk, lineHooks(opts.lineHooks, chunk));
       if (adoptEcho) continue;
       conn.publish({
         type: 'notice',

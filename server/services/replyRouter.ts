@@ -52,9 +52,17 @@ export type Asker = 'lurker' | 'user' | ReplyClient;
  */
 export type ReplyOwner = Asker | 'unasked' | 'nobody';
 
+/** A line handed to the connection's queue, which can be taken back before it goes. */
+export interface Written {
+  cancel(): boolean;
+}
+
 export interface ReplyRouterOptions {
-  /** Put a line on the wire. */
-  write(line: string): void;
+  /**
+   * Put a line on the wire: now, or in its turn behind what waits (#1149). A
+   * function makes the line when it goes. `onSent` runs once it has gone.
+   */
+  write(line: string | (() => string), onSent?: (at: number) => void): Written | void;
   /** Whether a query can go out now. One that can't ends at once. */
   canSend(): boolean;
   /** The network's case fold, for channel names and nicks. */
@@ -237,6 +245,11 @@ interface Query extends Spec {
   timer: ReturnType<typeof setTimeout> | null;
   // Whether any of its reply has come. A 301 counts for a WHOIS only after that.
   started: boolean;
+  // Whether the line has gone. Until then no reply can be its, its timeout
+  // isn't running, and `written` takes it back out of the queue.
+  sent: boolean;
+  written: Written | null;
+  onSent: ((at: number) => void) | undefined;
 }
 
 interface Settle {
@@ -285,11 +298,13 @@ export class ReplyRouter {
   /**
    * Send a line for `asker`. A query may wait its turn, and `build`, if given,
    * makes the line when it goes out; anything else is written at once.
+   * `onSent` runs when the line has gone (#1149): a timer that waits on the
+   * reply starts there.
    */
-  send(asker: Asker, line: string, build?: () => string): void {
+  send(asker: Asker, line: string, build?: () => string, onSent?: (at: number) => void): void {
     const found = this.classify(line);
     if (!found) {
-      this.opts.write(line);
+      this.opts.write(line, onSent);
       return;
     }
     this.dispatch({
@@ -299,6 +314,9 @@ export class ReplyRouter {
       heardAt: 0,
       timer: null,
       started: false,
+      sent: false,
+      written: null,
+      onSent,
     });
   }
 
@@ -329,7 +347,13 @@ export class ReplyRouter {
     // The query waiting on the line after its error counts too: that 318 or 315
     // never came.
     const ended = [...(this.settle ? [this.settle.query] : []), ...this.wire, ...this.waiting];
-    for (const query of this.wire) if (query.timer) clearTimeout(query.timer);
+    for (const query of this.wire) {
+      if (query.timer) clearTimeout(query.timer);
+      // Still in the queue: it must not go out on the next socket, where its
+      // reply would be nobody's.
+      query.written?.cancel();
+      query.written = null;
+    }
     if (this.settle?.timer) clearTimeout(this.settle.timer);
     this.wire = [];
     this.waiting = [];
@@ -356,10 +380,17 @@ export class ReplyRouter {
       this.abort(query);
       return;
     }
-    query.heardAt = Date.now();
+    // On the wire from here, so what follows it waits its turn; its timeout
+    // runs from when it has actually gone, which behind a backlog is later.
     this.wire.push(query);
-    this.armTimeout(query, this.timeoutMs());
-    this.opts.write(query.build());
+    query.written =
+      this.opts.write(query.build, (at) => {
+        query.sent = true;
+        query.written = null;
+        query.heardAt = Date.now();
+        if (this.wire.includes(query)) this.armTimeout(query, this.timeoutMs());
+        query.onSent?.(at);
+      }) ?? null;
   }
 
   // Whether a query waits for one already out, or for the line that may still
@@ -430,6 +461,8 @@ export class ReplyRouter {
   private claim(command: string, params: string[]): ReplyOwner | undefined {
     if (this.wire.length === 0) return undefined;
     for (const query of this.wire) {
+      // A reply to a line that hasn't gone yet can't be.
+      if (!query.sent) continue;
       const role = this.roleOf(query, command, params);
       if (!role) continue;
       query.heardAt = Date.now();
@@ -438,6 +471,7 @@ export class ReplyRouter {
       return query.asker ?? 'nobody';
     }
     for (const query of this.wire) {
+      if (!query.sent) continue;
       if (!this.isErrorFor(query, command, params)) continue;
       this.finish(query, this.endAfterError(query));
       return query.asker ?? 'nobody';
