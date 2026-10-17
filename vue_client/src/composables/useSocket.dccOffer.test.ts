@@ -115,6 +115,26 @@ describe('DCC chat offer toast — reconciled against every snapshot', () => {
     expect(offerToasts()).toHaveLength(1);
   });
 
+  // Secure DCC (#1157): the toast says so, and Accept asks for what it showed,
+  // so a plain offer that replaced the secure one meanwhile is refused by the
+  // server instead of opened in the clear.
+  it('names a secure offer, and accepts it as secure', async () => {
+    const ws = await openSocket();
+    ws.deliver({ ...offerFrame, secure: true });
+    const toast = useToastsStore().items.find((t) => t.title === 'Secure DCC chat from bob');
+    expect(toast).toBeDefined();
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    fetchMock.mockClear();
+    useToastsStore().runAction(toast!.id, 0); // Accept
+    await nextTick();
+    const call = fetchMock.mock.calls.find((c) => String(c[0]).endsWith('/api/dcc/chat'));
+    expect(call).toBeDefined();
+    expect(JSON.parse((call![1] as RequestInit).body as string)).toMatchObject({
+      nick: 'bob',
+      secure: true,
+    });
+  });
+
   // The case the review caught: the close event never arrived, so only the
   // next snapshot can say the offer is gone.
   it('retires the toast when a snapshot no longer lists the offer', async () => {

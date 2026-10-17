@@ -468,8 +468,12 @@ function applyEvent(event: any): boolean {
               tone: 'good',
               onClick: () => {
                 dccOfferToasts.delete(key);
+                // ⚠ Accepting what the toast SHOWED. A peer can replace a
+                // pending SCHAT with a plain CHAT before the new event reaches
+                // this tab; asking for `secure` makes the server refuse rather
+                // than open in the clear the chat this toast called secure.
                 void useDccStore()
-                  .openChat(networkId, from)
+                  .openChat(networkId, from, false, !!event.secure)
                   .then(() => buffers.activate(networkId, `=${from}`))
                   .catch(() => {});
               },

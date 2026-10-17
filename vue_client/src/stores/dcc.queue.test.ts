@@ -65,6 +65,12 @@ describe('an offer', () => {
     });
   });
 
+  it('says when the offer is secure (an SSEND)', () => {
+    const dcc = useDccStore();
+    dcc.applyTransfer(row({ secure: 1 }));
+    expect(useToastsStore().items[0]).toMatchObject({ title: 'Secure DCC file from mira' });
+  });
+
   it('accepts from the toast', async () => {
     h.api.mockResolvedValue({ transfer: row({ state: 'connecting' }) });
     const dcc = useDccStore();

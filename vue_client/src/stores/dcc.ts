@@ -459,7 +459,8 @@ export const useDccStore = defineStore('dcc', {
       const size = t.advertised_size > 0 ? ` · ${formatBytes(t.advertised_size)}` : '';
       const toastId = toasts.push({
         kind: 'notify',
-        title: `DCC file from ${t.peer_nick}`,
+        // An SSEND (#1157) says so where the user decides, not only in the row.
+        title: `${t.secure ? 'Secure DCC file' : 'DCC file'} from ${t.peer_nick}`,
         body: `${t.filename}${size}`,
         networkId: t.network_id ?? undefined,
         target: t.peer_nick,
