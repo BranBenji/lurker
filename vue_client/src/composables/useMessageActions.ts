@@ -298,7 +298,12 @@ export function useMessageActions(): MessageActionsAPI {
     return buildActions(message).map((a) => ({
       label: a.label,
       icon: a.icon,
-      onClick: () => run(a.key, message, ctx),
+      // The menu stays open while state moves on, so Save/Remove does what its
+      // label said, not the opposite of whatever is true at the tap (#1136).
+      onClick:
+        a.key === 'save'
+          ? () => bookmarks.setSaved(message, !a.active)
+          : () => run(a.key, message, ctx),
     }));
   }
 

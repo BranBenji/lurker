@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
-import { BanIcon, BookmarkCheckIcon, BookmarkIcon, ReplyIcon } from '@lucide/vue';
+import { BanIcon, BookmarkCheckIcon, ReplyIcon } from '@lucide/vue';
 import { useMessageActions, type MessageContext, type MessageLike } from './useMessageActions.js';
 import { useContextMenu } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
@@ -211,13 +211,21 @@ describe('useMessageActions', () => {
       expect(ctx.onIgnore).toHaveBeenCalledWith(m);
     });
 
-    it('save item toggles the bookmark store through run()', () => {
+    it('save item does what its label said, though the bookmark moved since (#1136)', () => {
       const api = useMessageActions();
-      const toggle = vi.spyOn(useBookmarksStore(), 'toggle');
+      const bookmarks = useBookmarksStore();
+      const setSaved = vi.spyOn(bookmarks, 'setSaved').mockImplementation(() => {});
       const m = other();
-      const save = api.buildItems(m, makeCtx()).find((i) => i.icon === BookmarkIcon);
+      const save = api.buildItems(m, makeCtx()).find((i) => i.label === 'Save message');
+      // Saved from another device while this menu sat open.
+      bookmarks.noteFromEvents([{ id: 42, bookmarked: true }], 1);
       save?.onClick?.();
-      expect(toggle).toHaveBeenCalledWith(m);
+      expect(setSaved).toHaveBeenCalledWith(m, true);
+
+      const remove = api.buildItems(m, makeCtx()).find((i) => i.label === 'Remove bookmark');
+      bookmarks.noteFromEvents([{ id: 42, bookmarked: false }], 1);
+      remove?.onClick?.();
+      expect(setSaved).toHaveBeenLastCalledWith(m, false);
     });
   });
 

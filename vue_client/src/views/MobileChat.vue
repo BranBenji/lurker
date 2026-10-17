@@ -224,7 +224,7 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import type { Network } from '../stores/networks.js';
 import type { BufferLike } from '../composables/useBufferActions.js';
-import { canDisconnect, useNetworksStore } from '../stores/networks.js';
+import { useNetworksStore } from '../stores/networks.js';
 import { useSocket } from '../composables/useSocket.js';
 import { useChatBootstrap } from '../composables/useChatBootstrap.js';
 import { pushBuffer } from '../composables/useBufferRoute.js';
@@ -263,6 +263,7 @@ import { useChannelListModal } from '../composables/useChannelListModal.js';
 import { useJoinChannelModal } from '../composables/useJoinChannelModal.js';
 import { useMediaViewer } from '../composables/useMediaViewer.js';
 import { useNetworkEditor } from '../composables/useNetworkEditor.js';
+import { useNetworkActions } from '../composables/useNetworkActions.js';
 import { useJumpToMessage } from '../composables/useJumpToMessage.js';
 import { useVisualViewport } from '../composables/useVisualViewport.js';
 import { useHighlightChip } from '../composables/useHighlightChip.js';
@@ -275,13 +276,11 @@ import {
   BookmarkIcon,
   EllipsisVerticalIcon,
   HashIcon,
-  PlugIcon,
   PlusIcon,
   SearchIcon,
   SettingsIcon,
   ShareIcon,
   ShieldCogIcon,
-  UnplugIcon,
   UsersIcon,
 } from '@lucide/vue';
 
@@ -335,6 +334,7 @@ const channelListModal = reactive(useChannelListModal());
 const joinChannelModal = reactive(useJoinChannelModal());
 const viewer = reactive(useMediaViewer());
 const networkEditor = reactive(useNetworkEditor());
+const networkActions = useNetworkActions();
 
 // `/` → list, `/buffer/<id>` → buffer, `/buffer/<id>/members` → members.
 //
@@ -398,20 +398,14 @@ function openBufferActions() {
     // Join channel / Channel list now live as top-bar buttons for server buffers,
     // so the kebab keeps just the less-frequent connect/edit actions.
     items.push(
+      // Decided as the menu opens, so the label and the action can't disagree
+      // while it sits open (#1136).
+      networkActions.connectionItem(a.networkId),
       {
-        label: serverConnectActionLabel.value,
-        icon: serverConnectActionIcon.value,
-        // ⚠ The decision goes WITH the label. Unlike the desktop header — whose
-        // button binds the computed reactively, so the two are read at the same
-        // instant — this kebab snapshots the label into a static array when the
-        // menu opens, and the menu then sits there. Re-reading state at click
-        // time lets the item say "Disconnect" and fire a reconnect: open it
-        // during a backoff, have the retry gate refuse (paused account, host
-        // dropped from the allowlist) so stopReconnecting settles the state to
-        // 'disconnected', and tap. Same trap as useNetworkActions.buildItems.
-        onClick: () => toggleServerConnection(serverOffersDisconnect.value),
+        label: 'Edit network',
+        icon: SettingsIcon,
+        onClick: () => editNetwork(a.network as Network | undefined),
       },
-      { label: 'Edit network', icon: SettingsIcon, onClick: editActiveNetwork },
     );
   } else {
     items.push(...bufferActions.buildItems(activeBuf.value as BufferLike));
@@ -425,37 +419,16 @@ function openAddNetwork() {
   networkEditor.open();
 }
 
-function editActiveNetwork() {
-  const net = active.value?.network as Network | undefined;
-  if (!net) return;
-  networkEditor.open(net);
+function editNetwork(net: Network | undefined) {
+  if (net) networkEditor.open(net);
 }
 
-// State-aware connect/disconnect for the server buffer header. Mirrors the
-// desktop logic, via the shared canDisconnect: "Disconnect" covers connected AND
-// the in-flight states, because during a reconnect backoff it is the only thing
-// that stops the loop (#785).
+// The server buffer's connection state, for the header buttons that need a live
+// socket.
 const serverConnectionState = computed(() => {
   if (!active.value || !isServerBuffer.value) return null;
   return networks.states[active.value.networkId]?.state ?? null;
 });
-const serverOffersDisconnect = computed(() => canDisconnect(serverConnectionState.value));
-const serverConnectActionLabel = computed(() =>
-  serverOffersDisconnect.value ? 'Disconnect' : 'Reconnect',
-);
-const serverConnectActionIcon = computed(() =>
-  serverOffersDisconnect.value ? UnplugIcon : PlugIcon,
-);
-function toggleServerConnection(offerDisconnect: boolean) {
-  if (!active.value) return;
-  const id = active.value.networkId;
-  // Fire-and-forget — the button's label is driven by networks.states so
-  // success reflects itself. A failed call stays observable via the state
-  // (label doesn't flip), so we just log and let the user retry rather
-  // than wiring a toast through the bar for this case.
-  const p = offerDisconnect ? networks.disconnect(id) : networks.reconnect(id);
-  p.catch((err) => console.error('[MobileChat] toggle server connection failed', err));
-}
 
 function closeNetworkForm() {
   networkEditor.close();
