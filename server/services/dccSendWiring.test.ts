@@ -671,6 +671,27 @@ describe('a secure offer (SSEND)', () => {
     await waitFor(() => row(id).state === 'completed');
   });
 
+  // The one-shot port is gone once a peer connected, so a failed handshake
+  // ends the offer now with its reason, rather than leaving it `offered`
+  // until the five minutes run out.
+  it('ends the offer with the reason when the peer connects but fails the handshake', async () => {
+    enableSend();
+    enableListening();
+    const h = harness();
+    const id = offer(h, { secure: true });
+    await waitFor(() => h.sent() !== null);
+    const port = Number(/^SSEND my_file\.bin \d+ (\d+) \d+$/.exec(h.sent()!)![1]);
+
+    const sock = dial(port);
+    sock.on('connect', () => sock.write('a plain receiver, no ClientHello\r\n'));
+    await waitFor(() => row(id).state === 'failed');
+    expect(row(id).error).toMatch(/^bob connected, but TLS handshake failed/);
+    expect(h.lines().at(-1)).toMatch(
+      /^DCC: sending "my file\.bin" to bob failed — bob connected, but TLS handshake failed/,
+    );
+    expect(activeDccListenerCount()).toBe(0);
+  });
+
   it('does not send in the clear when a plain SEND answers a secure offer', async () => {
     enableSend();
     process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1';

@@ -289,6 +289,24 @@ describe('a passive offer', () => {
 // the verb back, DccFileTransfer.cpp:2103-2115) and our port is its TLS
 // server.
 describe('a passive secure offer (SSEND)', () => {
+  it('says the sender connected but failed the handshake, not that it never came', async () => {
+    enable();
+    const h = harness();
+    h.from('bob', `SSEND "my show.mkv" 199 0 ${DATA.length} 6`);
+    h.conn.acceptPendingDcc(onlyRow());
+    await waitFor(() => h.sent().length === 1);
+    const port = Number(/^SSEND "my show\.mkv" \d+ (\d+) \d+ 6$/.exec(h.sent()[0])![1]);
+
+    sendTo(port, Buffer.from('plain bytes, no ClientHello\r\n'));
+    await waitFor(() => getDccTransfer(1, onlyRow().id)?.state === 'failed');
+    const failed = onlyRow();
+    expect(failed.error).toMatch(/^bob connected, but TLS handshake failed/);
+    expect(h.lines().at(-1)).toMatch(
+      /^DCC: bob connected to send "my show\.mkv", but TLS handshake failed/,
+    );
+    expect(activeDccListenerCount()).toBe(0);
+  });
+
   it('is answered with SSEND, and the file comes in over TLS', async () => {
     enable();
     const h = harness();
@@ -381,11 +399,14 @@ describe('a passive offer that ends early', () => {
     const offered = onlyRow();
     h.conn.acceptPendingDcc(offered);
     await waitFor(() => activeDccListenerCount() === 1 && h.sent().length === 1);
-    // The listener's own timeout, as it ends: closed while still waiting.
+    // The listener's own timeout, brought forward: a close() would read as
+    // ours (a cancel), which says nothing.
     const listens = (
-      h.conn as unknown as { dccPassiveListens: Map<number, { handle: { close(): void } }> }
+      h.conn as unknown as {
+        dccPassiveListens: Map<number, { handle: { armTimeout(ms: number): void } }>;
+      }
     ).dccPassiveListens;
-    listens.get(offered.id)!.handle.close();
+    listens.get(offered.id)!.handle.armTimeout(20);
     await waitFor(() => getDccTransfer(1, offered.id)?.state === 'failed');
     expect(getDccTransfer(1, offered.id)!.error).toBe('bob never connected');
     expect(h.lines()).toContain(

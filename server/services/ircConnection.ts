@@ -167,7 +167,12 @@ import { dccFileBytes, resolveDccDestination } from './dccPaths.js';
 import { hasFreeSpaceFor } from '../utils/diskSpace.js';
 import { getDccStorageLimit } from '../db/dccStorageLimits.js';
 import { DccChat } from './dccChat.js';
-import { openDccListener, type DccListenHandle } from './dccListener.js';
+import {
+  DccListenerClosedError,
+  DccListenerTimeoutError,
+  openDccListener,
+  type DccListenHandle,
+} from './dccListener.js';
 import { dialDccPeer } from './dccTls.js';
 import {
   dccChatHostFor,
@@ -7827,12 +7832,22 @@ export class IrcConnection {
               socket,
             );
           },
-          () => {
+          (err: unknown) => {
             // Gone already means it was closed on purpose (a cancel, teardown).
-            if (!ours()) return;
+            if (!ours() || err instanceof DccListenerClosedError) return;
+            if (err instanceof DccListenerTimeoutError) {
+              fail(
+                `${nick} never connected`,
+                `DCC: ${nick} never connected to send "${offer.filename}"; their offer may have expired`,
+              );
+              return;
+            }
+            // The sender connected and the TLS handshake failed (#1157): the
+            // one thing worth telling, since "never connected" is the opposite.
+            const why = err instanceof Error ? err.message : String(err);
             fail(
-              `${nick} never connected`,
-              `DCC: ${nick} never connected to send "${offer.filename}"; their offer may have expired`,
+              `${nick} connected, but ${why}`,
+              `DCC: ${nick} connected to send "${offer.filename}", but ${why}`,
             );
           },
         );
@@ -8282,8 +8297,21 @@ export class IrcConnection {
             if (this.takeDccSendOffer(offer)) this.startDccSender(offer, socket);
             else socket.destroy();
           },
-          () => {
-            // Closed by whatever ended the offer, which said so.
+          (err: unknown) => {
+            // Closed by whatever ended the offer, which said so. Anything else
+            // while the offer is still live is the peer's: it connected and
+            // failed the TLS handshake (#1157), and the one-shot port is gone,
+            // so the offer ends now rather than sitting `offered` until its
+            // five minutes run out with no reason given.
+            if (this.dccSendOffers.get(offer.transferId) !== offer) return;
+            if (err instanceof DccListenerClosedError) return;
+            const why = err instanceof Error ? err.message : String(err);
+            const reason = `${offer.nick} connected, but ${why}`;
+            this.endDccSendOffer(offer, 'failed', reason);
+            this.dccLine(
+              offer.nick,
+              `DCC: sending "${offer.name}" to ${offer.nick} failed — ${reason}`,
+            );
           },
         );
       },
@@ -8783,7 +8811,20 @@ export class IrcConnection {
     }
     // `/dcc chat <nick>` doubles as "accept the offer they already made", which
     // is how irssi spells it too — making a fresh offer at someone who is
-    // already waiting for us would just deadlock the two halves.
+    // already waiting for us would just deadlock the two halves. Their offer
+    // is taken as they made it — except that `-secure` against a PLAIN offer
+    // is refused (#1157): the user asked for TLS by name, and quietly opening
+    // the chat in the clear is the one thing that must not happen. The offer
+    // stays pending for a plain `/dcc chat <nick>` or a `/dcc close chat`.
+    const pending = this.pendingInboundChats.get(key);
+    if (pending && opts.secure === true && !pending.offer.secure) {
+      this.dccChatNotice(
+        nick,
+        `${nick}'s pending offer is a plain DCC chat, not a secure one — ` +
+          `/dcc chat ${nick} accepts it as offered, /dcc close chat ${nick} declines it.`,
+      );
+      return;
+    }
     const inbound = this.clearPendingInboundChat(key);
     if (inbound) {
       this.acceptInboundDccChat(inbound.nick, inbound.offer);
@@ -9204,7 +9245,7 @@ export class IrcConnection {
     if (entry?.chat !== chat) return false;
     this.dccChats.delete(key);
     this.releaseDccChatHost();
-    this.publishDccChatState(entry.nick, false);
+    this.publishDccChatState(entry.nick, false, entry.secure);
     return true;
   }
 
@@ -9291,7 +9332,7 @@ export class IrcConnection {
     this.releaseDccChatHost();
     entry.chat.close();
     this.dccChatNotice(entry.nick, `DCC chat with ${entry.nick} closed.`);
-    this.publishDccChatState(entry.nick, false);
+    this.publishDccChatState(entry.nick, false, entry.secure);
     return true;
   }
 
@@ -9348,7 +9389,7 @@ export class IrcConnection {
       this.dccChats.delete(key);
       entry.chat.close();
       this.dccChatNotice(entry.nick, `DCC chat ended — ${reason}.`);
-      this.publishDccChatState(entry.nick, false);
+      this.publishDccChatState(entry.nick, false, entry.secure);
     }
     // Deleting the current key mid-iteration is well-defined for a Map, and
     // clearPendingInboundChat is what tells the client to retire its toast —

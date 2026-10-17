@@ -1131,6 +1131,30 @@ describe('secure DCC chat (SCHAT)', () => {
     h.conn.closeDccChat('bob');
   });
 
+  // `/dcc chat <nick>` accepts a pending offer as made; `-secure` against a
+  // plain one is the user asking for TLS by name, so it is refused, not
+  // quietly downgraded. The offer stays pending for a plain accept.
+  it('refuses to take a plain pending offer as a secure one, and keeps it pending', async () => {
+    enableDcc();
+    allowLoopback();
+    const h = harness();
+    const peer = await startPeer();
+    offerFrom(h.conn, 'bob', `CHAT chat ${encodeDccAddress('127.0.0.1')} ${peer.port}`);
+
+    h.conn.offerDccChat('bob', { secure: true });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(h.conn.hasDccChat('bob')).toBe(false);
+    expect(h.notices().at(-1)).toMatch(/pending offer is a plain DCC chat, not a secure one/);
+    expect(h.offerEvents().some((e) => e.type === 'dcc-chat-offer-closed')).toBe(false);
+
+    // Taken as offered, it connects.
+    h.conn.offerDccChat('bob');
+    await peer.socket;
+    await waitFor(() => h.conn.hasDccChat('bob'));
+    expect(h.notices().at(-1)).toBe('DCC chat with bob connected.');
+    h.conn.closeDccChat('bob');
+  });
+
   it('refuses a plain CHAT answer to our secure passive offer, rather than connecting in the clear', async () => {
     enableDcc();
     allowLoopback();

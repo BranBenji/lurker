@@ -1705,9 +1705,12 @@ the peer in `from` (not `target`), carry DCC chat state to a client:
 | `dcc-chat-state`        | `from`, `live`, `secure`    | A session with `from` opened (`true`) or ended (`false`).      |
 
 `secure` is true for a chat over TLS (an `SCHAT`): the offer asked for it, or
-the session runs that way. A client says so where it names the chat. Accepting
-such an offer needs nothing extra — `POST /chat` for that peer takes it as
-offered.
+the session runs (or ran) that way. A client may say so where it names the
+chat; the server's own notices in the `=nick` buffer already do. Accepting such
+an offer needs nothing extra — `POST /chat` for that peer takes it as offered,
+while `POST /chat` with `secure: true` against a pending PLAIN offer is refused
+with a notice rather than opening the chat in the clear. The snapshot's
+`dccChats` carries nicks only.
 
 An offer surface should be retired on `dcc-chat-offer-closed` rather than on a
 timer, so it never outlives the offer it names. That event can be missed — the
