@@ -161,6 +161,7 @@ describe('what is made at send time', () => {
 
   it('encrypts an E2E message when its turn comes, REKEYs first, and notes each chunk as it goes', () => {
     const { conn, lines } = backlog({ join: ['#x'], peers: ['carol'] });
+    vi.spyOn(e2eManager, 'checkOutgoing').mockReturnValue({ kind: 'ok' });
     const prepare = vi.spyOn(e2eManager, 'prepareOutgoing').mockReturnValue(true);
     const encrypt = vi
       .spyOn(e2eManager, 'encryptOutgoing')
@@ -206,12 +207,17 @@ describe('what is made at send time', () => {
 
   it('reports an E2E message not sent when encryption is off by the time it goes', () => {
     const { conn, lines, published } = backlog();
-    vi.spyOn(e2eManager, 'prepareOutgoing').mockReturnValue(true);
+    // Nothing is prepared for a channel that is off: no key made, no REKEY
+    // taken for it (review: a rotation while the message waited would have
+    // sent REKEYs for a channel the user had turned off).
+    const prepare = vi.spyOn(e2eManager, 'prepareOutgoing').mockReturnValue(true);
+    const rekeys = vi.spyOn(e2eManager, 'takePendingRekeySends').mockReturnValue([]);
     vi.spyOn(e2eManager, 'encryptOutgoing').mockReturnValue({ kind: 'disabled' });
-    vi.spyOn(e2eManager, 'takePendingRekeySends').mockReturnValue([]);
     conn.sayEncrypted('#x', 'secret');
     vi.advanceTimersByTime(2000);
     expect(lines).toHaveLength(5);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(rekeys).not.toHaveBeenCalled();
     expect(published.at(-1)).toMatchObject({
       type: 'error',
       target: '#x',
@@ -443,6 +449,37 @@ describe('what the user sees', () => {
   });
 });
 
+describe('an engine restore', () => {
+  it('keeps a held NICK waiting while the transport would swallow it, whatever is written meanwhile', () => {
+    // The replayed 001 registers the Client, so ready() is true; what the
+    // replayed 005 makes the connection write (the MONITOR seed) must not
+    // drain a held NICK into the swallowing transport. What waits behind the
+    // NICK waits with it.
+    const { conn, lines } = backlog();
+    conn.raw('NICK bob', 'user');
+    conn.say('#c', 'held');
+    (conn as unknown as { restoring: boolean }).restoring = true;
+    vi.advanceTimersByTime(2000);
+    expect(lines).toHaveLength(5);
+    conn.raw('MONITOR + bob', 'lurker');
+    vi.advanceTimersByTime(4000);
+    expect(lines).toHaveLength(5);
+    (conn as unknown as { restoring: boolean }).restoring = false;
+    (conn as unknown as { sendPacer: { resume(): void } }).sendPacer.resume();
+    expect(lines.slice(5)).toEqual(['NICK bob', 'PRIVMSG #c :held']);
+    conn.dispose();
+  });
+
+  it('sends what the transport passes during a restore: the replay reconciles with PARTs', () => {
+    const { conn, lines } = backlog();
+    (conn as unknown as { restoring: boolean }).restoring = true;
+    conn.part('#c');
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('PART #c');
+    conn.dispose();
+  });
+});
+
 describe('lanes', () => {
   it("the autojoin's JOIN goes ahead of chat waiting; a user's /join waits its turn", () => {
     const { conn, lines } = backlog();
@@ -455,6 +492,57 @@ describe('lanes', () => {
     expect(lines.at(-1)).toBe('PRIVMSG #c :one');
     vi.advanceTimersByTime(2000);
     expect(lines.at(-1)).toBe('JOIN #mine');
+    conn.dispose();
+  });
+
+  it('the presence list rebuilt on a re-attach waits behind what the user says', () => {
+    const { conn, lines } = backlog();
+    (conn as unknown as { monitor: { sync(n: string[], l: number): unknown } }).monitor.sync(
+      ['bob'],
+      10,
+    );
+    conn.say('#c', 'hi');
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('PRIVMSG #c :hi');
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('MONITOR + bob');
+    conn.dispose();
+  });
+
+  it("the restore's own MODE asks about the nick we have when it goes", () => {
+    // A NICK goes ahead of it (the high lane); built at write it would ask
+    // about the old nick and get a 502.
+    const { conn, lines } = backlog();
+    (conn as unknown as { requestOwnModes(): void }).requestOwnModes();
+    (conn as unknown as { currentNick: string }).currentNick = 'bob';
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('MODE bob');
+    conn.dispose();
+  });
+
+  it('an auto-KEYREQ goes to the nick its peer has when it goes', () => {
+    const { conn, lines } = backlog();
+    let nick: string | null = 'carol';
+    (
+      conn as unknown as {
+        sendHandshakeThunk(
+          n: string,
+          k: string,
+          c: string,
+          b: () => string,
+          to: () => string | null,
+        ): void;
+      }
+    ).sendHandshakeThunk(
+      'carol',
+      'KEYREQ',
+      '#x',
+      () => 'RPEE2E KEYREQ v=1',
+      () => nick,
+    );
+    nick = 'carol2';
+    vi.advanceTimersByTime(2000);
+    expect(lines.at(-1)).toBe('NOTICE carol2 :\x01RPEE2E KEYREQ v=1\x01');
     conn.dispose();
   });
 

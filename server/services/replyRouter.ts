@@ -52,12 +52,10 @@ export type Asker = 'lurker' | 'user' | ReplyClient;
  */
 export type ReplyOwner = Asker | 'unasked' | 'nobody';
 
-import type { SendPriority } from './sendPacer.js';
+import type { SendHandle, SendPriority } from './sendPacer.js';
 
 /** A line handed to the connection's queue, which can be taken back before it goes. */
-export interface Written {
-  cancel(): boolean;
-}
+export type Written = SendHandle;
 
 export interface ReplyRouterOptions {
   /**
@@ -370,8 +368,9 @@ export class ReplyRouter {
     for (const query of this.wire) {
       if (query.timer) clearTimeout(query.timer);
       // Still in the queue: it must not go out on the next socket, where its
-      // reply would be nobody's.
-      query.written?.cancel();
+      // reply would be nobody's. Its sender is told, as of any line dropped
+      // with its socket (a user's /whois behind a paste: "not sent").
+      if (query.written?.cancel()) query.onDropped?.();
       query.written = null;
     }
     if (this.settle?.timer) clearTimeout(this.settle.timer);

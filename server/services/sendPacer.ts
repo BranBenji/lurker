@@ -117,6 +117,12 @@ export interface SendPacerOptions {
   send: (line: string) => void;
   /** Whether the connection is registered and can take a line. */
   ready: () => boolean;
+  /** Whether the next line must keep waiting although the connection is
+   *  ready: a NICK during an engine restore, whose transport would swallow it
+   *  as registration. Asked with the line (undefined for a thunk, which is
+   *  never one) on every drain, not only on resume(), since any write drains;
+   *  what waits behind it waits too. */
+  holding?: (line: string | undefined) => boolean;
   /** How many items wait, whenever that changes (coalesced per tick; an
    *  empty queue is reported once it has stayed empty EMPTY_HOLD_MS). */
   onDepth?: (waiting: number) => void;
@@ -229,7 +235,7 @@ export class SendPacer {
     }
     this.lanes[entry.priority].push(entry);
     this.noteDepth();
-    this.drain();
+    this.redrain();
     return this.handle(entry);
   }
 
@@ -251,8 +257,15 @@ export class SendPacer {
     }
     this.lanes[entry.priority].push(entry);
     this.noteDepth();
-    this.drain();
+    this.redrain();
     return this.handle(entry);
+  }
+
+  // A new item may be the head now (a higher lane), and a wait scheduled for
+  // the old head (a long MONITOR line: 6 s) is not its wait: pick again.
+  private redrain(): void {
+    if (!this.draining) this.clearTimer();
+    this.drain();
   }
 
   /** Items waiting. */
@@ -352,6 +365,7 @@ export class SendPacer {
       for (let head = this.head(); head; head = this.head()) {
         // Held until the connection is back; resume() picks it up.
         if (!this.opts.ready()) return;
+        if (this.opts.holding?.(head.text ?? head.unit?.[0])) return;
         // The line goes when its own charge still fits under the budget: the
         // server's clock never runs more than BURST_BUDGET_MS ahead of real
         // time by our count. A thunk is run once the shortest line would fit,
@@ -365,12 +379,16 @@ export class SendPacer {
           return;
         }
         this.lanes[head.priority].shift();
+        // Not wanted any more: nothing goes, and a thunk isn't even built.
+        if (head.live && !this.wanted(head)) {
+          this.noteDepth();
+          continue;
+        }
         if (head.build) {
           this.expand(head);
           continue;
         }
         this.noteDepth();
-        if (head.live && !head.live()) continue;
         if (head.unit) this.sendUnit(head);
         else this.sendNow(head, true);
       }
@@ -399,6 +417,8 @@ export class SendPacer {
     const expanded: Entry[] = items.map((item, i) => {
       const own: Entry = {
         priority: entry.priority,
+        // Asked again at each line's own turn.
+        live: entry.live,
         ...(typeof item === 'function'
           ? { build: item }
           : typeof item === 'string'
@@ -424,8 +444,8 @@ export class SendPacer {
   // Past the queue, uncharged: a line written before registration.
   private sendAtOnce(entry: Entry): void {
     if (entry.unit) {
-      for (const line of entry.unit) this.opts.send(line);
-      entry.onSent?.(this.now());
+      for (const line of entry.unit) this.guarded('send', () => this.opts.send(line));
+      if (entry.onSent) this.guarded('an onSent hook', () => entry.onSent!(this.now()));
       return;
     }
     if (!entry.build) {
@@ -448,26 +468,46 @@ export class SendPacer {
         this.sendAtOnce({ priority, build: lazyLine(item) });
       else this.sendNow({ priority, text: item.text, onSent: item.onSent }, false);
     }
-    if (items.length) entry.onSent?.(this.now());
+    if (items.length && entry.onSent)
+      this.guarded('an onSent hook', () => entry.onSent!(this.now()));
   }
 
   private sendNow(entry: Entry, charge: boolean): void {
     const text = entry.text!;
-    this.opts.send(text);
+    this.guarded('send', () => this.opts.send(text));
     const at = this.now();
     if (charge) this.charge(costOf(text), at);
-    entry.onSent?.(at);
+    if (entry.onSent) this.guarded('an onSent hook', () => entry.onSent!(at));
   }
 
   private sendUnit(entry: Entry): void {
     let cost = 0;
     for (const line of entry.unit!) {
-      this.opts.send(line);
+      this.guarded('send', () => this.opts.send(line));
       cost += costOf(line);
     }
     const at = this.now();
     this.charge(cost, at);
-    entry.onSent?.(at);
+    if (entry.onSent) this.guarded('an onSent hook', () => entry.onSent!(at));
+  }
+
+  private wanted(entry: Entry): boolean {
+    try {
+      return entry.live!();
+    } catch (err) {
+      console.warn('[irc] send: a live() check threw; the item was skipped:', err);
+      return false;
+    }
+  }
+
+  // A drain runs from a timer with no caller to catch for it: a hook that
+  // throws (a DB write) must not take the queue, or the process, with it.
+  private guarded(what: string, fn: () => void): void {
+    try {
+      fn();
+    } catch (err) {
+      console.warn(`[irc] send: ${what} threw:`, err);
+    }
   }
 
   private charge(cost: number, at: number): void {

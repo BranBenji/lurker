@@ -79,7 +79,12 @@ import type { ModeSpec } from '../../shared/channelModes.js';
 import type { ModeChange } from '../../shared/modes.js';
 import { registerIdent, unregisterIdent, isIdentdEnabled, isOidentdFileEnabled } from './identd.js';
 import { EngineLink, engineConfigured, engineConnectionId } from './engineLink.js';
-import { ENGINE_CLOSE, EngineTransport, engineCloseCode } from './engineTransport.js';
+import {
+  ENGINE_CLOSE,
+  EngineTransport,
+  engineCloseCode,
+  swallowedWhileRestoring,
+} from './engineTransport.js';
 import type { EnginePhase, EnginePhaseInfo } from './engineTransport.js';
 import {
   reattachAbandoned,
@@ -1272,6 +1277,11 @@ export class IrcConnection {
       // writes (the connect commands, the autojoin, MODE, AWAY) must queue
       // and be charged, not bypass as the registration burst does.
       ready: () => connection.connected && (!!connection.registered || this.sawRegistered),
+      // Through an engine restore the replayed 001 registers the Client while
+      // the transport still swallows registration commands; a held NICK keeps
+      // waiting until the 'restored' phase. Only that kind: the replay's own
+      // reconcile PARTs mid-restore, and chat goes.
+      holding: (line) => this.restoring && line !== undefined && swallowedWhileRestoring(line),
       onDepth: (waiting) => this.publishSendQueue(waiting),
     });
     connection.write = (data: string, callback?: () => void) =>
@@ -2880,8 +2890,15 @@ export class IrcConnection {
             // Built when it goes (#1149): the outgoing limiter is charged and
             // the pending secret created then, not while it waits its turn.
             const ctx = contextKey(eventTarget as string, handle);
-            this.sendHandshakeThunk(eventNick, 'KEYREQ', ctx, () =>
-              e2eManager.autoHandshakeBody(this.network.user_id, this.network.id, ctx, handle),
+            const channel = eventTarget as string;
+            this.sendHandshakeThunk(
+              eventNick,
+              'KEYREQ',
+              ctx,
+              () =>
+                e2eManager.autoHandshakeBody(this.network.user_id, this.network.id, ctx, handle),
+              // To the nick the peer has when it goes; a peer who left gets nothing.
+              () => this.nickForHandle(channel, handle),
             );
             handshaking = true;
           }
@@ -5807,7 +5824,7 @@ export class IrcConnection {
           mode: true,
           topic: false,
         });
-        this.rawQuiet('MODE', this.currentNick, () => this.refreshRestoreQuiet('*', false));
+        this.requestOwnModes(() => this.refreshRestoreQuiet('*', false));
         // The network's away state, sent again. This socket missed any change
         // made while the link was down, or while no process was attached, and
         // nothing here knows what it was last told. The 305/306 is Lurker's.
@@ -6101,6 +6118,18 @@ export class IrcConnection {
     this.replies.send('lurker', `${command} ${arg}`, undefined, onSent);
   }
 
+  // The restore's `MODE <nick>`, asking about the nick we have when it goes: a
+  // NICK goes ahead of it (sendPacer.ts, the high lane), and one built with
+  // the old nick would ask about someone else and get a 502.
+  private requestOwnModes(onSent?: () => void): void {
+    this.replies.send(
+      'lurker',
+      `MODE ${this.currentNick}`,
+      () => `MODE ${this.currentNick}`,
+      onSent,
+    );
+  }
+
   // The away-sync WHO, as irc-framework's who() sends it: WHOX where the network
   // has it, with a token irc-framework parses the reply by (it drops a 354 whose
   // token it didn't hand out). The token is taken when the WHO goes out, not
@@ -6335,6 +6364,12 @@ export class IrcConnection {
     this.sendPacer.write(
       () => {
         if (this.disposed) return null;
+        // Off by the time it goes: nothing is prepared, no key made, no REKEY
+        // queued for a channel the user has turned E2E off on.
+        if (e2eManager.checkOutgoing(uid, nid, ctx, text).kind === 'disabled') {
+          notSent('encryption is off');
+          return null;
+        }
         // The key first: a pending rotation makes a new one and queues its
         // REKEYs, which go ahead, each to the nick its peer has when it goes.
         // The chunks are made only once the REKEYs have, so their timestamp
@@ -8345,7 +8380,7 @@ export class IrcConnection {
 
   // The offer's five minutes, from when it actually went out (#1149).
   private armDccSendExpiry(offer: DccSendOffer): void {
-    if (offer.timer) if (offer.timer) clearTimeout(offer.timer);
+    if (offer.timer) clearTimeout(offer.timer);
     offer.timer = setTimeout(() => this.expireDccSend(offer.transferId), DCC_SEND_OFFER_TTL_MS);
     offer.timer.unref?.();
   }
@@ -8865,7 +8900,7 @@ export class IrcConnection {
     // <nick>` accepts, exactly as it does in irssi.
     const key = nick.toLowerCase();
     const prior = this.pendingInboundChats.get(key);
-    if (prior) if (prior.timer) clearTimeout(prior.timer);
+    if (prior?.timer) clearTimeout(prior.timer);
     const timer = setTimeout(() => {
       if (this.clearPendingInboundChat(key)) {
         // Ephemeral, and to the server buffer: the prompt never created a
@@ -9348,22 +9383,28 @@ export class IrcConnection {
   }
 
   // As sendHandshakeReply, for a body made when the line goes (the auto
-  // KEYREQ); `null` from `build` sends nothing.
+  // KEYREQ); `null` from `build` sends nothing. `to`, if given, names the nick
+  // when the line goes (the peer may have changed nick while it waited); null
+  // from it falls back to `nick`.
   private sendHandshakeThunk(
     nick: string,
     kind: string,
     channel: string,
     build: () => string | null,
+    to?: () => string | null,
   ): void {
     if (this.disposed) return;
     const key = `${foldTargetFor(this.network.id, nick)} ${kind} c=${channel}`;
     this.sendPacer.write(
       () => {
         if (this.disposed) return null;
+        // The peer just spoke, so with no member list to resolve the handle
+        // by (right after a restore), the nick they spoke as.
+        const target = (to ? to() : null) ?? nick;
         const body = build();
         if (!body) return null;
-        e2eDbg(() => `→ NOTICE ${nick}: ${body.slice(0, 140)}`);
-        return this.handshakeLine(nick, body);
+        e2eDbg(() => `→ NOTICE ${target}: ${body.slice(0, 140)}`);
+        return this.handshakeLine(target, body);
       },
       { key, onDropped: () => e2eDbg(() => `handshake to ${nick} dropped before it was sent`) },
     );

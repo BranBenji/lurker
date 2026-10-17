@@ -96,6 +96,26 @@ describe('a client that detaches', () => {
   });
 });
 
+describe('a socket that dies with a query still queued', () => {
+  it('tells the query it was dropped, as any line dropped with its socket', () => {
+    // A user's /whois behind a paste: reset() takes it out of the queue, and
+    // the sender hears "not sent" through onDropped, as a PRIVMSG's does.
+    const router = new ReplyRouter({
+      write: () => ({ cancel: () => true }),
+      canSend: () => true,
+      fold: (name) => name.toLowerCase(),
+      isJoined: () => true,
+      ownNick: () => 'me',
+      listModes: () => new Set('beIq'.split('')),
+      prefixModes: () => new Set(['o', 'v']),
+    });
+    const dropped: string[] = [];
+    router.send('user', 'WHOIS bob', undefined, undefined, () => dropped.push('WHOIS bob'));
+    router.reset();
+    expect(dropped).toEqual(['WHOIS bob']);
+  });
+});
+
 describe('what waits its turn', () => {
   it('holds a second WHO until the first ends', () => {
     const { router, writes, hear } = setup();

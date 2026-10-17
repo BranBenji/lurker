@@ -402,13 +402,17 @@ describe('SendPacer', () => {
     it('a line written during the hold is a rise, not a blink', () => {
       fill();
       pacer.write(SHORT);
-      vi.advanceTimersByTime(2000);
+      // The line went at 2000; the depth report ran a tick later and armed
+      // the hold. Written now, the lines are a rise, and the armed hold goes.
+      vi.advanceTimersByTime(2001);
       expect(sent).toHaveLength(6);
       pacer.write(SHORT);
       pacer.write(SHORT);
       vi.advanceTimersByTime(1);
       expect(depths).toEqual([1, 2]);
-      vi.advanceTimersByTime(2000);
+      // Past when that hold would have fired: no 0 from it. One line per 2 s.
+      vi.advanceTimersByTime(EMPTY_HOLD_MS);
+      expect(sent).toHaveLength(7);
       expect(depths).toEqual([1, 2, 1]);
       vi.advanceTimersByTime(2000);
       expect(sent).toHaveLength(8);
@@ -423,6 +427,83 @@ describe('SendPacer', () => {
     for (let i = 0; i < 5; i++) pacer.write(`PRIVMSG #f :${i}`);
     expect(sent).toHaveLength(5);
   }
+
+  describe('holding', () => {
+    it('keeps what waits waiting while holding() says so, though the connection is ready', () => {
+      let holding = false;
+      pacer = new SendPacer({
+        send: (l) => sent.push(l),
+        ready: () => ready,
+        holding: () => holding,
+      });
+      fill();
+      pacer.write(SHORT);
+      holding = true;
+      // A write meanwhile drains, and must not send the held line.
+      pacer.write('MONITOR + bob');
+      vi.advanceTimersByTime(6000);
+      expect(sent).toHaveLength(5);
+      holding = false;
+      pacer.resume();
+      // The budget decayed meanwhile: both fit now, in order.
+      expect(sent.slice(5)).toEqual([SHORT, 'MONITOR + bob']);
+    });
+  });
+
+  describe('hooks that throw', () => {
+    it('a throwing onSent or send does not stop the queue', () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      fill();
+      pacer.write(SHORT, {
+        onSent: () => {
+          throw new Error('SQLITE_BUSY');
+        },
+      });
+      pacer.write('PRIVMSG #c :after');
+      vi.advanceTimersByTime(2000);
+      expect(sent.at(-1)).toBe(SHORT);
+      vi.advanceTimersByTime(2000);
+      expect(sent.at(-1)).toBe('PRIVMSG #c :after');
+      expect(warn).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
+  });
+
+  describe('live on a thunk', () => {
+    it('asks live() before building, and again for each line the thunk made', () => {
+      fill();
+      let wanted = true;
+      let built = 0;
+      pacer.write(
+        () => {
+          built++;
+          return ['NOTICE p :one', 'NOTICE p :two'];
+        },
+        { live: () => wanted },
+      );
+      wanted = false;
+      vi.advanceTimersByTime(2000);
+      expect(built).toBe(0);
+      expect(sent).toHaveLength(5);
+      expect(pacer.pending).toBe(0);
+      // Built at once (the budget has 2 s free), first line gone, then
+      // withdrawn: the second never goes.
+      wanted = true;
+      pacer.write(
+        () => {
+          built++;
+          return ['NOTICE p :three', 'NOTICE p :four'];
+        },
+        { live: () => wanted },
+      );
+      expect(built).toBe(1);
+      expect(sent.at(-1)).toBe('NOTICE p :three');
+      wanted = false;
+      vi.advanceTimersByTime(2000);
+      expect(sent.at(-1)).toBe('NOTICE p :three');
+      expect(pacer.pending).toBe(0);
+    });
+  });
 
   describe('lanes', () => {
     it('sends high before normal before low while lines wait, in order within a lane', () => {
@@ -457,14 +538,30 @@ describe('SendPacer', () => {
     it('a keyed item replaces its predecessor where it stands, in its lane', () => {
       fill();
       pacer.write('NOTICE p :one', { key: 'p', priority: 'low' });
+      pacer.write('WHO #a', { priority: 'low' });
       pacer.write('JOIN #b', { priority: 'high' });
       pacer.write('NOTICE p :two', { key: 'p' });
-      expect(pacer.pending).toBe(2);
+      expect(pacer.pending).toBe(3);
+      const went: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        vi.advanceTimersByTime(2000);
+        went.push(sent.at(-1)!);
+      }
+      expect(went).toEqual(['JOIN #b', 'NOTICE p :two', 'WHO #a']);
+      expect(sent).not.toContain('NOTICE p :one');
+    });
+
+    it('a line in a higher lane does not wait out the wait scheduled for a slower head', () => {
+      fill();
+      pacer.write(`MONITOR + ${'n,'.repeat(200)}`, { priority: 'low' }); // 412 bytes: 6 s
+      pacer.write('JOIN #b', { priority: 'high' });
+      // The JOIN's own wait, 2 s, not the 6 s scheduled for the MONITOR.
       vi.advanceTimersByTime(2000);
       expect(sent.at(-1)).toBe('JOIN #b');
-      vi.advanceTimersByTime(2000);
-      expect(sent.at(-1)).toBe('NOTICE p :two');
-      expect(sent).not.toContain('NOTICE p :one');
+      vi.advanceTimersByTime(5999);
+      expect(sent).toHaveLength(6);
+      vi.advanceTimersByTime(1);
+      expect(sent.at(-1)).toMatch(/^MONITOR \+ /);
     });
 
     it('the keyed cap drops the oldest keyed item, whichever lane it waits in', () => {
