@@ -75,3 +75,48 @@ describe('peerFor — a DCC chat target has no presence', () => {
     expect(store('disconnected').peerFor(1, 'bob')).toMatchObject({ state: 'offline' });
   });
 });
+
+// A chat over TLS (#1157) is marked as such for as long as it is live, from
+// the snapshot's `dccSecureChats` or the `dcc-chat-state` event's `secure`.
+describe('DCC chat state — secure sessions', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('marks a secure session live and secure, and a plain one live only', () => {
+    const s = useNetworksStore();
+    s.applyDccChatState(1, 'bob', true, true);
+    s.applyDccChatState(1, 'alice', true);
+    expect(s.isDccChatLive(1, '=bob')).toBe(true);
+    expect(s.isDccChatSecure(1, '=bob')).toBe(true);
+    expect(s.isDccChatLive(1, '=alice')).toBe(true);
+    expect(s.isDccChatSecure(1, '=alice')).toBe(false);
+  });
+
+  // The lock is for a live session; the memory of its kind outlives it, so
+  // the "not connected" line can suggest the same kind again.
+  it('remembers an ended session was secure, until a plain one replaces it', () => {
+    const s = useNetworksStore();
+    s.applyDccChatState(1, 'bob', true, true);
+    s.applyDccChatState(1, 'Bob', false, true);
+    expect(s.states[1]!.dccChats).toEqual([]);
+    expect(s.isDccChatSecure(1, '=bob')).toBe(false);
+    expect(s.wasDccChatSecure(1, '=bob')).toBe(true);
+    s.applyDccChatState(1, 'bob', true);
+    expect(s.wasDccChatSecure(1, '=bob')).toBe(false);
+  });
+
+  // The snapshot lists only LIVE secure sessions, and replaces the state: the
+  // memory of an ended one has to be carried over by hand.
+  it('keeps the memory across a snapshot, unless it shows a plain session now', () => {
+    const s = useNetworksStore();
+    s.applyDccChatState(1, 'bob', true, true);
+    s.applyDccChatState(1, 'bob', false, true);
+    s.applySnapshot([{ networkId: 1, channels: [], dccChats: [], dccSecureChats: [] }]);
+    expect(s.wasDccChatSecure(1, '=bob')).toBe(true);
+    s.applySnapshot([{ networkId: 1, channels: [], dccChats: ['bob'], dccSecureChats: [] }]);
+    expect(s.wasDccChatSecure(1, '=bob')).toBe(false);
+    // And a live secure one in the snapshot is not listed twice.
+    s.applyDccChatState(1, 'bob', false, true);
+    s.applySnapshot([{ networkId: 1, channels: [], dccChats: ['bob'], dccSecureChats: ['bob'] }]);
+    expect(s.states[1]!.dccSecureChats).toEqual(['bob']);
+  });
+});

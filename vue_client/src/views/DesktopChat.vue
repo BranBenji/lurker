@@ -207,8 +207,8 @@
               v-if="dcc.canSend"
               type="button"
               class="link"
-              title="Send file (DCC)"
-              aria-label="Send file (DCC)"
+              :title="dmSendLabel"
+              :aria-label="dmSendLabel"
               @click="sendDmFile"
             >
               <FileUpIcon />
@@ -553,11 +553,24 @@ function openDmNote() {
   nickNotes.openEditor(active.value.networkId, active.value.target);
 }
 // Send this peer a file over DCC (#1085): the DCC window, picking one for them.
-// A `=nick` chat's peer is the nick.
+// A `=nick` chat's peer is the nick. In a secure chat's buffer the file goes
+// the same way (#1157): one button, and it follows the conversation it sits
+// on; the menus carry both kinds.
+const dmSendSecure = computed(() => {
+  const a = active.value;
+  return !!a && isDccChatTarget(a.target) && networks.isDccChatSecure(a.networkId, a.target);
+});
+const dmSendLabel = computed(() =>
+  dmSendSecure.value ? 'Send file (secure DCC)' : 'Send file (DCC)',
+);
 function sendDmFile() {
   if (!active.value) return;
   const t = active.value.target;
-  dcc.openSendTo(active.value.networkId, isDccChatTarget(t) ? dccChatPeer(t) : t);
+  dcc.openSendTo(
+    active.value.networkId,
+    isDccChatTarget(t) ? dccChatPeer(t) : t,
+    dmSendSecure.value,
+  );
 }
 
 // Channel notification level (always/highlights/nothing/muted) now lives in the

@@ -36,6 +36,10 @@
         <button class="link inline" :disabled="!!dcc.uploading" @click="chooseUpload">
           upload one…
         </button>
+        <!-- The one place every route to the pick (a menu, the DM's button,
+             `/dcc send`) can choose the kind (#1157); a secure entry arrives
+             with it on. -->
+        <label class="secure"><input v-model="dcc.pick.secure" type="checkbox" /> secure</label>
       </span>
       <button class="link" @click="dcc.pick = null">cancel</button>
     </div>
@@ -177,6 +181,9 @@
                 {{ n.name }}
               </option>
             </select>
+            <label class="secure"
+              ><input v-model="sendingTo.secure" type="checkbox" /> secure</label
+            >
             <button
               class="link"
               type="submit"
@@ -551,7 +558,13 @@ const connectedNetworks = computed(() =>
 );
 
 // The row whose Send to… is open, and what it holds.
-const sendingTo = ref<{ fileId: number; nick: string; networkId: number } | null>(null);
+const sendingTo = ref<{
+  fileId: number;
+  nick: string;
+  networkId: number;
+  /** Over TLS, an SSEND (#1157). */
+  secure: boolean;
+} | null>(null);
 
 function fileActions(f: DccFile): RowAction[] {
   if (dcc.pick) {
@@ -580,7 +593,7 @@ function startSendTo(f: DccFile) {
   const active = networks.activeBuffer?.networkId;
   const list = connectedNetworks.value;
   const networkId = list.some((n) => n.id === active) ? active! : list[0].id;
-  sendingTo.value = { fileId: f.id, nick: '', networkId };
+  sendingTo.value = { fileId: f.id, nick: '', networkId, secure: false };
 }
 
 function onSendTo(f: DccFile) {
@@ -588,7 +601,7 @@ function onSendTo(f: DccFile) {
   if (!to || !to.nick.trim()) return;
   // Active or passive is the server's call: passive when it can't listen (#1154).
   dcc
-    .sendFile(to.networkId, to.nick.trim(), f.id)
+    .sendFile(to.networkId, to.nick.trim(), f.id, false, to.secure)
     .then(() => {
       sendingTo.value = null;
     })
@@ -703,6 +716,15 @@ async function onUploadChosen(e: Event) {
 .err {
   margin-top: var(--space-2);
   overflow-wrap: anywhere;
+}
+/* The kind of send, beside the pick's prompt and the Send to… form. */
+label.secure {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: var(--space-4);
+  color: var(--fg-muted);
+  cursor: pointer;
 }
 .pick {
   display: flex;

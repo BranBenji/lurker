@@ -64,6 +64,12 @@ export interface NetworkState {
   // by every snapshot — including a disconnected network's, since a chat socket
   // outlives the IRC link — and kept current by `dcc-chat-state` events.
   dccChats?: string[];
+  // Peers whose current or LAST session was over TLS (an SCHAT, #1157): the
+  // status bar's lock while live, and the "/dcc chat -secure" suggestion once
+  // it has ended, so re-offering does not quietly drop to plain. The snapshot
+  // lists only the live ones; an ended one is remembered here across
+  // snapshots until a plain session with that peer replaces it.
+  dccSecureChats?: string[];
   // Peers whose DCC chat offer to us is still awaiting an answer. Used to
   // retire an offer toast whose offer disappeared while this tab was offline.
   dccChatOffers?: string[];
@@ -209,6 +215,20 @@ export const useNetworksStore = defineStore('networks', {
         const peer = dccChatPeer(target).toLowerCase();
         return (state.states[networkId]?.dccChats ?? []).some((n) => n.toLowerCase() === peer);
       },
+    // Whether the current or last session with that peer was over TLS (#1157).
+    wasDccChatSecure:
+      (state) =>
+      (networkId: number | string, target: string): boolean => {
+        const peer = dccChatPeer(target).toLowerCase();
+        return (state.states[networkId]?.dccSecureChats ?? []).some(
+          (n) => n.toLowerCase() === peer,
+        );
+      },
+    // Whether that live session is over TLS (#1157).
+    isDccChatSecure(): (networkId: number | string, target: string) => boolean {
+      return (networkId, target) =>
+        this.isDccChatLive(networkId, target) && this.wasDccChatSecure(networkId, target);
+    },
     activeBuffer(state): ActiveBuffer | null {
       if (!state.activeKey) return null;
       // Virtual buffers (:system:) use a flat sentinel key (no `::`).
@@ -335,7 +355,19 @@ export const useNetworksStore = defineStore('networks', {
     },
     applySnapshot(networks: NetworkState[]) {
       const map: Record<number | string, NetworkState> = {};
-      for (const snap of networks) map[snap.networkId] = snap;
+      for (const snap of networks) {
+        // The snapshot's secure list is the LIVE secure sessions. Keep what we
+        // remember of ended ones (#1157), unless the snapshot shows a plain
+        // session with that peer now.
+        const has = (list: string[] | undefined, nick: string) =>
+          (list ?? []).some((n) => n.toLowerCase() === nick.toLowerCase());
+        const remembered = (this.states[snap.networkId]?.dccSecureChats ?? []).filter(
+          (n) => !has(snap.dccSecureChats, n) && !has(snap.dccChats, n),
+        );
+        map[snap.networkId] = remembered.length
+          ? { ...snap, dccSecureChats: [...(snap.dccSecureChats ?? []), ...remembered] }
+          : snap;
+      }
       this.states = map;
     },
     applyState(event: any) {
@@ -401,12 +433,23 @@ export const useNetworksStore = defineStore('networks', {
       };
       this.states[networkId] = { ...existing, peerPresence };
     },
-    applyDccChatState(networkId: number | string, nick: string, live: boolean) {
+    applyDccChatState(networkId: number | string, nick: string, live: boolean, secure = false) {
       if (!networkId || !nick) return;
       const existing = this.states[networkId] || { networkId: Number(networkId), channels: [] };
       const lower = nick.toLowerCase();
       const others = (existing.dccChats ?? []).filter((n) => n.toLowerCase() !== lower);
-      this.states[networkId] = { ...existing, dccChats: live ? [...others, nick] : others };
+      const otherSecure = (existing.dccSecureChats ?? []).filter((n) => n.toLowerCase() !== lower);
+      // An ended session keeps its kind on record; a new one sets it.
+      const secureChats = !live
+        ? (existing.dccSecureChats ?? [])
+        : secure
+          ? [...otherSecure, nick]
+          : otherSecure;
+      this.states[networkId] = {
+        ...existing,
+        dccChats: live ? [...others, nick] : others,
+        dccSecureChats: secureChats,
+      };
     },
     applyLag(event: any) {
       const existing = this.states[event.networkId] || { networkId: event.networkId, channels: [] };

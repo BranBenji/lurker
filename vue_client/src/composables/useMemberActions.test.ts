@@ -12,6 +12,8 @@ vi.mock('./useSocket.js', () => ({
 
 import { useMemberActions } from './useMemberActions.js';
 import { useNetworksStore } from '../stores/networks.js';
+import { useConfigStore } from '../stores/config.js';
+import { useDccStore } from '../stores/dcc.js';
 import { parseModeSpec } from '../../../shared/channelModes.js';
 
 function labelsFor(selfModes: string[]): string[] {
@@ -80,5 +82,48 @@ describe('useMemberActions Reply', () => {
     expect(labelsIn(null)).toContain('Reply to alice');
     expect(labelsIn('alice')).not.toContain('Reply to alice');
     expect(labelsIn('=alice')).not.toContain('Reply to alice');
+  });
+});
+
+// The DCC entries on a person (#1085, #1157): chat and send, plain and secure,
+// each pair gated on its grant. KVIrc's menu minus its reverse entries.
+describe('useMemberActions DCC entries', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  function grant(chat: boolean, send: boolean): void {
+    useConfigStore().features.dcc = true;
+    useDccStore().account = { chat, receive: true, send };
+  }
+  const dccLabels = (isSelf = false) =>
+    useMemberActions()
+      .buildItems(
+        { nick: 'alice', modes: [] },
+        { networkId: 1, isSelf: () => isSelf, onIgnore: () => {}, channel: '#chan', selfModes: [] },
+      )
+      .map((i) => i.label ?? '')
+      .filter((l) => l.includes('(DCC)'));
+
+  it('offers chat and send, plain and secure, in that order', () => {
+    grant(true, true);
+    expect(dccLabels()).toEqual([
+      'Chat (DCC)',
+      'Secure Chat (DCC)',
+      'Send File (DCC)…',
+      'Secure Send File (DCC)…',
+    ]);
+  });
+
+  it('gates each pair on its own grant', () => {
+    grant(true, false);
+    expect(dccLabels()).toEqual(['Chat (DCC)', 'Secure Chat (DCC)']);
+    grant(false, true);
+    expect(dccLabels()).toEqual(['Send File (DCC)…', 'Secure Send File (DCC)…']);
+    grant(false, false);
+    expect(dccLabels()).toEqual([]);
+  });
+
+  it('offers none of it on yourself', () => {
+    grant(true, true);
+    expect(dccLabels(true)).toEqual([]);
   });
 });

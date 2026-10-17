@@ -149,3 +149,13 @@ export function secureAcceptedDccSocket(
     });
   });
 }
+
+/** " (TLSv1.2, ADH-AES256-GCM-SHA384)" for a TLS socket, for the line that says
+ *  a secure chat connected — the suite is the one fact worth printing, since
+ *  nothing verified the other side. Empty for a plain socket, or one whose
+ *  handshake has not settled. */
+export function describeDccTls(socket: net.Socket): string {
+  if (!(socket instanceof tls.TLSSocket)) return '';
+  const parts = [socket.getProtocol(), socket.getCipher()?.name].filter((p): p is string => !!p);
+  return parts.length ? ` (${parts.join(', ')})` : '';
+}

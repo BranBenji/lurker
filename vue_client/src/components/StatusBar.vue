@@ -45,6 +45,16 @@
         <span v-if="peerStatusLabel" class="seg peer-status" :class="peerStatusClass">{{
           peerStatusLabel
         }}</span>
+        <!-- A DCC chat over TLS (#1157) says so for as long as it is up, since
+             the connected line that named the cipher scrolls away. -->
+        <span
+          v-if="dccChatSecure"
+          class="seg secure"
+          role="img"
+          aria-label="Secure DCC chat"
+          title="Secure DCC chat: this session is over TLS"
+          ><LockIcon aria-hidden="true" /><span v-if="!compact">secure</span></span
+        >
         <span v-if="lagLabel && !compact" class="seg lag" :class="lagClass">{{ lagLabel }}</span>
         <!-- Lines still to go out on this network (#1149): a long paste or a
              handshake burst is sent paced rather than all at once, and this is
@@ -243,6 +253,7 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   KeyboardIcon,
+  LockIcon,
   PaletteIcon,
   PaperclipIcon,
   ReplyIcon,
@@ -447,10 +458,22 @@ const dccChatDown = computed(() => {
   if (!a || !isDccChatTarget(a.target)) return false;
   return !networks.isDccChatLive(a.networkId, a.target);
 });
+// The lock for a live chat over TLS. Live only: a dead secure chat is just a
+// dead chat, and the "not connected" line above already covers it.
+const dccChatSecure = computed(() => {
+  const a = active.value;
+  if (!a || !isDccChatTarget(a.target)) return false;
+  return networks.isDccChatSecure(a.networkId, a.target);
+});
 const peerStatusLabel = computed(() => {
   if (dccChatDown.value) {
-    const peer = dccChatPeer(active.value!.target);
-    return `DCC chat with ${peer} is not connected — /dcc chat ${peer} to start a new one`;
+    const a = active.value!;
+    const peer = dccChatPeer(a.target);
+    // A secure chat suggests a secure re-offer (#1157): `/dcc chat` alone
+    // would start the next one in the clear.
+    return networks.wasDccChatSecure(a.networkId, a.target)
+      ? `Secure DCC chat with ${peer} is not connected — /dcc chat -secure ${peer} to start a new one`
+      : `DCC chat with ${peer} is not connected — /dcc chat ${peer} to start a new one`;
   }
   const peer = peerForActive.value;
   if (!peer) return '';
@@ -704,6 +727,13 @@ function onToggleUploadMenu() {
 }
 .seg.dcc.muted {
   color: var(--fg-muted);
+}
+.seg.secure {
+  display: inline-flex;
+  align-items: center;
+  gap: 1ch;
+  color: var(--fg-muted);
+  flex-shrink: 0;
 }
 .seg.dcc .lucide,
 .seg.dcc .dcc-status,

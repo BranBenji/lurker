@@ -500,7 +500,7 @@ function applyEvent(event: any): boolean {
     }
     case 'dcc-chat-state': {
       const from = String(event.from ?? '');
-      if (from) networks.applyDccChatState(event.networkId, from, !!event.live);
+      if (from) networks.applyDccChatState(event.networkId, from, !!event.live, !!event.secure);
       break;
     }
     case 'dcc-chat-offer-closed': {

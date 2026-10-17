@@ -174,7 +174,6 @@ import {
   CircleQuestionMarkIcon,
   CopyIcon,
   EllipsisIcon,
-  FileUpIcon,
   InfoIcon,
   LoaderCircleIcon,
   LockIcon,
@@ -186,7 +185,7 @@ import {
   ShieldHalfIcon,
 } from '@lucide/vue';
 import type { LucideIcon } from '@lucide/vue';
-import { useDccStore } from '../stores/dcc.js';
+import { dccActionItems } from '../composables/dccActionItems.js';
 
 const props = defineProps<{
   nick: string;
@@ -199,7 +198,6 @@ const relayBots = useRelayBotsStore();
 const contextMenu = useContextMenu();
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
-const dcc = useDccStore();
 const ignoreOpen = ref(false);
 
 const isRelay = computed(() => relayBots.isRelay(props.networkId, props.nick));
@@ -433,16 +431,13 @@ function openMoreMenu(e: MouseEvent) {
   if (!isOffline.value && !isSelf.value) {
     items.push({ label: 'Ignore…', icon: BanIcon, onClick: onIgnore });
   }
-  // From the person, as on the nick menu (#1085).
-  if (!isOffline.value && !isSelf.value && dcc.canSend) {
-    items.push({
-      label: 'Send File (DCC)…',
-      icon: FileUpIcon,
-      onClick: () => {
-        whoisStore.closeViewer();
-        dcc.openSendTo(props.networkId, props.nick);
-      },
+  // The DCC section, as on the nick menu (#1085, #1157); the entries after it
+  // are their own group.
+  if (!isOffline.value && !isSelf.value) {
+    const section = dccActionItems(props.networkId, props.nick, {
+      before: () => whoisStore.closeViewer(),
     });
+    if (section.length) items.push(...section, { divider: true });
   }
   if (!isSelf.value) {
     // What it says is what it does, however long the menu stays open (#1136).

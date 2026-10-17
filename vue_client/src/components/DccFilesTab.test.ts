@@ -322,9 +322,31 @@ describe('DccFilesTab', () => {
     await form.find('select').trigger('change');
     await form.find('input.nick').setValue('  bob ');
     await form.trigger('submit');
-    // Active or passive is the server's call (#1154).
-    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(2, 'bob', 1));
+    // Active or passive is the server's call (#1154); secure is the user's (#1157).
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(2, 'bob', 1, false, false));
     await vi.waitFor(() => expect(w.find('form.send-to').exists()).toBe(false));
+  });
+
+  it('sends a kept file over TLS when the box is ticked (#1157)', async () => {
+    const dcc = useDccStore();
+    const networks = useNetworksStore();
+    networks.networks = [{ id: 1, name: 'rizon' }] as never;
+    networks.states = { 1: { networkId: 1, channels: [], state: 'connected' } } as never;
+    dcc.account = { chat: false, receive: true, send: true, canListen: false } as never;
+    dcc.filesLoaded = true;
+    dcc.files = [file(1, 'a.mkv')];
+    const send = vi.spyOn(dcc, 'sendFile').mockResolvedValue(row({}));
+    const w = mountTab();
+    await w.vm.$nextTick();
+    await w
+      .findAll('.acts .link')
+      .find((b) => b.text() === 'Send to…')!
+      .trigger('click');
+    const form = w.find('form.send-to');
+    await form.find('input.nick').setValue('bob');
+    await form.find('label.secure input').setValue(true);
+    await form.trigger('submit');
+    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(1, 'bob', 1, false, true));
   });
 
   it('counts partials and what is on the way, as the limit does (#1153)', async () => {
@@ -418,6 +440,12 @@ describe('DccFilesTab', () => {
     const w = mountTab();
     await w.vm.$nextTick();
     expect(w.find('.pick').text()).toContain('Pick a file to send to bob');
+    // The pick's kind can be changed here, whatever route opened it (#1157).
+    const secure = w.find('.pick label.secure input');
+    expect((secure.element as HTMLInputElement).checked).toBe(false);
+    await secure.setValue(true);
+    expect(dcc.pick!.secure).toBe(true);
+    await secure.setValue(false);
     await w
       .findAll('.acts .link')
       .find((b) => b.text() === 'Send')!

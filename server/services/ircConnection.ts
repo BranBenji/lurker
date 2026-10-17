@@ -173,7 +173,7 @@ import {
   openDccListener,
   type DccListenHandle,
 } from './dccListener.js';
-import { dialDccPeer } from './dccTls.js';
+import { describeDccTls, dialDccPeer } from './dccTls.js';
 import {
   dccChatHostFor,
   dccChatKey,
@@ -8742,6 +8742,13 @@ export class IrcConnection {
     return Array.from(this.dccChats.values(), (e) => e.nick);
   }
 
+  /** Of those, the ones over TLS (an SCHAT, #1157). */
+  liveSecureDccChatPeers(): string[] {
+    return Array.from(this.dccChats.values())
+      .filter((e) => e.secure)
+      .map((e) => e.nick);
+  }
+
   // Tell the client whether the `=nick` buffer has a live session behind it, so
   // it can say so the way a DM says its peer is offline. Ephemeral: the current
   // state also rides every snapshot (ircManager.snapshotForUser), which is what
@@ -9255,7 +9262,14 @@ export class IrcConnection {
     // does (dcc.c:300-312).
     registerDccChatHost(dccChatKey(this.network.user_id, this.network.id), this);
     chat.start();
-    this.dccChatNotice(nick, `${secure ? 'Secure DCC chat' : 'DCC chat'} with ${nick} connected.`);
+    // Name the suite for a secure chat, as KVIrc does: the one line that says
+    // what the TLS actually is, since nothing verified the other side.
+    this.dccChatNotice(
+      nick,
+      secure
+        ? `Secure DCC chat with ${nick} connected${describeDccTls(socket)}.`
+        : `DCC chat with ${nick} connected.`,
+    );
     this.publishDccChatState(nick, true, secure);
   }
 

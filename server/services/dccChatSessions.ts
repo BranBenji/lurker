@@ -34,6 +34,8 @@ export interface DccChatHost {
   hasDccChat(nick: string): boolean;
   /** Display nicks of every peer with a live session right now. */
   liveDccChatPeers(): string[];
+  /** Of those, the ones over TLS (#1157). */
+  liveSecureDccChatPeers(): string[];
   dccChatSend(nick: string, text: string, opts?: { action?: boolean }): boolean;
   closeDccChat(nick: string): boolean;
   /** End every session this host owns — for network/user teardown. */
