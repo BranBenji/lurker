@@ -31,7 +31,7 @@ export function metaParts(
 ): Array<{ text: string; tone?: 'good' | 'bad' | null; class?: string }> {
   const out: Array<{ text: string; tone?: 'good' | 'bad' | null; class?: string }> = [];
   for (const p of parts) {
-    if (p === false || p == null || p === '') continue;
+    if (!p) continue;
     out.push(typeof p === 'object' ? p : { text: String(p) });
   }
   return out;

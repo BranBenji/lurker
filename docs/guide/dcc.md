@@ -95,7 +95,8 @@ A file whose name carries no checksum says nothing: the size matched, but there
 was nothing more to check.
 
 A resumed file is read back and checked as a whole once it's complete. The DCC
-window says "checking the checksum" while that happens.
+window says "checking the checksum" while that happens. One Lurker couldn't read
+back says nothing either.
 
 ## Sending a file
 

@@ -72,10 +72,12 @@
       <div class="group">in progress</div>
       <section v-for="p in peers" :key="p.key" class="peer-block">
         <div class="peer-head">
-          <span
-            ><span class="peer">{{ networkName(p.networkId) }}/{{ p.nick }}</span
-            ><span v-if="p.queued" class="muted"> · {{ p.queued }} queued</span></span
-          >
+          <MetaLine
+            :parts="[
+              { text: `${networkName(p.networkId)}/${p.nick}`, class: 'peer' },
+              p.queued && `${p.queued} queued`,
+            ]"
+          />
           <span v-if="p.queued && p.networkId != null" class="btn-bar">
             <button class="bad" @click="act(dcc.unqueueXdcc(p.networkId, p.nick, null))">
               Clear queue
@@ -97,7 +99,7 @@
                 <div class="bar">
                   <div class="fill" :style="{ width: percentReceived(t) + '%' }"></div>
                 </div>
-                <span class="sub">{{ progressText(t) }}</span>
+                <MetaLine class="sub" :parts="progressParts(t)" />
               </div>
               <div v-if="dcc.actionError[t.id]" class="err">{{ dcc.actionError[t.id] }}</div>
             </div>
@@ -143,7 +145,7 @@
     </div>
     <ul v-if="kept.length" class="list">
       <li v-for="f in kept" :key="f.id" class="row">
-        <div class="glyph" :class="crcNotes.get(f.id)?.tone === 'bad' ? 'bad' : 'muted'">
+        <div class="glyph" :class="crcNote(f)?.tone === 'bad' ? 'bad' : 'muted'">
           <FileIcon />
         </div>
         <div class="meta">
@@ -338,7 +340,6 @@ const peers = computed((): PeerBlock[] => {
 });
 
 const kept = computed(() => dcc.files.filter((f) => matches(f.name)));
-const crcNotes = computed(() => new Map(kept.value.map((f) => [f.id, crcNote(f)])));
 
 // What the account's files take on disk (#1153), as Settings → DCC counts it:
 // kept files, and what each transfer that still owns a path has written. The
@@ -420,9 +421,10 @@ function rowParts(t: DccTransfer): MetaPart[] {
     case 'rejected': {
       const at = t.advertised_size > 0 && t.received_bytes > 0 ? ` at ${percentReceived(t)}%` : '';
       const why = t.error ? `: ${t.error}` : '';
-      const resume =
-        holdsPartial(t) && t.pack == null ? ` · it resumes if ${t.peer_nick} sends it again` : '';
-      return [`${t.state === 'stalled' ? 'stalled' : 'failed'}${at}${why}${resume}`];
+      return [
+        `${t.state === 'stalled' ? 'stalled' : 'failed'}${at}${why}`,
+        holdsPartial(t) && t.pack == null && `it resumes if ${t.peer_nick} sends it again`,
+      ];
     }
     default:
       return [];
@@ -434,16 +436,16 @@ function showBar(t: DccTransfer): boolean {
   return endedButOpen(t) && t.received_bytes > 0 && t.advertised_size > 0;
 }
 
-function progressText(t: DccTransfer): string {
+function progressParts(t: DccTransfer): MetaPart[] {
   const rate = dcc.rates[t.id];
-  const parts = [`${percentReceived(t)}%`];
+  const parts: MetaPart[] = [`${percentReceived(t)}%`];
   if (rate && inFlight(t)) {
     parts.push(`${formatBytes(rate.bps)}/s`);
     if (rate.etaSeconds != null) parts.push(`${formatEta(rate.etaSeconds)} left`);
   } else if (t.advertised_size > 0) {
     parts.push(`${formatBytes(t.received_bytes)} of ${formatBytes(t.advertised_size)}`);
   }
-  return parts.join(' · ');
+  return parts;
 }
 
 function glyphIcon(t: DccTransfer): LucideIcon {
@@ -536,7 +538,7 @@ function crcNote(f: DccFile): { text: string; tone: 'good' | 'bad' } | null {
 }
 
 function fileParts(f: DccFile): MetaPart[] {
-  const note = crcNotes.value.get(f.id);
+  const note = crcNote(f);
   return [
     f.peer_nick ? `${networkName(f.network_id)}/${f.peer_nick}` : 'uploaded by you',
     formatBytes(f.size),
@@ -602,9 +604,12 @@ async function onUploadChosen(e: Event) {
   align-items: baseline;
   gap: var(--space-4);
   flex-wrap: wrap;
+  color: var(--fg-muted);
   padding-top: var(--space-4);
 }
-.peer {
+/* The pick's nick, and the peer in a block's head (a MetaLine part, hence :deep). */
+.peer,
+.peer-head :deep(.peer) {
   color: var(--fg);
   font-weight: 600;
 }

@@ -232,8 +232,8 @@ describe('DccFilesTab', () => {
     expect(text).toContain('checking the checksum');
     expect(text).toContain('offered to five, waiting for them to accept');
     expect(text).toContain('to six');
-    expect(text).toContain('50% · 50 B of 100 B');
-    expect(text).toContain('failed at 30% · it resumes if seven sends it again');
+    expect(text).toContain('50% | 50 B of 100 B');
+    expect(text).toContain('failed at 30% | it resumes if seven sends it again');
     const labels = w.findAll('.acts button').map((b) => b.text());
     expect(labels).toEqual(expect.arrayContaining(['Cancel', 'Withdraw', 'Delete partial']));
   });
@@ -276,7 +276,7 @@ describe('DccFilesTab', () => {
     dcc.rates = { 3: { bps: 2048, etaSeconds: 300 } } as never;
     const w = mountTab();
     await w.vm.$nextTick();
-    expect(w.text()).toContain('41% · 2.0 KB/s · 5m left');
+    expect(w.text()).toContain('41% | 2.0 KB/s | 5m left');
   });
 
   it("opens one row's ⋯ menu at a time, and closes it again", async () => {
