@@ -508,6 +508,9 @@ function metaLine(u: UploadRow): string {
    modal is the same shape — an extra border here just made it look like a different
    app. */
 .filters {
+  /* One vertical padding for the search field, the starred toggle and the kind
+     bar, so the three controls stand the same height. */
+  --control-pad: var(--space-3);
   display: flex;
   gap: var(--space-4);
   align-items: center;
@@ -550,7 +553,7 @@ function metaLine(u: UploadRow): string {
   width: 100%;
   /* Left padding is derived, not picked: where the icon starts, plus the icon's own
      width, plus one character of breathing room. */
-  padding: var(--space-4) var(--space-5) var(--space-4)
+  padding: var(--control-pad) var(--space-5) var(--control-pad)
     calc(var(--search-icon-inset) + var(--icon-size) + 1ch);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -567,10 +570,11 @@ function metaLine(u: UploadRow): string {
   appearance: none;
 }
 
-/* The kind chips and the starred toggle are .btn-bar choices (main.css); the
-   kinds a touch taller than a row's actions, as filter controls. */
-.kinds > button {
-  padding-block: var(--space-3);
+/* The kind chips and the starred toggle are .btn-bar choices (main.css), at the
+   filter row's control height. */
+.kinds > button,
+.starred > button {
+  padding-block: var(--control-pad);
 }
 .starred {
   /* Never squeezed by the search field growing. */
@@ -580,10 +584,6 @@ function metaLine(u: UploadRow): string {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  /* Matched to the input's height rather than left as a shorter chip floating
-     beside a taller box — same vertical padding, same border, so the two line
-     up as one row of controls. */
-  padding-block: var(--space-4);
 }
 .starred > button[aria-pressed='true'] .lucide {
   color: var(--warn);
