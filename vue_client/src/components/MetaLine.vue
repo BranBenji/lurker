@@ -18,7 +18,10 @@
   <span class="meta-line"
     ><template v-for="(p, i) in items" :key="i"
       ><span v-if="i > 0" class="sep">{{ ` ${META_SEPARATOR} ` }}</span
-      ><span :class="[p.class, p.tone]">{{ p.text }}</span></template
+      ><span :class="[p.class, p.tone]"
+        ><span v-if="p.prefix" class="prefix">{{ p.prefix }}</span
+        >{{ p.text }}</span
+      ></template
     ></span
   >
 </template>
@@ -34,6 +37,10 @@ const items = computed(() => metaParts(props.parts));
 <style scoped>
 .sep {
   color: var(--border);
+}
+.prefix {
+  color: var(--fg-muted);
+  font-weight: 400;
 }
 .good {
   color: var(--good);
