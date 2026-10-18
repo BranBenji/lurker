@@ -74,7 +74,7 @@
         <div class="peer-head">
           <MetaLine
             :parts="[
-              { prefix: `${networkName(p.networkId)}/`, text: p.nick, class: 'peer' },
+              { text: `${networkName(p.networkId)}/${p.nick}`, class: 'peer' },
               p.queued && `${p.queued} queued`,
             ]"
           />
@@ -381,7 +381,7 @@ function networkName(id: number | null): string {
 
 function offerParts(t: DccTransfer): MetaPart[] {
   return [
-    { prefix: `${networkName(t.network_id)}/`, text: t.peer_nick, class: 'nick' },
+    `${networkName(t.network_id)}/${t.peer_nick}`,
     t.advertised_size > 0 ? formatBytes(t.advertised_size) : '',
     // An SSEND (#1157): the peer asked for TLS, so the row says so.
     t.secure ? 'secure' : '',
@@ -540,9 +540,7 @@ function crcNote(f: DccFile): { text: string; tone: 'good' | 'bad' } | null {
 function fileParts(f: DccFile): MetaPart[] {
   const note = crcNote(f);
   return [
-    f.peer_nick
-      ? { prefix: `${networkName(f.network_id)}/`, text: f.peer_nick, class: 'nick' }
-      : 'uploaded by you',
+    f.peer_nick ? `${networkName(f.network_id)}/${f.peer_nick}` : 'uploaded by you',
     formatBytes(f.size),
     formatRelative(f.created_at),
     note && { ...note, class: 'crc' },
@@ -609,15 +607,11 @@ async function onUploadChosen(e: Event) {
   color: var(--fg-muted);
   padding-top: var(--space-4);
 }
-/* A nick is accent, as in the status bar: the pick's, a block head's (bold, as
-   the block's title) and a row's. The latter two are MetaLine parts, hence :deep. */
+/* The pick's nick, and the peer in a block's head (a MetaLine part, hence :deep). */
 .peer,
 .peer-head :deep(.peer) {
-  color: var(--accent);
+  color: var(--fg);
   font-weight: 600;
-}
-.sub :deep(.nick) {
-  color: var(--accent);
 }
 .muted {
   color: var(--fg-muted);

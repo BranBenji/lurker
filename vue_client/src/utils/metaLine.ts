@@ -16,21 +16,20 @@
  */
 export const META_SEPARATOR = '|';
 
-/** One fact on a meta line, as an object: the text, a muted prefix drawn before it
- *  (the "libera/" of "libera/Bot", as the status bar draws it), a tone, a class. */
-export interface MetaPartObject {
-  text: string;
-  prefix?: string;
-  tone?: 'good' | 'bad' | null;
-  class?: string;
-}
-
-/** One fact on a meta line. A falsy part isn't there. */
-export type MetaPart = string | number | false | null | undefined | MetaPartObject;
+/** One fact on a meta line. A falsy part isn't there; an object part can carry a tone. */
+export type MetaPart =
+  | string
+  | number
+  | false
+  | null
+  | undefined
+  | { text: string; tone?: 'good' | 'bad' | null; class?: string };
 
 /** The parts that are there, each as an object. */
-export function metaParts(parts: MetaPart[]): MetaPartObject[] {
-  const out: MetaPartObject[] = [];
+export function metaParts(
+  parts: MetaPart[],
+): Array<{ text: string; tone?: 'good' | 'bad' | null; class?: string }> {
+  const out: Array<{ text: string; tone?: 'good' | 'bad' | null; class?: string }> = [];
   for (const p of parts) {
     if (!p) continue;
     out.push(typeof p === 'object' ? p : { text: String(p) });
@@ -45,6 +44,6 @@ export function metaParts(parts: MetaPart[]): MetaPartObject[] {
  */
 export function joinMeta(parts: MetaPart[]): string {
   return metaParts(parts)
-    .map((p) => (p.prefix ?? '') + p.text)
+    .map((p) => p.text)
     .join(` ${META_SEPARATOR} `);
 }
