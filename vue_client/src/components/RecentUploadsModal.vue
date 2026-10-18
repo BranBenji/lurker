@@ -23,7 +23,7 @@
 -->
 
 <template>
-  <AppModal :word="view" :title="view" size="xl" fill-height @close="$emit('close')">
+  <AppModal :word="view" :title="title" size="xl" fill-height @close="$emit('close')">
     <div class="filters">
       <!-- Search and the starred toggle share a line. The toggle used to sit after
            the kind chips, where it had nowhere to go: those five fill the content
@@ -136,7 +136,8 @@
 
           <div class="name" :title="u.filename || u.url">{{ u.filename || '(pasted)' }}</div>
           <div class="sub" :title="metaLine(u)">
-            {{ u.removed ? 'Removed by moderation' : metaLine(u) }}
+            <template v-if="u.removed">Removed by moderation</template>
+            <MetaLine v-else :parts="metaParts(u)" />
           </div>
 
           <!-- Overlaid on the artwork (absolutely positioned, so source order is free)
@@ -215,12 +216,14 @@
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import AppModal from './AppModal.vue';
 import DccFilesTab from './DccFilesTab.vue';
+import MetaLine from './MetaLine.vue';
 import { useUploadsStore } from '../stores/uploads.js';
 import type { UploadItem, UploadKind } from '../stores/uploads.js';
 import { useMediaViewer } from '../composables/useMediaViewer.js';
 import { useCopyFeedback } from '../composables/useCopyFeedback.js';
 import { formatRelative } from '../utils/timestamp.js';
-import { joinMeta } from '../utils/metaLine.js';
+import { joinMeta, type MetaPart } from '../utils/metaLine.js';
+import { useDccStore } from '../stores/dcc.js';
 import { formatBytes } from '../utils/formatBytes.js';
 import { iconForMime } from '../utils/uploaders.js';
 import { mediaKindForUrl } from '../utils/uploadHostMatch.js';
@@ -264,6 +267,10 @@ const emit = defineEmits<{
 const uploads = useUploadsStore();
 
 const onDcc = computed(() => props.view === 'dcc');
+const dcc = useDccStore();
+// Picking a file for a secure send (#1157) names the window after it, since the
+// pick's kind is set by the menu entry that opened it and shown nowhere else.
+const title = computed(() => (onDcc.value && dcc.pick?.secure ? 'secure dcc' : props.view));
 // The DCC window filters what it already holds, so its search and chip are its
 // own, apart from the shares search the server answers.
 const dccQuery = ref('');
@@ -490,11 +497,11 @@ async function onDelete(u: UploadRow) {
 // the app's business, not the user's: it doesn't help you recognise a picture, and it
 // isn't actionable from here. When it matters — the file is gone, or can't be deleted
 // — that surfaces as its own state, not as a label on every tile.
+function metaParts(u: UploadRow): MetaPart[] {
+  return [u.created_at && formatRelative(u.created_at), u.byte_size && formatBytes(u.byte_size)];
+}
 function metaLine(u: UploadRow): string {
-  return joinMeta([
-    u.created_at && formatRelative(u.created_at),
-    u.byte_size && formatBytes(u.byte_size),
-  ]);
+  return joinMeta(metaParts(u));
 }
 </script>
 

@@ -16,12 +16,34 @@
  */
 export const META_SEPARATOR = '|';
 
+/** One fact on a meta line. A falsy part isn't there; an object part can carry a tone. */
+export type MetaPart =
+  | string
+  | number
+  | false
+  | null
+  | undefined
+  | { text: string; tone?: 'good' | 'bad' | null; class?: string };
+
+/** The parts that are there, each as an object. */
+export function metaParts(
+  parts: MetaPart[],
+): Array<{ text: string; tone?: 'good' | 'bad' | null; class?: string }> {
+  const out: Array<{ text: string; tone?: 'good' | 'bad' | null; class?: string }> = [];
+  for (const p of parts) {
+    if (p === false || p == null || p === '') continue;
+    out.push(typeof p === 'object' ? p : { text: String(p) });
+  }
+  return out;
+}
+
 /**
- * Join the parts of a meta line, dropping the ones that aren't there.
- *
- * Built in JS rather than as adjacent template spans because Vue's whitespace
- * condensing strips the gaps between those, and the separator needs its spaces.
+ * Join the parts of a meta line as plain text, for a notification title or a
+ * line typed into the buffer. In a template, `<MetaLine>` renders the same parts
+ * with the separators dimmed.
  */
-export function joinMeta(parts: Array<string | number | false | null | undefined>): string {
-  return parts.filter(Boolean).join(` ${META_SEPARATOR} `);
+export function joinMeta(parts: MetaPart[]): string {
+  return metaParts(parts)
+    .map((p) => p.text)
+    .join(` ${META_SEPARATOR} `);
 }

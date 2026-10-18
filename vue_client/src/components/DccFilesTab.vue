@@ -13,8 +13,9 @@
                      block is its XDCC queue: the pack out, then the packs
                      waiting, each removable, and Clear queue. A pack that
                      ended without its file stays until you Retry or dismiss it.
-    kept             the files the account keeps (#1133): Download, Send to…,
-                     Delete. `/dcc send <nick>` opens this picking one (#1086).
+    kept             the files the account keeps (#1133): Download, Delete.
+                     Sending one starts from a nick's or DM's menu, which opens
+                     this picking a file (#1086).
 
   Search and the type chips come from the window's filter bar. On a phone a
   row's actions sit behind ⋯, except an offer's and a queued pack's, which are
@@ -36,10 +37,6 @@
         <button class="link inline" :disabled="!!dcc.uploading" @click="chooseUpload">
           upload one…
         </button>
-        <!-- The one place every route to the pick (a menu, the DM's button,
-             `/dcc send`) can choose the kind (#1157); a secure entry arrives
-             with it on. -->
-        <label class="secure"><input v-model="dcc.pick.secure" type="checkbox" /> secure</label>
       </span>
       <button class="link" @click="dcc.pick = null">cancel</button>
     </div>
@@ -56,7 +53,7 @@
           <div class="glyph warn"><ArrowDownIcon /></div>
           <div class="meta">
             <div class="name">{{ t.filename }}</div>
-            <div class="sub">{{ offerLine(t) }}</div>
+            <div class="sub"><MetaLine :parts="offerParts(t)" /></div>
             <div v-if="dcc.actionError[t.id]" class="err">{{ dcc.actionError[t.id] }}</div>
           </div>
           <div class="acts">
@@ -76,8 +73,7 @@
       <section v-for="p in peers" :key="p.key" class="peer-block">
         <div class="peer-head">
           <span
-            ><span class="peer">{{ p.nick }}</span>
-            <span class="muted"> · {{ networkName(p.networkId) }}</span
+            ><span class="peer">{{ networkName(p.networkId) }}/{{ p.nick }}</span
             ><span v-if="p.queued" class="muted"> · {{ p.queued }} queued</span></span
           >
           <button
@@ -98,7 +94,7 @@
             <div class="glyph" :class="glyphClass(t)"><component :is="glyphIcon(t)" /></div>
             <div class="meta">
               <div class="name">{{ rowName(t) }}</div>
-              <div v-if="rowLine(t)" class="sub">{{ rowLine(t) }}</div>
+              <div v-if="rowParts(t).length" class="sub"><MetaLine :parts="rowParts(t)" /></div>
               <div v-if="showBar(t)" class="bar-row">
                 <div class="bar">
                   <div class="fill" :style="{ width: percentReceived(t) + '%' }"></div>
@@ -147,7 +143,7 @@
 
     <div class="group">
       <span>kept</span>
-      <span v-if="dcc.files.length || usedBytes > 0">{{ storageLine }}</span>
+      <MetaLine v-if="dcc.files.length || usedBytes > 0" :parts="storageParts" />
     </div>
     <ul v-if="kept.length" class="list">
       <li v-for="f in kept" :key="f.id" class="row">
@@ -156,43 +152,7 @@
         </div>
         <div class="meta">
           <div class="name">{{ f.name }}</div>
-          <div class="sub">
-            <span>{{ fileLine(f) }}</span>
-            <span v-if="crcNotes.get(f.id)">{{ ` ${META_SEPARATOR} ` }}</span>
-            <span v-if="crcNotes.get(f.id)" class="crc" :class="crcNotes.get(f.id)!.tone">{{
-              crcNotes.get(f.id)!.text
-            }}</span>
-          </div>
-          <form v-if="sendingTo?.fileId === f.id" class="send-to" @submit.prevent="onSendTo(f)">
-            <input
-              v-model="sendingTo.nick"
-              class="nick"
-              placeholder="nick"
-              aria-label="nick to send to"
-              autofocus
-              @keydown.esc.stop="sendingTo = null"
-            />
-            <select
-              v-if="connectedNetworks.length > 1"
-              v-model="sendingTo.networkId"
-              aria-label="network"
-            >
-              <option v-for="n in connectedNetworks" :key="n.id" :value="n.id">
-                {{ n.name }}
-              </option>
-            </select>
-            <label class="secure"
-              ><input v-model="sendingTo.secure" type="checkbox" /> secure</label
-            >
-            <button
-              class="link"
-              type="submit"
-              :disabled="dcc.fileBusy[f.id] || !sendingTo.nick.trim()"
-            >
-              send
-            </button>
-            <button class="link" type="button" @click="sendingTo = null">cancel</button>
-          </form>
+          <div class="sub"><MetaLine :parts="fileParts(f)" /></div>
           <div v-if="dcc.fileError[f.id]" class="err">{{ dcc.fileError[f.id] }}</div>
         </div>
         <div class="acts" :class="{ always: !!dcc.pick }">
@@ -257,7 +217,8 @@ import { useNetworksStore } from '../stores/networks.js';
 import { isXdccPlaceholder } from '../../../shared/xdcc.js';
 import type { UploadKind } from '../stores/uploads.js';
 import { formatRelative } from '../utils/timestamp.js';
-import { META_SEPARATOR, joinMeta } from '../utils/metaLine.js';
+import type { MetaPart } from '../utils/metaLine.js';
+import MetaLine from './MetaLine.vue';
 import { formatBytes } from '../utils/formatBytes.js';
 import {
   ArrowDownIcon,
@@ -408,14 +369,14 @@ const comingBytes = computed(() =>
     0,
   ),
 );
-const storageLine = computed(() => {
+const storageParts = computed((): MetaPart[] => {
   const used = usedBytes.value;
   const limit = dcc.account?.limitBytes;
-  return joinMeta([
+  return [
     limit ? `${formatBytes(used)} of ${formatBytes(limit)}` : formatBytes(used),
     partialBytes.value > 0 && `${formatBytes(partialBytes.value)} in partials`,
     comingBytes.value > 0 && `${formatBytes(comingBytes.value)} on the way`,
-  ]);
+  ];
 });
 
 function networkName(id: number | null): string {
@@ -423,15 +384,14 @@ function networkName(id: number | null): string {
   return networks.networkById(id)?.name || `net:${id}`;
 }
 
-function offerLine(t: DccTransfer): string {
-  return joinMeta([
-    `from ${t.peer_nick}`,
-    networkName(t.network_id),
+function offerParts(t: DccTransfer): MetaPart[] {
+  return [
+    `${networkName(t.network_id)}/${t.peer_nick}`,
     t.advertised_size > 0 ? formatBytes(t.advertised_size) : '',
     // An SSEND (#1157): the peer asked for TLS, so the row says so.
     t.secure ? 'secure' : '',
     formatRelative(t.created_at),
-  ]);
+  ];
 }
 
 function rowName(t: DccTransfer): string {
@@ -440,29 +400,26 @@ function rowName(t: DccTransfer): string {
   return t.filename;
 }
 
-function rowLine(t: DccTransfer): string {
+function rowParts(t: DccTransfer): MetaPart[] {
   switch (t.state) {
     case 'queued':
-      return '';
+      return [];
     case 'requested':
-      return t.bot_acked_at ? "in the bot's queue" : 'asked, waiting for an answer';
+      return [t.bot_acked_at ? "in the bot's queue" : 'asked, waiting for an answer'];
     case 'connecting':
-      return joinMeta([t.pack != null ? `#${t.pack}` : '', 'connecting']);
+      return [t.pack != null ? `#${t.pack}` : '', 'connecting'];
     case 'verifying':
-      return 'checking the checksum';
+      return ['checking the checksum'];
     case 'offered':
-      return joinMeta([
-        `offered to ${t.peer_nick}, waiting for them to accept`,
-        t.secure ? 'secure' : '',
-      ]);
+      return [`offered to ${t.peer_nick}, waiting for them to accept`, t.secure ? 'secure' : ''];
     case 'receiving':
     case 'sending':
-      return joinMeta([
+      return [
         t.pack != null ? `#${t.pack}` : '',
         t.direction === 'send' ? `to ${t.peer_nick}` : '',
         t.secure ? 'secure' : '',
         t.attempt === 2 ? 'second try' : '',
-      ]);
+      ];
     case 'stalled':
     case 'failed':
     case 'cancelled':
@@ -471,10 +428,10 @@ function rowLine(t: DccTransfer): string {
       const why = t.error ? `: ${t.error}` : '';
       const resume =
         holdsPartial(t) && t.pack == null ? ` · it resumes if ${t.peer_nick} sends it again` : '';
-      return `${t.state === 'stalled' ? 'stalled' : 'failed'}${at}${why}${resume}`;
+      return [`${t.state === 'stalled' ? 'stalled' : 'failed'}${at}${why}${resume}`];
     }
     default:
-      return '';
+      return [];
   }
 }
 
@@ -552,28 +509,11 @@ function rowActions(t: DccTransfer): RowAction[] {
   return out;
 }
 
-// The networks a file can go out on: those connected now.
-const connectedNetworks = computed(() =>
-  networks.networks.filter((n) => networks.states[n.id]?.state === 'connected'),
-);
-
-// The row whose Send to… is open, and what it holds.
-const sendingTo = ref<{
-  fileId: number;
-  nick: string;
-  networkId: number;
-  /** Over TLS, an SSEND (#1157). */
-  secure: boolean;
-} | null>(null);
-
 function fileActions(f: DccFile): RowAction[] {
   if (dcc.pick) {
     return [{ label: 'Send', tone: 'good', run: () => act(dcc.sendPicked(f.id)) }];
   }
   const out: RowAction[] = [];
-  if (dcc.account?.send && connectedNetworks.value.length) {
-    out.push({ label: 'Send to…', run: () => startSendTo(f) });
-  }
   out.push({ label: 'Download', run: () => act(dcc.downloadKeptFile(f.id)) });
   out.push({
     label: 'Delete',
@@ -587,52 +527,28 @@ function fileActions(f: DccFile): RowAction[] {
   return out;
 }
 
-function startSendTo(f: DccFile) {
-  openMenu.value = null;
-  // The network of the buffer in view, when it's connected; else the first.
-  const active = networks.activeBuffer?.networkId;
-  const list = connectedNetworks.value;
-  const networkId = list.some((n) => n.id === active) ? active! : list[0].id;
-  sendingTo.value = { fileId: f.id, nick: '', networkId, secure: false };
-}
-
-function onSendTo(f: DccFile) {
-  const to = sendingTo.value;
-  if (!to || !to.nick.trim()) return;
-  // Active or passive is the server's call: passive when it can't listen (#1154).
-  dcc
-    .sendFile(to.networkId, to.nick.trim(), f.id, false, to.secure)
-    .then(() => {
-      sendingTo.value = null;
-    })
-    .catch(() => {
-      /* error surfaced via dcc.fileError */
-    });
-}
-
-// How a received file checked out (#1082). A file with no CRC32 in its name
-// says nothing: there was nothing to check. A resumed one whose name carried a
-// CRC32 that couldn't be read back does say so, or it would pass for verified.
-function crcNote(f: DccFile): { text: string; tone: 'good' | 'bad' | null } | null {
+// How a received file checked out (#1082). Only an outcome gets a word: a file
+// with no CRC32 in its name, or a resumed one that couldn't be read back, says
+// nothing.
+function crcNote(f: DccFile): { text: string; tone: 'good' | 'bad' } | null {
   switch (f.crc_status) {
     case 'ok':
       return { text: 'Verified', tone: 'good' };
     case 'mismatch':
       return { text: 'Checksum mismatch', tone: 'bad' };
-    case 'unverified':
-      return { text: 'Not verified (resumed)', tone: null };
     default:
       return null;
   }
 }
 
-function fileLine(f: DccFile): string {
-  return joinMeta([
-    f.peer_nick ? `from ${f.peer_nick}` : 'uploaded by you',
-    f.peer_nick ? networkName(f.network_id) : '',
+function fileParts(f: DccFile): MetaPart[] {
+  const note = crcNotes.value.get(f.id);
+  return [
+    f.peer_nick ? `${networkName(f.network_id)}/${f.peer_nick}` : 'uploaded by you',
     formatBytes(f.size),
     formatRelative(f.created_at),
-  ]);
+    note && { ...note, class: 'crc' },
+  ];
 }
 
 // ⋯ on a phone: one row's menu open at a time.
@@ -716,15 +632,6 @@ async function onUploadChosen(e: Event) {
   margin-top: var(--space-2);
   overflow-wrap: anywhere;
 }
-/* The kind of send, beside the pick's prompt and the Send to… form. */
-label.secure {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-left: var(--space-4);
-  color: var(--fg-muted);
-  cursor: pointer;
-}
 .pick {
   display: flex;
   justify-content: space-between;
@@ -766,12 +673,6 @@ label.secure {
 }
 .glyph.muted {
   color: var(--fg-muted);
-}
-.crc.good {
-  color: var(--good);
-}
-.crc.bad {
-  color: var(--bad);
 }
 .meta {
   min-width: 0;
@@ -850,17 +751,6 @@ label.secure {
 }
 .menu {
   display: none;
-}
-.send-to {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-4);
-  margin-top: var(--space-2);
-}
-.send-to .nick {
-  width: 12em;
-  max-width: 100%;
 }
 .empty {
   padding: var(--space-9) 0;
