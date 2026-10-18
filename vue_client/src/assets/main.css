@@ -451,6 +451,23 @@ button:disabled {
   border-color: var(--bad);
   color: var(--bad);
 }
+/* A toggle (it carries aria-pressed) is muted until pressed, then reads as the
+   choice: --fg text, an accent border lifted over its neighbours, a soft fill.
+   An action stays accent, so a bar of choices and a bar of actions differ at
+   a glance. */
+.btn-bar > button[aria-pressed] {
+  color: var(--fg-muted);
+}
+.btn-bar > button[aria-pressed]:hover:not(:disabled) {
+  color: var(--fg);
+}
+.btn-bar > button[aria-pressed='true'] {
+  position: relative;
+  z-index: var(--z-raised);
+  color: var(--fg);
+  border-color: var(--accent);
+  background: var(--bg-soft);
+}
 /* On mobile, footer buttons that pair an icon with a text label collapse to
    icon-only to save room — wrap the label in <span class="label"> to opt in.
    Text-only buttons (no .label) keep their text.

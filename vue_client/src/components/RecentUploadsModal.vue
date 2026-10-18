@@ -48,24 +48,21 @@
              gifs") rather than replacing one, and sitting inside the All/Images/…
              row would imply the mutual exclusivity those have. Beside the search
              field it reads as what it is — another way to narrow the same list. -->
-        <button
-          v-if="!onDcc"
-          class="chip starred"
-          :class="{ active: uploads.favoritesOnly }"
-          :aria-pressed="uploads.favoritesOnly"
-          title="Show only starred uploads"
-          aria-label="Show only starred uploads"
-          @click="onToggleFavoritesFilter"
-        >
-          <StarIcon /><span class="label">Starred</span>
-        </button>
+        <span v-if="!onDcc" class="btn-bar starred">
+          <button
+            :aria-pressed="uploads.favoritesOnly"
+            title="Show only starred uploads"
+            aria-label="Show only starred uploads"
+            @click="onToggleFavoritesFilter"
+          >
+            <StarIcon /><span class="label">Starred</span>
+          </button>
+        </span>
       </div>
-      <div class="kinds" role="group" aria-label="Filter by type">
+      <div class="kinds btn-bar" role="group" aria-label="Filter by type">
         <button
           v-for="k in KIND_CHIPS"
           :key="k.value ?? 'all'"
-          class="chip"
-          :class="{ active: activeKind === k.value }"
           :aria-pressed="activeKind === k.value"
           @click="onKind(k.value)"
         >
@@ -570,37 +567,25 @@ function metaLine(u: UploadRow): string {
   appearance: none;
 }
 
-.kinds {
-  display: flex;
-  gap: var(--space-2);
+/* The kind chips and the starred toggle are .btn-bar choices (main.css); the
+   kinds a touch taller than a row's actions, as filter controls. */
+.kinds > button {
+  padding-block: var(--space-3);
 }
-.chip {
-  background: none;
-  border: 1px solid var(--border);
-  color: var(--fg-muted);
-  cursor: pointer;
-  font: inherit;
-  padding: var(--space-3) var(--space-4);
+.starred {
+  /* Never squeezed by the search field growing. */
+  flex: none;
 }
-.chip:hover {
-  color: var(--fg);
-}
-.chip.active {
-  color: var(--fg);
-  border-color: var(--accent);
-  background: var(--bg-soft);
-}
-.chip.starred {
+.starred > button {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  /* Never squeezed by the search field growing, and matched to the input's height
-     rather than left as a shorter chip floating beside a taller box — same vertical
-     padding, same border, so the two line up as one row of controls. */
-  flex: none;
+  /* Matched to the input's height rather than left as a shorter chip floating
+     beside a taller box — same vertical padding, same border, so the two line
+     up as one row of controls. */
   padding-block: var(--space-4);
 }
-.chip.starred.active .lucide {
+.starred > button[aria-pressed='true'] .lucide {
   color: var(--warn);
   fill: currentColor;
 }
@@ -609,10 +594,10 @@ function metaLine(u: UploadRow): string {
    star alone is unambiguous next to them, and the button keeps its aria-label, so
    dropping the word costs nothing but the pixels. */
 @media (max-width: 768px) {
-  .chip.starred {
+  .starred > button {
     gap: 0;
   }
-  .chip.starred .label {
+  .starred .label {
     display: none;
   }
 }
