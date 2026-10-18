@@ -412,6 +412,55 @@ button:disabled {
   opacity: 0.4;
   cursor: default;
 }
+
+/* Button bar — a list row's actions as one strip of compact outline buttons
+   that share their borders, the way the status bar's segments share a pipe:
+   chrome without weight. A neutral action is accent; a .good or .bad one
+   carries its tone. Hover lifts the text to --fg and the border to the
+   button's colour, as the action buttons above do. Used by the DCC window's
+   rows; any row of actions beside content can take the same class. */
+.btn-bar {
+  display: inline-flex;
+  align-items: stretch;
+}
+.btn-bar > button {
+  font: inherit;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  color: var(--accent);
+  padding: var(--space-2) var(--space-4);
+  white-space: nowrap;
+  cursor: pointer;
+}
+/* Neighbours overlap by a pixel so the strip has one border between them; the
+   hovered button rises so its coloured border shows on both sides. */
+.btn-bar > button + button {
+  margin-left: -1px;
+}
+.btn-bar > button:hover:not(:disabled) {
+  position: relative;
+  z-index: var(--z-raised);
+  border-color: var(--accent);
+  color: var(--fg);
+}
+.btn-bar > button.good {
+  color: var(--good);
+}
+.btn-bar > button.bad {
+  color: var(--bad);
+}
+.btn-bar > button.good:hover:not(:disabled) {
+  border-color: var(--good);
+}
+.btn-bar > button.bad:hover:not(:disabled) {
+  border-color: var(--bad);
+}
+.btn-bar > button:disabled {
+  opacity: 0.5;
+  color: var(--fg-muted);
+  cursor: default;
+}
 /* On mobile, footer buttons that pair an icon with a text label collapse to
    icon-only to save room — wrap the label in <span class="label"> to opt in.
    Text-only buttons (no .label) keep their text.

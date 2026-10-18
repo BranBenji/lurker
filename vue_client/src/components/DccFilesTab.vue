@@ -38,7 +38,7 @@
           upload one…
         </button>
       </span>
-      <button class="link" @click="dcc.pick = null">cancel</button>
+      <span class="btn-bar"><button @click="dcc.pick = null">cancel</button></span>
     </div>
     <p v-if="dcc.uploading" class="muted">
       Uploading {{ dcc.uploading.name }}… {{ dcc.uploading.percent }}%
@@ -56,11 +56,11 @@
             <div class="sub"><MetaLine :parts="offerParts(t)" /></div>
             <div v-if="dcc.actionError[t.id]" class="err">{{ dcc.actionError[t.id] }}</div>
           </div>
-          <div class="acts">
-            <button class="link good" :disabled="dcc.busy[t.id]" @click="act(dcc.accept(t.id))">
+          <div class="acts btn-bar">
+            <button class="good" :disabled="dcc.busy[t.id]" @click="act(dcc.accept(t.id))">
               Accept
             </button>
-            <button class="link bad" :disabled="dcc.busy[t.id]" @click="act(dcc.reject(t.id))">
+            <button class="bad" :disabled="dcc.busy[t.id]" @click="act(dcc.reject(t.id))">
               Decline
             </button>
           </div>
@@ -76,13 +76,11 @@
             ><span class="peer">{{ networkName(p.networkId) }}/{{ p.nick }}</span
             ><span v-if="p.queued" class="muted"> · {{ p.queued }} queued</span></span
           >
-          <button
-            v-if="p.queued && p.networkId != null"
-            class="link bad"
-            @click="act(dcc.unqueueXdcc(p.networkId, p.nick, null))"
-          >
-            Clear queue
-          </button>
+          <span v-if="p.queued && p.networkId != null" class="btn-bar">
+            <button class="bad" @click="act(dcc.unqueueXdcc(p.networkId, p.nick, null))">
+              Clear queue
+            </button>
+          </span>
         </div>
         <ul class="list">
           <li
@@ -103,11 +101,10 @@
               </div>
               <div v-if="dcc.actionError[t.id]" class="err">{{ dcc.actionError[t.id] }}</div>
             </div>
-            <div class="acts">
+            <div class="acts btn-bar">
               <button
                 v-for="a in rowActions(t)"
                 :key="a.label"
-                class="link"
                 :class="a.tone"
                 :disabled="dcc.busy[t.id]"
                 @click="a.run()"
@@ -124,11 +121,10 @@
             >
               <EllipsisIcon />
             </button>
-            <div v-if="openMenu === `t${t.id}`" class="menu">
+            <div v-if="openMenu === `t${t.id}`" class="menu btn-bar">
               <button
                 v-for="a in rowActions(t)"
                 :key="a.label"
-                class="link"
                 :class="a.tone"
                 :disabled="dcc.busy[t.id]"
                 @click="a.run()"
@@ -155,11 +151,10 @@
           <div class="sub"><MetaLine :parts="fileParts(f)" /></div>
           <div v-if="dcc.fileError[f.id]" class="err">{{ dcc.fileError[f.id] }}</div>
         </div>
-        <div class="acts" :class="{ always: !!dcc.pick }">
+        <div class="acts btn-bar" :class="{ always: !!dcc.pick }">
           <button
             v-for="a in fileActions(f)"
             :key="a.label"
-            class="link"
             :class="a.tone"
             :disabled="dcc.fileBusy[f.id]"
             @click="a.run()"
@@ -176,11 +171,10 @@
         >
           <EllipsisIcon />
         </button>
-        <div v-if="openMenu === `f${f.id}`" class="menu">
+        <div v-if="openMenu === `f${f.id}`" class="menu btn-bar">
           <button
             v-for="a in fileActions(f)"
             :key="a.label"
-            class="link"
             :class="a.tone"
             :disabled="dcc.fileBusy[f.id]"
             @click="a.run()"
@@ -707,47 +701,32 @@ async function onUploadChosen(e: Event) {
 .bar-row .sub {
   flex-shrink: 0;
 }
-.acts {
-  display: flex;
-  gap: var(--space-2);
-  align-items: center;
-}
-.link {
+/* "upload one…" sits inside the pick's sentence, so it reads as a link, not a
+   button; every other action in the window is a .btn-bar (main.css). */
+.link.inline {
   background: none;
   border: none;
   color: var(--accent);
   cursor: pointer;
   font: inherit;
-  padding: var(--space-2) var(--space-4);
-  white-space: nowrap;
-}
-.link:hover {
-  color: var(--fg);
-}
-.link:disabled {
-  color: var(--fg-muted);
-  cursor: default;
-}
-.link.good {
-  color: var(--good);
-}
-.link.bad {
-  color: var(--bad);
-}
-.link.good:hover:not(:disabled),
-.link.bad:hover:not(:disabled) {
-  color: var(--fg);
-}
-.link.inline {
   padding: 0;
 }
+.link.inline:hover {
+  color: var(--fg);
+}
+/* The ⋯ that folds a row's actions on a phone: the bar's look, one button. */
 .more {
   display: none;
   background: none;
-  border: none;
+  border: 1px solid var(--border);
   color: var(--fg-muted);
   cursor: pointer;
   padding: var(--space-2) var(--space-4);
+}
+.more:hover,
+.more[aria-expanded='true'] {
+  border-color: var(--accent);
+  color: var(--fg);
 }
 .menu {
   display: none;
@@ -771,11 +750,10 @@ async function onUploadChosen(e: Event) {
     display: none;
   }
   .menu {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-2) var(--space-4);
+    display: inline-flex;
     grid-column: 2 / 4;
-    padding-top: var(--space-2);
+    justify-self: start;
+    margin-top: var(--space-2);
   }
   .row.inline {
     grid-template-columns: max-content 1fr;

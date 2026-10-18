@@ -105,11 +105,11 @@ describe('DccFilesTab', () => {
     await w.vm.$nextTick();
     const remove = w
       .findAll('.row')[0]
-      .findAll('.acts .link')
+      .findAll('.acts button')
       .find((b) => b.text() === 'Remove')!;
     await remove.trigger('click');
     expect(h.api).toHaveBeenCalledWith('/api/dcc/4/cancel', { method: 'POST' });
-    const clear = w.findAll('.peer-head .link').find((b) => b.text() === 'Clear queue')!;
+    const clear = w.findAll('.peer-head button').find((b) => b.text() === 'Clear queue')!;
     await clear.trigger('click');
     expect(h.api).toHaveBeenCalledWith('/api/dcc/xdcc/remove', {
       method: 'POST',
@@ -123,7 +123,7 @@ describe('DccFilesTab', () => {
     const w = mountTab();
     await w.vm.$nextTick();
     expect(w.text()).toContain('failed: no response from Bot');
-    expect(w.findAll('.acts .link').map((b) => b.text())).toEqual(['Retry', 'Dismiss']);
+    expect(w.findAll('.acts button').map((b) => b.text())).toEqual(['Retry', 'Dismiss']);
     dcc.transfers = [...dcc.transfers, row({ id: 7, pack: 29, attempt: 2 })];
     await w.vm.$nextTick();
     expect(w.text()).not.toContain('no response');
@@ -181,7 +181,7 @@ describe('DccFilesTab', () => {
     ];
     const w = mountTab();
     await w.vm.$nextTick();
-    const [yes, no] = w.findAll('.row.inline .acts .link');
+    const [yes, no] = w.findAll('.row.inline .acts button');
     await yes.trigger('click');
     await no.trigger('click');
     expect(accept).toHaveBeenCalledWith(8);
@@ -234,7 +234,7 @@ describe('DccFilesTab', () => {
     expect(text).toContain('to six');
     expect(text).toContain('50% · 50 B of 100 B');
     expect(text).toContain('failed at 30% · it resumes if seven sends it again');
-    const labels = w.findAll('.acts .link').map((b) => b.text());
+    const labels = w.findAll('.acts button').map((b) => b.text());
     expect(labels).toEqual(expect.arrayContaining(['Cancel', 'Withdraw', 'Delete partial']));
   });
 
@@ -254,7 +254,7 @@ describe('DccFilesTab', () => {
     ];
     const w = mountTab();
     await w.vm.$nextTick();
-    const del = w.findAll('.acts .link').find((b) => b.text() === 'Delete partial')!;
+    const del = w.findAll('.acts button').find((b) => b.text() === 'Delete partial')!;
     await del.trigger('click');
     expect(clear).not.toHaveBeenCalled();
     await del.trigger('click');
@@ -369,7 +369,7 @@ describe('DccFilesTab', () => {
     );
     const w = mountTab();
     await w.vm.$nextTick();
-    const btn = (label: string) => w.findAll('.acts .link').find((b) => b.text() === label)!;
+    const btn = (label: string) => w.findAll('.acts button').find((b) => b.text() === label)!;
     await btn('Download').trigger('click');
     expect(download).toHaveBeenCalledWith(1);
     await btn('Delete').trigger('click');
@@ -389,7 +389,7 @@ describe('DccFilesTab', () => {
     await w.vm.$nextTick();
     expect(w.find('.pick').text()).toContain('Pick a file to send to bob');
     await w
-      .findAll('.acts .link')
+      .findAll('.acts button')
       .find((b) => b.text() === 'Send')!
       .trigger('click');
     expect(picked).toHaveBeenCalledWith(1);
@@ -404,7 +404,7 @@ describe('DccFilesTab', () => {
     await vi.waitFor(() => expect(picked).toHaveBeenLastCalledWith(9));
     expect(upload).toHaveBeenCalledWith(chosen);
 
-    await w.findAll('.pick > .link').at(-1)!.trigger('click');
+    await w.find('.pick .btn-bar button').trigger('click');
     expect(dcc.pick).toBeNull();
   });
 });
