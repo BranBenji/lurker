@@ -228,7 +228,7 @@ describe('DccFilesTab', () => {
     const text = w.text();
     expect(text).toContain('asked, waiting for an answer');
     expect(text).toContain("in the bot's queue");
-    expect(text).toContain('#3 • connecting');
+    expect(text).toContain('#3 | connecting');
     expect(text).toContain('checking the checksum');
     expect(text).toContain('offered to five, waiting for them to accept');
     expect(text).toContain('to six');
@@ -372,7 +372,7 @@ describe('DccFilesTab', () => {
     // Only the failed one is a partial Delete partial can free; the rest of
     // the one coming in is on the way, which the limit holds back too.
     expect(w.findAll('.group').at(-1)!.text()).toBe(
-      'kept4.0 KB of 10.0 KB • 1.0 KB in partials • 3.0 KB on the way',
+      'kept4.0 KB of 10.0 KB | 1.0 KB in partials | 3.0 KB on the way',
     );
 
     // With no kept files, partials alone still show.
@@ -381,10 +381,10 @@ describe('DccFilesTab', () => {
       row({ id: 5, state: 'failed', destination_path: '/d/a.mkv', received_bytes: 1024 }),
     ];
     await w.vm.$nextTick();
-    expect(w.findAll('.group').at(-1)!.text()).toBe('kept1.0 KB of 10.0 KB • 1.0 KB in partials');
+    expect(w.findAll('.group').at(-1)!.text()).toBe('kept1.0 KB of 10.0 KB | 1.0 KB in partials');
   });
 
-  it('says how each received file checked out, and nothing for an upload (#1082)', async () => {
+  it('says how a received file checked out when there was a checksum, and nothing for an upload (#1082)', async () => {
     const dcc = useDccStore();
     dcc.filesLoaded = true;
     dcc.files = [
@@ -398,15 +398,17 @@ describe('DccFilesTab', () => {
     await w.vm.$nextTick();
     const rows = w.findAll('.list .row');
     const note = (i: number) => rows[i]!.find('.crc');
-    expect(note(0).text()).toBe('checksum verified');
+    expect(note(0).text()).toBe('Verified');
     expect(note(0).classes()).toContain('good');
-    expect(note(1).text()).toBe('checksum mismatch');
+    expect(note(1).text()).toBe('Checksum mismatch');
     expect(note(1).classes()).toContain('bad');
     expect(rows[1]!.find('.glyph').classes()).toContain('bad');
-    expect(note(2).text()).toBe('not verified (no checksum)');
-    expect(note(3).text()).toBe('not verified (resumed)');
+    // No checksum in the name: nothing to check, nothing to say.
+    expect(note(2).exists()).toBe(false);
+    expect(rows[2]!.find('.sub').text()).toMatch(/from Bot \| .* ago$/);
+    expect(note(3).text()).toBe('Not verified (resumed)');
     expect(note(4).exists()).toBe(false);
-    expect(rows[0]!.find('.sub').text()).toMatch(/from Bot • .* • checksum verified$/);
+    expect(rows[0]!.find('.sub').text()).toMatch(/from Bot \| .* \| Verified$/);
   });
 
   it('downloads a kept file, and deletes it only once confirmed', async () => {

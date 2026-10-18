@@ -86,18 +86,17 @@ restart. Up to 500 packs can be queued in one command.
 
 Many release files carry a CRC32 checksum in their name, like
 `Show - 01 [1080p][A1B2C3D4].mkv`. Lurker checks every received file against
-it, and each kept file says how that went:
+it, and a kept file says how that went:
 
-- **checksum verified**: the file matches.
-- **checksum mismatch**: it doesn't, so the file is damaged. Get it again.
-- **not verified (no checksum)**: the name carried no checksum, so there was
-  nothing to check. The size matched, but a file can be the right size and
-  still damaged.
-- **not verified (resumed)**: a resumed file Lurker couldn't read back to
-  check.
+- **Verified**: the file matches.
+- **Checksum mismatch**: it doesn't, so the file is damaged. Get it again.
+
+A file whose name carries no checksum says nothing: the size matched, but there
+was nothing more to check.
 
 A resumed file is read back and checked as a whole once it's complete. The DCC
-window says "checking the checksum" while that happens.
+window says "checking the checksum" while that happens. One Lurker couldn't read
+back says **Not verified (resumed)**.
 
 ## Sending a file
 

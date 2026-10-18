@@ -610,18 +610,17 @@ function onSendTo(f: DccFile) {
     });
 }
 
-// How a received file checked out (#1082). One with no CRC32 in its name, or
-// one resumed, says it wasn't verified rather than saying nothing.
+// How a received file checked out (#1082). A file with no CRC32 in its name
+// says nothing: there was nothing to check. A resumed one whose name carried a
+// CRC32 that couldn't be read back does say so, or it would pass for verified.
 function crcNote(f: DccFile): { text: string; tone: 'good' | 'bad' | null } | null {
   switch (f.crc_status) {
     case 'ok':
-      return { text: 'checksum verified', tone: 'good' };
+      return { text: 'Verified', tone: 'good' };
     case 'mismatch':
-      return { text: 'checksum mismatch', tone: 'bad' };
-    case 'absent':
-      return { text: 'not verified (no checksum)', tone: null };
+      return { text: 'Checksum mismatch', tone: 'bad' };
     case 'unverified':
-      return { text: 'not verified (resumed)', tone: null };
+      return { text: 'Not verified (resumed)', tone: null };
     default:
       return null;
   }

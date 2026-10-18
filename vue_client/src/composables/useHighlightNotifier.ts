@@ -158,7 +158,7 @@ export function notifyForEvent(event: NotifyEvent | null | undefined): void {
   // either, and the difference is the surface, not the wording: `.title` is
   // nowrap + ellipsis inside a stack capped at min(360px, …), so a sentence
   // that opens with the kicker's nick pushes the channel past the clip — a
-  // toast reading "ChanServ kicked you from libera •…" loses the one fact it
+  // toast reading "ChanServ kicked you from libera |…" loses the one fact it
   // exists to deliver. Lead with the outcome, which is a fixed 12 characters,
   // and move the kicker into the body where it can wrap. A lock screen has no
   // such cap, so the push keeps the sentence that reads better there.

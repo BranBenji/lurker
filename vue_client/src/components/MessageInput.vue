@@ -2573,7 +2573,7 @@ function formatIgnoreEntry(entry: IgnoreEntry, idx: number, global = false): str
   return `  ${idx}. ${summarizeIgnoreEntry(entry, global)}`;
 }
 
-// "QUACK! • whole word • #chan" — a highlight rule's dimensions, no index. The
+// "QUACK! | whole word | #chan" — a highlight rule's dimensions, no index. The
 // subject (mask/pattern) and scope are framed here; the secondary descriptors
 // come from the shared formatter the settings pane also uses.
 function summarizeHighlightEntry(entry: HighlightRule, global = false): string {
