@@ -405,7 +405,7 @@ describe('DccFilesTab', () => {
     expect(rows[1]!.find('.glyph').classes()).toContain('bad');
     // No checksum in the name: nothing to check, nothing to say.
     expect(note(2).exists()).toBe(false);
-    expect(rows[2]!.find('.sub').text()).toMatch(/from Bot \| .* ago$/);
+    expect(rows[2]!.findAll('.sub span')).toHaveLength(1); // no separator, no note
     expect(note(3).text()).toBe('Not verified (resumed)');
     expect(note(4).exists()).toBe(false);
     expect(rows[0]!.find('.sub').text()).toMatch(/from Bot \| .* \| Verified$/);
