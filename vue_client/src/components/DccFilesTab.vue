@@ -754,8 +754,12 @@ async function onUploadChosen(e: Event) {
   .row > .acts.always + .more {
     display: none;
   }
+  /* Wraps: three labels at the large font overrun a 320px phone. A wrapped
+     row reads as a second strip. */
   .menu {
     display: inline-flex;
+    flex-wrap: wrap;
+    row-gap: var(--space-2);
     grid-column: 2 / 4;
     justify-self: start;
     margin-top: var(--space-2);
