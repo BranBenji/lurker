@@ -124,6 +124,14 @@ export function chunkCountForSay(
   return total;
 }
 
+// How many lines the user typed into a PRIVMSG body: the newline-separated
+// non-empty lines, each a split point they can see. When this equals the
+// chunk count, nothing was torn by word wrap (#1119).
+export function lineCountForSay(text: string | null | undefined): number {
+  if (!text) return 0;
+  return text.split(/\r\n|\n|\r/).filter(Boolean).length;
+}
+
 // CTCP ACTION path: no newline pre-split (matches irc-framework), tighter
 // budget to leave room for the \x01ACTION ... \x01 wrapper.
 export function chunkCountForAction(
@@ -143,15 +151,23 @@ export function chunkCountForAction(
 // asked for splits to go out silently, so gating the 3+ tier anyway made the
 // setting look broken (#578). With it off, 2 messages get the cheap toast and
 // 3+ get the modal, since uploading is only worth offering for a real flood.
+//
+// The toast is for a split the user can't see: one long line torn in two by
+// word wrap. Two lines they typed themselves (`typedLines`, the body's newline
+// count, matching `count`) are two messages on purpose — a Quote above a reply
+// (#1119), a two-line thought — and go out without asking. A batch boundary on
+// a multiline network is invisible too, so that path passes 0.
 export type SplitGate = 'send' | 'confirm' | 'upload';
 
 export function splitGateFor(opts: {
   count: number;
   allowSplit: boolean;
   confirmed: boolean;
+  typedLines?: number;
 }): SplitGate {
-  const { count, allowSplit, confirmed } = opts;
+  const { count, allowSplit, confirmed, typedLines = 0 } = opts;
   if (count <= 1 || allowSplit || confirmed) return 'send';
+  if (count === 2 && typedLines === count) return 'send';
   return count >= 3 ? 'upload' : 'confirm';
 }
 

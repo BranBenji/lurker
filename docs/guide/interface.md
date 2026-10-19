@@ -14,6 +14,12 @@ A tour of the Lurker window and how messages are organized.
 ## Reading and writing
 
 - Message composition, drafts, and tab completion.
+- **Reply** and **Quote** on a message (the hover bar, or tap the message). Reply
+  starts your line with their nick and, on a network that carries IRCv3 reply tags,
+  shows a faded quote of the original above your message. Quote puts
+  `> <alice> what she said` above your draft as plain text and your answer under
+  it, for the people whose clients never see a reply tag. The two lines go out as
+  two messages without the split confirmation.
 - Saved messages and user notes.
 - **N waiting** in the status bar: lines still to send. Lurker spaces out a long
   paste or a burst so the server doesn't drop the connection for flooding; a line

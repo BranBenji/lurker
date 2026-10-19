@@ -227,6 +227,7 @@ import { setComposingState } from '../composables/useComposing.js';
 import {
   chunkCountForSay,
   chunkCountForAction,
+  lineCountForSay,
   multilineMessageCount,
   splitGateFor,
   textBudgetFor,
@@ -627,11 +628,14 @@ function lineBudget(target: string | undefined, action: boolean): number {
   return textBudgetFor(net, target ?? active.value?.target ?? '', action);
 }
 
-function computeChunks(raw: string): { chunks: number; isAction: boolean } {
+// `typedLines` is the body's own line count on the PRIVMSG path (0 for a /me,
+// which never splits on newlines): when it matches `chunks`, every split is one
+// the user typed, and the gate lets two of them go without asking (#1119).
+function computeChunks(raw: string): { chunks: number; isAction: boolean; typedLines: number } {
   const { body, isAction, target } = bodyForSplit(raw);
   const bytes = lineBudget(target, isAction);
   const chunks = isAction ? chunkCountForAction(body, bytes) : chunkCountForSay(body, bytes);
-  return { chunks, isAction };
+  return { chunks, isAction, typedLines: isAction ? 0 : lineCountForSay(body) };
 }
 
 // Whether the active network advertised draft/multiline limits. Drives the
@@ -665,8 +669,8 @@ function publishComposing(raw: string): void {
     setComposingState({ chunks: batches, isAction: false, multiline: true });
     return;
   }
-  const { chunks, isAction } = computeChunks(raw);
-  setComposingState({ chunks, isAction, multiline: false });
+  const { chunks, isAction, typedLines } = computeChunks(raw);
+  setComposingState({ chunks, isAction, multiline: false, typedLines });
 }
 
 function sendTyping(networkId: number, target: string, state: string): void {
@@ -1857,6 +1861,16 @@ function addressInComposer(nick: string): void {
   }
 }
 
+// Quote (#1119): the `> <nick> text` line goes above the draft, on its own
+// line, and the caret lands at the end — under it, where the answer goes. A
+// second Quote stacks above the first, so quoting two people reads in order.
+// An empty draft ends up as the quote plus a newline, so the SPLIT chip says
+// what the send will be before a word is typed.
+function quoteIntoDraft(line: string): void {
+  if (!active.value || !line) return;
+  focusForReply(line + '\n' + text.value);
+}
+
 // Reply on your own line (#997): the same landing, with the draft as it is.
 function focusInComposer(): void {
   if (!active.value) return;
@@ -2114,6 +2128,7 @@ onMounted(() => {
     onAddress: addressInComposer,
     onFocus: focusInComposer,
     onCancelReply: cancelReply,
+    onQuote: quoteIntoDraft,
   });
 });
 
@@ -2397,11 +2412,12 @@ async function submit() {
   //   - /me over one line: hard block (CTCP ACTION can't reasonably split)
   //   - 3+ messages: offer the upload-as-.txt modal (flood)
   //   - 2 messages: gated by chat.allow_split_messages (off → require a second
-  //     Send press; on → send silently)
+  //     Send press; on → send silently) — unless both are lines the user typed
+  //     (a Quote above a reply, #1119), which go out as they are
   // computeChunks()/multilineCountFor() return 0 for slash commands we don't
   // route through PRIVMSG, so /join, /raw, etc. fall right through. A draft that
   // fits one multiline batch is exactly one message and skips the gate. (#381)
-  const { chunks: wireChunks, isAction } = computeChunks(raw);
+  const { chunks: wireChunks, isAction, typedLines } = computeChunks(raw);
   const batches = multilineCountFor(raw);
   const multiline = batches > 0;
   const count = multiline ? batches : wireChunks;
@@ -2416,7 +2432,12 @@ async function submit() {
   }
   if (count > 1) {
     const allowSplit = !!settings.effective('chat.allow_split_messages');
-    const gate = splitGateFor({ count, allowSplit, confirmed: pendingSplitConfirm });
+    const gate = splitGateFor({
+      count,
+      allowSplit,
+      confirmed: pendingSplitConfirm,
+      typedLines: multiline ? 0 : typedLines,
+    });
     if (gate !== 'send') {
       pendingSplitConfirm = true;
       if (gate === 'upload') {

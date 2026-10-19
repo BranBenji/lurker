@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
-import { BanIcon, BookmarkCheckIcon, ReplyIcon } from '@lucide/vue';
+import { BanIcon, BookmarkCheckIcon, QuoteIcon, ReplyIcon } from '@lucide/vue';
 import { useMessageActions, type MessageContext, type MessageLike } from './useMessageActions.js';
 import { useContextMenu } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
@@ -16,6 +16,7 @@ function makeCtx(): MessageContext {
   return {
     networkId: 1,
     onReply: vi.fn<(message: MessageLike) => void>(),
+    onQuote: vi.fn<(message: MessageLike) => void>(),
     onIgnore: vi.fn<(message: MessageLike) => void>(),
   };
 }
@@ -34,14 +35,26 @@ describe('useMessageActions', () => {
   });
 
   describe('buildActions', () => {
-    it('returns reply, copy, save, ignore for another user with text + id', () => {
+    it('returns reply, quote, copy, save, ignore for another user with text + id', () => {
       const actions = useMessageActions().buildActions(other());
-      expect(actions.map((a) => a.key)).toEqual(['reply', 'copy', 'save', 'ignore']);
+      expect(actions.map((a) => a.key)).toEqual(['reply', 'quote', 'copy', 'save', 'ignore']);
     });
 
     it('drops reply + ignore on your own line', () => {
       const actions = useMessageActions().buildActions(other({ self: true }));
-      expect(actions.map((a) => a.key)).toEqual(['copy', 'save']);
+      expect(actions.map((a) => a.key)).toEqual(['quote', 'copy', 'save']);
+    });
+
+    // #1119: Quote is plain text, so it needs nothing from the network — not a
+    // msgid, not a reply tag — only words. Your own line and a DM take it where
+    // Reply has nothing to offer.
+    it('offers quote wherever there is a nick and text, with no network gate', () => {
+      const api = useMessageActions();
+      const quote = (m: MessageLike) => api.buildActions(m).find((a) => a.key === 'quote');
+      expect(quote(other({ id: null, networkId: null }))?.label).toBe('Quote bob');
+      expect(quote(other({ self: true, target: 'bob' }))).toBeDefined();
+      expect(quote(other({ text: '' }))).toBeUndefined();
+      expect(quote(other({ nick: undefined }))).toBeUndefined();
     });
 
     // #997: on your own line Reply can only make a real reply, so it needs a
@@ -147,7 +160,7 @@ describe('useMessageActions', () => {
 
     it('drops save when there is no stable id', () => {
       const actions = useMessageActions().buildActions(other({ id: null }));
-      expect(actions.map((a) => a.key)).toEqual(['reply', 'copy', 'ignore']);
+      expect(actions.map((a) => a.key)).toEqual(['reply', 'quote', 'copy', 'ignore']);
     });
 
     it('drops save on a system-buffer line, which has no owning network', () => {
@@ -155,7 +168,7 @@ describe('useMessageActions', () => {
       // these (the ownership check joins through networks), so offering it
       // would be a button that silently does nothing.
       const actions = useMessageActions().buildActions(other({ networkId: null }));
-      expect(actions.map((a) => a.key)).toEqual(['reply', 'copy', 'ignore']);
+      expect(actions.map((a) => a.key)).toEqual(['reply', 'quote', 'copy', 'ignore']);
     });
 
     it('does not label a system line saved when a real message shares its id', () => {
@@ -202,6 +215,15 @@ describe('useMessageActions', () => {
       expect(ctx.onReply).toHaveBeenCalledWith(m);
     });
 
+    it('quote item dispatches onQuote through run()', () => {
+      const api = useMessageActions();
+      const ctx = makeCtx();
+      const m = other();
+      const quote = api.buildItems(m, ctx).find((i) => i.icon === QuoteIcon);
+      quote?.onClick?.();
+      expect(ctx.onQuote).toHaveBeenCalledWith(m);
+    });
+
     it('ignore item dispatches onIgnore through run()', () => {
       const api = useMessageActions();
       const ctx = makeCtx();
@@ -237,7 +259,7 @@ describe('useMessageActions', () => {
       expect(menu.state.open).toBe(true);
       expect(menu.state.x).toBe(12);
       expect(menu.state.y).toBe(34);
-      expect(menu.state.items.length).toBe(4);
+      expect(menu.state.items.length).toBe(5);
     });
 
     it('no-ops for a null message', () => {
@@ -272,7 +294,7 @@ describe('copy link to message (#744)', () => {
 
   it('offers the link once the buffer has a server id', () => {
     const actions = useMessageActions().buildActions(inBuffer('#chan', 7));
-    expect(actions.map((a) => a.key)).toEqual(['reply', 'copy', 'link', 'save', 'ignore']);
+    expect(actions.map((a) => a.key)).toEqual(['reply', 'quote', 'copy', 'link', 'save', 'ignore']);
   });
 
   it('copies an absolute /buffer/<id>?msg=<id> URL', async () => {

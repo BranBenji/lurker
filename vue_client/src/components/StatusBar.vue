@@ -225,6 +225,7 @@ import {
   requestScrollToUnread,
 } from '../composables/useScrollState.js';
 import { useComposing } from '../composables/useComposing.js';
+import { splitGateFor } from '../utils/messageSplit.js';
 import { formatTimestamp } from '../utils/timestamp.js';
 import { isPeerOffline, isPeerAway } from '../utils/peerPresence.js';
 import SuggestionStrip from './SuggestionStrip.vue';
@@ -302,16 +303,19 @@ const splitLabel = computed(() => {
 // chat.allow_split_messages on, a split just goes out — so the chip stays as a
 // neutral count rather than crying wolf in warn/bad on every long message
 // (#578). An overlong /me is still bad: actions never split, they're refused.
+// Otherwise it's the composer's own gate (splitGateFor) that says whether a
+// Send will stop and ask, so the chip and the toast can't disagree.
 const splitClass = computed(() => {
-  if (composing.multiline) {
-    if (composing.chunks <= 1) return '';
-    if (settings.effective('chat.allow_split_messages')) return '';
-    return composing.chunks >= 3 ? 'bad' : 'warn';
-  }
   if (composing.chunks <= 1) return '';
   if (composing.isAction) return 'bad';
-  if (settings.effective('chat.allow_split_messages')) return '';
-  return composing.chunks >= 3 ? 'bad' : 'warn';
+  const gate = splitGateFor({
+    count: composing.chunks,
+    allowSplit: !!settings.effective('chat.allow_split_messages'),
+    confirmed: false,
+    typedLines: composing.multiline ? 0 : composing.typedLines,
+  });
+  if (gate === 'send') return '';
+  return gate === 'upload' ? 'bad' : 'warn';
 });
 
 // Narrate the leg the upload is ACTUALLY on (#545). A percentage appears only where

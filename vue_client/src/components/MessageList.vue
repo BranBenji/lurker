@@ -431,12 +431,13 @@ import { useWhoisStore } from '../stores/whois.js';
 import {
   addressNick,
   cancelComposerReply,
+  quoteInComposer,
   focusComposer,
 } from '../composables/useComposerOverlay.js';
 import { setViewedBuffer } from '../composables/useViewedBuffer.js';
 import { isChannelTarget, dccChatPeer } from '../../../shared/channels.js';
 import ReactionRow from './ReactionRow.vue';
-import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
+import { quoteLine, type ReplyContext, type ReplyParent } from '../../../shared/replies.js';
 import { useRepliesStore } from '../stores/replies.js';
 import { emitJumpIntent } from '../composables/useJumpIntent.js';
 import { CopyIcon, IdCardIcon, ReplyIcon, SatelliteDishIcon } from '@lucide/vue';
@@ -802,6 +803,20 @@ const actionContext: MessageContext = {
     }
     if (!unaddressed) addressNick(msg.nick);
     else if (started) focusComposer();
+  },
+  // Quote (#1119): the line as plain text above the draft. A relayed line is
+  // quoted as the person inside the envelope, the way the reply quote shows it.
+  onQuote: (msg) => {
+    if (!msg.nick) return;
+    const networkId = msg.networkId ?? msg.network_id ?? buffer.value?.networkId;
+    const relayed = networkId == null ? null : relayBots.unwrap(networkId, msg);
+    quoteInComposer(
+      quoteLine({
+        nick: relayed?.nick ?? msg.nick,
+        type: msg.type,
+        text: relayed?.text ?? (msg.text as string | undefined) ?? '',
+      }),
+    );
   },
   onIgnore: (msg) => {
     const { user, host } = parseUserHost(msg.userhost);

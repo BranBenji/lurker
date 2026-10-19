@@ -77,6 +77,9 @@ let onFocus: VoidHandler = () => {};
 // Drop the pending reply (#993) — the status bar's ×. The composer owns it
 // because cancelling also takes the `nick: ` the Reply put in the draft back out.
 let onCancelReply: VoidHandler = () => {};
+// Put a quoted line above the draft (#1119) — the message action bar's Quote.
+// The composer owns the draft text and the caret, so the line comes here whole.
+let onQuote: NickSelectHandler = () => {};
 
 export interface ComposerOverlayHandlers {
   onNickSelect?: NickSelectHandler;
@@ -89,6 +92,7 @@ export interface ComposerOverlayHandlers {
   onAddress?: NickSelectHandler;
   onFocus?: VoidHandler;
   onCancelReply?: VoidHandler;
+  onQuote?: NickSelectHandler;
 }
 
 export function setComposerOverlayHandlers(h: ComposerOverlayHandlers): void {
@@ -102,6 +106,7 @@ export function setComposerOverlayHandlers(h: ComposerOverlayHandlers): void {
   if (h.onAddress) onAddress = h.onAddress;
   if (h.onFocus) onFocus = h.onFocus;
   if (h.onCancelReply) onCancelReply = h.onCancelReply;
+  if (h.onQuote) onQuote = h.onQuote;
 }
 
 export function setNickStrip(open: boolean, items: NickStripItem[] = []): void {
@@ -181,6 +186,11 @@ export function focusComposer(): void {
 }
 export function cancelComposerReply(): void {
   onCancelReply();
+}
+// Quote affordance (#1119): a finished `> <nick> text` line for the composer to
+// put above the draft.
+export function quoteInComposer(line: string): void {
+  onQuote(line);
 }
 export function selectEmoji(item: EmojiMatch): void {
   onEmojiSelect(item);

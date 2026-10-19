@@ -5,6 +5,8 @@
 // message row in, shared by the server (which resolves it) and the client
 // (which draws the line above the reply).
 
+import { stripFormatting } from './textMatch.js';
+
 // The line types a reply can answer and a thread can start from — the ones
 // that are stored as lines someone said. Everything that finds a parent or a
 // thread root by msgid filters on this, so they agree about what a root is.
@@ -77,4 +79,23 @@ export function parseDraftReplyRef(raw: unknown): DraftReplyRef | null | undefin
   const messageId = Number(r.messageId);
   if (!Number.isInteger(messageId) || messageId <= 0) return null;
   return { messageId, addressed: r.addressed === true };
+}
+
+// What goes either side of a quoted line's nick, by the line's type — the way
+// IRC writes the line: `<alice> text`, `* bob waves`, `-ChanServ- text`. Shared
+// by the reply quote the timeline draws and the Quote action's plain-text line.
+export function quoteMarks(type: string | null | undefined): [string, string] {
+  if (type === 'action') return ['* ', ''];
+  if (type === 'notice') return ['-', '-'];
+  return ['<', '>'];
+}
+
+// The Quote action (#1119): a line as plain text, for people on clients that
+// never see a reply tag — `> <alice> what she said`. Formatting codes go (the
+// quote is prose, not a replay), and a multi-line original collapses to one
+// line: a quote is an excerpt, and every extra line is another PRIVMSG.
+export function quoteLine(line: { nick: string; type?: string | null; text: string }): string {
+  const [open, close] = quoteMarks(line.type);
+  const text = stripFormatting(line.text).replace(/\s+/g, ' ').trim();
+  return `> ${open}${line.nick}${close}${text ? ` ${text}` : ''}`;
 }

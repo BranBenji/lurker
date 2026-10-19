@@ -105,6 +105,11 @@ as a highlight, even when it doesn't mention your nick. Web client only for now.
   Replies you send start with `nick: ` too, so people on clients without reply support
   still see who you're answering. On a network whose `CLIENTTAGDENY` refuses the tag,
   or on an E2E channel, the reply goes out as a plain message.
+- **Quote** is Reply's plain-text sibling, for when the people you're answering can't
+  see a reply tag at all. It puts `> <alice> what she said` above your draft, on its
+  own line, and your answer goes under it — two messages, no tag, that read the same
+  on every client. The two lines send without the split confirmation; a long line torn
+  in two by word wrap still asks.
   <br>`server/services/ircConnection.ts:2436` (receive), `:8305` (send),
   `server/db/messages.ts:317` (the quote)
 
