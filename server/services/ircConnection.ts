@@ -9322,11 +9322,22 @@ export class IrcConnection {
       }
       return false;
     }
-    // Echo what the peer got, not what was typed: send() strips line breaks and
-    // caps an over-long line (#1051).
-    const sent = entry.chat.send(text, { action: opts.action });
-    if (sent === null) return false;
-    this.publishDccChatLine(nick, sent, true, !!opts.action);
+    // A multi-line draft — a Quote above its answer (#1119), a paste — is that
+    // many chat lines, as it is on IRC: DCC CHAT is line-based, and send()
+    // would otherwise fold the answer into the quote. A /me stays one line;
+    // actions never split anywhere. Echo what the peer got, not what was
+    // typed: send() strips any line break left and caps an over-long line
+    // (#1051).
+    // A line that didn't go — the chat closed under us — fails the send, as a
+    // single line's always has: the composer keeps the draft and says so. What
+    // did go is already echoed, so the user can see where it stopped.
+    const lines = opts.action ? [text] : text.split(/\r\n|\n|\r/).filter(Boolean);
+    if (!lines.length) lines.push(text);
+    for (const line of lines) {
+      const sent = entry.chat.send(line, { action: opts.action });
+      if (sent === null) return false;
+      this.publishDccChatLine(nick, sent, true, !!opts.action);
+    }
     return true;
   }
 

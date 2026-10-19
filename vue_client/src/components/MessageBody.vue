@@ -10,6 +10,7 @@
     :self-color="selfColor"
     :network-id="networkId"
     :interactive-nicks="interactiveNicks"
+    :blockquotes="blockquotes"
     @nick-click="(nick: string, ev: MouseEvent) => $emit('nickClick', nick, ev)"
   />
   <!-- ⚠⚠ `body-only` tells the ROW that this body has no text in it, and MessageList's
@@ -79,8 +80,10 @@ const props = withDefaults(
     selfColor?: string | null;
     networkId?: number | null;
     interactiveNicks?: boolean;
+    /** Passed through to RenderSegments: `> …` lines as block quotes. */
+    blockquotes?: boolean;
   }>(),
-  { selfColor: null, networkId: null, interactiveNicks: false },
+  { selfColor: null, networkId: null, interactiveNicks: false, blockquotes: false },
 );
 
 defineEmits<{

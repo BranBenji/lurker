@@ -4,7 +4,29 @@
 -->
 
 <template>
-  <template v-for="(seg, i) in segments" :key="i">
+  <!-- Block quotes (#1119): the message's `> …` lines drawn as blocks, each a
+       bar and faded text, the lines between them rendered by this component
+       again — the segment branches below run once, on the block's segments. -->
+  <template v-if="blocks">
+    <template v-for="(block, bi) in blocks" :key="bi"
+      ><span v-if="block.quote" class="msg-quote"
+        ><RenderSegments
+          :segments="block.segments"
+          :self-color="selfColor"
+          :network-id="networkId"
+          :interactive-nicks="interactiveNicks"
+          @nick-click="(nick: string, ev: MouseEvent) => $emit('nickClick', nick, ev)"
+      /></span>
+      <RenderSegments
+        v-else
+        :segments="block.segments"
+        :self-color="selfColor"
+        :network-id="networkId"
+        :interactive-nicks="interactiveNicks"
+        @nick-click="(nick: string, ev: MouseEvent) => $emit('nickClick', nick, ev)"
+    /></template>
+  </template>
+  <template v-for="(seg, i) in segments" v-else :key="i">
     <SpoilerText v-if="seg.spoiler" :seg="seg" />
     <!-- Links render inside clickable rows (a history
          row jumps to the message on click), and a link activation shouldn't
@@ -54,9 +76,10 @@
 </template>
 
 <script setup lang="ts">
-import type { CSSProperties } from 'vue';
+import { computed, type CSSProperties } from 'vue';
 import type { RenderSegment } from '../utils/nickColor.js';
 import { segmentInlineStyle, segmentHasStyle } from '../utils/nickColor.js';
+import { quoteBlocks } from '../utils/replyText.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useMircPalette } from '../composables/useNickColors.js';
@@ -86,8 +109,13 @@ const props = withDefaults(
     // Off everywhere except the message list, so other callers (topic bar,
     // motd, history rows) keep nick segments inert.
     interactiveNicks?: boolean;
+    // Opt-in: draw lines that open with `> ` as block quotes (#1119) — what
+    // the Quote action writes above an answer, and what IRC has always typed
+    // by hand. For a message, the one type a person wrote: a notice is a
+    // service's text (`> help` is HelpServ's), a topic or a reason isn't quoting.
+    blockquotes?: boolean;
   }>(),
-  { selfColor: null, networkId: null, interactiveNicks: false },
+  { selfColor: null, networkId: null, interactiveNicks: false, blockquotes: false },
 );
 
 defineEmits<{
@@ -98,6 +126,11 @@ const buffers = useBuffersStore();
 const settings = useSettingsStore();
 const viewer = useMediaViewer();
 const mircPalette = useMircPalette();
+
+// Null — the plain segment list below — unless asked to and the message
+// quotes. The blocks' own renderers are never asked, so the recursion is one
+// level deep.
+const blocks = computed(() => (props.blockquotes ? quoteBlocks(props.segments) : null));
 
 function styleFor(seg: RenderSegment): CSSProperties {
   return segmentInlineStyle(seg, props.selfColor ?? null, mircPalette.value) as CSSProperties;

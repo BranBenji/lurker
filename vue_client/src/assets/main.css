@@ -151,6 +151,11 @@
      Tune here only; both the spoiler box and ordinary coloured runs read it. */
   --mirc-bg-bleed: 0.15em;
 
+  /* How far a quoted line fades — the reply quote above a message and a `> …`
+     block quote in one (ReplyQuote.vue, .msg-quote). Opacity, not a colour, so a
+     nick in the quote keeps its own. */
+  --quote-fade: 0.45;
+
   /* Corner radii. The app is intentionally flat (most things are square);
      these are the few deliberate exceptions. */
   --radius-sm: 2px;
@@ -283,6 +288,22 @@ a {
 }
 .msg-link:hover {
   text-decoration-color: var(--link);
+}
+
+/* A quoted line in a message — `> <alice> what she said`, the Quote action's
+   line (#1119) or one typed by hand — drawn as a block quote: a bar where the
+   `> ` was, and the text faded the way the reply quote above a message is
+   (--quote-fade). Here rather than in a scoped style because RenderSegments
+   renders it and MessageList owns the body, like .msg-link. A quote of nothing
+   but a hidden link still keeps its line, so the bar shows above the picture. */
+.msg-quote {
+  display: block;
+  min-height: 1lh;
+  border-left: 2px solid currentColor;
+  padding-left: 1ch;
+  color: var(--fg);
+  font-style: italic;
+  opacity: var(--quote-fade);
 }
 
 /* Auto-linked IRC channel names in chat messages. Kept at the normal message

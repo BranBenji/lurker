@@ -8,12 +8,14 @@ import {
   CopyIcon,
   HeartPlusIcon,
   LinkIcon,
+  QuoteIcon,
   ReplyIcon,
 } from '@lucide/vue';
 import type { LucideIcon } from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useReactionsStore } from '../stores/reactions.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
 import { tagSupport, useNetworksStore } from '../stores/networks.js';
 import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
 import { useBuffersStore } from '../stores/buffers.js';
@@ -86,10 +88,11 @@ export function reactionsGoOut(networkId: number | null | undefined): boolean {
 export interface MessageContext {
   networkId: number;
   onReply(message: MessageLike): void;
+  onQuote(message: MessageLike): void;
   onIgnore(message: MessageLike): void;
 }
 
-export type MessageActionKey = 'reply' | 'react' | 'copy' | 'link' | 'save' | 'ignore';
+export type MessageActionKey = 'reply' | 'quote' | 'react' | 'copy' | 'link' | 'save' | 'ignore';
 
 export interface MessageAction {
   key: MessageActionKey;
@@ -128,7 +131,7 @@ export interface MessageActionsAPI {
 // composer, supplying both via that context.
 //
 // `message` shape: { id, nick, text, self, userhost, network_id|networkId, ... }
-// `context` shape: { networkId, onReply(message), onIgnore(message) }
+// `context` shape: { networkId, onReply(message), onQuote(message), onIgnore(message) }
 export function useMessageActions(): MessageActionsAPI {
   const bookmarks = useBookmarksStore();
   const reactions = useReactionsStore();
@@ -199,6 +202,18 @@ export function useMessageActions(): MessageActionsAPI {
       actions.push({ key: 'reply', label, icon: ReplyIcon });
     }
 
+    // Quote (#1119) is Reply's plain-text sibling: `> <nick> text` above the
+    // draft, for the people on clients that never see a reply tag. It needs no
+    // network and no msgid — only words to quote — so it's offered on your own
+    // lines and in DMs too, and on a line a Reply can't take.
+    if (message.nick && message.text) {
+      // Named for the person quoted: on a relayed line, the one inside the
+      // envelope, as the quote line will read (MessageList's onQuote unwraps).
+      const nid = message.networkId ?? message.network_id;
+      const who = useRelayBotsStore().unwrap(nid, message)?.nick ?? message.nick;
+      actions.push({ key: 'quote', label: `Quote ${who}`, icon: QuoteIcon });
+    }
+
     // A reaction replies to the line's msgid, so it needs a line a reply could
     // name, on a network that can carry it (canReact — see the server's
     // canSendReactions). Not a notice — the server's reactionSendTarget says
@@ -256,6 +271,9 @@ export function useMessageActions(): MessageActionsAPI {
     switch (key) {
       case 'reply':
         ctx.onReply(message);
+        break;
+      case 'quote':
+        ctx.onQuote(message);
         break;
       case 'react':
         reactions.openPicker({

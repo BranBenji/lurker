@@ -9,6 +9,7 @@
 // useComposing — there is only ever one composer on screen at a time.
 
 import { reactive, readonly, type DeepReadonly } from 'vue';
+import type { QuoteSource } from '../utils/replyText.js';
 import type { EmojiMatch } from '../utils/emojiData.js';
 
 export interface NickStripItem {
@@ -77,6 +78,11 @@ let onFocus: VoidHandler = () => {};
 // Drop the pending reply (#993) — the status bar's ×. The composer owns it
 // because cancelling also takes the `nick: ` the Reply put in the draft back out.
 let onCancelReply: VoidHandler = () => {};
+// Quote a line into the draft (#1119) — the message action bar's Quote. The
+// composer owns the draft, the caret and the wire budget the line is clipped
+// to, so what comes here is the line's author, type and text.
+type QuoteHandler = (source: QuoteSource) => void;
+let onQuote: QuoteHandler = () => {};
 
 export interface ComposerOverlayHandlers {
   onNickSelect?: NickSelectHandler;
@@ -89,6 +95,7 @@ export interface ComposerOverlayHandlers {
   onAddress?: NickSelectHandler;
   onFocus?: VoidHandler;
   onCancelReply?: VoidHandler;
+  onQuote?: QuoteHandler;
 }
 
 export function setComposerOverlayHandlers(h: ComposerOverlayHandlers): void {
@@ -102,6 +109,7 @@ export function setComposerOverlayHandlers(h: ComposerOverlayHandlers): void {
   if (h.onAddress) onAddress = h.onAddress;
   if (h.onFocus) onFocus = h.onFocus;
   if (h.onCancelReply) onCancelReply = h.onCancelReply;
+  if (h.onQuote) onQuote = h.onQuote;
 }
 
 export function setNickStrip(open: boolean, items: NickStripItem[] = []): void {
@@ -181,6 +189,10 @@ export function focusComposer(): void {
 }
 export function cancelComposerReply(): void {
   onCancelReply();
+}
+// Quote affordance (#1119): a line for the composer to quote above the draft.
+export function quoteInComposer(source: QuoteSource): void {
+  onQuote(source);
 }
 export function selectEmoji(item: EmojiMatch): void {
   onEmojiSelect(item);

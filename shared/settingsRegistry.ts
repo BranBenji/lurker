@@ -720,7 +720,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: true,
     description:
-      'Show the floating action toolbar (reply, copy, bookmark, ignore) when ' +
+      'Show the floating action toolbar (reply, quote, copy, bookmark, ignore) when ' +
       'hovering a message on desktop. When off, click a message to open the same ' +
       'actions as a menu instead. No effect on touch devices, where the bar is ' +
       'never shown and tapping a message always opens the menu.',

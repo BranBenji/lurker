@@ -47,7 +47,7 @@
 import { computed } from 'vue';
 import NickRef from './NickRef.vue';
 import { replyExcerpt } from '../utils/replyText.js';
-import type { QuotedLine, ReplyParent } from '../../../shared/replies.js';
+import { quoteMarks, type QuotedLine, type ReplyParent } from '../../../shared/replies.js';
 
 const props = defineProps<{
   // The answered line as it should show — null for "unavailable" (gone, never
@@ -63,13 +63,9 @@ const emit = defineEmits<{ jump: [parent: ReplyParent] }>();
 
 const live = computed(() => !!props.parent && !props.static);
 
-// What goes either side of the nick, by the quoted line's type.
-const marks = computed((): [string, string] => {
-  const type = props.parent?.type;
-  if (type === 'action') return ['* ', ''];
-  if (type === 'notice') return ['-', '-'];
-  return ['<', '>'];
-});
+// What goes either side of the nick, by the quoted line's type — the rule the
+// Quote action's plain-text line shares.
+const marks = computed(() => quoteMarks(props.parent?.type));
 
 // In the timeline the quote keeps its clicks, even with nothing to jump to;
 // static, they're the row's.
@@ -95,7 +91,7 @@ function onKey(e: KeyboardEvent): void {
   text-overflow: ellipsis;
   color: var(--fg);
   font-style: italic;
-  opacity: 0.45;
+  opacity: var(--quote-fade);
   cursor: pointer;
 }
 .reply-quote:not(.missing):not(.static):hover {

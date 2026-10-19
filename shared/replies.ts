@@ -78,3 +78,12 @@ export function parseDraftReplyRef(raw: unknown): DraftReplyRef | null | undefin
   if (!Number.isInteger(messageId) || messageId <= 0) return null;
   return { messageId, addressed: r.addressed === true };
 }
+
+// What goes either side of a quoted line's nick, by the line's type — the way
+// IRC writes the line: `<alice> text`, `* bob waves`, `-ChanServ- text`. Shared
+// by the reply quote the timeline draws and the Quote action's plain-text line.
+export function quoteMarks(type: string | null | undefined): [string, string] {
+  if (type === 'action') return ['* ', ''];
+  if (type === 'notice') return ['-', '-'];
+  return ['<', '>'];
+}

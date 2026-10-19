@@ -6,6 +6,7 @@ import {
   chunkCountForSay,
   chunkCountForAction,
   multilineMessageCount,
+  lineCountForSay,
   splitGateFor,
   MESSAGE_MAX_BYTES,
   ACTION_MAX_BYTES,
@@ -116,6 +117,29 @@ describe('splitGateFor', () => {
   it('lets a prior confirmation override the gate', () => {
     expect(gate(2, false, true)).toBe('send');
     expect(gate(50, false, true)).toBe('send');
+  });
+
+  // #1119: two lines the user typed (a Quote above a reply) are two messages on
+  // purpose. The toast is for a split they can't see — a wrap tear, or a third
+  // line, which is a flood either way.
+  it('sends two typed lines without confirming, and nothing else', () => {
+    const typed = (count: number, typedLines: number) =>
+      splitGateFor({ count, allowSplit: false, confirmed: false, typedLines });
+    expect(typed(2, 2)).toBe('send');
+    expect(typed(2, 1)).toBe('confirm'); // one line torn by wrap
+    expect(typed(2, 0)).toBe('confirm'); // a multiline batch boundary
+    expect(typed(3, 3)).toBe('upload');
+    expect(typed(3, 2)).toBe('upload');
+  });
+});
+
+describe('lineCountForSay', () => {
+  it('counts the non-empty newline-separated lines', () => {
+    expect(lineCountForSay('')).toBe(0);
+    expect(lineCountForSay(null)).toBe(0);
+    expect(lineCountForSay('one')).toBe(1);
+    expect(lineCountForSay('> <alice> hi\nyes')).toBe(2);
+    expect(lineCountForSay('a\r\nb\n\nc\n')).toBe(3);
   });
 });
 

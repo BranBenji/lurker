@@ -17,6 +17,9 @@
 // StatusBar shows 1 → a neutral MULTILINE chip and 2+ → MULTILINE ×N escalating
 // to warn/bad. The legacy SPLIT/FLOOD wording is used only when `multiline` is
 // false. (#381)
+// `typedLines` is how many newline-separated lines the body has on the wire
+// path, for the split gate's "two lines you typed need no confirming" rule
+// (#1119); 0 on the multiline path and for anything that isn't a PRIVMSG body.
 
 import { reactive, readonly } from 'vue';
 
@@ -24,18 +27,26 @@ export interface ComposingState {
   chunks: number;
   isAction: boolean;
   multiline?: boolean;
+  typedLines?: number;
 }
 
 const state = reactive<Required<ComposingState>>({
   chunks: 0,
   isAction: false,
+  typedLines: 0,
   multiline: false,
 });
 
-export function setComposingState({ chunks, isAction, multiline = false }: ComposingState): void {
+export function setComposingState({
+  chunks,
+  isAction,
+  multiline = false,
+  typedLines = 0,
+}: ComposingState): void {
   state.chunks = chunks;
   state.isAction = isAction;
   state.multiline = multiline;
+  state.typedLines = typedLines;
 }
 
 export function useComposing(): Readonly<ComposingState> {
