@@ -112,9 +112,12 @@ as a highlight, even when it doesn't mention your nick. Web client only for now.
   own line, and your answer goes under it — two messages, no tag, that read the same
   on every client. The two lines send without the split confirmation; a long line torn
   in two by word wrap still asks. Quote replaces a pending Reply: one message carries
-  one reply tag, and it would land on the quote line.
-  <br>`vue_client/src/utils/replyText.ts` (`quoteLineFor`),
-  `vue_client/src/components/MessageInput.vue` (`quoteIntoDraft`)
+  one reply tag, and it would land on the quote line. On the way in, any line that
+  starts with `> ` is drawn as a block quote — faded like the reply quote, with a bar
+  where the `> ` was — whichever client wrote it.
+  <br>`vue_client/src/utils/replyText.ts` (`quoteLineFor`, `quoteBlocks`),
+  `vue_client/src/components/MessageInput.vue` (`quoteIntoDraft`),
+  `vue_client/src/components/RenderSegments.vue` (the block)
 
 ### Reactions sit under the message
 

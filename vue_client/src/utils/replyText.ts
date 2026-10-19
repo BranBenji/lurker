@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { hidesText, parseIrcFormatting } from './nickColor.js';
+import { hidesText, parseIrcFormatting, type RenderSegment } from './nickColor.js';
 import { escapeRegex } from '../../../shared/textMatch.js';
 import { quoteMarks } from '../../../shared/replies.js';
 import { byteLen } from './messageSplit.js';
@@ -74,6 +74,68 @@ export function splitQuoteBlock(draft: string): { quotes: string; body: string }
   const m = /^(?:> [^\n]*\n)*/.exec(draft);
   const quotes = m ? m[0] : '';
   return { quotes, body: draft.slice(quotes.length) };
+}
+
+// A message's lines that open with `> ` — the Quote action's line, or one anyone
+// typed — grouped with the lines between them, for the renderer to draw as block
+// quotes: a bar where the `> ` was, the text faded the way the reply quote above
+// a message is. Works on the rendered segments, after formatting codes are gone,
+// so a `> ` written in bold still counts and one inside a spoiler never does
+// (its text is hidden). Consecutive quote lines are one block, one bar. Null
+// when no line quotes, and the message renders as it always did — cutting its
+// segments at line breaks would tear a spoiler run that spans one in two.
+export interface QuoteBlock {
+  quote: boolean;
+  segments: RenderSegment[];
+}
+
+const QUOTE_MARK = '> ';
+
+export function quoteBlocks(segments: RenderSegment[]): QuoteBlock[] | null {
+  // The message's lines, each its own run of segments.
+  const lines: RenderSegment[][] = [[]];
+  for (const seg of segments) {
+    const parts = seg.text.split('\n');
+    for (let i = 0; i < parts.length; i++) {
+      if (i > 0) lines.push([]);
+      if (!parts[i]) continue;
+      lines[lines.length - 1].push(parts.length === 1 ? seg : { ...seg, text: parts[i] });
+    }
+  }
+  const quoted = lines.map(opensQuote);
+  if (!quoted.includes(true)) return null;
+  const blocks: QuoteBlock[] = [];
+  lines.forEach((line, i) => {
+    const quote = quoted[i];
+    const segs = quote ? withoutQuoteMark(line) : line;
+    const last = blocks[blocks.length - 1];
+    if (last && last.quote === quote) last.segments.push({ text: '\n' }, ...segs);
+    else blocks.push({ quote, segments: segs });
+  });
+  return blocks;
+}
+
+// Whether a line's visible text starts with `> ` — read across segments, since
+// a formatting change can fall between the two characters.
+function opensQuote(line: RenderSegment[]): boolean {
+  let head = '';
+  for (const seg of line) {
+    if (seg.spoiler) break;
+    head += seg.text;
+    if (head.length >= QUOTE_MARK.length) break;
+  }
+  return head.startsWith(QUOTE_MARK);
+}
+
+function withoutQuoteMark(line: RenderSegment[]): RenderSegment[] {
+  let left = QUOTE_MARK.length;
+  const out: RenderSegment[] = [];
+  for (const seg of line) {
+    const take = Math.min(left, seg.text.length);
+    left -= take;
+    if (take < seg.text.length) out.push(take ? { ...seg, text: seg.text.slice(take) } : seg);
+  }
+  return out;
 }
 
 // The longest prefix of `s` within `bytes` of UTF-8, cut between code points so

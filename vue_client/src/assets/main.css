@@ -285,6 +285,20 @@ a {
   text-decoration-color: var(--link);
 }
 
+/* A quoted line in a message — `> <alice> what she said`, the Quote action's
+   line (#1119) or one typed by hand — drawn as a block quote: a bar where the
+   `> ` was, and the text faded the way the reply quote above a message is
+   (opacity, so a nick in it keeps its colour). Shared by the message list and
+   the history rows, like .msg-link. */
+.msg-quote {
+  display: block;
+  border-left: 2px solid currentColor;
+  padding-left: 1ch;
+  color: var(--fg);
+  font-style: italic;
+  opacity: 0.45;
+}
+
 /* Auto-linked IRC channel names in chat messages. Kept at the normal message
    text colour — the pointer cursor and hover underline are the only cues. */
 .msg-channel {

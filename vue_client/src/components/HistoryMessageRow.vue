@@ -50,7 +50,7 @@
       <span class="text"
         ><span v-if="line.relaySource" class="relay-via" :title="`Relayed via ${line.relayBot}`"
           >[{{ line.relaySource }}] </span
-        ><LinkedText :text="shown.text"
+        ><LinkedText :text="shown.text" blockquotes
       /></span>
     </div>
   </li>

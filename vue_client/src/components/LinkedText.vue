@@ -4,7 +4,7 @@
 -->
 
 <template>
-  <RenderSegments :segments="segments" />
+  <RenderSegments :segments="segments" :blockquotes="blockquotes" />
 </template>
 
 <script setup lang="ts">
@@ -23,8 +23,10 @@ import RenderSegments from './RenderSegments.vue';
 const props = withDefaults(
   defineProps<{
     text?: string;
+    // Message text, not a topic or a reason: `> …` lines draw as block quotes.
+    blockquotes?: boolean;
   }>(),
-  { text: '' },
+  { text: '', blockquotes: false },
 );
 
 // emojiFn() makes this reactive to the emoji table loading, so a topic/motd

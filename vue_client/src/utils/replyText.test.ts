@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import { describe, it, expect } from 'vitest';
-import { quoteLineFor, replyExcerpt, splitQuoteBlock, stripReplyAddress } from './replyText.js';
+import {
+  quoteBlocks,
+  quoteLineFor,
+  replyExcerpt,
+  splitQuoteBlock,
+  stripReplyAddress,
+} from './replyText.js';
+import { splitTextByTokens } from './nickColor.js';
 
 describe('stripReplyAddress', () => {
   it('drops the address to the author being answered', () => {
@@ -123,5 +130,62 @@ describe('splitQuoteBlock', () => {
       quotes: '',
       body: 'sure\n> <alice> hi\n',
     });
+  });
+});
+
+describe('quoteBlocks', () => {
+  const segs = (text: string) => splitTextByTokens(text, null, null, null);
+  const texts = (blocks: ReturnType<typeof quoteBlocks>) =>
+    blocks!.map((b) => [b.quote, b.segments.map((s) => s.text).join('')]);
+
+  it('is null for a message that quotes nothing, so it renders as before', () => {
+    expect(quoteBlocks(segs('hello there'))).toBeNull();
+    expect(quoteBlocks(segs('a\nb'))).toBeNull();
+    expect(quoteBlocks(segs(''))).toBeNull();
+  });
+
+  it('splits the quote line from the answer and drops the mark', () => {
+    expect(texts(quoteBlocks(segs('> <alice> what time is it?\nnoon')))).toEqual([
+      [true, '<alice> what time is it?'],
+      [false, 'noon'],
+    ]);
+  });
+
+  it('keeps consecutive quote lines as one block, one bar', () => {
+    expect(texts(quoteBlocks(segs('> <alice> hi\n> <bob> yo\nboth of you')))).toEqual([
+      [true, '<alice> hi\n<bob> yo'],
+      [false, 'both of you'],
+    ]);
+  });
+
+  it('quotes a line anywhere in the message, not only the first', () => {
+    expect(texts(quoteBlocks(segs('she said\n> <alice> hi\nto me')))).toEqual([
+      [false, 'she said'],
+      [true, '<alice> hi'],
+      [false, 'to me'],
+    ]);
+  });
+
+  // The mark is two characters, and a formatting change can fall between them.
+  it('reads the mark across formatting and keeps the formatting', () => {
+    const blocks = quoteBlocks(segs('\x02>\x02 bold mark\nplain'));
+    expect(texts(blocks)).toEqual([
+      [true, 'bold mark'],
+      [false, 'plain'],
+    ]);
+    const bold = quoteBlocks(segs('\x02> bold\x02 line\nplain'))!;
+    expect(bold[0].segments[0]).toMatchObject({ text: 'bold', bold: true });
+  });
+
+  it('cuts a segment that spans the break, keeping its formatting on both halves', () => {
+    const blocks = quoteBlocks(segs('> \x1dquoted\nanswer\x1d'))!;
+    expect(blocks[0].segments).toEqual([{ text: 'quoted', italic: true }]);
+    expect(blocks[1].segments).toEqual([{ text: 'answer', italic: true }]);
+  });
+
+  // `>implying` is greentext, not a quote; a mark hidden in a spoiler is hidden.
+  it('needs the space, and ignores a mark inside a spoiler', () => {
+    expect(quoteBlocks(segs('>implying\nno'))).toBeNull();
+    expect(quoteBlocks(segs('\x031,1> secret\x03\nno'))).toBeNull();
   });
 });

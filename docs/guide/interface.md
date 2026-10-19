@@ -19,7 +19,9 @@ A tour of the Lurker window and how messages are organized.
   shows a faded quote of the original above your message. Quote puts
   `> <alice> what she said` above your draft as plain text and your answer under
   it, for the people whose clients never see a reply tag. The two lines go out as
-  two messages without the split confirmation.
+  two messages without the split confirmation. Any line that starts with `> `,
+  yours or anyone's, is drawn as a block quote: faded, with a bar where the `> `
+  was.
 - Saved messages and user notes.
 - **N waiting** in the status bar: lines still to send. Lurker spaces out a long
   paste or a burst so the server doesn't drop the connection for flooding; a line
