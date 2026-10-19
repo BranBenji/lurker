@@ -270,7 +270,9 @@ describe('GET /api/dcc/:id/file', () => {
     const res = await getBytes(aliceAgent, `/api/dcc/${id}/file`);
     expect(res.status).toBe(200);
     expect(res.body).toEqual(BYTES);
-    expect(res.headers['content-disposition']).toBe('attachment; filename="show.mkv"');
+    // content-disposition 2 (express 5.3) leaves a filename that is a valid HTTP
+    // token unquoted; RFC 6266 reads both forms the same.
+    expect(res.headers['content-disposition']).toBe('attachment; filename=show.mkv');
     expect(res.headers['accept-ranges']).toBe('bytes');
     expect(res.headers['cache-control']).toBe('private, no-store');
   });

@@ -33,9 +33,9 @@ env:
   # connections — for nothing. Entries are one-shot: drop them once released.
   #
   # v2.5.0: the engine closure's only change since v2.4.3 is dotenv 18.0.5 →
-  # 18.0.7 (option parsing and CLI fixes; `dotenv/config` still defaults to
-  # quiet, so the engine reads its environment the same way). None of the
-  # engine's own files changed.
+  # 18.0.8 (option parsing, CLI and fast-parser fixes; `dotenv/config` still
+  # defaults to quiet and the standard parser, so the engine reads its
+  # environment the same way). None of the engine's own files changed.
   ENGINE_TAG_PINNED_RELEASES: 'v2.5.0'
 
 jobs:
