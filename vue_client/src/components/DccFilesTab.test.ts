@@ -6,8 +6,9 @@
 // grouped by peer (a bot's block is its queue), and the kept files.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
+import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.js';
 
 const h = vi.hoisted(() => ({
   api: vi.fn<(url: string, opts?: { method?: string; body?: unknown }) => Promise<unknown>>(),
@@ -67,7 +68,21 @@ function mountTab(query = '', kind: 'video' | null = null) {
   return mount(DccFilesTab, { props: { query, kind } });
 }
 
+// A row's ⋮ opens the app's one context menu; its items are read off the
+// composable, since ContextMenu.vue itself isn't mounted here. Closed first:
+// ContextMenu.vue closes on an item's click, and ⋮ on an open menu toggles it.
+async function openMore(w: VueWrapper, i = 0) {
+  useContextMenu().close();
+  await w.findAll('button.more')[i]!.trigger('click');
+  return useContextMenu().state.items;
+}
+function item(items: ContextMenuItem[], label: string): ContextMenuItem {
+  return items.find((it) => it.label === label)!;
+}
+
 describe('DccFilesTab', () => {
+  afterEach(() => useContextMenu().close());
+
   it("shows a bot's queue as one block: the pack out, then the rest in order", async () => {
     const dcc = useDccStore();
     dcc.account = { chat: false, receive: true, send: false };
@@ -105,11 +120,11 @@ describe('DccFilesTab', () => {
     await w.vm.$nextTick();
     const remove = w
       .findAll('.row')[0]
-      .findAll('.acts .link')
+      .findAll('.acts button')
       .find((b) => b.text() === 'Remove')!;
     await remove.trigger('click');
     expect(h.api).toHaveBeenCalledWith('/api/dcc/4/cancel', { method: 'POST' });
-    const clear = w.findAll('.peer-head .link').find((b) => b.text() === 'Clear queue')!;
+    const clear = w.findAll('.peer-head button').find((b) => b.text() === 'Clear queue')!;
     await clear.trigger('click');
     expect(h.api).toHaveBeenCalledWith('/api/dcc/xdcc/remove', {
       method: 'POST',
@@ -123,7 +138,9 @@ describe('DccFilesTab', () => {
     const w = mountTab();
     await w.vm.$nextTick();
     expect(w.text()).toContain('failed: no response from Bot');
-    expect(w.findAll('.acts .link').map((b) => b.text())).toEqual(['Retry', 'Dismiss']);
+    const items = await openMore(w);
+    expect(items.map((i) => i.label)).toEqual(['Retry', 'Dismiss']);
+    expect(items.every((i) => i.icon)).toBe(true);
     dcc.transfers = [...dcc.transfers, row({ id: 7, pack: 29, attempt: 2 })];
     await w.vm.$nextTick();
     expect(w.text()).not.toContain('no response');
@@ -181,7 +198,7 @@ describe('DccFilesTab', () => {
     ];
     const w = mountTab();
     await w.vm.$nextTick();
-    const [yes, no] = w.findAll('.row.inline .acts .link');
+    const [yes, no] = w.findAll('.row.inline .acts button');
     await yes.trigger('click');
     await no.trigger('click');
     expect(accept).toHaveBeenCalledWith(8);
@@ -228,13 +245,16 @@ describe('DccFilesTab', () => {
     const text = w.text();
     expect(text).toContain('asked, waiting for an answer');
     expect(text).toContain("in the bot's queue");
-    expect(text).toContain('#3 • connecting');
+    expect(text).toContain('#3 | connecting');
     expect(text).toContain('checking the checksum');
     expect(text).toContain('offered to five, waiting for them to accept');
     expect(text).toContain('to six');
-    expect(text).toContain('50% · 50 B of 100 B');
-    expect(text).toContain('failed at 30% · it resumes if seven sends it again');
-    const labels = w.findAll('.acts .link').map((b) => b.text());
+    expect(text).toContain('50% | 50 B of 100 B');
+    expect(text).toContain('failed at 30% | it resumes if seven sends it again');
+    const labels: string[] = [];
+    for (let i = 0; i < w.findAll('button.more').length; i++) {
+      labels.push(...(await openMore(w, i)).map((it) => it.label!));
+    }
     expect(labels).toEqual(expect.arrayContaining(['Cancel', 'Withdraw', 'Delete partial']));
   });
 
@@ -254,10 +274,10 @@ describe('DccFilesTab', () => {
     ];
     const w = mountTab();
     await w.vm.$nextTick();
-    const del = w.findAll('.acts .link').find((b) => b.text() === 'Delete partial')!;
-    await del.trigger('click');
+    const del = item(await openMore(w), 'Delete partial');
+    del.onClick!();
     expect(clear).not.toHaveBeenCalled();
-    await del.trigger('click');
+    del.onClick!();
     expect(clear).toHaveBeenCalledWith(7, true);
     expect(confirm).toHaveBeenCalledTimes(2);
   });
@@ -276,77 +296,33 @@ describe('DccFilesTab', () => {
     dcc.rates = { 3: { bps: 2048, etaSeconds: 300 } } as never;
     const w = mountTab();
     await w.vm.$nextTick();
-    expect(w.text()).toContain('41% · 2.0 KB/s · 5m left');
+    expect(w.text()).toContain('41% | 2.0 KB/s | 5m left');
   });
 
-  it("opens one row's ⋯ menu at a time, and closes it again", async () => {
+  it("opens one row's ⋮ menu at a time, and closes it again", async () => {
     const dcc = useDccStore();
     dcc.filesLoaded = true;
     dcc.files = [file(1, 'a.mkv'), file(2, 'b.mkv')];
     const w = mountTab();
     await w.vm.$nextTick();
+    const menu = useContextMenu();
     const [one, two] = w.findAll('button.more');
     await one.trigger('click');
-    expect(w.findAll('.menu')).toHaveLength(1);
+    expect(menu.state.open).toBe(true);
+    expect(one.attributes('aria-expanded')).toBe('true');
     await two.trigger('click');
-    expect(w.findAll('.menu')).toHaveLength(1);
+    expect(menu.state.open).toBe(true);
+    expect(menu.state.triggerEl).toBe(two.element);
+    expect(one.attributes('aria-expanded')).toBe('false');
     expect(two.attributes('aria-expanded')).toBe('true');
+    // The same ⋮ again closes it; so does anything else that closes the menu.
     await two.trigger('click');
-    expect(w.findAll('.menu')).toHaveLength(0);
-  });
-
-  it('sends a kept file to a nick, on the network picked', async () => {
-    const dcc = useDccStore();
-    const networks = useNetworksStore();
-    networks.networks = [
-      { id: 1, name: 'rizon' },
-      { id: 2, name: 'libera' },
-    ] as never;
-    networks.states = {
-      1: { networkId: 1, channels: [], state: 'connected' },
-      2: { networkId: 2, channels: [], state: 'connected' },
-    } as never;
-    dcc.account = { chat: false, receive: true, send: true, canListen: false } as never;
-    dcc.filesLoaded = true;
-    dcc.files = [file(1, 'a.mkv')];
-    const send = vi.spyOn(dcc, 'sendFile').mockResolvedValue(row({}));
-    const w = mountTab();
+    expect(menu.state.open).toBe(false);
+    expect(two.attributes('aria-expanded')).toBe('false');
+    await one.trigger('click');
+    menu.close();
     await w.vm.$nextTick();
-    await w
-      .findAll('.acts .link')
-      .find((b) => b.text() === 'Send to…')!
-      .trigger('click');
-    const form = w.find('form.send-to');
-    expect(form.find('select').exists()).toBe(true);
-    (form.findAll('option')[1].element as HTMLOptionElement).selected = true;
-    await form.find('select').trigger('change');
-    await form.find('input.nick').setValue('  bob ');
-    await form.trigger('submit');
-    // Active or passive is the server's call (#1154); secure is the user's (#1157).
-    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(2, 'bob', 1, false, false));
-    await vi.waitFor(() => expect(w.find('form.send-to').exists()).toBe(false));
-  });
-
-  it('sends a kept file over TLS when the box is ticked (#1157)', async () => {
-    const dcc = useDccStore();
-    const networks = useNetworksStore();
-    networks.networks = [{ id: 1, name: 'rizon' }] as never;
-    networks.states = { 1: { networkId: 1, channels: [], state: 'connected' } } as never;
-    dcc.account = { chat: false, receive: true, send: true, canListen: false } as never;
-    dcc.filesLoaded = true;
-    dcc.files = [file(1, 'a.mkv')];
-    const send = vi.spyOn(dcc, 'sendFile').mockResolvedValue(row({}));
-    const w = mountTab();
-    await w.vm.$nextTick();
-    await w
-      .findAll('.acts .link')
-      .find((b) => b.text() === 'Send to…')!
-      .trigger('click');
-    const form = w.find('form.send-to');
-    await form.find('input.nick').setValue('bob');
-    await form.find('label.secure input').setValue(true);
-    await form.trigger('submit');
-    await vi.waitFor(() => expect(send).toHaveBeenCalledWith(1, 'bob', 1, false, true));
+    expect(one.attributes('aria-expanded')).toBe('false');
   });
 
   it('counts partials and what is on the way, as the limit does (#1153)', async () => {
@@ -372,7 +348,7 @@ describe('DccFilesTab', () => {
     // Only the failed one is a partial Delete partial can free; the rest of
     // the one coming in is on the way, which the limit holds back too.
     expect(w.findAll('.group').at(-1)!.text()).toBe(
-      'kept4.0 KB of 10.0 KB • 1.0 KB in partials • 3.0 KB on the way',
+      'kept4.0 KB of 10.0 KB | 1.0 KB in partials | 3.0 KB on the way',
     );
 
     // With no kept files, partials alone still show.
@@ -381,10 +357,10 @@ describe('DccFilesTab', () => {
       row({ id: 5, state: 'failed', destination_path: '/d/a.mkv', received_bytes: 1024 }),
     ];
     await w.vm.$nextTick();
-    expect(w.findAll('.group').at(-1)!.text()).toBe('kept1.0 KB of 10.0 KB • 1.0 KB in partials');
+    expect(w.findAll('.group').at(-1)!.text()).toBe('kept1.0 KB of 10.0 KB | 1.0 KB in partials');
   });
 
-  it('says how each received file checked out, and nothing for an upload (#1082)', async () => {
+  it('says how a received file checked out when there was a checksum, and nothing for an upload (#1082)', async () => {
     const dcc = useDccStore();
     dcc.filesLoaded = true;
     dcc.files = [
@@ -398,15 +374,17 @@ describe('DccFilesTab', () => {
     await w.vm.$nextTick();
     const rows = w.findAll('.list .row');
     const note = (i: number) => rows[i]!.find('.crc');
-    expect(note(0).text()).toBe('checksum verified');
+    expect(note(0).text()).toBe('Verified');
     expect(note(0).classes()).toContain('good');
-    expect(note(1).text()).toBe('checksum mismatch');
+    expect(note(1).text()).toBe('Checksum mismatch');
     expect(note(1).classes()).toContain('bad');
     expect(rows[1]!.find('.glyph').classes()).toContain('bad');
-    expect(note(2).text()).toBe('not verified (no checksum)');
-    expect(note(3).text()).toBe('not verified (resumed)');
+    // No checksum in the name, or a resume that couldn't be read back: nothing to say.
+    expect(note(2).exists()).toBe(false);
+    expect(rows[2]!.find('.sub').text()).not.toMatch(/verified/i);
+    expect(note(3).exists()).toBe(false);
     expect(note(4).exists()).toBe(false);
-    expect(rows[0]!.find('.sub').text()).toMatch(/from Bot • .* • checksum verified$/);
+    expect(rows[0]!.find('.sub').text()).toMatch(/^net:1\/Bot \| .* \| Verified$/);
   });
 
   it('downloads a kept file, and deletes it only once confirmed', async () => {
@@ -421,12 +399,12 @@ describe('DccFilesTab', () => {
     );
     const w = mountTab();
     await w.vm.$nextTick();
-    const btn = (label: string) => w.findAll('.acts .link').find((b) => b.text() === label)!;
-    await btn('Download').trigger('click');
+    const run = async (label: string) => item(await openMore(w), label).onClick!();
+    await run('Download');
     expect(download).toHaveBeenCalledWith(1);
-    await btn('Delete').trigger('click');
+    await run('Delete');
     expect(del).not.toHaveBeenCalled();
-    await btn('Delete').trigger('click');
+    await run('Delete');
     expect(del).toHaveBeenCalledWith(1);
   });
 
@@ -440,14 +418,8 @@ describe('DccFilesTab', () => {
     const w = mountTab();
     await w.vm.$nextTick();
     expect(w.find('.pick').text()).toContain('Pick a file to send to bob');
-    // The pick's kind can be changed here, whatever route opened it (#1157).
-    const secure = w.find('.pick label.secure input');
-    expect((secure.element as HTMLInputElement).checked).toBe(false);
-    await secure.setValue(true);
-    expect(dcc.pick!.secure).toBe(true);
-    await secure.setValue(false);
     await w
-      .findAll('.acts .link')
+      .findAll('.acts button')
       .find((b) => b.text() === 'Send')!
       .trigger('click');
     expect(picked).toHaveBeenCalledWith(1);
@@ -462,7 +434,10 @@ describe('DccFilesTab', () => {
     await vi.waitFor(() => expect(picked).toHaveBeenLastCalledWith(9));
     expect(upload).toHaveBeenCalledWith(chosen);
 
-    await w.findAll('.pick > .link').at(-1)!.trigger('click');
+    // Cancelling the pick closes the window it opened.
+    dcc.panelOpen = true;
+    await w.find('.pick .btn-bar button').trigger('click');
     expect(dcc.pick).toBeNull();
+    expect(dcc.panelOpen).toBe(false);
   });
 });

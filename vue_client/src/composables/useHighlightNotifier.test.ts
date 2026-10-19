@@ -145,7 +145,7 @@ describe('notifyForEvent kick-of-us', () => {
     expect(push).toHaveBeenCalledTimes(1);
     expect(push.mock.calls[0][0]).toMatchObject({
       kind: 'kicked',
-      title: 'Kicked from libera • #lurker',
+      title: 'Kicked from libera | #lurker',
       body: 'op: read the topic',
     });
   });
@@ -155,7 +155,7 @@ describe('notifyForEvent kick-of-us', () => {
     // A server kick has no nick...
     notifyForEvent(kick({ nick: null }));
     expect(push.mock.calls[0][0]).toMatchObject({
-      title: 'Kicked from libera • #lurker',
+      title: 'Kicked from libera | #lurker',
       body: 'read the topic',
     });
     // ...and a kick with no reason is ordinary.

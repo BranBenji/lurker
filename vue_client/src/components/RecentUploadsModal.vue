@@ -23,7 +23,7 @@
 -->
 
 <template>
-  <AppModal :word="view" :title="view" size="xl" fill-height @close="$emit('close')">
+  <AppModal :word="view" :title="title" size="xl" fill-height @close="$emit('close')">
     <div class="filters">
       <!-- Search and the starred toggle share a line. The toggle used to sit after
            the kind chips, where it had nowhere to go: those five fill the content
@@ -48,24 +48,21 @@
              gifs") rather than replacing one, and sitting inside the All/Images/…
              row would imply the mutual exclusivity those have. Beside the search
              field it reads as what it is — another way to narrow the same list. -->
-        <button
-          v-if="!onDcc"
-          class="chip starred"
-          :class="{ active: uploads.favoritesOnly }"
-          :aria-pressed="uploads.favoritesOnly"
-          title="Show only starred uploads"
-          aria-label="Show only starred uploads"
-          @click="onToggleFavoritesFilter"
-        >
-          <StarIcon /><span class="label">Starred</span>
-        </button>
+        <span v-if="!onDcc" class="btn-bar starred">
+          <button
+            :aria-pressed="uploads.favoritesOnly"
+            title="Show only starred uploads"
+            aria-label="Show only starred uploads"
+            @click="onToggleFavoritesFilter"
+          >
+            <StarIcon /><span class="label">Starred</span>
+          </button>
+        </span>
       </div>
-      <div class="kinds" role="group" aria-label="Filter by type">
+      <div class="kinds btn-bar" role="group" aria-label="Filter by type">
         <button
           v-for="k in KIND_CHIPS"
           :key="k.value ?? 'all'"
-          class="chip"
-          :class="{ active: activeKind === k.value }"
           :aria-pressed="activeKind === k.value"
           @click="onKind(k.value)"
         >
@@ -136,7 +133,8 @@
 
           <div class="name" :title="u.filename || u.url">{{ u.filename || '(pasted)' }}</div>
           <div class="sub" :title="metaLine(u)">
-            {{ u.removed ? 'Removed by moderation' : metaLine(u) }}
+            <template v-if="u.removed">Removed by moderation</template>
+            <MetaLine v-else :parts="metaParts(u)" />
           </div>
 
           <!-- Overlaid on the artwork (absolutely positioned, so source order is free)
@@ -215,12 +213,14 @@
 import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue';
 import AppModal from './AppModal.vue';
 import DccFilesTab from './DccFilesTab.vue';
+import MetaLine from './MetaLine.vue';
 import { useUploadsStore } from '../stores/uploads.js';
 import type { UploadItem, UploadKind } from '../stores/uploads.js';
 import { useMediaViewer } from '../composables/useMediaViewer.js';
 import { useCopyFeedback } from '../composables/useCopyFeedback.js';
 import { formatRelative } from '../utils/timestamp.js';
-import { joinMeta } from '../utils/metaLine.js';
+import { joinMeta, type MetaPart } from '../utils/metaLine.js';
+import { useDccStore } from '../stores/dcc.js';
 import { formatBytes } from '../utils/formatBytes.js';
 import { iconForMime } from '../utils/uploaders.js';
 import { mediaKindForUrl } from '../utils/uploadHostMatch.js';
@@ -264,6 +264,10 @@ const emit = defineEmits<{
 const uploads = useUploadsStore();
 
 const onDcc = computed(() => props.view === 'dcc');
+const dcc = useDccStore();
+// Picking a file for a secure send (#1157) names the window after it, since the
+// pick's kind is set by the menu entry that opened it and shown nowhere else.
+const title = computed(() => (onDcc.value && dcc.pick?.secure ? 'secure dcc' : props.view));
 // The DCC window filters what it already holds, so its search and chip are its
 // own, apart from the shares search the server answers.
 const dccQuery = ref('');
@@ -490,11 +494,11 @@ async function onDelete(u: UploadRow) {
 // the app's business, not the user's: it doesn't help you recognise a picture, and it
 // isn't actionable from here. When it matters — the file is gone, or can't be deleted
 // — that surfaces as its own state, not as a label on every tile.
+function metaParts(u: UploadRow): MetaPart[] {
+  return [u.created_at && formatRelative(u.created_at), u.byte_size && formatBytes(u.byte_size)];
+}
 function metaLine(u: UploadRow): string {
-  return joinMeta([
-    u.created_at && formatRelative(u.created_at),
-    u.byte_size && formatBytes(u.byte_size),
-  ]);
+  return joinMeta(metaParts(u));
 }
 </script>
 
@@ -504,6 +508,9 @@ function metaLine(u: UploadRow): string {
    modal is the same shape — an extra border here just made it look like a different
    app. */
 .filters {
+  /* One vertical padding for the search field, the starred toggle and the kind
+     bar, so the three controls stand the same height. */
+  --control-pad: var(--space-3);
   display: flex;
   gap: var(--space-4);
   align-items: center;
@@ -546,7 +553,7 @@ function metaLine(u: UploadRow): string {
   width: 100%;
   /* Left padding is derived, not picked: where the icon starts, plus the icon's own
      width, plus one character of breathing room. */
-  padding: var(--space-4) var(--space-5) var(--space-4)
+  padding: var(--control-pad) var(--space-5) var(--control-pad)
     calc(var(--search-icon-inset) + var(--icon-size) + 1ch);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -563,37 +570,25 @@ function metaLine(u: UploadRow): string {
   appearance: none;
 }
 
-.kinds {
-  display: flex;
-  gap: var(--space-2);
+/* The kind chips and the starred toggle are .btn-bar choices (main.css), at the
+   filter row's control height. */
+.kinds > button,
+.starred > button {
+  padding-block: var(--control-pad);
 }
-.chip {
-  background: none;
-  border: 1px solid var(--border);
-  color: var(--fg-muted);
-  cursor: pointer;
-  font: inherit;
-  padding: var(--space-3) var(--space-4);
+.starred {
+  /* Never squeezed by the search field growing, and as tall as the field: on a
+     phone the button holds only the icon, whose box is shorter than a text line,
+     so left to its content it would stand short of the input beside it. */
+  flex: none;
+  align-self: stretch;
 }
-.chip:hover {
-  color: var(--fg);
-}
-.chip.active {
-  color: var(--fg);
-  border-color: var(--accent);
-  background: var(--bg-soft);
-}
-.chip.starred {
+.starred > button {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  /* Never squeezed by the search field growing, and matched to the input's height
-     rather than left as a shorter chip floating beside a taller box — same vertical
-     padding, same border, so the two line up as one row of controls. */
-  flex: none;
-  padding-block: var(--space-4);
 }
-.chip.starred.active .lucide {
+.starred > button[aria-pressed='true'] .lucide {
   color: var(--warn);
   fill: currentColor;
 }
@@ -602,10 +597,10 @@ function metaLine(u: UploadRow): string {
    star alone is unambiguous next to them, and the button keeps its aria-label, so
    dropping the word costs nothing but the pixels. */
 @media (max-width: 768px) {
-  .chip.starred {
+  .starred > button {
     gap: 0;
   }
-  .chip.starred .label {
+  .starred .label {
     display: none;
   }
 }

@@ -28,12 +28,13 @@ The window has three parts:
   here with **Retry** when it can be retried, and **Delete partial** for the
   bytes it got.
 - **kept**: every file you have on the server, received or uploaded, with
-  **Download**, **Send to…** and **Delete**. The line above the list says how
+  **Download** and **Delete**. The line above the list says how
   much space your files take, partials included, and your limit if the admin
   set one. What a file coming in has still to send counts toward the limit
   too, shown as "on the way". **Delete partial** frees a partial's space.
 
-On a phone, each row's actions are behind its **⋯** button.
+Each row's actions are behind its **⋯** button, except an offer's Accept and
+Decline and a queued pack's Remove, which sit on the row.
 
 ## Receiving a file
 
@@ -86,26 +87,24 @@ restart. Up to 500 packs can be queued in one command.
 
 Many release files carry a CRC32 checksum in their name, like
 `Show - 01 [1080p][A1B2C3D4].mkv`. Lurker checks every received file against
-it, and each kept file says how that went:
+it, and a kept file says how that went:
 
-- **checksum verified**: the file matches.
-- **checksum mismatch**: it doesn't, so the file is damaged. Get it again.
-- **not verified (no checksum)**: the name carried no checksum, so there was
-  nothing to check. The size matched, but a file can be the right size and
-  still damaged.
-- **not verified (resumed)**: a resumed file Lurker couldn't read back to
-  check.
+- **Verified**: the file matches.
+- **Checksum mismatch**: it doesn't, so the file is damaged. Get it again.
+
+A file whose name carries no checksum says nothing: the size matched, but there
+was nothing more to check.
 
 A resumed file is read back and checked as a whole once it's complete. The DCC
-window says "checking the checksum" while that happens.
+window says "checking the checksum" while that happens. One Lurker couldn't read
+back says nothing either.
 
 ## Sending a file
 
 To send someone a file, use **Send File (DCC)…** from their name in the member
 list or their profile's **⋯** menu, or from a DM: the DM's menu in the buffer
 list, or (on a computer) the send button at the top of the DM. The DCC window opens to pick the
-file: one you keep, or a new one to upload. A kept file also has **Send to…**,
-which asks for a nick, and for a network when you're on more than one.
+file: one you keep, or a new one to upload.
 
 From the keyboard: `/dcc send <nick> [<file>]`, where the file is a name or an
 id from `/dcc files`. With no file, the DCC window opens to pick one.
@@ -136,10 +135,9 @@ A DCC connection is plain TCP, so anyone on the path can read it. KVIrc's
 secure DCC puts the same chat or file transfer inside TLS, and Lurker speaks
 it: **Secure Chat (DCC)** and **Secure Send File (DCC)…** sit under the plain
 entries in the same menus, and `/dcc chat -secure <nick>` and
-`/dcc send -secure <nick> [<file>]` do the same from the keyboard. However
-the DCC window came to be picking a file, its prompt has a **secure** box, and
-so does a kept file's **Send to…**. An offer that arrives this way is taken
-this way. The toast, the status line and the
+`/dcc send -secure <nick> [<file>]` do the same from the keyboard. When the
+DCC window is picking a file for a secure send, its title says **secure dcc**.
+An offer that arrives this way is taken this way. The toast, the status line and the
 row in the DCC window say "secure"; a secure chat's connected line names the
 TLS version and cipher, and its buffer shows a lock in the status bar for as
 long as it is up. The send button at the top of that buffer sends securely

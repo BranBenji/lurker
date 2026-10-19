@@ -3,25 +3,47 @@
 
 /**
  * The separator between the facts on a secondary line — a notification's
- * "libera • #general", a highlight rule's "QUACK! • whole word • #chan", an upload's
- * "2h ago • 412 KB".
+ * "libera | #general", a highlight rule's "QUACK! | whole word | #chan", an upload's
+ * "2h ago | 412 KB".
  *
- * A bullet, not the middot (·) this used to be: these lines are rendered in muted grey
- * by definition, and at that weight a middot all but vanishes — it reads as a speck
- * rather than a separator.
+ * A pipe with a space each side, after a middot (·) that all but vanished in the muted
+ * grey these lines are rendered in, and then a bullet (•). A nick can carry a pipe too
+ * ("brad|afk"), so the spaces around the separator are what tell it apart; never join
+ * without them.
  *
  * ⚠ Not used for the `/help` command examples in MessageInput. Those are monospace,
- * terminal-shaped text where a middot between example commands reads correctly and a
- * bullet would look like a list marker. Same glyph, different job.
+ * terminal-shaped text where a middot between example commands reads correctly.
  */
-export const META_SEPARATOR = '•';
+export const META_SEPARATOR = '|';
+
+/** One fact on a meta line. A falsy part isn't there; an object part can carry a tone. */
+export type MetaPart =
+  | string
+  | number
+  | false
+  | null
+  | undefined
+  | { text: string; tone?: 'good' | 'bad' | null; class?: string };
+
+/** The parts that are there, each as an object. */
+export function metaParts(
+  parts: MetaPart[],
+): Array<{ text: string; tone?: 'good' | 'bad' | null; class?: string }> {
+  const out: Array<{ text: string; tone?: 'good' | 'bad' | null; class?: string }> = [];
+  for (const p of parts) {
+    if (!p) continue;
+    out.push(typeof p === 'object' ? p : { text: String(p) });
+  }
+  return out;
+}
 
 /**
- * Join the parts of a meta line, dropping the ones that aren't there.
- *
- * Built in JS rather than as adjacent template spans because Vue's whitespace
- * condensing strips the gaps between those, and the separator needs its spaces.
+ * Join the parts of a meta line as plain text, for a notification title or a
+ * line typed into the buffer. In a template, `<MetaLine>` renders the same parts
+ * with the separators dimmed.
  */
-export function joinMeta(parts: Array<string | number | false | null | undefined>): string {
-  return parts.filter(Boolean).join(` ${META_SEPARATOR} `);
+export function joinMeta(parts: MetaPart[]): string {
+  return metaParts(parts)
+    .map((p) => p.text)
+    .join(` ${META_SEPARATOR} `);
 }
