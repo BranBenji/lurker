@@ -1063,7 +1063,7 @@ page.
   undocumented default rather than a decision, so don't reason from it.
 - **The slice is still a contiguous id range**, exactly like an event-counted
   one. `hasMoreOlder`, prepend-and-dedupe, and the `before: <oldest returned
-id>` cursor are unchanged. This cannot open a hole.
+  id>` cursor are unchanged. This cannot open a hole.
 - **The scan is capped** (2000 rows). Past the cap you get fewer renderable rows
   than you asked for and `hasMoreOlder` stays true — a buffer holding tens of
   thousands of joins between two sentences degrades to today's behavior instead
@@ -1835,8 +1835,8 @@ What the iOS app actually ships with (`FrameParser.parseWs`,
   with `open-buffer` — §4.3 for why that's the difference between reading a
   buffer and reopening it on every device the user owns.
 - **REST (4):** `POST /api/auth/login/token` (or the CP login), `GET
-/api/networks`, `POST /api/auth/logout`, and optionally `GET
-/api/push/config`.
+  /api/networks`, `POST /api/auth/logout`, and optionally `GET
+  /api/push/config`.
 
 Known first-party gaps at this tier (fine to share): nicklist only as of last
 snapshot (no live `names`/`member-update` patching), no typing/peer-presence,
