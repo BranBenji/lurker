@@ -312,7 +312,7 @@ const splitClass = computed(() => {
     count: composing.chunks,
     allowSplit: !!settings.effective('chat.allow_split_messages'),
     confirmed: false,
-    typedLines: composing.multiline ? 0 : composing.typedLines,
+    typedLines: composing.typedLines,
   });
   if (gate === 'send') return '';
   return gate === 'upload' ? 'bad' : 'warn';

@@ -187,7 +187,12 @@ import { bufferKey, useBuffersStore } from '../stores/buffers.js';
 import { useReactionsStore } from '../stores/reactions.js';
 import { useRepliesStore } from '../stores/replies.js';
 import type { PendingReply } from '../stores/replies.js';
-import { NOT_NICK_CHAR } from '../utils/replyText.js';
+import {
+  NOT_NICK_CHAR,
+  quoteLineFor,
+  splitQuoteBlock,
+  type QuoteSource,
+} from '../utils/replyText.js';
 import { formatBytes } from '../utils/formatBytes.js';
 import { MAX_REACTION_GRAPHEMES, isValidReactionValue } from '../../../shared/reactions.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
@@ -638,6 +643,30 @@ function computeChunks(raw: string): { chunks: number; isAction: boolean; typedL
   return { chunks, isAction, typedLines: isAction ? 0 : lineCountForSay(body) };
 }
 
+// What the send of `raw` is: `count` messages the channel sees, `isAction`
+// for a /me, `multiline` when they go as draft/multiline batches (then
+// `wireChunks` still carries the raw PRIVMSG estimate), and `typedLines`, the
+// newline-separated lines the user typed — 0 on the multiline path, where the
+// only split that asks is an invisible batch boundary. The ONE source for the
+// StatusBar's chip (publishComposing) and the gate in submit(), so they can't
+// disagree.
+interface SplitPlan {
+  count: number;
+  wireChunks: number;
+  isAction: boolean;
+  multiline: boolean;
+  typedLines: number;
+}
+
+function splitPlan(raw: string): SplitPlan {
+  const { chunks, isAction, typedLines } = computeChunks(raw);
+  const batches = multilineCountFor(raw);
+  if (batches > 0) {
+    return { count: batches, wireChunks: chunks, isAction: false, multiline: true, typedLines: 0 };
+  }
+  return { count: chunks, wireChunks: chunks, isAction, multiline: false, typedLines };
+}
+
 // Whether the active network advertised draft/multiline limits. Drives the
 // multiline-aware split gating below. (#381)
 function currentMultilineLimits(): MultilineLimits | null {
@@ -664,13 +693,8 @@ function multilineCountFor(raw: string): number {
 // On a multiline network `chunks` carries the batch (message) count and
 // `multiline` is set; otherwise it's the legacy wire-PRIVMSG estimate.
 function publishComposing(raw: string): void {
-  const batches = multilineCountFor(raw);
-  if (batches > 0) {
-    setComposingState({ chunks: batches, isAction: false, multiline: true });
-    return;
-  }
-  const { chunks, isAction, typedLines } = computeChunks(raw);
-  setComposingState({ chunks, isAction, multiline: false, typedLines });
+  const { count, isAction, multiline, typedLines } = splitPlan(raw);
+  setComposingState({ chunks: count, isAction, multiline, typedLines });
 }
 
 function sendTyping(networkId: number, target: string, state: string): void {
@@ -956,9 +980,10 @@ function cancelReply(): void {
   if (!reply) return;
   replies.cancel(key);
   if (!reply.addressed) return;
-  const cur = text.value;
-  const stripped = stripAddress(cur, reply.nick);
-  if (stripped !== cur) setInputAndCaretEnd(stripped);
+  // From the answer, under any quote lines (#1119) — where Reply put it.
+  const { quotes, body } = splitQuoteBlock(text.value);
+  const stripped = stripAddress(body, reply.nick);
+  if (stripped !== body) setInputAndCaretEnd(quotes + stripped);
 }
 
 function buildNickMatches(buf: Buffer, networkId: number, prefix: string): string[] {
@@ -1852,8 +1877,10 @@ function onStripSelect(nick: string): void {
 function addressInComposer(nick: string): void {
   if (!active.value || !nick) return;
   const cur = text.value;
-  if (!isAddressedTo(cur, nick)) {
-    focusForReply(nick + addressSuffix() + cur);
+  // The address belongs to the answer, under any quote lines (#1119).
+  const { quotes, body } = splitQuoteBlock(cur);
+  if (!isAddressedTo(body, nick)) {
+    focusForReply(quotes + nick + addressSuffix() + body);
     // Cancelling the pending reply (#993) takes back only what this inserted.
     if (networks.activeKey) replies.markAddressed(networks.activeKey, nick);
   } else {
@@ -1861,14 +1888,34 @@ function addressInComposer(nick: string): void {
   }
 }
 
-// Quote (#1119): the `> <nick> text` line goes above the draft, on its own
+// Quote (#1119): the `> <nick> text` line goes above the answer, on its own
 // line, and the caret lands at the end — under it, where the answer goes. A
-// second Quote stacks above the first, so quoting two people reads in order.
-// An empty draft ends up as the quote plus a newline, so the SPLIT chip says
-// what the send will be before a word is typed.
-function quoteIntoDraft(line: string): void {
-  if (!active.value || !line) return;
-  focusForReply(line + '\n' + text.value);
+// second Quote goes under the first, so quoting two people reads in the order
+// they were quoted. An empty draft ends up as the quote plus a newline, so the
+// SPLIT chip says what the send will be before a word is typed. The line is
+// clipped to one wire line (lineBudget), or the quote alone would split.
+//
+// Quote and Reply don't mix: a send carries one reply tag, and on a network
+// without draft/multiline it would ride the first wire line — the quote. So a
+// pending Reply goes, with the `nick: ` it put in the draft (cancelReply).
+function quoteIntoDraft(source: QuoteSource): void {
+  if (!active.value || !source.nick) return;
+  // A /command in the draft would go out as channel text once a line sat
+  // above it — `/msg bob …` included. Say so instead.
+  const { body } = splitQuoteBlock(text.value);
+  if (body.startsWith('/') && !body.startsWith('//')) {
+    toasts.push({
+      title: 'Clear the /command first',
+      body: 'A quote above it would send the command as text.',
+      kind: 'warn',
+      ttlMs: 5000,
+    });
+    return;
+  }
+  cancelReply();
+  const line = quoteLineFor(source, lineBudget(undefined, false));
+  const after = splitQuoteBlock(text.value);
+  focusForReply(after.quotes + line + '\n' + after.body);
 }
 
 // Reply on your own line (#997): the same landing, with the draft as it is.
@@ -2417,10 +2464,7 @@ async function submit() {
   // computeChunks()/multilineCountFor() return 0 for slash commands we don't
   // route through PRIVMSG, so /join, /raw, etc. fall right through. A draft that
   // fits one multiline batch is exactly one message and skips the gate. (#381)
-  const { chunks: wireChunks, isAction, typedLines } = computeChunks(raw);
-  const batches = multilineCountFor(raw);
-  const multiline = batches > 0;
-  const count = multiline ? batches : wireChunks;
+  const { count, wireChunks, isAction, multiline, typedLines } = splitPlan(raw);
   if (isAction && wireChunks > 1) {
     toasts.push({
       title: 'Action message too long',
@@ -2432,12 +2476,7 @@ async function submit() {
   }
   if (count > 1) {
     const allowSplit = !!settings.effective('chat.allow_split_messages');
-    const gate = splitGateFor({
-      count,
-      allowSplit,
-      confirmed: pendingSplitConfirm,
-      typedLines: multiline ? 0 : typedLines,
-    });
+    const gate = splitGateFor({ count, allowSplit, confirmed: pendingSplitConfirm, typedLines });
     if (gate !== 'send') {
       pendingSplitConfirm = true;
       if (gate === 'upload') {

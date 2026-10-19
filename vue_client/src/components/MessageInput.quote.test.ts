@@ -15,7 +15,12 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useRecentBuffersStore } from '../stores/recentBuffers.js';
 import { useToastsStore } from '../stores/toasts.js';
-import { quoteInComposer } from '../composables/useComposerOverlay.js';
+import { useRepliesStore } from '../stores/replies.js';
+import {
+  addressNick,
+  cancelComposerReply,
+  quoteInComposer,
+} from '../composables/useComposerOverlay.js';
 import { useComposing } from '../composables/useComposing.js';
 import { socketSendWithAck } from '../composables/useSocket.js';
 import MessageInput from './MessageInput.vue';
@@ -29,6 +34,8 @@ vi.mock('../composables/useSocket.js', () => ({
 }));
 
 const KEY = '1::#chan';
+const ALICE = { nick: 'alice', type: 'message', text: 'what time is it?' };
+const BOB = { nick: 'bob', type: 'message', text: 'three' };
 const QUOTE = '> <alice> what time is it?';
 
 let mounted: VueWrapper[] = [];
@@ -82,7 +89,7 @@ describe('quoting a line', () => {
     seed();
     const el = await composer();
     await type(el, 'noon');
-    quoteInComposer(QUOTE);
+    quoteInComposer(ALICE);
     await flush();
     expect(el.value).toBe(`${QUOTE}\nnoon`);
     expect(el.selectionStart).toBe(el.value.length);
@@ -92,22 +99,99 @@ describe('quoting a line', () => {
   it('opens an empty draft as the quote and a fresh line under it', async () => {
     seed();
     const el = await composer();
-    quoteInComposer(QUOTE);
+    quoteInComposer(ALICE);
     await flush();
     expect(el.value).toBe(`${QUOTE}\n`);
     // The SPLIT chip already says what the send will be.
     expect(useComposing().chunks).toBe(1);
   });
 
-  it('stacks a second quote above the first', async () => {
+  it('puts a second quote under the first, above the answer', async () => {
     seed();
     const el = await composer();
-    quoteInComposer(QUOTE);
+    quoteInComposer(ALICE);
     await flush();
     await type(el, `${QUOTE}\nboth of you`);
-    quoteInComposer('> <bob> three');
+    quoteInComposer(BOB);
     await flush();
-    expect(el.value).toBe(`> <bob> three\n${QUOTE}\nboth of you`);
+    expect(el.value).toBe(`${QUOTE}\n> <bob> three\nboth of you`);
+  });
+
+  it('clips the quote to one wire line', async () => {
+    seed();
+    const el = await composer();
+    quoteInComposer({ ...ALICE, text: 'x'.repeat(900) });
+    await flush();
+    const [line, rest] = el.value.split('\n');
+    expect(rest).toBe('');
+    expect(line).toMatch(/^> <alice> x+…$/);
+    expect(useComposing().chunks).toBe(1);
+  });
+
+  // One send carries one reply tag, and the server puts it on the first wire
+  // line — which would be the quote. So Quote replaces a pending Reply, along
+  // with the `nick: ` the Reply put in the draft.
+  it('drops a pending Reply and the address it put in', async () => {
+    seed();
+    const el = await composer();
+    useRepliesStore().start(KEY, { messageId: 42, ...ALICE });
+    addressNick('alice');
+    await flush();
+    expect(el.value).toBe('alice: ');
+    quoteInComposer(BOB);
+    await flush();
+    expect(el.value).toBe('> <bob> three\n');
+    expect(useRepliesStore().forKey(KEY)).toBeNull();
+    await type(el, '> <bob> three\nyes');
+    await press(el, 'Enter');
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).not.toHaveProperty('replyTo');
+  });
+
+  it('leaves an address the user typed when it drops the Reply', async () => {
+    seed();
+    const el = await composer();
+    await type(el, 'alice: ');
+    useRepliesStore().start(KEY, { messageId: 42, ...ALICE });
+    addressNick('alice'); // already addressed: nothing inserted, nothing to take back
+    await flush();
+    quoteInComposer(BOB);
+    await flush();
+    expect(el.value).toBe('> <bob> three\nalice: ');
+    expect(useRepliesStore().forKey(KEY)).toBeNull();
+  });
+
+  // A Reply after a Quote addresses the answer, not the quote line, and its ×
+  // takes the address back from there.
+  it('lets a Reply address the answer under the quote, and take it back', async () => {
+    seed();
+    const el = await composer();
+    quoteInComposer(ALICE);
+    await flush();
+    await type(el, `${QUOTE}\nsure`);
+    useRepliesStore().start(KEY, { messageId: 43, ...BOB });
+    addressNick('bob');
+    await flush();
+    expect(el.value).toBe(`${QUOTE}\nbob: sure`);
+    cancelComposerReply();
+    await flush();
+    expect(el.value).toBe(`${QUOTE}\nsure`);
+    expect(useRepliesStore().forKey(KEY)).toBeNull();
+  });
+
+  it('refuses to quote above a /command, which would go out as text', async () => {
+    seed();
+    const el = await composer();
+    await type(el, '/msg bob the password is hunter2');
+    quoteInComposer(ALICE);
+    await flush();
+    expect(el.value).toBe('/msg bob the password is hunter2');
+    expect(useToastsStore().items.map((t) => t.title)).toEqual(['Clear the /command first']);
+    // An escaped slash is text, and takes a quote.
+    await type(el, '//me is not a command');
+    quoteInComposer(ALICE);
+    await flush();
+    expect(el.value).toBe(`${QUOTE}\n//me is not a command`);
   });
 
   it('sends the quote and the answer as two typed lines without asking', async () => {
@@ -145,5 +229,10 @@ describe('quoting a line', () => {
     await type(el, `${QUOTE}\n> <bob> three\nboth of you`);
     await press(el, 'Enter');
     expect(sent()).toEqual([]);
+    // The modal, not the two-line toast.
+    expect(useToastsStore().items).toEqual([]);
+    expect(document.body.querySelector('pre.preview')?.textContent).toBe(
+      `${QUOTE}\n> <bob> three\nboth of you`,
+    );
   });
 });

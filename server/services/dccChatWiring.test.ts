@@ -632,6 +632,33 @@ describe('a = target never reaches the IRC wire', () => {
     h.conn.closeDccChat('bob');
   });
 
+  // A Quote above its answer (#1119), or a paste: DCC CHAT is line-based, so
+  // each line goes as its own, and is echoed as its own. A /me stays one line.
+  it('sends a multi-line draft as that many chat lines, each echoed', async () => {
+    enableDcc();
+    allowLoopback();
+    const h = harness();
+    inject(h.conn);
+    const peer = await startPeer();
+    offerAndAccept(h.conn, 'bob', `CHAT chat ${encodeDccAddress('127.0.0.1')} ${peer.port}`);
+    const sock = await peer.socket;
+    await waitFor(() => h.conn.hasDccChat('bob'));
+
+    const seen: string[] = [];
+    sock.on('data', (d) => seen.push(d.toString()));
+
+    expect(ircManager.send(1, 1, '=bob', '> <bob> question?\nanswer')).toBe(true);
+    expect(ircManager.action(1, 1, '=bob', 'waves\nand nods')).toBe(true);
+    await waitFor(() => seen.join('').split('\r\n').filter(Boolean).length === 3);
+
+    expect(seen.join('')).toBe(
+      '> <bob> question?\r\nanswer\r\n\u0001ACTION waves and nods\u0001\r\n',
+    );
+    const mine = h.chatLines().filter((l) => l.self);
+    expect(mine.map((l) => l.text)).toEqual(['> <bob> question?', 'answer']);
+    h.conn.closeDccChat('bob');
+  });
+
   // No valid nick or channel starts with `=`, so a bare `=` is a pseudo-target
   // too — it used to fall through as a DM and go out as `PRIVMSG =`.
   it('refuses a bare = on every send path, silently', () => {

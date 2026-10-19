@@ -437,7 +437,7 @@ import {
 import { setViewedBuffer } from '../composables/useViewedBuffer.js';
 import { isChannelTarget, dccChatPeer } from '../../../shared/channels.js';
 import ReactionRow from './ReactionRow.vue';
-import { quoteLine, type ReplyContext, type ReplyParent } from '../../../shared/replies.js';
+import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
 import { useRepliesStore } from '../stores/replies.js';
 import { emitJumpIntent } from '../composables/useJumpIntent.js';
 import { CopyIcon, IdCardIcon, ReplyIcon, SatelliteDishIcon } from '@lucide/vue';
@@ -810,13 +810,11 @@ const actionContext: MessageContext = {
     if (!msg.nick) return;
     const networkId = msg.networkId ?? msg.network_id ?? buffer.value?.networkId;
     const relayed = networkId == null ? null : relayBots.unwrap(networkId, msg);
-    quoteInComposer(
-      quoteLine({
-        nick: relayed?.nick ?? msg.nick,
-        type: msg.type,
-        text: relayed?.text ?? (msg.text as string | undefined) ?? '',
-      }),
-    );
+    quoteInComposer({
+      nick: relayed?.nick ?? msg.nick,
+      type: msg.type,
+      text: relayed?.text ?? (msg.text as string | undefined) ?? '',
+    });
   },
   onIgnore: (msg) => {
     const { user, host } = parseUserHost(msg.userhost);
