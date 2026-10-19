@@ -434,7 +434,10 @@ describe('DccFilesTab', () => {
     await vi.waitFor(() => expect(picked).toHaveBeenLastCalledWith(9));
     expect(upload).toHaveBeenCalledWith(chosen);
 
+    // Cancelling the pick closes the window it opened.
+    dcc.panelOpen = true;
     await w.find('.pick .btn-bar button').trigger('click');
     expect(dcc.pick).toBeNull();
+    expect(dcc.panelOpen).toBe(false);
   });
 });

@@ -38,7 +38,8 @@
           upload one…
         </button>
       </span>
-      <span class="btn-bar"><button @click="dcc.pick = null">cancel</button></span>
+      <!-- The window opened for the pick, so cancelling the pick closes it. -->
+      <span class="btn-bar"><button @click="dcc.close()">cancel</button></span>
     </div>
     <p v-if="dcc.uploading" class="muted">
       Uploading {{ dcc.uploading.name }}… {{ dcc.uploading.percent }}%
