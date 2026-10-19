@@ -4206,7 +4206,7 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       // with, so this guard can't drift from what the verb accepts.
       const linesOpt = getOption('data.retention.lines');
       const floor = linesOpt?.type === 'int' ? (linesOpt.minNonzero ?? 0) : 1000;
-      const maxLines = linesOpt?.type === 'int' ? linesOpt.max : 10_000_000;
+      const maxLines = (linesOpt?.type === 'int' ? linesOpt.max : undefined) ?? 10_000_000;
       const arg = argLine.trim().toLowerCase();
       if (!arg) {
         void (async () => {

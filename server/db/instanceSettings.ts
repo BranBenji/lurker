@@ -7,6 +7,7 @@
 
 import db from './index.js';
 import { isNodeMode } from '../utils/edition.js';
+import { DEFAULT_UPLOAD_CEILING_MB } from '../../shared/settingsRegistry.js';
 
 export function getInstanceSetting(key: string): string | null {
   const row = db.prepare('SELECT value FROM instance_settings WHERE key = ?').get(key) as
@@ -75,4 +76,29 @@ export function pushRelayEnabled(): boolean {
 
 export function setPushRelayEnabled(enabled: boolean): void {
   setInstanceSetting(PUSH_RELAY_ENABLED_KEY, enabled ? '1' : '0');
+}
+
+export const UPLOAD_CEILING_MB_KEY = 'uploads.max_upload_mb';
+
+/**
+ * The admin-set upload ceiling in MiB, or null when the admin never set one
+ * (#1131). Self-host only: on a hosted cell the ceiling is the operator's
+ * LURKER_NODE_UPLOAD_MAX_MB, read in services/uploadLimits.ts, and a tenant's
+ * write here would be ignored. A stored value that won't parse reads as unset.
+ */
+export function storedUploadCeilingMb(): number | null {
+  const v = getInstanceSetting(UPLOAD_CEILING_MB_KEY);
+  if (v === null) return null;
+  const n = Math.floor(Number(v));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/** The ceiling as the self-host upload path resolves it: stored, else the
+ *  install default. */
+export function uploadCeilingMbStandalone(): number {
+  return storedUploadCeilingMb() ?? DEFAULT_UPLOAD_CEILING_MB;
+}
+
+export function setUploadCeilingMb(mb: number): void {
+  setInstanceSetting(UPLOAD_CEILING_MB_KEY, String(mb));
 }

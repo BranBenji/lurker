@@ -14,23 +14,31 @@ let user: User;
 let fresh: User;
 let setUserSetting: (userId: number, key: string, value: unknown) => void;
 let limits: typeof import('./uploadLimits.js');
+let instanceSettings: typeof import('../db/instanceSettings.js');
+let db: typeof import('../db/index.js').default;
 
 beforeAll(async () => {
   const { createUser } = await import('../db/users.js');
   ({ setUserSetting } = await import('../db/settings.js'));
   limits = await import('./uploadLimits.js');
+  instanceSettings = await import('../db/instanceSettings.js');
+  db = (await import('../db/index.js')).default;
   user = createUser('alice');
   fresh = createUser('root');
 });
 
 afterEach(() => {
   delete process.env.LURKER_MAX_UPLOAD_MB;
+  // Back to "the admin never set one", which is not the same row as "set to 200".
+  db.prepare('DELETE FROM instance_settings WHERE key = ?').run(
+    instanceSettings.UPLOAD_CEILING_MB_KEY,
+  );
   vi.restoreAllMocks();
 });
 
 describe('transportCapBytes', () => {
-  it('is the hard ceiling when unset — a self-hoster with nothing in front of them', () => {
-    expect(limits.transportCapBytes()).toBe(limits.MAX_CAP_BYTES);
+  it('is the instance ceiling when unset — a self-hoster with nothing in front of them', () => {
+    expect(limits.transportCapBytes()).toBe(limits.uploadCeilingBytes());
   });
 
   // The bug this feature exists to kill: a proxy limit applies to the whole
@@ -50,9 +58,9 @@ describe('transportCapBytes', () => {
     expect(limits.transportCapBytes()).toBeLessThan(100 * MIB);
   });
 
-  it('can never RAISE the hard ceiling', () => {
+  it('can never RAISE the instance ceiling', () => {
     process.env.LURKER_MAX_UPLOAD_MB = '5000';
-    expect(limits.transportCapBytes()).toBe(limits.MAX_CAP_BYTES);
+    expect(limits.transportCapBytes()).toBe(limits.uploadCeilingBytes());
   });
 
   // Silently ignoring "100MB" — the natural typo, given the var is named _MB —
@@ -64,7 +72,7 @@ describe('transportCapBytes', () => {
   it('warns about an unparseable value instead of ignoring it silently', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     process.env.LURKER_MAX_UPLOAD_MB = '100MB';
-    expect(limits.transportCapBytes()).toBe(limits.MAX_CAP_BYTES);
+    expect(limits.transportCapBytes()).toBe(limits.uploadCeilingBytes());
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('LURKER_MAX_UPLOAD_MB'));
     // Once per process, not once per upload — this runs on every snapshot.
     limits.transportCapBytes();
@@ -76,7 +84,7 @@ describe('transportCapBytes', () => {
     // much worse failure than ignoring the value.
     for (const raw of ['', '  ', 'lots', '0', '-10', 'NaN']) {
       process.env.LURKER_MAX_UPLOAD_MB = raw;
-      expect(limits.transportCapBytes()).toBe(limits.MAX_CAP_BYTES);
+      expect(limits.transportCapBytes()).toBe(limits.uploadCeilingBytes());
     }
   });
 
@@ -104,12 +112,64 @@ describe('effectiveUploadCapBytes', () => {
     expect(limits.effectiveUploadCapBytes(user.id, false)).toBe(25 * MIB);
   });
 
-  it('answers for a user with no settings row at all (registry default applies)', () => {
+  it('is the instance ceiling for a user with no settings row at all', () => {
     // "How big may I upload" must have an answer before the user has touched a
-    // single setting — this is the value a fresh client is told on connect.
-    const cap = limits.effectiveUploadCapBytes(fresh.id, true);
-    expect(cap).toBeGreaterThan(0);
-    expect(cap).toBeLessThanOrEqual(limits.MAX_CAP_BYTES);
+    // single setting — this is the value a fresh client is told on connect. And
+    // the answer is the ceiling, not a second default (#1131): an account that
+    // never set its own cap follows whatever the admin allows.
+    expect(limits.effectiveUploadCapBytes(fresh.id, true)).toBe(limits.uploadCeilingBytes());
+  });
+});
+
+// #1131: the ceiling is the admin's, not a constant. 200 MB until raised, so an
+// install that never touches it sees the old hard cap; no upper bound in code.
+describe('the instance ceiling', () => {
+  it('is 200 MiB until the admin sets one', () => {
+    expect(limits.uploadCeilingMb()).toBe(200);
+    expect(limits.uploadCeilingBytes()).toBe(200 * MIB);
+  });
+
+  it('raising it raises every account that never set its own cap, 0 included', () => {
+    instanceSettings.setUploadCeilingMb(300);
+    expect(limits.effectiveUploadCapBytes(fresh.id, true)).toBe(300 * MIB);
+    // 0 is the registry default — "the ceiling" — not a 0-byte cap.
+    setUserSetting(user.id, 'uploads.image.max_upload_mb', 0);
+    expect(limits.effectiveUploadCapBytes(user.id, false)).toBe(300 * MIB);
+  });
+
+  it('keeps a LOWER personal cap, and clamps one set above it', () => {
+    instanceSettings.setUploadCeilingMb(300);
+    setUserSetting(user.id, 'uploads.image.max_upload_mb', 25);
+    expect(limits.effectiveUploadCapBytes(user.id, false)).toBe(25 * MIB);
+    // The registry has no max any more; a stored 500 is enforced as the ceiling,
+    // the way a retention value above its ceiling is.
+    setUserSetting(user.id, 'uploads.image.max_upload_mb', 500);
+    expect(limits.effectiveUploadCapBytes(user.id, false)).toBe(300 * MIB);
+  });
+
+  it('bounds an operator-baked policy cap too', () => {
+    instanceSettings.setUploadCeilingMb(300);
+    expect(limits.chunkedCapBytesFor({ maxMb: 500 }, {})).toBe(300 * MIB);
+    expect(limits.chunkedCapBytesFor({ maxMb: 50 }, {})).toBe(50 * MIB);
+  });
+
+  it('has no upper bound in code — the disk is the bound', () => {
+    instanceSettings.setUploadCeilingMb(5000);
+    expect(limits.effectiveUploadCapBytes(fresh.id, true)).toBe(5000 * MIB);
+  });
+
+  it('reads a stored value that will not parse as "never set"', () => {
+    instanceSettings.setUploadCeilingMb(300);
+    db.prepare('UPDATE instance_settings SET value = ? WHERE key = ?').run(
+      'lots',
+      instanceSettings.UPLOAD_CEILING_MB_KEY,
+    );
+    expect(limits.uploadCeilingMb()).toBe(200);
+  });
+
+  it('is what advertisedUploadLimits hands a client as the bound on its own cap', () => {
+    instanceSettings.setUploadCeilingMb(300);
+    expect(limits.advertisedUploadLimits(fresh.id, true).uploadCeilingBytes).toBe(300 * MIB);
   });
 });
 
@@ -160,6 +220,7 @@ describe('advertisedUploadLimits', () => {
         maxStaticImageDimension: 1600,
         maxChunkedUploadBytes: 30 * MIB,
         uploadChunkBytes: 16 * MIB,
+        uploadCeilingBytes: 200 * MIB,
       });
     } finally {
       const { deleteUserSetting } = await import('../db/settings.js');
@@ -187,24 +248,24 @@ describe('chunked uploads', () => {
     expect(limits.uploadChunkBytes()).toBe(16 * MIB);
   });
 
-  it('leaves the proxy limit out of the file cap, and keeps the hard ceiling', () => {
+  it('leaves the proxy limit out of the file cap, and keeps the instance ceiling', () => {
     process.env.LURKER_MAX_UPLOAD_MB = '10';
     const settings = { 'uploads.image.max_upload_mb': 150 };
     expect(limits.capBytesFor(null, settings)).toBe(10_000_000 - 64 * 1024);
     expect(limits.chunkedCapBytesFor(null, settings)).toBe(150 * MIB);
-    expect(limits.chunkedCapBytesFor({ maxMb: 500 }, settings)).toBe(limits.MAX_CAP_BYTES);
+    expect(limits.chunkedCapBytesFor({ maxMb: 500 }, settings)).toBe(limits.uploadCeilingBytes());
   });
 });
 
 // #649: a caller with its own, larger limit (imports allow 500 MB) needs the raw
-// declaration. transportCapBytes() reports "unset" as the upload path's 200 MB
-// hard cap, so reusing it would have silently cost imports 300 MB of headroom.
+// declaration. transportCapBytes() reports "unset" as the upload path's instance
+// ceiling, so reusing it would have silently cost imports 300 MB of headroom.
 describe('clampToTransport', () => {
   const IMPORT_LIMIT = 500 * 1024 * 1024;
 
   it('leaves a larger own-limit ALONE when no ceiling is declared', () => {
     expect(limits.clampToTransport(IMPORT_LIMIT)).toBe(IMPORT_LIMIT);
-    expect(limits.transportCapBytes()).toBe(limits.MAX_CAP_BYTES); // the trap
+    expect(limits.transportCapBytes()).toBe(limits.uploadCeilingBytes()); // the trap
   });
 
   it('lowers it to the declared ceiling', () => {
@@ -217,9 +278,9 @@ describe('clampToTransport', () => {
     expect(limits.clampToTransport(10 * 1024 * 1024)).toBe(10 * 1024 * 1024);
   });
 
-  it('is not bounded by the upload hard cap — that is an upload-path rule', () => {
+  it('is not bounded by the upload ceiling — that is an upload-path rule', () => {
     process.env.LURKER_MAX_UPLOAD_MB = '400';
-    expect(limits.clampToTransport(IMPORT_LIMIT)).toBeGreaterThan(limits.MAX_CAP_BYTES);
+    expect(limits.clampToTransport(IMPORT_LIMIT)).toBeGreaterThan(limits.uploadCeilingBytes());
   });
 });
 

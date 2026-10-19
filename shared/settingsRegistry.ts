@@ -13,6 +13,14 @@
 // human-readable headline shown in the UI; the dotted key shows as a subtitle
 // for power-user reference. `description` remains the longer help text.
 
+// ─── Constants ─────────────────────────────────────────────────────────────
+
+/** The upload ceiling every install starts with, in MiB (#1131): the old hard
+ *  cap, so an existing instance sees no change until its admin raises it. Lives
+ *  here (import-free, both sides) because the db seed, the hosted env reader
+ *  and the client's fallback note all need it and can't share a server module. */
+export const DEFAULT_UPLOAD_CEILING_MB = 200;
+
 // ─── Types ─────────────────────────────────────────────────────────────────
 
 /** Discriminant for how a setting is edited, validated, and stored. */
@@ -91,11 +99,14 @@ export interface StringOption extends BaseOption {
   default: string;
 }
 
-/** Integer settings, always bounded by min/max. */
+/** Integer settings, bounded below by `min` and, for all but a few, above by `max`.
+ *  A setting whose ceiling the server decides at runtime (the upload cap, which
+ *  an admin raises per instance) carries no `max`: the server advertises the
+ *  bound and clamps a stored value above it at resolve time. */
 export interface IntOption extends BaseOption {
   type: 'int';
   min: number;
-  max: number;
+  max?: number;
   // Extra floor applied to NONZERO values only, for knobs where 0 means
   // "off/unlimited" but a small live value is almost certainly a mistake
   // (retention: deletion is irreversible, so 50 lines is a typo, not an
@@ -1382,15 +1393,18 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     category: 'uploads',
     group: 'pipeline',
     type: 'int',
-    min: 1,
-    max: 200,
-    // 100, not 25: a 30-second phone video clears 25 MB instantly, and media
-    // uploads (#515) make that the common case rather than the exotic one.
-    default: 100,
+    // No `max`: the bound is the instance ceiling the admin sets (#1131), which
+    // the server advertises as `uploadCeilingBytes` and clamps to at resolve
+    // time. 0 (the default) means "the ceiling", so raising the ceiling raises
+    // every account that never set its own cap, the way the retention
+    // ceilings work. Only a LOWER personal cap is a statement.
+    min: 0,
+    default: 0,
     selfHostedOnly: true,
     description:
-      'Hard cap on the raw upload size in megabytes. Anything larger is ' +
-      'rejected before the optimization pipeline runs.',
+      'Cap on the raw upload size in megabytes; anything larger is rejected ' +
+      'before the optimization pipeline runs. 0 uses this server’s ceiling, ' +
+      'which the admin sets. A value above the ceiling counts as the ceiling.',
   },
   {
     key: 'uploads.paste.enabled',

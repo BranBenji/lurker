@@ -79,6 +79,16 @@ describe('coerceSettingValue', () => {
     expect(coerceSettingValue(intOpt, 'abc')).toMatchObject({ ok: false });
   });
 
+  // #1131: an int whose bound the server decides at runtime carries no max.
+  it('checks only the floor of an integer with no registry max', () => {
+    const open = { ...intOpt, key: 'a.open', max: undefined } satisfies SettingOption;
+    expect(coerceSettingValue(open, '40')).toEqual({ ok: true, value: 40 });
+    expect(coerceSettingValue(open, '8')).toEqual({
+      ok: false,
+      error: 'a.open must be at least 9',
+    });
+  });
+
   it('validates enums against their choices', () => {
     expect(coerceSettingValue(enumOpt, 'right')).toEqual({ ok: true, value: 'right' });
     expect(coerceSettingValue(enumOpt, 'up')).toEqual({

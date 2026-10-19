@@ -114,6 +114,9 @@ export const useAdminStore = defineStore('admin', {
     // Hosted: the uploader is env-managed by the control plane, so the whole
     // management surface is read-only (the routes 409 anyway).
     uploadersManaged: false,
+    // The instance upload ceiling in MB (#1131): the most any account may be
+    // allowed. Editable on a self-host; the operator's env on a hosted cell.
+    uploadCeilingMb: null as number | null,
     // Instance network presets + the network lockdown (#298). Named distinctly
     // from the uploader policy above — the two switches are independent, and
     // conflating them would let a change to one silently move the other.
@@ -281,6 +284,7 @@ export const useAdminStore = defineStore('admin', {
         this.uploaderDrivers = data.drivers || [];
         this.allowUserDefined = data.allowUserDefined !== false;
         this.uploadersManaged = !!data.managed;
+        this.uploadCeilingMb = typeof data.maxUploadMb === 'number' ? data.maxUploadMb : null;
         this.uploadersLoaded = true;
       } catch (e: any) {
         this.error = e.message || 'failed to load uploaders';
@@ -317,6 +321,13 @@ export const useAdminStore = defineStore('admin', {
         body: { allowUserDefined },
       });
       this.allowUserDefined = allowUserDefined;
+    },
+    async setUploadCeilingMb(maxUploadMb: number) {
+      const data = await api('/api/admin/uploaders/ceiling', {
+        method: 'PUT',
+        body: { maxUploadMb },
+      });
+      this.uploadCeilingMb = typeof data.maxUploadMb === 'number' ? data.maxUploadMb : maxUploadMb;
     },
 
     // ─── instance network presets (#298) ─────────────────────────────────────

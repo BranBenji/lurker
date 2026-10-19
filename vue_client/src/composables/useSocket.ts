@@ -856,6 +856,9 @@ function handleMessage(raw: string): void {
     // #650: a file over one chunk is sent in chunks. Absent on an older server.
     useUploadsStore().chunkBytes =
       typeof payload.uploadChunkBytes === 'number' ? payload.uploadChunkBytes : null;
+    // #1131: the instance ceiling, the bound on the user's own cap setting.
+    useUploadsStore().ceilingBytes =
+      typeof payload.uploadCeilingBytes === 'number' ? payload.uploadCeilingBytes : null;
     // DCC: whether the account has transfers or files to show the button for,
     // and what changed while the socket was down.
     void useDccStore().resync();
@@ -953,6 +956,12 @@ function handleMessage(raw: string): void {
   if (payload.kind === 'settings') {
     const settings = useSettingsStore();
     settings.applyRemote(payload);
+    // #1131: the admin moved the instance ceiling (or this user touched their
+    // own cap, which re-sends every limit). Only when present: an ordinary
+    // settings frame carries no limits, and absence is not "no ceiling".
+    if (typeof payload.uploadCeilingBytes === 'number') {
+      useUploadsStore().ceilingBytes = payload.uploadCeilingBytes;
+    }
     // A cross-device theme APPLY lands here (pointer write + themed resets) and
     // races the themes-changed refetch, which is an async GET — a pointer at a
     // theme this tab hasn't fetched yet resolves as built-in Dark meanwhile.

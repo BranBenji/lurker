@@ -793,7 +793,7 @@ export async function importFromZipFile(
     // 1-line cap the UI could never have written.
     {
       const opt = getOption('data.retention.lines');
-      if (opt?.type === 'int') {
+      if (opt?.type === 'int' && typeof opt.max === 'number') {
         db.prepare(
           `DELETE FROM buffer_retention
             WHERE user_id = ? AND (max_lines > ? OR (max_lines <> 0 AND max_lines < ?))`,

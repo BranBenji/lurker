@@ -35,7 +35,7 @@
         v-else-if="opt.type === 'int'"
         type="number"
         :min="opt.min"
-        :max="opt.max"
+        :max="opt.max ?? max"
         :value="value"
         :disabled="!!hint"
         @change="onIntChange"
@@ -109,6 +109,9 @@
       dependency back restores exactly what was here.
     -->
     <p v-if="hint" class="dep-hint">{{ hint }}</p>
+    <!-- A fact the registry can't carry because the server decides it at
+         runtime: the instance ceiling an int is bounded by (#1131). -->
+    <p v-if="note" class="dep-hint">{{ note }}</p>
     <div v-if="modified" class="default-line">
       default:
       <code>{{ formatDefault(opt, baseline !== undefined ? baseline : opt.default) }}</code>
@@ -138,12 +141,22 @@ const props = withDefaults(
      * (the default) for an ordinary live row.
      */
     hint?: string;
+    /**
+     * The upper bound for an int whose registry entry carries no `max` because
+     * the server decides it at runtime (#1131). Ignored when the registry has
+     * one. Undefined leaves the input unbounded; the server clamps regardless.
+     */
+    max?: number;
+    /** A line under the editor stating a server-decided fact, such as that bound. */
+    note?: string;
   }>(),
   {
     value: undefined,
     modified: false,
     baseline: undefined,
     hint: '',
+    max: undefined,
+    note: '',
   },
 );
 

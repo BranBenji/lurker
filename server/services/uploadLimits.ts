@@ -6,7 +6,13 @@
 // Three ceilings stack, and a client that wants to size media to fit needs the
 // smallest of them — not any single one:
 //
-//   1. MAX_CAP_BYTES     the registry's own hard ceiling; nothing may exceed it.
+//   1. uploadCeilingBytes the instance ceiling (#1131): what the admin set on
+//                        Admin → Uploaders, or the operator's
+//                        LURKER_NODE_UPLOAD_MAX_MB on a hosted cell; 200 MB until
+//                        someone raises it. Nothing may exceed it, and there is
+//                        no larger bound in code: the disk is the bound, and an
+//                        upload session refuses what would breach the free-disk
+//                        floor.
 //   2. transportCapBytes the request-body limit of whatever sits IN FRONT of this
 //                        instance. app.lurker.chat is behind Cloudflare, whose
 //                        limit is 100 MB on Free/Pro (200 MB on Business); a
@@ -28,8 +34,13 @@
 // ceiling's headroom below can be expressed honestly.
 
 import { getUserSettings } from '../db/settings.js';
+import { uploadCeilingMbStandalone } from '../db/instanceSettings.js';
+import { isNodeMode } from '../utils/edition.js';
 import { defaultsAsObject, getOption } from './settingsRegistry.js';
+import { nodeUploadLimits } from './uploadProviders/nodeUpload.js';
 import { resolveUploader, type UploaderPolicy } from './uploadProviders/resolve.js';
+
+const MIB = 1024 * 1024;
 
 /** The largest archive `POST /api/imports` or an import session takes. 500 MB is
  *  generous for "a single user's logs"; if a user trips this we want to see the
@@ -37,9 +48,21 @@ import { resolveUploader, type UploaderPolicy } from './uploadProviders/resolve.
  *  to a temp file and the importer reads it from disk, so memory stays flat. */
 export const MAX_IMPORT_BYTES = 500 * 1024 * 1024;
 
-/** The registry's own ceiling; a per-user cap can't exceed it, so neither can multer. */
-export const MAX_CAP_MB = 200;
-export const MAX_CAP_BYTES = MAX_CAP_MB * 1024 * 1024;
+/**
+ * The instance ceiling in MiB (#1131). On a hosted cell it is the operator's
+ * env, read fresh each time like the rest of the node pipeline knobs; on a
+ * self-host it is what the admin stored, else the install default. Read on every
+ * call rather than cached: the admin's PUT takes effect on the next upload, and
+ * the read is one indexed row.
+ */
+export function uploadCeilingMb(): number {
+  return isNodeMode() ? nodeUploadLimits().maxMb : uploadCeilingMbStandalone();
+}
+
+/** The same ceiling in bytes — the unit everything below compares in. */
+export function uploadCeilingBytes(): number {
+  return uploadCeilingMb() * MIB;
+}
 
 // What the multipart envelope costs on top of the file itself: the boundary
 // lines, each part's Content-Disposition/Content-Type headers, and the
@@ -60,13 +83,14 @@ export function effectiveSettings(userId: number): Record<string, unknown> {
   return { ...defaultsAsObject(), ...getUserSettings(userId) };
 }
 
-/** The user's size cap, in bytes. effectiveSettings() has already merged the
- *  registry default in, so this reads it from ONE place — a second hardcoded
- *  default here would be a duplicate that quietly disagrees the next time the
- *  registry changes. MiB, matching the registry setting's own units. */
+/** The user's size cap, in bytes. 0 — the registry default — and anything
+ *  unusable mean "the instance ceiling": an account that never set its own cap
+ *  follows the ceiling, so raising it raises them all at once (#1131). MiB,
+ *  matching the registry setting's own units. Not clamped here; every caller
+ *  clamps to the ceiling after choosing between this and a policy cap. */
 export function userCapBytes(settings: Record<string, unknown>): number {
   const n = Number(settings['uploads.image.max_upload_mb']);
-  return Number.isFinite(n) && n > 0 ? n * 1024 * 1024 : MAX_CAP_BYTES;
+  return Number.isFinite(n) && n > 0 ? n * MIB : uploadCeilingBytes();
 }
 
 // Warn once per process, not per upload: transportCapBytes() runs on every
@@ -78,8 +102,8 @@ let warnedBadTransportCap = false;
  * What the operator DECLARED, in bytes, or null when they declared nothing —
  * the self-hoster with no proxy in front of them. Not clamped to any upload
  * ceiling: a caller with its own, larger limit (`POST /api/imports` allows
- * 500 MB) needs the raw declaration, and would silently lose 300 MB of headroom
- * if "unset" were reported as the upload path's 200 MB hard cap.
+ * 500 MB) needs the raw declaration, and would silently lose headroom if
+ * "unset" were reported as the upload path's ceiling.
  *
  * Deliberately an env var rather than a tenant setting, for the same reason the
  * node-edition pipeline knobs are: it describes the deployment, not a preference,
@@ -115,9 +139,11 @@ export function declaredTransportCapBytes(): number | null {
 }
 
 /** The transport ceiling as the UPLOAD path sees it: the declaration, else no
- *  extra ceiling beyond the hard cap. */
+ *  extra ceiling beyond the instance ceiling. A declaration can only LOWER the
+ *  cap — a proxy that passes more than the ceiling doesn't raise it. */
 export function transportCapBytes(): number {
-  return Math.min(declaredTransportCapBytes() ?? MAX_CAP_BYTES, MAX_CAP_BYTES);
+  const ceiling = uploadCeilingBytes();
+  return Math.min(declaredTransportCapBytes() ?? ceiling, ceiling);
 }
 
 /**
@@ -157,7 +183,8 @@ export function setUploadChunkBytesForTests(bytes: number | null): void {
  *  fractional policy maxMb would 500 every upload. Before that, busboy just
  *  ignored one. */
 export function clampUploadCapBytes(bytes: number): number {
-  return Math.max(1, Math.floor(Math.min(bytes, transportCapBytes(), MAX_CAP_BYTES)));
+  // transportCapBytes() is already under the instance ceiling.
+  return Math.max(1, Math.floor(Math.min(bytes, transportCapBytes())));
 }
 
 /** The policy of the user's DEFAULT uploader, or null when none is usable. An
@@ -184,14 +211,14 @@ export function capBytesFor(
 }
 
 /** The same cap for a chunked upload (#650), which no transport ceiling
- *  touches: the policy or the user's setting, under the hard ceiling. */
+ *  touches: the policy or the user's setting, under the instance ceiling. */
 export function chunkedCapBytesFor(
   policy: Pick<UploaderPolicy, 'maxMb'> | null,
   settings: Record<string, unknown>,
 ): number {
   const policyMb = policy?.maxMb;
-  const bytes = policyMb == null ? userCapBytes(settings) : policyMb * 1024 * 1024;
-  return Math.max(1, Math.floor(Math.min(bytes, MAX_CAP_BYTES)));
+  const bytes = policyMb == null ? userCapBytes(settings) : policyMb * MIB;
+  return Math.max(1, Math.floor(Math.min(bytes, uploadCeilingBytes())));
 }
 
 /**
@@ -243,6 +270,9 @@ export interface AdvertisedUploadLimits {
   maxChunkedUploadBytes: number;
   /** The largest chunk a session takes (#650). */
   uploadChunkBytes: number;
+  /** The instance ceiling (#1131): the most any account on this server may be
+   *  allowed, and the bound on the user's own cap setting. */
+  uploadCeilingBytes: number;
 }
 
 /**
@@ -263,6 +293,7 @@ export function advertisedUploadLimits(userId: number, isAdmin: boolean): Advert
     maxStaticImageDimension: staticImageMaxDimension(policy, settings),
     maxChunkedUploadBytes: chunkedCapBytesFor(policy, settings),
     uploadChunkBytes: uploadChunkBytes(),
+    uploadCeilingBytes: uploadCeilingBytes(),
   };
 }
 
@@ -271,6 +302,6 @@ export function advertisedUploadLimits(userId: number, isAdmin: boolean): Advert
  *  user their file "exceeds 1 MB" when the real limit is 0.9 MB sends them back
  *  with another file that fails. */
 export function formatCapMb(bytes: number): string {
-  const mb = bytes / (1024 * 1024);
+  const mb = bytes / MIB;
   return (mb >= 10 ? Math.floor(mb) : Math.floor(mb * 10) / 10).toString();
 }
