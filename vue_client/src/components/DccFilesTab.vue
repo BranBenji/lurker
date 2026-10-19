@@ -17,9 +17,9 @@
                      Sending one starts from a nick's or DM's menu, which opens
                      this picking a file (#1086).
 
-  Search and the type chips come from the window's filter bar. On a phone a
-  row's actions sit behind ⋯, except an offer's and a queued pack's, which are
-  the whole point of their rows.
+  Search and the type chips come from the window's filter bar. A row's actions
+  sit behind a kebab (⋮), which opens the app's context menu, except an offer's, a queued
+  pack's and the pick's Send, which are the whole point of their rows.
 -->
 
 <template>
@@ -103,7 +103,7 @@
               </div>
               <div v-if="dcc.actionError[t.id]" class="err">{{ dcc.actionError[t.id] }}</div>
             </div>
-            <div class="acts btn-bar">
+            <div v-if="t.state === 'queued'" class="acts btn-bar">
               <button
                 v-for="a in rowActions(t)"
                 :key="a.label"
@@ -115,25 +115,15 @@
               </button>
             </div>
             <button
-              v-if="rowActions(t).length"
+              v-else-if="rowActions(t).length"
               class="more"
               :aria-label="`Actions for ${rowName(t)}`"
-              :aria-expanded="openMenu === `t${t.id}`"
-              @click="toggleMenu(`t${t.id}`)"
+              aria-haspopup="menu"
+              :aria-expanded="menuFor === `t${t.id}`"
+              @click="openRowMenu($event, `t${t.id}`, rowActions(t), !!dcc.busy[t.id])"
             >
-              <EllipsisIcon />
+              <EllipsisVerticalIcon />
             </button>
-            <div v-if="openMenu === `t${t.id}`" class="menu btn-bar">
-              <button
-                v-for="a in rowActions(t)"
-                :key="a.label"
-                :class="a.tone"
-                :disabled="dcc.busy[t.id]"
-                @click="a.run()"
-              >
-                {{ a.label }}
-              </button>
-            </div>
           </li>
         </ul>
       </section>
@@ -153,7 +143,7 @@
           <div class="sub"><MetaLine :parts="fileParts(f)" /></div>
           <div v-if="dcc.fileError[f.id]" class="err">{{ dcc.fileError[f.id] }}</div>
         </div>
-        <div class="acts btn-bar" :class="{ always: !!dcc.pick }">
+        <div v-if="dcc.pick" class="acts btn-bar">
           <button
             v-for="a in fileActions(f)"
             :key="a.label"
@@ -165,25 +155,15 @@
           </button>
         </div>
         <button
-          v-if="!dcc.pick"
+          v-else
           class="more"
           :aria-label="`Actions for ${f.name}`"
-          :aria-expanded="openMenu === `f${f.id}`"
-          @click="toggleMenu(`f${f.id}`)"
+          aria-haspopup="menu"
+          :aria-expanded="menuFor === `f${f.id}`"
+          @click="openRowMenu($event, `f${f.id}`, fileActions(f), !!dcc.fileBusy[f.id])"
         >
-          <EllipsisIcon />
+          <EllipsisVerticalIcon />
         </button>
-        <div v-if="openMenu === `f${f.id}`" class="menu btn-bar">
-          <button
-            v-for="a in fileActions(f)"
-            :key="a.label"
-            :class="a.tone"
-            :disabled="dcc.fileBusy[f.id]"
-            @click="a.run()"
-          >
-            {{ a.label }}
-          </button>
-        </div>
       </li>
     </ul>
     <p v-else-if="dcc.filesLoading && !dcc.filesLoaded" class="empty">Loading…</p>
@@ -196,7 +176,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import {
   ACTIVE_STATES,
   formatEta,
@@ -215,15 +195,21 @@ import type { UploadKind } from '../stores/uploads.js';
 import { formatRelative } from '../utils/timestamp.js';
 import type { MetaPart } from '../utils/metaLine.js';
 import MetaLine from './MetaLine.vue';
+import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.js';
 import { formatBytes } from '../utils/formatBytes.js';
 import {
   ArrowDownIcon,
   ArrowUpIcon,
   CircleAlertIcon,
-  EllipsisIcon,
+  DownloadIcon,
+  EllipsisVerticalIcon,
   FileIcon,
+  FileUpIcon,
   ListOrderedIcon,
   PauseIcon,
+  RefreshCwIcon,
+  TrashIcon,
+  XIcon,
 } from '@lucide/vue';
 import type { LucideIcon } from '@lucide/vue';
 
@@ -466,6 +452,8 @@ function glyphClass(t: DccTransfer): string {
 
 interface RowAction {
   label: string;
+  /** In the ⋮ menu, as the app's other menus carry one; a bar shows none. */
+  icon: LucideIcon;
   tone?: 'good' | 'bad';
   run: () => void;
 }
@@ -473,26 +461,26 @@ interface RowAction {
 // Errors land on the row (actionError / fileError) or in the store's own
 // error lines; a failed promise needs nothing more here.
 function act(p: Promise<unknown>): void {
-  openMenu.value = null;
   p.catch(() => {});
 }
 
 function rowActions(t: DccTransfer): RowAction[] {
   if (t.state === 'queued')
-    return [{ label: 'Remove', tone: 'bad', run: () => act(dcc.cancel(t.id)) }];
+    return [{ label: 'Remove', icon: XIcon, tone: 'bad', run: () => act(dcc.cancel(t.id)) }];
   if (t.state === 'offered') {
-    return [{ label: 'Withdraw', tone: 'bad', run: () => act(dcc.cancel(t.id)) }];
+    return [{ label: 'Withdraw', icon: XIcon, tone: 'bad', run: () => act(dcc.cancel(t.id)) }];
   }
   if (ACTIVE_STATES.has(t.state) && t.state !== 'stalled') {
-    return [{ label: 'Cancel', tone: 'bad', run: () => act(dcc.cancel(t.id)) }];
+    return [{ label: 'Cancel', icon: XIcon, tone: 'bad', run: () => act(dcc.cancel(t.id)) }];
   }
   const out: RowAction[] = [];
   if (retryable(t)) {
-    out.push({ label: 'Retry', run: () => act(dcc.retry(t.id)) });
+    out.push({ label: 'Retry', icon: RefreshCwIcon, run: () => act(dcc.retry(t.id)) });
   }
   if (holdsPartial(t)) {
     out.push({
       label: 'Delete partial',
+      icon: TrashIcon,
       tone: 'bad',
       run: () => {
         if (!confirm(`Delete the partial download of "${t.filename}"?`)) return;
@@ -500,19 +488,22 @@ function rowActions(t: DccTransfer): RowAction[] {
       },
     });
   } else {
-    out.push({ label: 'Dismiss', run: () => act(dcc.clearTransfer(t.id)) });
+    out.push({ label: 'Dismiss', icon: XIcon, run: () => act(dcc.clearTransfer(t.id)) });
   }
   return out;
 }
 
 function fileActions(f: DccFile): RowAction[] {
   if (dcc.pick) {
-    return [{ label: 'Send', tone: 'good', run: () => act(dcc.sendPicked(f.id)) }];
+    return [
+      { label: 'Send', icon: FileUpIcon, tone: 'good', run: () => act(dcc.sendPicked(f.id)) },
+    ];
   }
   const out: RowAction[] = [];
-  out.push({ label: 'Download', run: () => act(dcc.downloadKeptFile(f.id)) });
+  out.push({ label: 'Download', icon: DownloadIcon, run: () => act(dcc.downloadKeptFile(f.id)) });
   out.push({
     label: 'Delete',
+    icon: TrashIcon,
     tone: 'bad',
     run: () => {
       // The file is gone for good once deleted.
@@ -547,10 +538,33 @@ function fileParts(f: DccFile): MetaPart[] {
   ];
 }
 
-// ⋯ on a phone: one row's menu open at a time.
-const openMenu = ref<string | null>(null);
-function toggleMenu(key: string) {
-  openMenu.value = openMenu.value === key ? null : key;
+// ─── ⋮ ───────────────────────────────────────────────────────────────────────
+//
+// A row's actions open in the app's context menu, anchored under the ⋮. The
+// menu is one for the whole app, so which row owns it is kept here for the
+// button's aria-expanded, and let go when the menu closes for any reason.
+
+const menu = useContextMenu();
+const menuFor = ref<string | null>(null);
+watch(
+  () => menu.state.open,
+  (open) => {
+    if (!open) menuFor.value = null;
+  },
+);
+
+function openRowMenu(e: MouseEvent, key: string, actions: RowAction[], busy: boolean) {
+  const items: ContextMenuItem[] = actions.map((a) => ({
+    label: a.label,
+    icon: a.icon,
+    disabled: busy,
+    onClick: a.run,
+  }));
+  const btn = e.currentTarget as Element;
+  const rect = btn.getBoundingClientRect();
+  // open() from the trigger whose menu is up closes it instead.
+  menu.open(items, rect.left, rect.bottom + 2, btn);
+  menuFor.value = menu.state.open ? key : null;
 }
 
 // ─── Upload to send ──────────────────────────────────────────────────────────
@@ -719,9 +733,8 @@ async function onUploadChosen(e: Event) {
 .link.inline:hover {
   color: var(--fg);
 }
-/* The ⋯ that folds a row's actions on a phone: the bar's look, one button. */
+/* The ⋯ that opens a row's actions: the bar's look, one button. */
 .more {
-  display: none;
   background: none;
   border: 1px solid var(--border);
   color: var(--fg-muted);
@@ -733,37 +746,15 @@ async function onUploadChosen(e: Event) {
   border-color: var(--accent);
   color: var(--fg);
 }
-.menu {
-  display: none;
-}
 .empty {
   padding: var(--space-9) 0;
   color: var(--fg-muted);
   text-align: center;
 }
 
-/* A phone: a row's actions fold behind ⋯, except where they are the row's
-   whole point (an offer, a queued pack, a pick). */
+/* A phone: an inline row's bar (an offer's Accept / Decline, a queued pack's
+   Remove) drops under its text. */
 @media (max-width: 640px) {
-  .row:not(.inline) > .acts:not(.always) {
-    display: none;
-  }
-  .row:not(.inline) > .more {
-    display: block;
-  }
-  .row > .acts.always + .more {
-    display: none;
-  }
-  /* Wraps: three labels at the large font overrun a 320px phone. A wrapped
-     row reads as a second strip. */
-  .menu {
-    display: inline-flex;
-    flex-wrap: wrap;
-    row-gap: var(--space-2);
-    grid-column: 2 / 4;
-    justify-self: start;
-    margin-top: var(--space-2);
-  }
   .row.inline {
     grid-template-columns: max-content 1fr;
   }

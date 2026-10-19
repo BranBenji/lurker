@@ -33,7 +33,8 @@ The window has three parts:
   set one. What a file coming in has still to send counts toward the limit
   too, shown as "on the way". **Delete partial** frees a partial's space.
 
-On a phone, each row's actions are behind its **⋯** button.
+Each row's actions are behind its **⋯** button, except an offer's Accept and
+Decline and a queued pack's Remove, which sit on the row.
 
 ## Receiving a file
 

@@ -6,8 +6,9 @@
 // grouped by peer (a bot's block is its queue), and the kept files.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { mount, type VueWrapper } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
+import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.js';
 
 const h = vi.hoisted(() => ({
   api: vi.fn<(url: string, opts?: { method?: string; body?: unknown }) => Promise<unknown>>(),
@@ -67,7 +68,21 @@ function mountTab(query = '', kind: 'video' | null = null) {
   return mount(DccFilesTab, { props: { query, kind } });
 }
 
+// A row's ⋯ opens the app's one context menu; its items are read off the
+// composable, since ContextMenu.vue itself isn't mounted here. Closed first:
+// ContextMenu.vue closes on an item's click, and ⋯ on an open menu toggles it.
+async function openMore(w: VueWrapper, i = 0) {
+  useContextMenu().close();
+  await w.findAll('button.more')[i]!.trigger('click');
+  return useContextMenu().state.items;
+}
+function item(items: ContextMenuItem[], label: string): ContextMenuItem {
+  return items.find((it) => it.label === label)!;
+}
+
 describe('DccFilesTab', () => {
+  afterEach(() => useContextMenu().close());
+
   it("shows a bot's queue as one block: the pack out, then the rest in order", async () => {
     const dcc = useDccStore();
     dcc.account = { chat: false, receive: true, send: false };
@@ -123,7 +138,9 @@ describe('DccFilesTab', () => {
     const w = mountTab();
     await w.vm.$nextTick();
     expect(w.text()).toContain('failed: no response from Bot');
-    expect(w.findAll('.acts button').map((b) => b.text())).toEqual(['Retry', 'Dismiss']);
+    const items = await openMore(w);
+    expect(items.map((i) => i.label)).toEqual(['Retry', 'Dismiss']);
+    expect(items.every((i) => i.icon)).toBe(true);
     dcc.transfers = [...dcc.transfers, row({ id: 7, pack: 29, attempt: 2 })];
     await w.vm.$nextTick();
     expect(w.text()).not.toContain('no response');
@@ -234,7 +251,10 @@ describe('DccFilesTab', () => {
     expect(text).toContain('to six');
     expect(text).toContain('50% | 50 B of 100 B');
     expect(text).toContain('failed at 30% | it resumes if seven sends it again');
-    const labels = w.findAll('.acts button').map((b) => b.text());
+    const labels: string[] = [];
+    for (let i = 0; i < w.findAll('button.more').length; i++) {
+      labels.push(...(await openMore(w, i)).map((it) => it.label!));
+    }
     expect(labels).toEqual(expect.arrayContaining(['Cancel', 'Withdraw', 'Delete partial']));
   });
 
@@ -254,10 +274,10 @@ describe('DccFilesTab', () => {
     ];
     const w = mountTab();
     await w.vm.$nextTick();
-    const del = w.findAll('.acts button').find((b) => b.text() === 'Delete partial')!;
-    await del.trigger('click');
+    const del = item(await openMore(w), 'Delete partial');
+    del.onClick!();
     expect(clear).not.toHaveBeenCalled();
-    await del.trigger('click');
+    del.onClick!();
     expect(clear).toHaveBeenCalledWith(7, true);
     expect(confirm).toHaveBeenCalledTimes(2);
   });
@@ -285,14 +305,24 @@ describe('DccFilesTab', () => {
     dcc.files = [file(1, 'a.mkv'), file(2, 'b.mkv')];
     const w = mountTab();
     await w.vm.$nextTick();
+    const menu = useContextMenu();
     const [one, two] = w.findAll('button.more');
     await one.trigger('click');
-    expect(w.findAll('.menu')).toHaveLength(1);
+    expect(menu.state.open).toBe(true);
+    expect(one.attributes('aria-expanded')).toBe('true');
     await two.trigger('click');
-    expect(w.findAll('.menu')).toHaveLength(1);
+    expect(menu.state.open).toBe(true);
+    expect(menu.state.triggerEl).toBe(two.element);
+    expect(one.attributes('aria-expanded')).toBe('false');
     expect(two.attributes('aria-expanded')).toBe('true');
+    // The same ⋯ again closes it; so does anything else that closes the menu.
     await two.trigger('click');
-    expect(w.findAll('.menu')).toHaveLength(0);
+    expect(menu.state.open).toBe(false);
+    expect(two.attributes('aria-expanded')).toBe('false');
+    await one.trigger('click');
+    menu.close();
+    await w.vm.$nextTick();
+    expect(one.attributes('aria-expanded')).toBe('false');
   });
 
   it('counts partials and what is on the way, as the limit does (#1153)', async () => {
@@ -369,12 +399,12 @@ describe('DccFilesTab', () => {
     );
     const w = mountTab();
     await w.vm.$nextTick();
-    const btn = (label: string) => w.findAll('.acts button').find((b) => b.text() === label)!;
-    await btn('Download').trigger('click');
+    const run = async (label: string) => item(await openMore(w), label).onClick!();
+    await run('Download');
     expect(download).toHaveBeenCalledWith(1);
-    await btn('Delete').trigger('click');
+    await run('Delete');
     expect(del).not.toHaveBeenCalled();
-    await btn('Delete').trigger('click');
+    await run('Delete');
     expect(del).toHaveBeenCalledWith(1);
   });
 
