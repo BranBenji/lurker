@@ -243,18 +243,26 @@ const onTogglePolicy = (e: Event) =>
 
 // Committed on change like the switch above: one number, no form. A bad value
 // is caught here so nothing round-trips just to be rejected; the server checks
-// the same thing.
+// the same thing. Either way a refusal snaps the field back to what the server
+// holds, so the box never shows a number that didn't take.
 const ceilingError = ref('');
 async function onCeilingChange(e: Event) {
   const input = e.target as HTMLInputElement;
   const mb = Number(input.value);
+  ceilingError.value = '';
   if (!Number.isInteger(mb) || mb < 1) {
     ceilingError.value = 'a whole number of MB, at least 1';
-    input.value = String(store.uploadCeilingMb ?? '');
-    return;
+  } else {
+    busy.value = true;
+    try {
+      await store.setUploadCeilingMb(mb);
+    } catch (err: any) {
+      ceilingError.value = err.message || 'failed to update the upload ceiling';
+    } finally {
+      busy.value = false;
+    }
   }
-  ceilingError.value = '';
-  await run(() => store.setUploadCeilingMb(mb), 'failed to update the upload ceiling');
+  input.value = String(store.uploadCeilingMb ?? '');
 }
 
 async function onSaveNew({ label, values }: { label: string; values: Record<string, string> }) {

@@ -43,6 +43,7 @@ import {
 } from '../services/uploadService.js';
 import { publicBaseUrl } from '../utils/publicOrigin.js';
 import { capText } from '../utils/capText.js';
+import { hasFreeSpaceFor } from '../utils/diskSpace.js';
 
 const router = Router();
 
@@ -234,6 +235,12 @@ async function handleUpload(req: Request, res: Response): Promise<void> {
   const declared = Number(req.headers['content-length']);
   if (Number.isFinite(declared) && declared > capBytes) {
     refuse(req, res, 413, `file exceeds ${formatCapMb(capBytes)} MB`);
+    return;
+  }
+  // The free-disk floor an upload session checks (#650); see routes/uploads.ts.
+  const expected = Number.isFinite(declared) && declared > 0 ? declared : capBytes;
+  if (!hasFreeSpaceFor(UPLOAD_TMP_DIR, expected)) {
+    refuse(req, res, 507, 'not enough free disk space on the server for this file');
     return;
   }
 

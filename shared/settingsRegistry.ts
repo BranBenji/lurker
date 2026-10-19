@@ -16,9 +16,12 @@
 // ─── Constants ─────────────────────────────────────────────────────────────
 
 /** The upload ceiling every install starts with, in MiB (#1131): the old hard
- *  cap, so an existing instance sees no change until its admin raises it. Lives
- *  here (import-free, both sides) because the db seed, the hosted env reader
- *  and the client's fallback note all need it and can't share a server module. */
+ *  cap, so nothing an admin never raised lets more through than before. (One
+ *  deliberate move on upgrade: an account that never set its own cap used to
+ *  get the 100 MB registry default and now gets the ceiling — see the
+ *  uploads.image.max_upload_mb entry.) Lives here, import-free and on both
+ *  sides, because the db layer and the hosted env reader both need it and
+ *  can't share a server module. */
 export const DEFAULT_UPLOAD_CEILING_MB = 200;
 
 // ─── Types ─────────────────────────────────────────────────────────────────
@@ -1397,7 +1400,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     // the server advertises as `uploadCeilingBytes` and clamps to at resolve
     // time. 0 (the default) means "the ceiling", so raising the ceiling raises
     // every account that never set its own cap, the way the retention
-    // ceilings work. Only a LOWER personal cap is a statement.
+    // ceilings work. Only a LOWER personal cap is a statement. This replaced a
+    // default of 100, so on upgrade an untouched account moves from 100 MB to
+    // the 200 MB ceiling: the issue's intent, not an accident.
     min: 0,
     default: 0,
     selfHostedOnly: true,

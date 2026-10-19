@@ -27,6 +27,7 @@ import {
 } from '../db/uploadHistory.js';
 import { configuredBaseUrl, publicBaseUrl } from '../utils/publicOrigin.js';
 import { capText } from '../utils/capText.js';
+import { hasFreeSpaceFor } from '../utils/diskSpace.js';
 import {
   processUpload,
   providerErrorStatus,
@@ -115,6 +116,18 @@ export async function sweepTempUploads(maxAgeMs = 60 * 60 * 1000): Promise<numbe
 // uploader, which is what catches an override with a tighter policy cap.
 const uploadToDisk = (req: Request, res: Response, next: NextFunction): void => {
   const capBytes = effectiveUploadCapBytes(req.user!.id, req.user!.role === 'admin');
+  // The same free-disk floor an upload session checks (#650): with the ceiling
+  // the admin's to raise (#1131), a single request can be as large as the disk,
+  // and this temp file shares that disk with the database. The body's declared
+  // length is the honest estimate (the file plus its multipart envelope); a
+  // body that declares none, or more than the cap, can land at most the cap.
+  const declared = Number(req.headers['content-length']);
+  const expected =
+    Number.isFinite(declared) && declared > 0 ? Math.min(declared, capBytes) : capBytes;
+  if (!hasFreeSpaceFor(TMP_DIR, expected)) {
+    res.status(507).json({ error: 'not enough free disk space on the server for this file' });
+    return;
+  }
   const handler = multer({
     storage,
     limits: { fileSize: capBytes, files: 1 },

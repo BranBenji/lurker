@@ -41,7 +41,6 @@
           :modified="settings.isModified(opt.key)"
           :baseline="settings.baseline(opt.key)"
           :hint="dependencyHintFor(opt)"
-          :max="runtimeMaxFor(opt)"
           :note="noteFor(opt)"
           @commit="(v) => onCommit(opt.key, v)"
           @reset="onReset(opt.key)"
@@ -122,20 +121,17 @@ function dependencyHintFor(opt: SettingOption): string {
 }
 
 // #1131: the upload cap's bound is the instance ceiling, which the admin sets
-// and the server advertises — the registry entry carries no `max`. Whole MB,
-// the unit the setting is in; null before the snapshot has said.
+// and the server advertises — the registry entry carries no `max`. A note, not
+// the input's max: a value above the ceiling is accepted and counts as the
+// ceiling, and an input that called it invalid would contradict that. Whole MB,
+// the unit the setting is in; nothing before the snapshot has said.
 const ceilingMb = computed(() =>
   uploads.ceilingBytes == null ? null : Math.floor(uploads.ceilingBytes / (1024 * 1024)),
 );
 
-function runtimeMaxFor(opt: SettingOption): number | undefined {
-  if (opt.key !== 'uploads.image.max_upload_mb') return undefined;
-  return ceilingMb.value ?? undefined;
-}
-
 function noteFor(opt: SettingOption): string {
   if (opt.key !== 'uploads.image.max_upload_mb' || ceilingMb.value == null) return '';
-  return `This server’s ceiling is ${ceilingMb.value.toLocaleString()} MB. 0 uses it.`;
+  return `This server’s ceiling is ${ceilingMb.value.toLocaleString()} MB. 0 uses it; more counts as it.`;
 }
 
 async function onCommit(key: string, value: SettingValue) {

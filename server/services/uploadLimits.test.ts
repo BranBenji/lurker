@@ -158,6 +158,14 @@ describe('the instance ceiling', () => {
     expect(limits.effectiveUploadCapBytes(fresh.id, true)).toBe(5000 * MIB);
   });
 
+  it('treats a stored cap that is not a number as "the ceiling" rather than throwing', () => {
+    // An import copies settings rows unvalidated; Number() on this object throws.
+    expect(limits.userCapBytes({ 'uploads.image.max_upload_mb': { toString: null } })).toBe(
+      limits.uploadCeilingBytes(),
+    );
+    expect(limits.userCapBytes({ 'uploads.image.max_upload_mb': '25' })).toBe(25 * MIB);
+  });
+
   it('reads a stored value that will not parse as "never set"', () => {
     instanceSettings.setUploadCeilingMb(300);
     db.prepare('UPDATE instance_settings SET value = ? WHERE key = ?').run(

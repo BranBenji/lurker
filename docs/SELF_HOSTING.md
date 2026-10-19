@@ -271,7 +271,7 @@ See [Uploaded images are broken for other people](#uploaded-images-are-broken-fo
 
 ### Upload size
 
-Nobody can upload more than the **upload ceiling**, set in **Admin → Uploaders**. It starts at 200 MB and has no upper bound: your disk is the bound, and an upload that would fill it is refused. Each person can set a lower cap for themselves in **Settings → Uploads**, where `0` means the ceiling, so raising the ceiling raises everyone who never set their own.
+Nobody can upload more than the **upload ceiling**, set in **Admin → Uploaders**. It starts at 200 MB and has no upper bound: your disk is the bound, and an upload that would fill it is refused. Each person can set a lower cap for themselves in **Settings → Uploads**, where `0` means the ceiling, so raising the ceiling raises everyone who never set their own. (Before 2.5.0 those people were capped at 100 MB; now they get the ceiling.)
 
 Behind a reverse proxy or a CDN, set `LURKER_MAX_UPLOAD_MB` to the request-body limit it enforces. That only matters for files that go up in one request: anything bigger than one chunk (16 MB) crosses the proxy in pieces and is bound by the ceiling alone. The iOS and Android apps still upload in one request, so behind Cloudflare they stay at its limit whatever the ceiling.
 

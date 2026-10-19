@@ -191,8 +191,12 @@ describe('connect burst terminator (#635)', () => {
     const { setUserSetting } = await import('../db/settings.js');
     setUserSetting(userId, 'uploads.image.max_upload_mb', 42);
     try {
-      const [snapshot] = (await collectBurst()) as unknown as [{ maxUploadBytes?: number }];
+      const [snapshot] = (await collectBurst()) as unknown as [
+        { maxUploadBytes?: number; uploadCeilingBytes?: number },
+      ];
       expect(snapshot.maxUploadBytes).toBe(42 * 1024 * 1024);
+      // #1131: the bound on that setting rides beside it.
+      expect(snapshot.uploadCeilingBytes).toBe(200 * 1024 * 1024);
     } finally {
       const { deleteUserSetting } = await import('../db/settings.js');
       deleteUserSetting(userId, 'uploads.image.max_upload_mb');

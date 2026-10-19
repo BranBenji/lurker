@@ -89,7 +89,13 @@ export function effectiveSettings(userId: number): Record<string, unknown> {
  *  matching the registry setting's own units. Not clamped here; every caller
  *  clamps to the ceiling after choosing between this and a policy cap. */
 export function userCapBytes(settings: Record<string, unknown>): number {
-  const n = Number(settings['uploads.image.max_upload_mb']);
+  // Only a number or a numeric string counts. `Number(x)` THROWS on an object
+  // with a null `toString`, and an import copies settings rows without
+  // validating them — so a crafted archive could otherwise take down every
+  // snapshot for that account, and (via the ceiling broadcast) every other
+  // connected account's limits refresh with it.
+  const raw = settings['uploads.image.max_upload_mb'];
+  const n = typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : NaN;
   return Number.isFinite(n) && n > 0 ? n * MIB : uploadCeilingBytes();
 }
 
