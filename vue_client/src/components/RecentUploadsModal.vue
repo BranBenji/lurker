@@ -577,8 +577,11 @@ function metaLine(u: UploadRow): string {
   padding-block: var(--control-pad);
 }
 .starred {
-  /* Never squeezed by the search field growing. */
+  /* Never squeezed by the search field growing, and as tall as the field: on a
+     phone the button holds only the icon, whose box is shorter than a text line,
+     so left to its content it would stand short of the input beside it. */
   flex: none;
+  align-self: stretch;
 }
 .starred > button {
   display: flex;
