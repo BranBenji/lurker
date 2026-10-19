@@ -91,7 +91,7 @@ function onKey(e: KeyboardEvent): void {
   text-overflow: ellipsis;
   color: var(--fg);
   font-style: italic;
-  opacity: 0.45;
+  opacity: var(--quote-fade);
   cursor: pointer;
 }
 .reply-quote:not(.missing):not(.static):hover {

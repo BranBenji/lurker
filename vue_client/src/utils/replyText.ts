@@ -82,19 +82,31 @@ export function splitQuoteBlock(draft: string): { quotes: string; body: string }
 // a message is. Works on the rendered segments, after formatting codes are gone,
 // so a `> ` written in bold still counts and one inside a spoiler never does
 // (its text is hidden). Consecutive quote lines are one block, one bar. Null
-// when no line quotes, and the message renders as it always did — cutting its
-// segments at line breaks would tear a spoiler run that spans one in two.
+// when no line quotes, and the message renders as it always did.
+//
+// The blocks are block boxes under `white-space: pre-wrap`, and that decides two
+// things here. A spoiler run is never cut at a line break — one run, one box to
+// reveal — so a line that starts inside one can't open a quote, which it
+// couldn't be read to anyway. And a line break that ends a block renders
+// nothing (the box ends there), so a blank line left at the end of a plain
+// block gets a second break to stay a blank line, as one at the start of the
+// next block already does.
 export interface QuoteBlock {
   quote: boolean;
   segments: RenderSegment[];
 }
 
 const QUOTE_MARK = '> ';
+const BREAK: RenderSegment = { text: '\n' };
 
 export function quoteBlocks(segments: RenderSegment[]): QuoteBlock[] | null {
   // The message's lines, each its own run of segments.
   const lines: RenderSegment[][] = [[]];
   for (const seg of segments) {
+    if (seg.spoiler) {
+      lines[lines.length - 1].push(seg);
+      continue;
+    }
     const parts = seg.text.split('\n');
     for (let i = 0; i < parts.length; i++) {
       if (i > 0) lines.push([]);
@@ -109,14 +121,23 @@ export function quoteBlocks(segments: RenderSegment[]): QuoteBlock[] | null {
     const quote = quoted[i];
     const segs = quote ? withoutQuoteMark(line) : line;
     const last = blocks[blocks.length - 1];
-    if (last && last.quote === quote) last.segments.push({ text: '\n' }, ...segs);
-    else blocks.push({ quote, segments: segs });
+    if (last && last.quote === quote) {
+      last.segments.push(BREAK, ...segs);
+      return;
+    }
+    if (last && !last.quote && (!last.segments.length || last.segments.at(-1) === BREAK)) {
+      last.segments.push(BREAK);
+    }
+    blocks.push({ quote, segments: segs });
   });
   return blocks;
 }
 
 // Whether a line's visible text starts with `> ` — read across segments, since
-// a formatting change can fall between the two characters.
+// a formatting change can fall between the two characters. A line that is the
+// mark alone counts too: a quoted link whose picture is on screen instead
+// (MessageBody hides the address, and trims the space with it) is still a quote,
+// of the picture.
 function opensQuote(line: RenderSegment[]): boolean {
   let head = '';
   for (const seg of line) {
@@ -124,7 +145,7 @@ function opensQuote(line: RenderSegment[]): boolean {
     head += seg.text;
     if (head.length >= QUOTE_MARK.length) break;
   }
-  return head.startsWith(QUOTE_MARK);
+  return head.startsWith(QUOTE_MARK) || head === QUOTE_MARK.trimEnd();
 }
 
 function withoutQuoteMark(line: RenderSegment[]): RenderSegment[] {

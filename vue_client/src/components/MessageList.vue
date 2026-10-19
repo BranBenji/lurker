@@ -141,7 +141,7 @@
               :self-color="selfColor"
               :network-id="buffer?.networkId ?? null"
               interactive-nicks
-              blockquotes
+              :blockquotes="row.m?.type === 'message'"
               @nick-click="onMentionMenu"
               @measured="repinAfterPreviewGrowth(true)"
             /><RenderSegments
@@ -150,7 +150,7 @@
               :self-color="selfColor"
               :network-id="buffer?.networkId ?? null"
               interactive-nicks
-              blockquotes
+              :blockquotes="row.m?.type === 'message'"
               @nick-click="onMentionMenu"
             /><ReactionRow
               v-if="row.m && reactable(row.m)"
@@ -202,7 +202,7 @@
               :self-color="selfColor"
               :network-id="buffer?.networkId ?? null"
               interactive-nicks
-              blockquotes
+              :blockquotes="row.m?.type === 'message'"
               @nick-click="onMentionMenu"
               @measured="repinAfterPreviewGrowth(true)"
             /><RenderSegments
@@ -211,7 +211,7 @@
               :self-color="selfColor"
               :network-id="buffer?.networkId ?? null"
               interactive-nicks
-              blockquotes
+              :blockquotes="row.m?.type === 'message'"
               @nick-click="onMentionMenu"
             />
             <template v-else-if="row.m?.type === 'join'"

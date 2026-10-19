@@ -26,7 +26,7 @@
         @nick-click="(nick: string, ev: MouseEvent) => $emit('nickClick', nick, ev)"
     /></template>
   </template>
-  <template v-for="(seg, i) in blocks ? [] : segments" v-else :key="i">
+  <template v-for="(seg, i) in segments" v-else :key="i">
     <SpoilerText v-if="seg.spoiler" :seg="seg" />
     <!-- Links render inside clickable rows (a history
          row jumps to the message on click), and a link activation shouldn't
@@ -111,7 +111,8 @@ const props = withDefaults(
     interactiveNicks?: boolean;
     // Opt-in: draw lines that open with `> ` as block quotes (#1119) — what
     // the Quote action writes above an answer, and what IRC has always typed
-    // by hand. For message text; a topic or a part reason isn't quoting.
+    // by hand. For a message, the one type a person wrote: a notice is a
+    // service's text (`> help` is HelpServ's), a topic or a reason isn't quoting.
     blockquotes?: boolean;
   }>(),
   { selfColor: null, networkId: null, interactiveNicks: false, blockquotes: false },

@@ -84,13 +84,17 @@ describe('MessageList — block quotes', () => {
     expect(rowOf(w, a.id).find('.msg-quote').exists()).toBe(false);
   });
 
-  it('does not quote greentext, an action, or a notice that only mentions a >', () => {
+  // Only a message quotes: a notice is a service's text (`> help` is HelpServ's
+  // own mark), an action is prose with the author in front.
+  it('does not quote greentext, an action, or a notice', () => {
     const green = line('bob', '>implying');
-    const act = line('bob', '> waves', { type: 'action' });
-    const note = line('ChanServ', 'use > carefully', { type: 'notice' });
+    const act = line('bob', '> waves\n> again', { type: 'action' });
+    const note = line('HelpServ', '> help\n> list', { type: 'notice' });
     const w = mountWith([green, act, note]);
-    for (const m of [green, act, note])
+    for (const m of [green, act, note]) {
       expect(rowOf(w, m.id).find('.msg-quote').exists()).toBe(false);
-    expect(rowOf(w, act.id).find('.body').text()).toBe('bob > waves');
+    }
+    expect(rowOf(w, act.id).find('.body').text()).toBe('bob > waves\n> again');
+    expect(rowOf(w, note.id).find('.body').text()).toBe('> help\n> list');
   });
 });

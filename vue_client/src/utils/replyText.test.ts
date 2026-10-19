@@ -183,6 +183,39 @@ describe('quoteBlocks', () => {
     expect(blocks[1].segments).toEqual([{ text: 'answer', italic: true }]);
   });
 
+  // One spoiler run is one box to reveal: never cut, even across a break.
+  it('keeps a spoiler run that spans a break in one piece', () => {
+    const blocks = quoteBlocks(segs('> <alice> hi\n\x0314,14one\ntwo\x03 end'))!;
+    expect(blocks[1].segments).toEqual([
+      { text: 'one\ntwo', spoiler: true, fg: 14 },
+      { text: ' end' },
+    ]);
+  });
+
+  // A block box ends at its last break, so a blank line left there would vanish;
+  // one at the start of the next block already shows. Both sides keep theirs.
+  it('keeps a blank line on either side of a quote block', () => {
+    expect(texts(quoteBlocks(segs('she said\n\n> <alice> hi\n\nback')))).toEqual([
+      [false, 'she said\n\n'],
+      [true, '<alice> hi'],
+      [false, '\nback'],
+    ]);
+    expect(texts(quoteBlocks(segs('> <alice> hi\n\n> <bob> yo')))).toEqual([
+      [true, '<alice> hi'],
+      [false, '\n'],
+      [true, '<bob> yo'],
+    ]);
+  });
+
+  // A quoted link whose picture is shown instead: MessageBody drops the address
+  // and trims the space with it, leaving the mark alone. Still a quote.
+  it('counts a line that is the mark alone', () => {
+    expect(texts(quoteBlocks(segs('>\nnice')))).toEqual([
+      [true, ''],
+      [false, 'nice'],
+    ]);
+  });
+
   // `>implying` is greentext, not a quote; a mark hidden in a spoiler is hidden.
   it('needs the space, and ignores a mark inside a spoiler', () => {
     expect(quoteBlocks(segs('>implying\nno'))).toBeNull();
