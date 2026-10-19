@@ -33,7 +33,13 @@ import {
   setInstanceDefault,
   toDetail,
 } from '../db/uploaderConfig.js';
-import { allowUserDefinedUploaders, setAllowUserDefinedUploaders } from '../db/instanceSettings.js';
+import {
+  allowUserDefinedUploaders,
+  setAllowUserDefinedUploaders,
+  setUploadCeilingMb,
+} from '../db/instanceSettings.js';
+import { uploadCeilingMb } from '../services/uploadLimits.js';
+import { fanOutUploadLimitsToAll } from '../services/wsHub.js';
 import { BUILT_IN_INSTANCE_DRIVERS } from '../db/uploaderConfigSeed.js';
 import { getDriver, driverIds } from '../services/uploadProviders/index.js';
 import { isNodeMode } from '../utils/edition.js';
@@ -128,6 +134,8 @@ router.get('/', (_req: Request, res: Response) => {
       return detail;
     }),
     allowUserDefined: allowUserDefinedUploaders(),
+    // #1131: read-only on a hosted cell (the operator's env), editable elsewhere.
+    maxUploadMb: uploadCeilingMb(),
     drivers: visibleDrivers(),
     // The client hides the whole management surface on a hosted cell rather than
     // offering buttons that will 409.
@@ -259,6 +267,25 @@ router.delete('/:id', (req: Request, res: Response) => {
   }
   deleteUploaderConfig(id);
   res.json({ ok: true });
+});
+
+/**
+ * The instance upload ceiling (#1131): the most any account may be allowed,
+ * and the bound on everyone's own cap. A positive whole number of MiB with no
+ * upper bound in code — the disk is the bound, and an upload session refuses
+ * what would breach the free-disk floor. Hosted cells take it from the
+ * operator's environment, so the write 409s there like every other edit.
+ */
+router.put('/ceiling', (req: Request, res: Response) => {
+  if (refuseOnNode(res)) return;
+  const mb = (req.body as { maxUploadMb?: unknown } | null)?.maxUploadMb;
+  if (typeof mb !== 'number' || !Number.isSafeInteger(mb) || mb < 1) {
+    res.status(400).json({ error: 'maxUploadMb must be a whole number of MB, at least 1' });
+    return;
+  }
+  setUploadCeilingMb(mb);
+  fanOutUploadLimitsToAll();
+  res.json({ ok: true, maxUploadMb: uploadCeilingMb() });
 });
 
 /** The lockdown switch (design decision 2). */

@@ -4,7 +4,7 @@
 // The admin half of uploader management (#514 / #299): instance uploaders, the
 // default a new account inherits, and the lockdown switch.
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import type { Express } from 'express';
 import type { LurkerTestAgent } from '../test-utils/testApp.js';
 import { setupTestDb, createTestApp, createAuthedAgent } from '../test-utils/testApp.js';
@@ -314,5 +314,40 @@ describe('PUT /api/admin/uploaders/policy', () => {
       (await adminAgent.put('/api/admin/uploaders/policy').send({ allowUserDefined: 'yes' }))
         .status,
     ).toBe(400);
+  });
+});
+
+// #1131: the upload ceiling is the admin's, not a 200 MB constant.
+describe('PUT /api/admin/uploaders/ceiling', () => {
+  afterEach(() => {
+    db.prepare(`DELETE FROM instance_settings WHERE key = 'uploads.max_upload_mb'`).run();
+  });
+
+  it('starts at 200 MB and is listed with the uploaders', async () => {
+    const res = await adminAgent.get('/api/admin/uploaders');
+    expect(res.body.maxUploadMb).toBe(200);
+  });
+
+  it('raises it past 200, and every account that never set its own cap follows', async () => {
+    const { effectiveUploadCapBytes } = await import('../services/uploadLimits.js');
+    const res = await adminAgent.put('/api/admin/uploaders/ceiling').send({ maxUploadMb: 300 });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, maxUploadMb: 300 });
+    expect((await adminAgent.get('/api/admin/uploaders')).body.maxUploadMb).toBe(300);
+    expect(effectiveUploadCapBytes(plainUser.id, false)).toBe(300 * 1024 * 1024);
+  });
+
+  it('takes a whole positive number of MB and nothing else', async () => {
+    for (const maxUploadMb of [0, -1, 1.5, '300', null, undefined, Number.MAX_SAFE_INTEGER + 2]) {
+      const res = await adminAgent.put('/api/admin/uploaders/ceiling').send({ maxUploadMb });
+      expect({ maxUploadMb, status: res.status }).toEqual({ maxUploadMb, status: 400 });
+    }
+    expect((await adminAgent.get('/api/admin/uploaders')).body.maxUploadMb).toBe(200);
+  });
+
+  it('is admin-only', async () => {
+    expect(
+      (await userAgent.put('/api/admin/uploaders/ceiling').send({ maxUploadMb: 300 })).status,
+    ).toBe(403);
   });
 });

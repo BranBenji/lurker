@@ -1602,6 +1602,21 @@ function fanOut(userId: number, payload: WsPayload, opts: FanOutOpts = {}): void
   }
 }
 
+// #1131: the admin raised or lowered the instance upload ceiling, which moves
+// every account's effective cap at once. Each user's own cap change already
+// rides their `settings` frame (below); this is the same frame, with nothing
+// changed, for every connected user — lowered, a client sizing media against the
+// old number would 413 on every upload until it reconnected.
+export function fanOutUploadLimitsToAll(): void {
+  for (const userId of socketsByUser.keys()) {
+    fanOut(userId, {
+      kind: 'settings',
+      changes: {},
+      ...advertisedUploadLimits(userId, findUserById(userId)?.role === 'admin'),
+    });
+  }
+}
+
 // Public alias for verb handlers that produce a value via MCP but still want
 // the user's open WS tabs to react (e.g. set_nick_note). Same signature as
 // the private fanOut; named to make the cross-module call site read clearly.
@@ -2680,8 +2695,13 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // #872: `maxStaticImageDimension` rides beside it — the longest edge the
     // pipeline keeps of a static image, so a phone can shrink a 48MP photo before
     // sending it instead of uploading ~100 MB to produce a ~300 KB WebP.
-    const { maxUploadBytes, maxStaticImageDimension, maxChunkedUploadBytes, uploadChunkBytes } =
-      advertisedUploadLimits(userId, findUserById(userId)?.role === 'admin');
+    const {
+      maxUploadBytes,
+      maxStaticImageDimension,
+      maxChunkedUploadBytes,
+      uploadChunkBytes,
+      uploadCeilingBytes,
+    } = advertisedUploadLimits(userId, findUserById(userId)?.role === 'admin');
     // Global ignore rules (network_id NULL) aren't tied to any one network blob,
     // so they ride alongside the per-network snapshot as their own field (#350).
     send(ws, {
@@ -2695,6 +2715,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       // #650: what a chunked upload session takes, file and chunk.
       maxChunkedUploadBytes,
       uploadChunkBytes,
+      // #1131: the instance ceiling, the bound on the user's own cap setting.
+      uploadCeilingBytes,
       networks,
       globalIgnores: ircManager.listGlobalIgnoresFor(userId),
       ...(isFreshConnect ? { cursor } : {}),

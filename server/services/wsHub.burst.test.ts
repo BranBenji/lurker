@@ -191,8 +191,12 @@ describe('connect burst terminator (#635)', () => {
     const { setUserSetting } = await import('../db/settings.js');
     setUserSetting(userId, 'uploads.image.max_upload_mb', 42);
     try {
-      const [snapshot] = (await collectBurst()) as unknown as [{ maxUploadBytes?: number }];
+      const [snapshot] = (await collectBurst()) as unknown as [
+        { maxUploadBytes?: number; uploadCeilingBytes?: number },
+      ];
       expect(snapshot.maxUploadBytes).toBe(42 * 1024 * 1024);
+      // #1131: the bound on that setting rides beside it.
+      expect(snapshot.uploadCeilingBytes).toBe(200 * 1024 * 1024);
     } finally {
       const { deleteUserSetting } = await import('../db/settings.js');
       deleteUserSetting(userId, 'uploads.image.max_upload_mb');
@@ -224,9 +228,11 @@ describe('connect burst terminator (#635)', () => {
 // they fan out. Changing the setting only once the burst is done means the frame
 // we're waiting for can't be confused with anything in the burst.
 async function settingsFrameAfter(
-  changes: Record<string, unknown>,
+  changes: Record<string, unknown> | (() => void),
 ): Promise<Record<string, unknown>> {
   const settingsService = (await import('./settingsService.js')).default;
+  const apply =
+    typeof changes === 'function' ? changes : () => settingsService.update(userId, changes);
   const { token } = createSession(userId);
   return new Promise<Record<string, unknown>>((resolve, reject) => {
     const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
@@ -239,7 +245,7 @@ async function settingsFrameAfter(
       const f = JSON.parse(raw.toString()) as Record<string, unknown>;
       if (f.kind === 'backlog-complete' && !applied) {
         applied = true;
-        settingsService.update(userId, changes);
+        apply();
         return;
       }
       if (f.kind !== 'settings') return;
@@ -272,6 +278,27 @@ describe('upload limits on the settings frame (#627, #872)', () => {
     expect(frame.maxStaticImageDimension).toBe(1024);
     // Resolved together, so the cap comes along — an absolute value, harmless to re-apply.
     expect(frame.maxUploadBytes).toEqual(expect.any(Number));
+  });
+
+  // #1131: the admin's ceiling change moves EVERY account's cap, so it goes to
+  // every connected user as the same frame — changes empty, limits fresh.
+  it('re-sends every limit to connected users when the admin moves the ceiling', async () => {
+    const { setUploadCeilingMb } = await import('../db/instanceSettings.js');
+    const { fanOutUploadLimitsToAll } = await import('./wsHub.js');
+    const testDbModule = (await import('../db/index.js')).default;
+    try {
+      const frame = await settingsFrameAfter(() => {
+        setUploadCeilingMb(300);
+        fanOutUploadLimitsToAll();
+      });
+      expect(frame.changes).toEqual({});
+      expect(frame.uploadCeilingBytes).toBe(300 * 1024 * 1024);
+      expect(frame.maxChunkedUploadBytes).toBe(300 * 1024 * 1024);
+    } finally {
+      testDbModule
+        .prepare(`DELETE FROM instance_settings WHERE key = 'uploads.max_upload_mb'`)
+        .run();
+    }
   });
 
   // Absent on the settings frame means "unchanged" — a client patches only what

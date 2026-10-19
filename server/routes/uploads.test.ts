@@ -20,6 +20,16 @@ import { resolveDataDir } from '../utils/dataDir.js';
 
 const ctx = setupTestDb('routes-uploads');
 
+// The free-disk floor, switchable per test (same shape as uploadSessions.test.ts).
+const disk = vi.hoisted(() => ({ full: false, asked: [] as number[] }));
+vi.mock('../utils/diskSpace.js', () => ({
+  FREE_DISK_FLOOR_BYTES: 1024 ** 3,
+  hasFreeSpaceFor: (_dir: string, bytes: number) => {
+    disk.asked.push(bytes);
+    return !disk.full;
+  },
+}));
+
 // Stub driver — the route exercises resolve/upload/url plumbing without reaching
 // the real network. Behavior is configurable per-test via state on the
 // module-level `stub`. The seed migration creates a real `x0` instance default in
@@ -128,6 +138,25 @@ describe('POST /api/uploads', () => {
   it('rejects unauthenticated', async () => {
     const res = await createAnonAgent(app).post('/api/uploads');
     expect(res.status).toBe(401);
+  });
+
+  // #1131: with the ceiling the admin's to raise, one request can be as large as
+  // the disk, so the single-request path checks the floor a session does.
+  it('507s before reading a file the disk has no room for', async () => {
+    disk.full = true;
+    disk.asked.length = 0;
+    try {
+      const res = await agent
+        .post('/api/uploads')
+        .attach('image', smallPng, { filename: 'photo.png', contentType: 'image/png' });
+      expect(res.status).toBe(507);
+      // Asked for the body it was told about, not for the whole cap.
+      expect(disk.asked).toHaveLength(1);
+      expect(disk.asked[0]).toBeGreaterThanOrEqual(smallPng.length);
+      expect(disk.asked[0]).toBeLessThan(smallPng.length + 4096);
+    } finally {
+      disk.full = false;
+    }
   });
 
   it('400 when no file is attached', async () => {

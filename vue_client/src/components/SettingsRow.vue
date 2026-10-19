@@ -109,6 +109,7 @@
       dependency back restores exactly what was here.
     -->
     <p v-if="hint" class="dep-hint">{{ hint }}</p>
+    <p v-if="note" class="dep-hint">{{ note }}</p>
     <div v-if="modified" class="default-line">
       default:
       <code>{{ formatDefault(opt, baseline !== undefined ? baseline : opt.default) }}</code>
@@ -138,12 +139,21 @@ const props = withDefaults(
      * (the default) for an ordinary live row.
      */
     hint?: string;
+    /**
+     * A line under the editor stating a fact the registry can't carry because
+     * the server decides it at runtime: the instance ceiling the upload cap is
+     * bounded by (#1131). Deliberately NOT the input's `max` — the browser would
+     * flag a value above it as invalid, while the server accepts one and counts
+     * it as the ceiling.
+     */
+    note?: string;
   }>(),
   {
     value: undefined,
     modified: false,
     baseline: undefined,
     hint: '',
+    note: '',
   },
 );
 

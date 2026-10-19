@@ -66,8 +66,11 @@ export function coerceSettingValue(
     case 'int': {
       const n = Number(raw.trim());
       if (!Number.isInteger(n)) return { ok: false, error: `${opt.key} expects an integer` };
-      if (n < opt.min || n > opt.max) {
-        return { ok: false, error: `${opt.key} must be between ${opt.min} and ${opt.max}` };
+      // No `max` means the server decides the bound at runtime (the upload cap's
+      // instance ceiling, #1131) and clamps; only the floor is checked here.
+      if (n < opt.min || (opt.max != null && n > opt.max)) {
+        const range = opt.max != null ? `between ${opt.min} and ${opt.max}` : `at least ${opt.min}`;
+        return { ok: false, error: `${opt.key} must be ${range}` };
       }
       return { ok: true, value: n };
     }

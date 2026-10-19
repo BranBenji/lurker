@@ -50,6 +50,20 @@ describe('validate', () => {
     });
   });
 
+  // #1131: the upload cap's bound is the instance ceiling, not the registry.
+  describe('int without a max', () => {
+    it('the registry actually carries the shape under test', () => {
+      const opt = getOption('uploads.image.max_upload_mb');
+      expect(opt?.type === 'int' && opt.max).toBeUndefined();
+    });
+
+    it('accepts 0 (the ceiling) and any value above the old 200 MB cap', () => {
+      expect(validate('uploads.image.max_upload_mb', 0)).toEqual({ ok: true, value: 0 });
+      expect(validate('uploads.image.max_upload_mb', 5000)).toEqual({ ok: true, value: 5000 });
+      expect(validate('uploads.image.max_upload_mb', -1).ok).toBe(false);
+    });
+  });
+
   describe('int minNonzero', () => {
     // Retention is the live carrier of the field: 0 = unlimited is valid, a
     // small live cap is a guarded footgun (pruning is irreversible).

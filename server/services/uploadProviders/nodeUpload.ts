@@ -10,6 +10,7 @@
 // config check agree, and keeps it out of the (mockable) provider registry so
 // the route reads the real environment in tests.
 
+import { DEFAULT_UPLOAD_CEILING_MB } from '../../../shared/settingsRegistry.js';
 import { getOption } from '../settingsRegistry.js';
 
 /** Provider id forced for every upload in node edition. */
@@ -44,23 +45,36 @@ function intOverride(envName: string, settingKey: string): number {
   const raw = (process.env[envName] || '').trim();
   const n = raw ? Math.floor(Number(raw)) : NaN;
   if (!Number.isFinite(n)) return fallback;
-  const min = opt && 'min' in opt ? opt.min : n;
-  const max = opt && 'max' in opt ? opt.max : n;
+  const min = opt?.type === 'int' ? opt.min : n;
+  const max = opt?.type === 'int' && typeof opt.max === 'number' ? opt.max : n;
   return Math.min(Math.max(n, min), max);
+}
+
+// The upload ceiling is NOT a registry override (#1131): the registry setting
+// has no `max` any more, and its default (0, "the ceiling") is the one value
+// that must never become the cell's cap. The env var IS the ceiling on a cell,
+// unclamped — the operator raises hosted uploads by raising it (and the
+// dropper's own cap, tracked in the control plane). Unset or malformed falls
+// back to the install default, never to 0.
+function ceilingOverride(envName: string): number {
+  const raw = (process.env[envName] || '').trim();
+  const n = raw ? Math.floor(Number(raw)) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_UPLOAD_CEILING_MB;
 }
 
 /**
  * Operator-controlled image-pipeline limits for node edition. In the hosted
  * service these are NOT tenant settings — a tenant could otherwise inflate
  * storage/bandwidth or lift their own size cap with a direct settings write —
- * so the cell sources them from the environment, clamped to each setting's
- * registry [min,max] bounds and falling back to the registry default when an
- * env var is unset or malformed. A3 hides the matching tenant UI; this is the
- * enforcement behind it.
+ * so the cell sources them from the environment: the dimension and quality
+ * clamped to each setting's registry [min,max] bounds and falling back to the
+ * registry default, the size cap unclamped (it IS the cell's upload ceiling,
+ * #1131) and falling back to the install default. A3 hides the matching tenant
+ * UI; this is the enforcement behind it.
  */
 export function nodeUploadLimits(): { maxMb: number; maxDim: number; quality: number } {
   return {
-    maxMb: intOverride('LURKER_NODE_UPLOAD_MAX_MB', 'uploads.image.max_upload_mb'),
+    maxMb: ceilingOverride('LURKER_NODE_UPLOAD_MAX_MB'),
     maxDim: intOverride('LURKER_NODE_UPLOAD_MAX_DIM', 'uploads.image.max_dimension'),
     quality: intOverride('LURKER_NODE_UPLOAD_QUALITY', 'uploads.image.quality'),
   };

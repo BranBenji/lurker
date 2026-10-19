@@ -6,7 +6,7 @@
 // a temp dir, and the file comes back through the public /uploads route at the
 // Location we answered with.
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import http from 'node:http';
 import net from 'node:net';
 import type { AddressInfo } from 'node:net';
@@ -17,6 +17,13 @@ import sharp from 'sharp';
 import type { Express } from 'express';
 import { setupTestDb, testRequest, TEST_SESSION_SECRET } from '../test-utils/testApp.js';
 import type { User } from '../db/users.js';
+
+// The free-disk floor, switchable per test (same shape as uploadSessions.test.ts).
+const disk = vi.hoisted(() => ({ full: false }));
+vi.mock('../utils/diskSpace.js', () => ({
+  FREE_DISK_FLOOR_BYTES: 1024 ** 3,
+  hasFreeSpaceFor: () => !disk.full,
+}));
 
 const ctx = setupTestDb('routes-filehost');
 
@@ -135,6 +142,18 @@ describe('POST', () => {
     const rows = listUploads(user.id, {});
     expect(rows.map((r) => r.url)).toContain(location);
     expect(rows.find((r) => r.url === location)?.filename).toBe('photo.png');
+  });
+
+  // #1131: the single-request path checks the free-disk floor a session does.
+  it('answers 507 when the disk has no room for the file', async () => {
+    const user = await seedUser();
+    disk.full = true;
+    try {
+      const res = await upload(basic(user.username, PASSWORD), png);
+      expect(res.status).toBe(507);
+    } finally {
+      disk.full = false;
+    }
   });
 
   it('takes a read-write API token and a username carrying /network and @client', async () => {

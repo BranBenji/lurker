@@ -150,6 +150,10 @@ export const useUploadsStore = defineStore('uploads', {
     // file bigger than one chunk goes in chunks; null (a server without
     // sessions) sends everything in one request, as before.
     chunkBytes: null as number | null,
+    // The instance ceiling (#1131), from the snapshot and the settings frame:
+    // the bound on the user's own cap setting, which the registry can't hold any
+    // more because the admin sets it. null until a snapshot says.
+    ceilingBytes: null as number | null,
 
     recent: [] as UploadItem[], // paginated history rows
     cursor: null as number | null, // smallest id seen, used as `before=` for the next page

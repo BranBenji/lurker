@@ -10,6 +10,9 @@
       to. This is #299's whole point: uploads work from first use.
     • whether an uploader is OFFERED to users at all, or admin-only.
     • the lockdown switch: may users define their own uploaders?
+    • the upload ceiling (#1131): the most any account may be allowed, and the
+      bound on everyone's own cap. 200 MB until raised; no upper bound here,
+      the disk is the bound.
 
   Built-ins (x0, catbox, local disk) can be disabled but not deleted — they're
   re-created on the next boot regardless, and deleting the local-disk one would
@@ -28,9 +31,35 @@
     <p v-if="store.uploadersManaged" class="muted small">
       This server’s uploader is managed by the control plane and configured from the operator
       environment — it can’t be changed here.
+      <template v-if="store.uploadCeilingMb != null">
+        Uploads are capped at {{ store.uploadCeilingMb.toLocaleString() }} MB.
+      </template>
     </p>
 
     <template v-else>
+      <label class="policy ceiling">
+        <span>
+          <span class="name">Upload ceiling</span>
+          The most anyone may upload, in MB. Each person can set a lower cap for themselves in
+          Settings; an account that never did follows this number. Uploads bigger than one chunk
+          cross a proxy in pieces, so this isn’t bound by what your proxy passes — only your disk
+          is.
+        </span>
+        <span class="ceiling-edit">
+          <input
+            type="number"
+            min="1"
+            step="1"
+            :value="store.uploadCeilingMb ?? ''"
+            :disabled="busy || store.uploadCeilingMb == null"
+            aria-label="upload ceiling in MB"
+            @change="onCeilingChange"
+          />
+          MB
+        </span>
+      </label>
+      <p v-if="ceilingError" class="error inline">{{ ceilingError }}</p>
+
       <label class="policy check">
         <input
           type="checkbox"
@@ -212,6 +241,30 @@ const onTogglePolicy = (e: Event) =>
     'failed to update the policy',
   );
 
+// Committed on change like the switch above: one number, no form. A bad value
+// is caught here so nothing round-trips just to be rejected; the server checks
+// the same thing. Either way a refusal snaps the field back to what the server
+// holds, so the box never shows a number that didn't take.
+const ceilingError = ref('');
+async function onCeilingChange(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const mb = Number(input.value);
+  ceilingError.value = '';
+  if (!Number.isInteger(mb) || mb < 1) {
+    ceilingError.value = 'a whole number of MB, at least 1';
+  } else {
+    busy.value = true;
+    try {
+      await store.setUploadCeilingMb(mb);
+    } catch (err: any) {
+      ceilingError.value = err.message || 'failed to update the upload ceiling';
+    } finally {
+      busy.value = false;
+    }
+  }
+  input.value = String(store.uploadCeilingMb ?? '');
+}
+
 async function onSaveNew({ label, values }: { label: string; values: Record<string, string> }) {
   if (!adding.value) return;
   formError.value = '';
@@ -281,6 +334,24 @@ onMounted(() => {
   align-items: flex-start;
   gap: var(--space-2);
   margin: var(--space-3) 0;
+}
+
+.ceiling {
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+.ceiling .name {
+  display: block;
+  font-weight: 600;
+}
+.ceiling-edit {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+.ceiling-edit input {
+  width: 6em;
 }
 
 .driver-pick {
