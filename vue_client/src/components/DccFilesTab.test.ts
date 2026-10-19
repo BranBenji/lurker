@@ -68,9 +68,9 @@ function mountTab(query = '', kind: 'video' | null = null) {
   return mount(DccFilesTab, { props: { query, kind } });
 }
 
-// A row's ⋯ opens the app's one context menu; its items are read off the
+// A row's ⋮ opens the app's one context menu; its items are read off the
 // composable, since ContextMenu.vue itself isn't mounted here. Closed first:
-// ContextMenu.vue closes on an item's click, and ⋯ on an open menu toggles it.
+// ContextMenu.vue closes on an item's click, and ⋮ on an open menu toggles it.
 async function openMore(w: VueWrapper, i = 0) {
   useContextMenu().close();
   await w.findAll('button.more')[i]!.trigger('click');
@@ -299,7 +299,7 @@ describe('DccFilesTab', () => {
     expect(w.text()).toContain('41% | 2.0 KB/s | 5m left');
   });
 
-  it("opens one row's ⋯ menu at a time, and closes it again", async () => {
+  it("opens one row's ⋮ menu at a time, and closes it again", async () => {
     const dcc = useDccStore();
     dcc.filesLoaded = true;
     dcc.files = [file(1, 'a.mkv'), file(2, 'b.mkv')];
@@ -315,7 +315,7 @@ describe('DccFilesTab', () => {
     expect(menu.state.triggerEl).toBe(two.element);
     expect(one.attributes('aria-expanded')).toBe('false');
     expect(two.attributes('aria-expanded')).toBe('true');
-    // The same ⋯ again closes it; so does anything else that closes the menu.
+    // The same ⋮ again closes it; so does anything else that closes the menu.
     await two.trigger('click');
     expect(menu.state.open).toBe(false);
     expect(two.attributes('aria-expanded')).toBe('false');

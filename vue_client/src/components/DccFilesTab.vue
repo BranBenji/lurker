@@ -733,7 +733,7 @@ async function onUploadChosen(e: Event) {
 .link.inline:hover {
   color: var(--fg);
 }
-/* The ⋯ that opens a row's actions: the bar's look, one button. */
+/* The ⋮ that opens a row's actions: the bar's look, one button. */
 .more {
   background: none;
   border: 1px solid var(--border);
