@@ -15,6 +15,7 @@ import type { LucideIcon } from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useReactionsStore } from '../stores/reactions.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
 import { tagSupport, useNetworksStore } from '../stores/networks.js';
 import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
 import { useBuffersStore } from '../stores/buffers.js';
@@ -206,7 +207,11 @@ export function useMessageActions(): MessageActionsAPI {
     // network and no msgid — only words to quote — so it's offered on your own
     // lines and in DMs too, and on a line a Reply can't take.
     if (message.nick && message.text) {
-      actions.push({ key: 'quote', label: `Quote ${message.nick}`, icon: QuoteIcon });
+      // Named for the person quoted: on a relayed line, the one inside the
+      // envelope, as the quote line will read (MessageList's onQuote unwraps).
+      const nid = message.networkId ?? message.network_id;
+      const who = useRelayBotsStore().unwrap(nid, message)?.nick ?? message.nick;
+      actions.push({ key: 'quote', label: `Quote ${who}`, icon: QuoteIcon });
     }
 
     // A reaction replies to the line's msgid, so it needs a line a reply could

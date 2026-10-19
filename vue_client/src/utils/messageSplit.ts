@@ -45,7 +45,8 @@ export function textBudgetFor(
 }
 
 const encoder = new TextEncoder();
-function byteLen(s: string): number {
+// UTF-8 length — the unit every wire budget is in.
+export function byteLen(s: string): number {
   return encoder.encode(s).byteLength;
 }
 

@@ -19,6 +19,7 @@ import { useRepliesStore } from '../stores/replies.js';
 import {
   addressNick,
   cancelComposerReply,
+  focusComposer,
   quoteInComposer,
 } from '../composables/useComposerOverlay.js';
 import { useComposing } from '../composables/useComposing.js';
@@ -161,9 +162,10 @@ describe('quoting a line', () => {
     expect(useRepliesStore().forKey(KEY)).toBeNull();
   });
 
-  // A Reply after a Quote addresses the answer, not the quote line, and its ×
-  // takes the address back from there.
-  it('lets a Reply address the answer under the quote, and take it back', async () => {
+  // A Reply after a Quote is its plain-text half only: it addresses the answer,
+  // not the quote line, and the reply tag — which would ride the quote line —
+  // is dropped. The address stays as one the user typed.
+  it('lets a Reply address the answer under the quote, without the tag', async () => {
     seed();
     const el = await composer();
     quoteInComposer(ALICE);
@@ -173,10 +175,56 @@ describe('quoting a line', () => {
     addressNick('bob');
     await flush();
     expect(el.value).toBe(`${QUOTE}\nbob: sure`);
+    expect(useRepliesStore().forKey(KEY)).toBeNull();
     cancelComposerReply();
     await flush();
-    expect(el.value).toBe(`${QUOTE}\nsure`);
+    expect(el.value).toBe(`${QUOTE}\nbob: sure`);
+    await press(el, 'Enter');
+    expect(sent()).toHaveLength(1);
+    expect(sent()[0]).not.toHaveProperty('replyTo');
+  });
+
+  it('drops the tag of a Reply to your own line under a quote too', async () => {
+    seed();
+    const el = await composer();
+    quoteInComposer(ALICE);
+    await flush();
+    useRepliesStore().start(KEY, {
+      messageId: 44,
+      nick: 'me',
+      type: 'message',
+      text: 'x',
+      self: true,
+    });
+    focusComposer();
+    await flush();
     expect(useRepliesStore().forKey(KEY)).toBeNull();
+    expect(el.value).toBe(`${QUOTE}\n`);
+  });
+
+  it('refuses to send a /command typed under a quote, which would go out as text', async () => {
+    seed();
+    const el = await composer();
+    quoteInComposer(ALICE);
+    await flush();
+    await type(el, `${QUOTE}\n/msg bob the password is hunter2`);
+    await press(el, 'Enter');
+    expect(sent()).toEqual([]);
+    expect(el.value).toBe(`${QUOTE}\n/msg bob the password is hunter2`);
+    expect(useToastsStore().items.map((t) => t.title)).toEqual([
+      "A /command can't go under a quote",
+    ]);
+  });
+
+  it('sends a quote of a spoiler still hidden', async () => {
+    seed();
+    const el = await composer();
+    quoteInComposer({ ...ALICE, text: 'the killer is \x0314,14bob\x03' });
+    await flush();
+    expect(el.value).toBe('> <alice> the killer is ||bob||\n');
+    await type(el, `${el.value}knew it`);
+    await press(el, 'Enter');
+    expect(sent()[0].text).toBe('> <alice> the killer is \x0314,14bob\x03\nknew it');
   });
 
   it('refuses to quote above a /command, which would go out as text', async () => {
@@ -187,11 +235,14 @@ describe('quoting a line', () => {
     await flush();
     expect(el.value).toBe('/msg bob the password is hunter2');
     expect(useToastsStore().items.map((t) => t.title)).toEqual(['Clear the /command first']);
-    // An escaped slash is text, and takes a quote.
+    // An escaped slash is text, and takes a quote; one slash goes out, as at
+    // the top of a draft.
     await type(el, '//me is not a command');
     quoteInComposer(ALICE);
     await flush();
     expect(el.value).toBe(`${QUOTE}\n//me is not a command`);
+    await press(el, 'Enter');
+    expect(sent()[0].text).toBe(`${QUOTE}\n/me is not a command`);
   });
 
   it('sends the quote and the answer as two typed lines without asking', async () => {

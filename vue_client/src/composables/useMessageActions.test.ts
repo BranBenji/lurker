@@ -11,6 +11,7 @@ import { useContextMenu } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNetworksStore } from '../stores/networks.js';
+import { useRelayBotsStore } from '../stores/relayBots.js';
 
 function makeCtx(): MessageContext {
   return {
@@ -55,6 +56,14 @@ describe('useMessageActions', () => {
       expect(quote(other({ self: true, target: 'bob' }))).toBeDefined();
       expect(quote(other({ text: '' }))).toBeUndefined();
       expect(quote(other({ nick: undefined }))).toBeUndefined();
+    });
+
+    it('names the person inside a relayed line, as the quote will', () => {
+      useRelayBotsStore().byKey['1::bridge'] = { nick: 'bridge', pattern: '' };
+      const actions = useMessageActions().buildActions(
+        other({ nick: 'bridge', text: '<alice> hi', type: 'message' }),
+      );
+      expect(actions.find((a) => a.key === 'quote')?.label).toBe('Quote alice');
     });
 
     // #997: on your own line Reply can only make a real reply, so it needs a

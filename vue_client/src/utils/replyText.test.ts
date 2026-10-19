@@ -69,6 +69,30 @@ describe('quoteLineFor', () => {
     expect(quoteLineFor({ nick: 'alice', text: '\x02\x02' })).toBe('> <alice>');
   });
 
+  it('keeps a spoiler hidden, as the composer’s ||markup||', () => {
+    expect(quoteLineFor({ nick: 'alice', text: 'the killer is \x0314,14bob\x03' })).toBe(
+      '> <alice> the killer is ||bob||',
+    );
+    // A clip that lands inside the spoiler closes it rather than opening it.
+    const clipped = quoteLineFor(
+      { nick: 'alice', text: `the killer is \x0314,14${'b'.repeat(200)}\x03` },
+      60,
+    );
+    expect(clipped).toMatch(/^> <alice> the killer is \|\|b+\|\|…$/);
+  });
+
+  it('measures the clip as the line will go out', () => {
+    // The composer's spoiler rewrite adds bytes; the clip is measured through it.
+    const measure = (s: string) => new TextEncoder().encode(s).length + (s.includes('||') ? 6 : 0);
+    const line = quoteLineFor(
+      { nick: 'alice', text: `\x0314,14${'x'.repeat(200)}\x03` },
+      60,
+      measure,
+    );
+    expect(measure(line)).toBeLessThanOrEqual(60);
+    expect(line).toMatch(/^> <alice> \|\|x+\|\|…$/);
+  });
+
   it('clips to the wire budget in bytes, between characters, with an ellipsis', () => {
     const long = quoteLineFor({ nick: 'alice', text: 'x'.repeat(900) }, 100);
     expect(new TextEncoder().encode(long).length).toBeLessThanOrEqual(100);

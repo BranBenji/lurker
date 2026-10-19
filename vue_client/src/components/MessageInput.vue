@@ -232,6 +232,7 @@ import { setComposingState } from '../composables/useComposing.js';
 import {
   chunkCountForSay,
   chunkCountForAction,
+  byteLen,
   lineCountForSay,
   multilineMessageCount,
   splitGateFor,
@@ -1886,18 +1887,30 @@ function addressInComposer(nick: string): void {
   } else {
     focusForReply(cur);
   }
+  dropReplyUnderQuote();
+}
+
+// A Reply under a quote (#1119) is its plain-text half only — the `nick: `. A
+// send carries one reply tag, and on a network without draft/multiline it
+// rides the first wire line, which would be the quote; so the pending reply
+// goes, and the address stays as one the user typed. Quote on a pending Reply
+// is the same rule the other way round (quoteIntoDraft).
+function dropReplyUnderQuote(): void {
+  if (splitQuoteBlock(text.value).quotes) replies.cancel(networks.activeKey);
 }
 
 // Quote (#1119): the `> <nick> text` line goes above the answer, on its own
 // line, and the caret lands at the end — under it, where the answer goes. A
-// second Quote goes under the first, so quoting two people reads in the order
-// they were quoted. An empty draft ends up as the quote plus a newline, so the
-// SPLIT chip says what the send will be before a word is typed. The line is
-// clipped to one wire line (lineBudget), or the quote alone would split.
+// second Quote goes under the first, in the order they were quoted (three
+// lines meet the FLOOD modal like any three). An empty draft ends up as the
+// quote plus a newline, so the SPLIT chip says what the send will be before a
+// word is typed. The line is clipped to one wire line (lineBudget), measured
+// as it will go out (applySpoilerMarkup), or the quote alone would split.
 //
 // Quote and Reply don't mix: a send carries one reply tag, and on a network
 // without draft/multiline it would ride the first wire line — the quote. So a
-// pending Reply goes, with the `nick: ` it put in the draft (cancelReply).
+// pending Reply goes, with the `nick: ` it put in the draft (cancelReply);
+// dropReplyUnderQuote is the same rule for a Reply that comes second.
 function quoteIntoDraft(source: QuoteSource): void {
   if (!active.value || !source.nick) return;
   // A /command in the draft would go out as channel text once a line sat
@@ -1913,7 +1926,9 @@ function quoteIntoDraft(source: QuoteSource): void {
     return;
   }
   cancelReply();
-  const line = quoteLineFor(source, lineBudget(undefined, false));
+  const line = quoteLineFor(source, lineBudget(undefined, false), (s) =>
+    byteLen(applySpoilerMarkup(s)),
+  );
   const after = splitQuoteBlock(text.value);
   focusForReply(after.quotes + line + '\n' + after.body);
 }
@@ -1922,6 +1937,7 @@ function quoteIntoDraft(source: QuoteSource): void {
 function focusInComposer(): void {
   if (!active.value) return;
   focusForReply(text.value);
+  dropReplyUnderQuote();
 }
 
 function focusForReply(draft: string): void {
@@ -2504,6 +2520,20 @@ async function submit() {
   }
   pendingSplitConfirm = false;
 
+  // A /command under a quote (#1119) is neither: the draft doesn't start with
+  // it, so it would go out as channel text — `/msg bob …` included. Say so.
+  // `//` there is the same escape as at the top: one slash goes out.
+  const quoted = splitQuoteBlock(raw);
+  if (quoted.quotes && quoted.body.startsWith('/') && !quoted.body.startsWith('//')) {
+    toasts.push({
+      title: "A /command can't go under a quote",
+      body: 'Send the quote first, or take it out.',
+      kind: 'warn',
+      ttlMs: 5000,
+    });
+    return;
+  }
+
   // `//foo` escapes the slash and sends literal `/foo` as a normal message.
   // History keeps the typed `//foo` form so up-arrow round-trips identically.
   const escapedSlash = raw.startsWith('//');
@@ -2540,7 +2570,13 @@ async function submit() {
   // Rewrite `||spoiler||` into IRC spoiler codes on the way out. History keeps
   // the typed `||…||` form (commitInput is given `raw`), so up-arrow
   // round-trips the editable text rather than raw control codes.
-  const wireText = applySpoilerMarkup(escapedSlash ? raw.slice(1) : raw);
+  const wireText = applySpoilerMarkup(
+    escapedSlash
+      ? raw.slice(1)
+      : quoted.body.startsWith('//')
+        ? quoted.quotes + quoted.body.slice(1)
+        : raw,
+  );
   const taken = takeReply();
   const pending = socketSendWithAck({
     type: 'send',

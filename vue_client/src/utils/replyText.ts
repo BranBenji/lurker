@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { parseIrcFormatting } from './nickColor.js';
+import { hidesText, parseIrcFormatting } from './nickColor.js';
 import { escapeRegex } from '../../../shared/textMatch.js';
 import { quoteMarks } from '../../../shared/replies.js';
+import { byteLen } from './messageSplit.js';
 
 // Text helpers for IRCv3 replies (#993), shared by the reply line above a
 // message (MessageList) and the pending-reply segment (StatusBar).
@@ -11,8 +12,16 @@ import { quoteMarks } from '../../../shared/replies.js';
 // The answered line as one line of plain text: formatting codes dropped, line
 // breaks folded to spaces. Callers clip it to width with CSS.
 export function replyExcerpt(text: string): string {
+  return flattenRuns(text, false);
+}
+
+// `keepSpoilers` writes a hidden run (fg = bg, hidesText) back as `||text||` — the composer's
+// markup, which applySpoilerMarkup hides again on the way out — so a quote of
+// a spoiler stays one. The display drops it: the quote above a message is
+// already faded, and SpoilerText does its own hiding.
+function flattenRuns(text: string, keepSpoilers: boolean): string {
   return parseIrcFormatting(text)
-    .map((run) => run.text)
+    .map((run) => (keepSpoilers && hidesText(run.fg, run.bg) ? `||${run.text}||` : run.text))
     .join('')
     .replace(/\s*\n+\s*/g, ' ')
     .trim();
@@ -27,22 +36,35 @@ export interface QuoteSource {
 }
 
 // The Quote action's line: `> <alice> what she said`, the way IRC writes the
-// line (quoteMarks) behind `> `, as prose (replyExcerpt — the one rule the
-// reply quote above a message also reads by). Plain text for the people on
-// clients that never see a reply tag. `maxBytes` is the wire budget for one
-// line: a quote is an excerpt, and one that didn't fit would split into a
-// second message of its own, so it's clipped to fit with an ellipsis.
-export function quoteLineFor(line: QuoteSource, maxBytes?: number): string {
+// line (quoteMarks) behind `> `, as prose by the rule the reply quote above a
+// message reads by (flattenRuns), with a spoiler kept as `||…||`. Plain text
+// for the people on clients that never see a reply tag. `maxBytes` is the
+// wire budget for one line: a quote is an excerpt, and one that didn't fit
+// would split into a second message of its own, so it's clipped to fit with
+// an ellipsis. `measure` says how many bytes a draft line is on the wire —
+// the composer's rewrites `||…||` into colour codes, which weigh more.
+export function quoteLineFor(
+  line: QuoteSource,
+  maxBytes?: number,
+  measure: (s: string) => number = byteLen,
+): string {
   const [open, close] = quoteMarks(line.type);
   const head = `> ${open}${line.nick}${close}`;
-  const text = replyExcerpt(line.text);
+  const text = flattenRuns(line.text, true);
   if (!text) return head;
   const full = `${head} ${text}`;
-  if (maxBytes == null || utf8Length(full) <= maxBytes) return full;
+  if (maxBytes == null || measure(full) <= maxBytes) return full;
   // The space and the ellipsis (three bytes) come out of the text's room.
-  const room = maxBytes - utf8Length(head) - 1 - 3;
-  if (room <= 0) return head;
-  return `${head} ${clipUtf8(text, room)}…`;
+  let room = maxBytes - measure(head) - 1 - 3;
+  while (room > 0) {
+    let clipped = clipUtf8(text, room);
+    // A cut inside a spoiler leaves it open — and its text in the clear.
+    if ((clipped.match(/\|\|/g) ?? []).length % 2 === 1) clipped += '||';
+    const out = `${head} ${clipped}…`;
+    if (measure(out) <= maxBytes) return out;
+    room -= measure(out) - maxBytes;
+  }
+  return head;
 }
 
 // A draft's leading quote lines (the Quote action's, each `> …` and complete)
@@ -54,17 +76,13 @@ export function splitQuoteBlock(draft: string): { quotes: string; body: string }
   return { quotes, body: draft.slice(quotes.length) };
 }
 
-function utf8Length(s: string): number {
-  return new TextEncoder().encode(s).length;
-}
-
 // The longest prefix of `s` within `bytes` of UTF-8, cut between code points so
 // no character is torn, with trailing whitespace dropped.
 function clipUtf8(s: string, bytes: number): string {
   let used = 0;
   let out = '';
   for (const ch of s) {
-    const n = utf8Length(ch);
+    const n = byteLen(ch);
     if (used + n > bytes) break;
     used += n;
     out += ch;
