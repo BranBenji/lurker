@@ -2870,7 +2870,8 @@ watch(
 
 /* Compact layout (look.message.layout = compact, or = auto on mobile):
    IRCCloud-style two-column row — content on the left, timestamp on the
-   right — with messages getting a nick-only head line above. Only the
+   right — with messages getting a head line (nick, time at the right)
+   above. Only the
    outer scroller and per-line layout change; the scroll/history machinery
    is untouched. */
 .message-list.compact {
@@ -2879,8 +2880,10 @@ watch(
   padding: var(--space-2) var(--space-4);
 }
 .message-list.compact .line {
-  /* Per-row grid: head spans both content columns above the body row;
-     body row is [prefix? body time]. When .head is absent (continuation
+  /* Per-row grid: head spans every column above the body row; body row
+     is [prefix? body time]. A message that opens a run carries its time
+     in the head, so its time track is empty; continuation and event rows
+     carry theirs in the time track. When .head is absent (continuation
      messages, non-message rows) the head track collapses to 0. When
      line-level .prefix is absent (compact message body/continuation rows)
      the prefix column collapses to 0 and body takes the remaining width. */
@@ -2918,17 +2921,21 @@ watch(
 }
 /* Inside the head we want the nick at the left edge — undo the standard
    prefix rules (justify-self: end / padding-right: 1ch) that the 3-col
-   grid relies on. */
+   grid relies on. A nick too long for a phone's width truncates rather
+   than pushing the time off the edge. */
 .message-list.compact .line > .head .prefix {
   justify-self: auto;
   padding-right: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* The head's time takes the far right edge, lining up with the times on
    continuation and event rows below it. */
 .message-list.compact .line > .head .time {
+  flex-shrink: 0;
   margin-left: auto;
   padding-right: 0;
-  padding-left: 0.75ch;
 }
 .message-list.compact .line > .prefix {
   grid-area: prefix;
