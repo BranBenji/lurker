@@ -89,11 +89,16 @@ describe('a message the recipient’s caller ID refused', () => {
     conn.upsertChannel('#anime');
     stubCtcpRequest(conn, vi.fn<(target: string, type: string, payload?: string) => void>());
     conn.sendCtcpRequest('#anime', 'alice', 'VERSION', '');
+    publishEphemeral.mockClear(); // the request's own echo
     read(TARGUMODEG);
     read(TARGNOTIFY);
 
     expect(publishEphemeral).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'ctcp', target: '#anime' }),
+      expect.objectContaining({
+        type: 'ctcp',
+        target: '#anime',
+        text: "Message not delivered — alice has caller ID on and hasn't accepted you.",
+      }),
     );
     expect(publish).not.toHaveBeenCalledWith(expect.objectContaining({ target: 'alice' }));
   });
@@ -179,7 +184,7 @@ describe('someone our caller ID turned away (718)', () => {
         type: 'callerid-blocked',
         target: `:server:${network.id}`,
         from: 'bob',
-        userhost: 'bob@example.test',
+        userhost: 'bob!bob@example.test',
       }),
     );
     expect(logNet).toHaveBeenCalledWith(
@@ -203,6 +208,40 @@ describe('someone our caller ID turned away (718)', () => {
 
     expect(publishEphemeral).not.toHaveBeenCalled();
     expect(logNet).not.toHaveBeenCalled();
+  });
+
+  it('says nothing about someone ignored by host', () => {
+    const { network, publishEphemeral, logNet, read } = makeConn();
+    ignoreRulesService.add(userId, network.id, {
+      mask: '*!*@example.test',
+      channels: null,
+      pattern: null,
+      patternKind: 'substr',
+      levels: ['ALL'],
+      isExcept: false,
+      expiresAt: null,
+    });
+    read(UMODEGMSG);
+
+    expect(publishEphemeral).not.toHaveBeenCalled();
+    expect(logNet).not.toHaveBeenCalled();
+  });
+
+  it('keeps the record but raises no toast for a NONOTIFY nick', () => {
+    const { network, publishEphemeral, logNet, read } = makeConn();
+    ignoreRulesService.add(userId, network.id, {
+      mask: 'bob!*@*',
+      channels: null,
+      pattern: null,
+      patternKind: 'substr',
+      levels: ['NONOTIFY'],
+      isExcept: false,
+      expiresAt: null,
+    });
+    read(UMODEGMSG);
+
+    expect(publishEphemeral).not.toHaveBeenCalled();
+    expect(logNet).toHaveBeenCalledTimes(1);
   });
 
   it('reads both wire shapes', () => {

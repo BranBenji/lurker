@@ -10521,25 +10521,32 @@ export class IrcConnection {
     this.publish({ type: 'error', target, text: sendRejectionText(reason), raw });
   }
 
-  // Someone's message to us was discarded by our caller ID (#206). Not for
-  // someone the user ignores: judged as the message it would have been, the way
-  // a reaction is, and an ignored nick doesn't get to ask to be let in.
+  // Someone's message to us was discarded by our caller ID (#206). Judged as
+  // the message it would have been, the way a reaction is: an ignored nick
+  // doesn't get to ask to be let in, and a NONOTIFY one is still recorded but
+  // raises no toast. `userhost` is the 718's user@host; the matcher and the
+  // event both take the whole nick!user@host, as buildUserhost makes it.
   surfaceBlockedCaller(nick: string, userhost: string | null): void {
+    const mask = userhost ? `${nick}!${userhost}` : null;
+    let notify = true;
     try {
       const verdict = evaluateIgnores(
         ignoreRulesService.getCompiled(this.network.user_id, this.network.id),
-        { nick, userhost, target: nick, text: '', type: 'message', isDm: true },
+        { nick, userhost: mask, target: nick, text: '', type: 'message', isDm: true },
       );
       if (verdict.hide) return;
+      if (verdict.nonotify) notify = false;
     } catch (e) {
       console.warn('[callerid] ignore check failed:', (e as Error)?.message || e);
     }
-    this.publishEphemeral({
-      type: 'callerid-blocked',
-      target: this.serverTarget(),
-      from: nick,
-      userhost,
-    });
+    if (notify) {
+      this.publishEphemeral({
+        type: 'callerid-blocked',
+        target: this.serverTarget(),
+        from: nick,
+        userhost: mask,
+      });
+    }
     this.logNet(
       `${nick}${userhost ? ` (${userhost})` : ''} tried to message you; caller ID blocked it.`,
     );
