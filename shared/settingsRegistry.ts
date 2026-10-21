@@ -761,7 +761,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description:
       'Time format used in chat buffers when the compact message layout is ' +
       'active (look.message.layout = compact, or = auto on mobile). ' +
-      "Defaults to HH:mm — compact's right-aligned per-line timestamp is " +
+      "Defaults to HH:mm — compact's right-aligned timestamp is " +
       'tight on small viewports and seconds are rarely useful at a glance. ' +
       'Tokens: YYYY MM DD HH H hh h mm ss a A — hh/h are 12-hour and a/A ' +
       'are am/pm, e.g. "hh:mm a". Empty string hides the column.',

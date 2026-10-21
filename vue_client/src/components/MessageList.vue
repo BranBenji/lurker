@@ -105,11 +105,11 @@
         @click="onMessageRowClick($event, row.m)"
       >
         <template v-if="compactMode && row.m?.type === 'message'">
-          <!-- Compact-mode message rows (IRCCloud-style): nick on its own
-             head line above the body; body row carries the body and a
-             right-aligned timestamp. The head is omitted entirely on
-             author continuations so a run of same-author messages reads
-             as one block, but every body row still shows its own time. -->
+          <!-- Compact-mode message rows: nick and a right-aligned timestamp
+             on a head line above the body. The head is omitted entirely on
+             author continuations so a run of same-author messages reads as
+             one block; those rows carry their time at the right edge of the
+             body line instead, the same column the head's time sits in. -->
           <div v-if="!row.continuationAuthor" class="head">
             <span class="prefix" :class="prefixClass(row.m)"
               ><NickRef
@@ -120,6 +120,7 @@
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
             /></span>
+            <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
           </div>
           <span class="body" :class="bodyClass(row.m)">
             <!-- IRCv3 reply (#993): the line this one answers, as the body's first
@@ -159,7 +160,9 @@
               @measured="repinAfterPreviewGrowth(true)"
             />
           </span>
-          <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
+          <span v-if="row.continuationAuthor" class="time">{{
+            row.continuationTime ? '' : time(row.m?.time)
+          }}</span>
         </template>
         <template v-else>
           <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
@@ -2919,6 +2922,13 @@ watch(
 .message-list.compact .line > .head .prefix {
   justify-self: auto;
   padding-right: 0;
+}
+/* The head's time takes the far right edge, lining up with the times on
+   continuation and event rows below it. */
+.message-list.compact .line > .head .time {
+  margin-left: auto;
+  padding-right: 0;
+  padding-left: 0.75ch;
 }
 .message-list.compact .line > .prefix {
   grid-area: prefix;
