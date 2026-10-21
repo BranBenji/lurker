@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Compact layout: a message that opens an author run carries its time on the
-// head line beside the nick; continuation rows keep theirs on the body line.
+// head line beside the nick, always; continuation rows carry none.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
@@ -35,7 +35,10 @@ function message(id: number, nick: string, minute: number, second = 0) {
 }
 
 function mountCompact() {
-  useSettingsStore().values = { 'look.message.layout': 'compact' } as never;
+  useSettingsStore().values = {
+    'look.message.layout': 'compact',
+    'look.message.collapse_timestamps': true,
+  } as never;
   const networks = useNetworksStore();
   networks.networks = [{ id: 1, name: 'testnet' }] as never;
   networks.states = { 1: { nick: 'me', state: 'connected', peerPresence: {} } } as never;
@@ -45,7 +48,7 @@ function mountCompact() {
     message(1, 'alice', 0),
     message(2, 'alice', 0, 30),
     message(3, 'alice', 2),
-    message(4, 'bob', 3),
+    message(4, 'bob', 2, 10),
   ] as never;
   b.joined = true;
   b.hasMoreOlder = false;
@@ -73,14 +76,17 @@ describe('MessageList — compact head timestamp', () => {
     mountCompact();
     expect(row(1).headTime).toBeTruthy();
     expect(row(1).bodyTime).toBeNull();
-    expect(row(4).headTime).toBeTruthy();
-    expect(row(4).bodyTime).toBeNull();
   });
 
-  it('keeps continuation times on the body line, collapsed when unchanged', () => {
+  it('shows no time on continuation rows, even when the minute changes', () => {
     mountCompact();
-    expect(row(2)).toEqual({ headTime: null, bodyTime: '' });
-    expect(row(3).headTime).toBeNull();
-    expect(row(3).bodyTime).toBeTruthy();
+    expect(row(2)).toEqual({ headTime: null, bodyTime: null });
+    expect(row(3)).toEqual({ headTime: null, bodyTime: null });
+  });
+
+  it('ignores timestamp collapsing: a head in the same minute still shows its time', () => {
+    mountCompact();
+    // bob's 12:02 matches alice's line above, which collapsing would blank.
+    expect(row(4).headTime).toBeTruthy();
   });
 });

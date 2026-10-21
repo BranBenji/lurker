@@ -108,8 +108,7 @@
           <!-- Compact-mode message rows: nick and a right-aligned timestamp
              on a head line above the body. The head is omitted entirely on
              author continuations so a run of same-author messages reads as
-             one block; those rows carry their time at the right edge of the
-             body line instead, the same column the head's time sits in. -->
+             one block under one time; continuation rows show no time. -->
           <div v-if="!row.continuationAuthor" class="head">
             <span class="prefix" :class="prefixClass(row.m)"
               ><NickRef
@@ -120,7 +119,7 @@
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
             /></span>
-            <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
+            <span class="time">{{ time(row.m?.time) }}</span>
           </div>
           <span class="body" :class="bodyClass(row.m)">
             <!-- IRCv3 reply (#993): the line this one answers, as the body's first
@@ -160,9 +159,6 @@
               @measured="repinAfterPreviewGrowth(true)"
             />
           </span>
-          <span v-if="row.continuationAuthor" class="time">{{
-            row.continuationTime ? '' : time(row.m?.time)
-          }}</span>
         </template>
         <template v-else>
           <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
@@ -1108,11 +1104,12 @@ const compactMode = computed(() => {
 
 // Compact mode forces author collapsing — the head is the only place the
 // nick appears, and without collapsing the buffer is wall-to-wall headers.
-// Timestamp collapsing stays user-opt-in regardless of mode: compact's
-// right-aligned time is its own visual column (IRCCloud-style), so the
-// repetition is much less noisy than in standard mode.
+// It ignores timestamp collapsing: a message's time lives on its head, so
+// every head shows one and continuation rows show none.
 const effectiveCollapseAuthors = computed(() => compactMode.value || collapseAuthorsEnabled.value);
-const effectiveCollapseTimestamps = computed(() => collapseTimestampsEnabled.value);
+const effectiveCollapseTimestamps = computed(
+  () => !compactMode.value && collapseTimestampsEnabled.value,
+);
 
 // Self-presence on this buffer's network (network_away_state on the server):
 // away is per network (#994), so each buffer draws its own network's markers.
@@ -2881,8 +2878,8 @@ watch(
 }
 .message-list.compact .line {
   /* Per-row grid: head spans every column above the body row; body row
-     is [prefix? body time]. A message that opens a run carries its time
-     in the head, so its time track is empty; continuation and event rows
+     is [prefix? body time]. Message rows carry their time in the head (or,
+     on continuations, none), so their time track is empty; event rows
      carry theirs in the time track. When .head is absent (continuation
      messages, non-message rows) the head track collapses to 0. When
      line-level .prefix is absent (compact message body/continuation rows)
@@ -2931,7 +2928,7 @@ watch(
   text-overflow: ellipsis;
 }
 /* The head's time takes the far right edge, lining up with the times on
-   continuation and event rows below it. */
+   event rows. */
 .message-list.compact .line > .head .time {
   flex-shrink: 0;
   margin-left: auto;
