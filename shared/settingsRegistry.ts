@@ -463,9 +463,10 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'mobile. "standard" forces the three-column grid everywhere. ' +
       '"compact" forces the two-line layout (nick + time on top, body ' +
       'below) everywhere — useful on low-resolution desktop displays ' +
-      'where the columns squeeze the body too far. In compact mode the ' +
-      'author and timestamp collapse settings below are effectively ' +
-      'forced on regardless of their stored value.',
+      'where the columns squeeze the body too far. In compact mode ' +
+      'repeated authors always collapse, and only the head line of each ' +
+      'run shows a time, so the timestamp collapse setting below does ' +
+      'not apply.',
   },
   {
     key: 'look.message.collapse_authors',
@@ -506,7 +507,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description:
       'Hide the timestamp on consecutive rows that would display the exact ' +
       'same time string (driven by look.buffer.time_format). Reduces visual ' +
-      'noise in fast bursts without losing any information.',
+      'noise in fast bursts without losing any information. Not used by ' +
+      'the compact message layout.',
   },
 
   // ─── Member-list mode prefixes ────────────────────────────────────────
@@ -761,7 +763,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description:
       'Time format used in chat buffers when the compact message layout is ' +
       'active (look.message.layout = compact, or = auto on mobile). ' +
-      "Defaults to HH:mm — compact's right-aligned per-line timestamp is " +
+      "Defaults to HH:mm — compact's right-aligned timestamp is " +
       'tight on small viewports and seconds are rarely useful at a glance. ' +
       'Tokens: YYYY MM DD HH H hh h mm ss a A — hh/h are 12-hour and a/A ' +
       'are am/pm, e.g. "hh:mm a". Empty string hides the column.',
