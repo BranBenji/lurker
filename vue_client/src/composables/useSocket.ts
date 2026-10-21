@@ -431,6 +431,28 @@ function applyEvent(event: any): boolean {
       });
       break;
     }
+    // Someone tried to message us and our caller ID (+g) discarded it (#206).
+    // The invite's shape: ephemeral, read from `from`, with the system buffer
+    // keeping the record. Not sticky — nothing waits on an answer, the message
+    // is already gone — and Accept only lets the NEXT one through.
+    case 'callerid-blocked': {
+      const from = String(event.from ?? '');
+      if (!from) break;
+      const networkId = event.networkId as number;
+      useToastsStore().push({
+        kind: 'notify',
+        title: `${from} tried to message you`,
+        body: 'Caller ID blocked it. Accept to let their next message through.',
+        networkId,
+        ttlMs: 15000,
+        action: {
+          label: 'Accept',
+          tone: 'good',
+          onClick: () => socketSend({ type: 'raw', networkId, line: `ACCEPT ${from}` }),
+        },
+      });
+      break;
+    }
     // A peer wants to open a DCC chat. Same shape as the invite above —
     // ephemeral, server-pseudo-buffer target, read from `from` — but STICKY
     // (ttlMs 0): an invite you miss can be re-requested and the channel isn't

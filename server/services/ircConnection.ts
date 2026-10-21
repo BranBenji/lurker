@@ -1095,6 +1095,10 @@ export class IrcConnection {
   // grafts them onto the first fragment. Consumed on first fragment; cleared on
   // socket close with multilineBatches so an unopened batch can't leak.
   multilineBatchTags: Map<string, { time?: string; msgid?: string; reply?: string }>;
+  // The caller-ID accept list being read back (#206): nicks from each
+  // RPL_ACCEPTLIST (281), said once at RPL_ENDOFACCEPT (282). Cleared on
+  // socket close, so a 281 with no end can't carry into the next connection.
+  acceptListNicks: string[] = [];
   // When the server line being handled arrived. An event without server-time
   // takes it as its time, and so does the bouncer's copy of the line, so the
   // stored row and the relayed line agree: a MARKREAD from an attached client
@@ -1921,6 +1925,26 @@ export class IrcConnection {
         rawCommand === '353' ? msg?.params?.[2] : rawCommand === '366' ? msg?.params?.[1] : null;
       const namesElsewhere =
         typeof namesChannel === 'string' && !this.isChannelJoined(namesChannel);
+      // The accept list (#206) as one line. solanum packs every nick into one
+      // 281 and InspIRCd sends a 281 per nick, so collect them to the end.
+      if (rawCommand === '281') {
+        for (const param of (msg?.params ?? []).slice(1)) {
+          this.acceptListNicks.push(...String(param).split(' ').filter(Boolean));
+        }
+        return;
+      }
+      if (rawCommand === '282') {
+        const nicks = this.acceptListNicks;
+        this.acceptListNicks = [];
+        this.publish({
+          type: 'notice',
+          target: this.serverTarget(),
+          nick: 'lurker',
+          notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
+          text: nicks.length ? `Accept list: ${nicks.join(', ')}` : 'Your accept list is empty.',
+        });
+        return;
+      }
       if (isServerBufferDeniedNumeric(rawCommand) && !namesElsewhere) return;
       if (
         RESTORE_QUIET_NUMERICS.has(rawCommand) &&
@@ -1958,6 +1982,39 @@ export class IrcConnection {
         (joinRejectionMessage(command) || command === '403')
       ) {
         this.pendingJoins.delete(foldTargetFor(this.network.id, channel));
+      }
+      // Caller ID (#206): a DM the recipient's own user mode refused — +g/+G
+      // (716), +R (486), or our own +g with a full accept list (494). The ircd
+      // discards the message and, under echo-message, never echoes it, so
+      // without this the only trace was a raw line in the server buffer.
+      // Same path as 531, which is the same failure by another number.
+      if (channel && !isChannelTarget(channel)) {
+        const refusal = dmRefusalReason(command, channel, reason);
+        if (refusal !== undefined) {
+          this.handleSendRejection(channel, refusal, { command, params });
+          return;
+        }
+        // RPL_TARGNOTIFY follows a 716 when the recipient was told. Only for a
+        // message the user just said: a 716 drawn by a typing TAGMSG or a
+        // /ctcp draws this too, and must not put a line in the DM.
+        if (command === '717') {
+          if (this.recentConversationalSend(channel)) {
+            this.publish({
+              type: 'motd',
+              target: channel,
+              text: `${channel} was told you tried to message them.`,
+            });
+          }
+          return;
+        }
+      }
+      // RPL_UMODEGMSG: someone tried to message us, and our +g discarded it.
+      // A toast offers to accept them, and the system buffer keeps the record,
+      // as an invite does. The ircd sends one a minute at most, from anyone.
+      if (command === '718') {
+        const caller = parseCallerIdNotice(params);
+        if (caller) this.surfaceBlockedCaller(caller.nick, caller.userhost);
+        return;
       }
       // ERR_NEEDREGGEDNICK (477) to a channel we're already in is a speak
       // rejection, not a join failure — surface it inline in that channel so
@@ -2207,6 +2264,7 @@ export class IrcConnection {
       this.replies.reset();
       this.multilineBatches.clear();
       this.multilineBatchTags.clear();
+      this.acceptListNicks = [];
       this.batchedCtcpAnswerers.clear();
       // Echo-correlation state is per-socket: no echo can arrive for a line
       // sent on the dead socket.
@@ -2763,6 +2821,12 @@ export class IrcConnection {
       // so its offer is coming, however long its own queue takes.
       if (eventNick && !targetIsChannel && this.xdccWaiting.size > 0) {
         this.noteXdccBotSpoke(eventNick, typeof eventMessage === 'string' ? eventMessage : '');
+      }
+      // Someone messaging us may have lifted what refused our last message to
+      // them: a +g user accepts whoever they message (#206). Typing goes back
+      // on, and if they still refuse us, the next bounce marks it again.
+      if (eventNick && !targetIsChannel && eventNick.toLowerCase() !== me?.toLowerCase()) {
+        this.unsendableTargets.delete(eventNick.toLowerCase());
       }
       if (eventNick && me && eventNick.toLowerCase() === me.toLowerCase()) {
         // Our prefix exactly as the network relays it, on every echo: the one
@@ -10446,6 +10510,30 @@ export class IrcConnection {
     this.publish({ type: 'error', target, text: sendRejectionText(reason), raw });
   }
 
+  // Someone's message to us was discarded by our caller ID (#206). Not for
+  // someone the user ignores: judged as the message it would have been, the way
+  // a reaction is, and an ignored nick doesn't get to ask to be let in.
+  surfaceBlockedCaller(nick: string, userhost: string | null): void {
+    try {
+      const verdict = evaluateIgnores(
+        ignoreRulesService.getCompiled(this.network.user_id, this.network.id),
+        { nick, userhost, target: nick, text: '', type: 'message', isDm: true },
+      );
+      if (verdict.hide) return;
+    } catch (e) {
+      console.warn('[callerid] ignore check failed:', (e as Error)?.message || e);
+    }
+    this.publishEphemeral({
+      type: 'callerid-blocked',
+      target: this.serverTarget(),
+      from: nick,
+      userhost,
+    });
+    this.logNet(
+      `${nick}${userhost ? ` (${userhost})` : ''} tried to message you; caller ID blocked it.`,
+    );
+  }
+
   // Forget per-connection send state: the speak-permission marks and the send-
   // attribution timestamps. Both are tied to the live socket, so a reconnect
   // must start clean — otherwise a pre-reconnect send could mis-attribute the
@@ -11132,6 +11220,9 @@ const SERVER_BUFFER_DENIED_NUMERICS = new Set<string>([
   // surfaced by the 'nick in use' handler.
   '432',
   '433',
+  // RPL_UMODEGMSG — someone our caller ID turned away (#206). Said by the
+  // 'unknown command' handler as a toast and a system-buffer line.
+  '718',
 ]);
 
 // True for numerics another handler already surfaces (or that would flood), so
@@ -11466,6 +11557,40 @@ export function sendRejectionText(reason: string | null | undefined): string {
   return r
     ? `Message not delivered — ${r}`
     : 'Message not delivered — the server rejected it (you may need to register or identify your nick).';
+}
+
+// Why a DM was refused by a user mode (#206), in the words sendRejectionText
+// wraps — undefined for a numeric that isn't one. 716 and 494 send a sentence
+// fragment ("is in +g mode and must manually allow you…"), so theirs is ours;
+// 486 is a whole sentence on solanum and bahamut alike, so it stays the
+// server's (and null falls back to the register-or-identify default).
+export function dmRefusalReason(
+  command: string,
+  target: string,
+  reason: string | null,
+): string | null | undefined {
+  switch (command) {
+    case '716': // ERR_TARGUMODEG: they have caller ID on (+g, or +G)
+      return `${target} has caller ID on and hasn't accepted you.`;
+    case '494': // ERR_OWNMODE: we're +g, and they can't be added to answer us
+      return `you have caller ID on and your accept list is full, so ${target} couldn't be added to answer you.`;
+    case '486': // ERR_NONONREG: they're +R and we aren't identified
+      return reason;
+    default:
+      return undefined;
+  }
+}
+
+// Who an RPL_UMODEGMSG (718) says tried to message us. solanum, ratbox and
+// InspIRCd send `<me> <nick> <user@host> :…`; hybrid packs the two as
+// `<me> <nick[user@host]> :…` (doc/features/modeg.txt in solanum).
+export function parseCallerIdNotice(
+  params: string[],
+): { nick: string; userhost: string | null } | null {
+  if (params.length >= 4 && params[1]) return { nick: params[1], userhost: params[2] || null };
+  const packed = /^([^[\s]+)\[([^\]\s]+)\]$/.exec(params[1] ?? '');
+  if (packed) return { nick: packed[1], userhost: packed[2] };
+  return params[1] ? { nick: params[1], userhost: null } : null;
 }
 
 // Render an unhandled server numeric into a single server-buffer line. Only

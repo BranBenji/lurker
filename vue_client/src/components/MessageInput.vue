@@ -2705,6 +2705,7 @@ const COMMANDS_LINES = [
   '                           -all: every network; -one: just this one',
   '  /whois <nick>          — query user info (renders in server buffer)',
   '  /ctcp <nick> <type>    — CTCP query (VERSION/PING/TIME/CLIENTINFO/SOURCE)',
+  '  /accept [nick…]        — caller ID (+g): let nicks message you; -nick removes; no arg lists',
   '  /ping [nick]           — CTCP ping a user for round-trip latency',
   '  /kick <nick> [reason]  — kick from current channel',
   '  /kickban <nick> [msg]  — kick and ban in one step',
@@ -4271,6 +4272,16 @@ function handleCommand(line: string, networkId: number | null, target: string): 
     case 'raw':
     case 'quote':
       return sendOrToast({ type: 'raw', networkId, line: argLine }, line);
+    case 'accept': {
+      // Caller ID (#206): /accept alice bob -carol → ACCEPT alice,bob,-carol.
+      // The wire wants one comma list (a second word is ignored), and no
+      // argument asks for the list, as irssi's /accept does.
+      const nicks = rest.join(',').split(',').filter(Boolean).join(',');
+      return sendOrToast(
+        { type: 'raw', networkId, line: nicks ? `ACCEPT ${nicks}` : 'ACCEPT *' },
+        line,
+      );
+    }
     case 'whois': {
       const who = rest[0];
       if (!who) {
