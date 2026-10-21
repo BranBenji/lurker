@@ -209,12 +209,13 @@ type Form =
   | 'topic'
   | 'ison'
   | 'userhost'
-  | 'away';
+  | 'away'
+  | 'accept';
 
 // The kinds whose replies name nothing to match them by. One of these waits for
 // the last of its kind to be answered. A 221 names nothing either: without its
 // turn, a restore's unanswered MODE <nick> would take a client's reply.
-const WAITS = new Set<Form>(['who', 'list', 'ison', 'userhost', 'umode']);
+const WAITS = new Set<Form>(['who', 'list', 'ison', 'userhost', 'umode', 'accept']);
 
 // The end numeric a server may send right after an error ends a query: 401 then
 // 318, 263 then 315. A list-mode query's is by letter.
@@ -640,6 +641,9 @@ export class ReplyRouter {
         return command === '302' ? 'end' : null;
       case 'away':
         return command === '305' || command === '306' ? 'end' : null;
+      case 'accept':
+        if (command === '281') return 'body';
+        return command === '282' ? 'end' : null;
     }
   }
 
@@ -799,6 +803,12 @@ export class ReplyRouter {
         // A 305 or 306 names nothing, but only an AWAY draws one, so the oldest
         // AWAY on the wire takes it and no AWAY waits.
         return spec('away', command);
+      case 'ACCEPT':
+        // Only `ACCEPT *` is a query: adding or removing a nick answers
+        // nothing unless it fails (#206).
+        return params[0] === '*'
+          ? spec('accept', command, { abort: { numeric: '282', params: [] } })
+          : null;
       default:
         return null;
     }

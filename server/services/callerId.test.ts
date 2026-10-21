@@ -138,6 +138,23 @@ describe('a message the recipient’s caller ID refused', () => {
     expect(conn.unsendableTargets.has('alice')).toBe(false);
   });
 
+  it('keeps typing off after a NOTICE from them, which accepts nobody', () => {
+    const { conn, read } = makeConn();
+    read(TARGUMODEG);
+    read(':alice!a@example.test NOTICE nick :I am away');
+    expect(conn.unsendableTargets.has('alice')).toBe(true);
+  });
+
+  it('doesn’t take a 486 that names nobody for a nick', () => {
+    const { conn, publish, read } = makeConn();
+    conn.say('bob', 'hi');
+    read(
+      ':irc.example.test 486 nick :You must identify to a registered nick to private message bob',
+    );
+    expect(publish).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'error' }));
+    expect(conn.unsendableTargets.size).toBe(0);
+  });
+
   it('leaves a channel-targeted 486 alone', () => {
     expect(dmRefusalReason('486', '#chan', 'x')).toBe('x');
     const { conn, publish, read } = makeConn();
@@ -198,16 +215,28 @@ describe('someone our caller ID turned away (718)', () => {
       nick: 'bob',
       userhost: 'b@h',
     });
+    // …with brackets in the nick itself
+    expect(parseCallerIdNotice(['me', 'foo[m][f@h]', 'is messaging you'])).toEqual({
+      nick: 'foo[m]',
+      userhost: 'f@h',
+    });
     expect(parseCallerIdNotice(['me'])).toBeNull();
   });
 });
 
 describe('the accept list (/accept with no argument)', () => {
+  // A network with caller ID says so in ISUPPORT.
+  function makeCallerIdConn() {
+    const made = makeConn();
+    made.read(':irc.example.test 005 nick CALLERID=g :are supported by this server');
+    made.publish.mockClear();
+    return made;
+  }
   const notices = (publish: ReturnType<typeof makeConn>['publish']) =>
     publish.mock.calls.map(([e]) => e).filter((e) => String(e.target).startsWith(':server:'));
 
   it('says solanum’s one 281 as one line', () => {
-    const { publish, read } = makeConn();
+    const { publish, read } = makeCallerIdConn();
     read(':irc.example.test 281 nick alice bob');
     read(':irc.example.test 282 nick :End of /ACCEPT list.');
     expect(notices(publish)).toEqual([
@@ -216,7 +245,7 @@ describe('the accept list (/accept with no argument)', () => {
   });
 
   it('collects InspIRCd’s 281 per nick into one line', () => {
-    const { publish, read } = makeConn();
+    const { publish, read } = makeCallerIdConn();
     read(':irc.example.test 281 nick :alice');
     read(':irc.example.test 281 nick :bob');
     read(':irc.example.test 282 nick :End of ACCEPT list');
@@ -226,7 +255,7 @@ describe('the accept list (/accept with no argument)', () => {
   });
 
   it('says an empty list is empty', () => {
-    const { publish, read } = makeConn();
+    const { publish, read } = makeCallerIdConn();
     read(':irc.example.test 282 nick :End of /ACCEPT list.');
     expect(notices(publish)).toEqual([
       expect.objectContaining({ type: 'notice', text: 'Your accept list is empty.' }),
@@ -234,7 +263,7 @@ describe('the accept list (/accept with no argument)', () => {
   });
 
   it('starts each listing fresh', () => {
-    const { publish, read } = makeConn();
+    const { publish, read } = makeCallerIdConn();
     read(':irc.example.test 281 nick alice');
     read(':irc.example.test 282 nick :End of /ACCEPT list.');
     read(':irc.example.test 282 nick :End of /ACCEPT list.');
@@ -242,5 +271,14 @@ describe('the accept list (/accept with no argument)', () => {
       'Accept list: alice',
       'Your accept list is empty.',
     ]);
+  });
+
+  it('leaves 281 and 282 verbatim where there is no caller ID — ircu’s G-line and jupe replies', () => {
+    const { publish, read } = makeConn();
+    read(':irc.example.test 281 nick :End of G-line List');
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'motd', text: 'End of G-line List' }),
+    );
+    expect(publish).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'notice' }));
   });
 });

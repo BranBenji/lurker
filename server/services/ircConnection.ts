@@ -1927,13 +1927,16 @@ export class IrcConnection {
         typeof namesChannel === 'string' && !this.isChannelJoined(namesChannel);
       // The accept list (#206) as one line. solanum packs every nick into one
       // 281 and InspIRCd sends a 281 per nick, so collect them to the end.
-      if (rawCommand === '281') {
+      // Only where the network has caller ID: ircu's 281 and 282 are G-line
+      // and jupe replies, and those stay verbatim.
+      const callerId = !!this.client.network?.supports('CALLERID');
+      if (rawCommand === '281' && callerId) {
         for (const param of (msg?.params ?? []).slice(1)) {
           this.acceptListNicks.push(...String(param).split(' ').filter(Boolean));
         }
         return;
       }
-      if (rawCommand === '282') {
+      if (rawCommand === '282' && callerId) {
         const nicks = this.acceptListNicks;
         this.acceptListNicks = [];
         this.publish({
@@ -1988,7 +1991,9 @@ export class IrcConnection {
       // discards the message and, under echo-message, never echoes it, so
       // without this the only trace was a raw line in the server buffer.
       // Same path as 531, which is the same failure by another number.
-      if (channel && !isChannelTarget(channel)) {
+      // Three params at least, a target and the reason: an ircd whose 486
+      // names nobody would otherwise have its sentence taken for a nick.
+      if (channel && !isChannelTarget(channel) && params.length >= 3) {
         const refusal = dmRefusalReason(command, channel, reason);
         if (refusal !== undefined) {
           this.handleSendRejection(channel, refusal, { command, params });
@@ -2824,8 +2829,14 @@ export class IrcConnection {
       }
       // Someone messaging us may have lifted what refused our last message to
       // them: a +g user accepts whoever they message (#206). Typing goes back
-      // on, and if they still refuse us, the next bounce marks it again.
-      if (eventNick && !targetIsChannel && eventNick.toLowerCase() !== me?.toLowerCase()) {
+      // on, and if they still refuse us, the next bounce marks it again. Not a
+      // NOTICE, which solanum lets through without accepting anyone.
+      if (
+        eventNick &&
+        !targetIsChannel &&
+        type !== 'notice' &&
+        eventNick.toLowerCase() !== me?.toLowerCase()
+      ) {
         this.unsendableTargets.delete(eventNick.toLowerCase());
       }
       if (eventNick && me && eventNick.toLowerCase() === me.toLowerCase()) {
@@ -11588,7 +11599,8 @@ export function parseCallerIdNotice(
   params: string[],
 ): { nick: string; userhost: string | null } | null {
   if (params.length >= 4 && params[1]) return { nick: params[1], userhost: params[2] || null };
-  const packed = /^([^[\s]+)\[([^\]\s]+)\]$/.exec(params[1] ?? '');
+  // Greedy to the LAST bracket pair: a nick may hold brackets itself (foo[m]).
+  const packed = /^(\S+)\[([^[\]\s]+)\]$/.exec(params[1] ?? '');
   if (packed) return { nick: packed[1], userhost: packed[2] };
   return params[1] ? { nick: params[1], userhost: null } : null;
 }

@@ -167,7 +167,7 @@ describe('what waits its turn', () => {
     expect(hear(':irc.test 315 me #d :End of /WHO list.')).toBe(b);
   });
 
-  it.each(['LIST', 'ISON bob', 'USERHOST bob', 'MODE me'])(
+  it.each(['LIST', 'ISON bob', 'USERHOST bob', 'MODE me', 'ACCEPT *'])(
     'holds a second %s too: its replies name nothing',
     (query) => {
       const { router, writes } = setup();
@@ -325,6 +325,11 @@ describe('who a reply is for', () => {
     ['no topic', 'TOPIC #c', [':irc.test 331 me #c :No topic is set.']],
     ['ISON', 'ISON bob carol', [':irc.test 303 me :bob']],
     ['USERHOST', 'USERHOST bob', [':irc.test 302 me :bob=+~u@h']],
+    [
+      'the accept list',
+      'ACCEPT *',
+      [':irc.test 281 me alice bob', ':irc.test 282 me :End of /ACCEPT list.'],
+    ],
   ];
 
   it.each(cases)(
