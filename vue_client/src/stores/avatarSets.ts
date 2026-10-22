@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// Avatar tile sets (#607): the bundled set in public/avatars/default and the
-// sets the user uploaded (/api/avatar-sets), plus the pointer that picks one
-// (look.avatars.set, 'default' for the bundled set). Answers "which image goes
+// Avatar tile sets (#607): the bundled sets (shared/avatarTiles.ts, the tile
+// ones under public/avatars/) and the sets the user uploaded
+// (/api/avatar-sets), plus the pointer that picks one (look.avatars.set,
+// 'initial-dark' out of the box). Answers "which image goes
 // on this nick's tile" — the nick colour behind it is the nick colour's
 // business, and a metadata avatar replaces the whole tile where one is set
 // (NickAvatar.vue).
@@ -85,7 +86,7 @@ export const useAvatarSetsStore = defineStore('avatarSets', {
     byId(): (id: string) => AvatarSetEntry | null {
       return (id: string) => this.all.find((s) => s.id === id) || null;
     },
-    /** The pointer, resolved; one at a set we don't have falls back to the bundled set. */
+    /** The pointer, resolved; one at a set we don't have falls back to the registry default. */
     activeSetId(): string {
       const settings = useSettingsStore();
       const id = String(settings.effective(AVATAR_SET_POINTER_KEY) ?? DEFAULT_AVATAR_SET);

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Builds an avatar tile set (#607): the bundled one in vue_client/public/
-// avatars/default, or any folder of square images into the layout the client
+// avatars/ealain, or any folder of square images into the layout the client
 // and the apps read — `000.<ext>` … `NNN.<ext>` in file-name order, plus a
 // manifest.json with the count.
 //

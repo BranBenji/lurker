@@ -43,8 +43,8 @@ describe('tileIndex', () => {
 
 describe('tileUrl', () => {
   it('numbers tiles from 000', () => {
-    expect(tileUrl('/avatars/default', 0, 'webp')).toBe('/avatars/default/000.webp');
-    expect(tileUrl('/avatars/default/', 42, 'png')).toBe('/avatars/default/042.png');
+    expect(tileUrl('/avatars/ealain', 0, 'webp')).toBe('/avatars/ealain/000.webp');
+    expect(tileUrl('/avatars/ealain/', 42, 'png')).toBe('/avatars/ealain/042.png');
     expect(tileUrl('/api/avatar-sets/7', 123, 'webp')).toBe('/api/avatar-sets/7/123.webp');
   });
 });

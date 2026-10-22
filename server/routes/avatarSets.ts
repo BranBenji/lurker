@@ -3,7 +3,7 @@
 
 // REST surface for uploaded avatar tile sets (#607). Thin like routes/themes.ts:
 // validation, zip ingestion and fan-out live in services/avatarSetsService.ts.
-// The bundled set is static files under /avatars/default, never listed here.
+// The bundled sets are static files under /avatars/<id>, never listed here.
 //
 //   GET    /api/avatar-sets            the user's sets
 //   POST   /api/avatar-sets            multipart: name + zip

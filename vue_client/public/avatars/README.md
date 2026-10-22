@@ -1,6 +1,6 @@
 # Avatar tile sets
 
-`default/` is the bundled set behind generated avatars (#607); `plain-light/`
+`ealain/` is the bundled art set behind generated avatars (#607); `plain-light/`
 and `plain-dark/` are one-tile alternatives (a bust silhouette, white or dark,
 at 85% so the colour shows through) for anyone who finds the art too much. The
 Initial sets draw a letter and have no files here. A set is one tile per
@@ -17,7 +17,7 @@ Layout, read by the web client and the apps:
 Built by `tools/build-avatar-set.mjs`:
 
 ```
-node tools/build-avatar-set.mjs <folder-of-images> vue_client/public/avatars/default
+node tools/build-avatar-set.mjs <folder-of-images> vue_client/public/avatars/ealain --key any
 ```
 
 The current tiles are a placeholder (`--placeholder`), geometric shapes in

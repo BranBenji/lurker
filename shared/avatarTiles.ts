@@ -13,8 +13,11 @@
 // which share a factor, so the colour's own hash value modulo the count would
 // leave three in four colour-and-tile pairs unreachable.
 
-export const DEFAULT_AVATAR_SET = 'default';
-export const DEFAULT_AVATAR_SET_URL = '/avatars/default';
+// What look.avatars.set points at out of the box, and where a dangling
+// pointer falls back to.
+export const DEFAULT_AVATAR_SET = 'initial-dark';
+// The art set: Ealain pieces with the colour keyed out (tools/build-avatar-set.mjs).
+export const EALAIN_AVATAR_SET = 'ealain';
 
 /**
  * The sets that ship with the client. A `tiles` set is static files under
@@ -29,7 +32,7 @@ export interface BuiltinAvatarSet {
   ink?: 'light' | 'dark';
 }
 export const BUILTIN_AVATAR_SETS: readonly BuiltinAvatarSet[] = [
-  { id: DEFAULT_AVATAR_SET, name: 'Default', kind: 'tiles', url: DEFAULT_AVATAR_SET_URL },
+  { id: EALAIN_AVATAR_SET, name: 'Ealain', kind: 'tiles', url: '/avatars/ealain' },
   // One tile each, a bust silhouette — the generic avatar every chat app has
   // — in white or in near-black, for anyone who finds the art too much. Which
   // reads better depends on the nick palette, so both are offered and the

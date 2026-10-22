@@ -52,7 +52,7 @@ function mountWith(values: Record<string, unknown>) {
   // The bundled set, as if its manifest had loaded.
   // Every bundled tile set, as if its manifest had loaded (no fetch here).
   useAvatarSetsStore().builtinManifests = {
-    default: { count: 32, ext: 'webp' },
+    ealain: { count: 32, ext: 'webp' },
     'plain-light': { count: 1, ext: 'webp' },
     'plain-dark': { count: 1, ext: 'webp' },
   };
@@ -77,21 +77,29 @@ describe('MessageList — compact avatars', () => {
   });
 
   it('draws a tile on the first row of a run and reserves the gutter on the rest', () => {
-    mountWith({ 'look.message.layout': 'compact', 'look.message.avatars': true });
+    mountWith({
+      'look.message.layout': 'compact',
+      'look.message.avatars': true,
+      'look.avatars.set': 'ealain',
+    });
     expect(wrapper!.find('.message-list').classes()).toContain('avatars');
     const first = avatarOf(1) as HTMLElement;
     expect(first).not.toBeNull();
     // Generated: the nick colour behind a tile of the bundled set.
     expect(first.style.background).not.toBe('');
     expect(first.querySelector('img')?.getAttribute('src')).toMatch(
-      /^\/avatars\/default\/\d{3}\.webp$/,
+      /^\/avatars\/ealain\/\d{3}\.webp$/,
     );
     expect(first.getAttribute('aria-label')).toBe('alice');
     expect(avatarOf(2)).toBeNull();
   });
 
   it('shows the metadata avatar as the server minted it, never an origin', () => {
-    mountWith({ 'look.message.layout': 'compact', 'look.message.avatars': true });
+    mountWith({
+      'look.message.layout': 'compact',
+      'look.message.avatars': true,
+      'look.avatars.set': 'ealain',
+    });
     const bob = avatarOf(3) as HTMLElement;
     expect(bob.querySelector('img')?.getAttribute('src')).toBe('/api/link-preview/media/tok.sig');
     expect(bob.classList.contains('metadata')).toBe(true);

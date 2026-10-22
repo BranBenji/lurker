@@ -4,7 +4,7 @@
 // Uploaded avatar tile sets (#607): the limits and name rules both sides
 // agree on. A set is a zip of square images a user uploads; the server
 // normalises every tile to AVATAR_TILE_SIZE WebP and stores them as blobs, and
-// look.avatars.set points at one by id ('default' is the bundled set).
+// look.avatars.set points at one by id (the bundled ones are shared/avatarTiles.ts).
 
 export const AVATAR_SET_NAME_MAX = 40;
 export const MAX_AVATAR_SETS_PER_USER = 5;
@@ -26,6 +26,7 @@ export const AVATAR_SET_UNPACKED_MAX_BYTES = 64 * 1024 * 1024;
 
 export const RESERVED_AVATAR_SET_NAMES = [
   'default',
+  'ealain',
   'plain (light)',
   'plain (dark)',
   'initial (light)',

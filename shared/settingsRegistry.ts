@@ -1882,7 +1882,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   // ─── Avatar sets (#607) ─────────────────────────────────────────────────
   // Pointer to the tile set behind generated avatars, like the theme pointers:
   // `avatars` is absent from CATEGORIES so the registry pane never renders it;
-  // the Appearance pane's avatar section does. 'default' is the bundled set;
+  // the Appearance pane's avatar section does. The bundled ids are in avatarTiles.ts;
   // anything else is the id of one the user uploaded.
   {
     key: 'look.avatars.set',
@@ -1890,11 +1890,11 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     category: 'avatars',
     group: 'sets',
     type: 'string',
-    default: 'default',
+    default: 'initial-dark',
     description:
-      'Which tile set generated avatars draw from: "default" for the bundled set, "plain-light" ' +
-      'or "plain-dark" for a bust silhouette, "initial-light" or "initial-dark" for the first ' +
-      'letter of the name, or the id of a set you uploaded.',
+      'Which set generated avatars draw from: "initial-light" or "initial-dark" for the first ' +
+      'letter of the name, "plain-light" or "plain-dark" for a bust silhouette, "ealain" for the ' +
+      'bundled art, or the id of a set you uploaded.',
   },
   {
     key: 'look.theme.active',

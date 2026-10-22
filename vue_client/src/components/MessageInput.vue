@@ -3427,7 +3427,7 @@ function runSheep(argLine: string, networkId: number | null, target: string): vo
 // REST-backed + async → fire-and-forget from handleCommand, reports when
 // settled.
 // /avatars (#607): list the tile sets, point at one, or delete an upload.
-// Names match case-insensitively; 'default' is the bundled set.
+// Names match case-insensitively; a bundled id works as a name too.
 async function runAvatars(
   argLine: string,
   networkId: number | null,
