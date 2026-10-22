@@ -2986,7 +2986,7 @@ watch(
    (background-attachment: local), at the list's own left padding plus the
    tile and a gap. */
 .message-list.compact.avatars {
-  --avatar-size: 2.25em;
+  --avatar-size: 2.6em;
   --avatar-gutter: calc(var(--avatar-size) + var(--space-3));
   background-image: linear-gradient(var(--border), var(--border));
   background-size: 1px 100%;
@@ -3017,7 +3017,7 @@ watch(
 }
 @media (max-width: 768px) {
   .message-list.compact.avatars {
-    --avatar-size: 1.75em;
+    --avatar-size: 2em;
   }
 }
 
