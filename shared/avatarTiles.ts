@@ -16,17 +16,29 @@
 export const DEFAULT_AVATAR_SET = 'default';
 export const DEFAULT_AVATAR_SET_URL = '/avatars/default';
 
-/** The sets that ship with the client, as static files; each has a manifest.json. */
+/**
+ * The sets that ship with the client. A `tiles` set is static files under
+ * `url` with a manifest.json; an `initial` set has no files — the client draws
+ * the first letter of the name in the box, in the given ink.
+ */
 export interface BuiltinAvatarSet {
   id: string;
   name: string;
-  url: string;
+  kind: 'tiles' | 'initial';
+  url?: string;
+  ink?: 'light' | 'dark';
 }
 export const BUILTIN_AVATAR_SETS: readonly BuiltinAvatarSet[] = [
-  { id: DEFAULT_AVATAR_SET, name: 'Default', url: DEFAULT_AVATAR_SET_URL },
-  // One tile, a bust silhouette: the generic avatar every chat app has,
-  // for anyone who finds the art too much.
-  { id: 'plain', name: 'Plain', url: '/avatars/plain' },
+  { id: DEFAULT_AVATAR_SET, name: 'Default', kind: 'tiles', url: DEFAULT_AVATAR_SET_URL },
+  // One tile each, a bust silhouette — the generic avatar every chat app has
+  // — in white or in near-black, for anyone who finds the art too much. Which
+  // reads better depends on the nick palette, so both are offered and the
+  // user picks.
+  { id: 'plain-light', name: 'Plain (Light)', kind: 'tiles', url: '/avatars/plain-light' },
+  { id: 'plain-dark', name: 'Plain (Dark)', kind: 'tiles', url: '/avatars/plain-dark' },
+  // The first letter of the display name (or the nick), as many clients do.
+  { id: 'initial-light', name: 'Initial (Light)', kind: 'initial', ink: 'light' },
+  { id: 'initial-dark', name: 'Initial (Dark)', kind: 'initial', ink: 'dark' },
 ];
 export function isBuiltinAvatarSetId(id: string): boolean {
   return BUILTIN_AVATAR_SETS.some((set) => set.id === id);

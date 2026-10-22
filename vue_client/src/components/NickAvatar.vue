@@ -19,8 +19,14 @@
     :title="nick"
     role="img"
     :aria-label="nick"
-    ><img v-if="src" :src="src" alt="" draggable="false" @error="onError"
-  /></span>
+    ><img v-if="src" :src="src" alt="" draggable="false" @error="onError" /><span
+      v-else-if="initial"
+      class="initial"
+      :class="initial.ink"
+      aria-hidden="true"
+      >{{ initial.letter }}</span
+    ></span
+  >
 </template>
 
 <script setup lang="ts">
@@ -28,6 +34,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useAvatarSetsStore } from '../stores/avatarSets.js';
 import { useNickColors } from '../composables/useNickColors.js';
+import { useDisplayNames } from '../composables/useDisplayNames.js';
 
 const props = withDefaults(
   defineProps<{
@@ -46,6 +53,7 @@ const props = withDefaults(
 const networks = useNetworksStore();
 const avatarSets = useAvatarSetsStore();
 const nicks = useNickColors();
+const displayNames = useDisplayNames();
 
 onMounted(() => {
   void avatarSets.ensureBuiltins();
@@ -66,6 +74,15 @@ const fromMetadata = computed(() => !!meta.value?.avatarUrl && !failed.value);
 const src = computed(() => {
   if (fromMetadata.value) return meta.value!.avatarUrl as string;
   return props.nick ? avatarSets.tileFor(props.nick) : null;
+});
+// An Initial set: the first letter of what the head prints — the display
+// name where there is one, else the nick — in the set's ink.
+const initial = computed(() => {
+  const ink = avatarSets.activeSet?.initialInk;
+  if (!ink || !props.nick) return null;
+  const shown = props.plain ? null : displayNames.plainDisplayNameFor(props.networkId, props.nick);
+  const first = Array.from(shown ?? props.nick)[0];
+  return first ? { ink, letter: first.toUpperCase() } : null;
 });
 
 const isSelf = computed(() => {
@@ -101,5 +118,22 @@ function onError(): void {
 }
 .nick-avatar.interactive {
   cursor: pointer;
+}
+/* The Initial sets: one letter, centred, at the one font size, faded the way
+   the silhouettes are so the colour shows through. */
+.nick-avatar .initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-weight: 600;
+  user-select: none;
+}
+.nick-avatar .initial.light {
+  color: rgba(255, 255, 255, 0.85);
+}
+.nick-avatar .initial.dark {
+  color: rgba(28, 26, 30, 0.85);
 }
 </style>

@@ -391,7 +391,7 @@ function insertTable(
     }
 
     // The avatar-set pointer (#607): same shape as the theme pointers, with
-    // the built-in ids ('default', 'plain') travelling as-is.
+    // the built-in ids ('default', 'plain-*', 'initial-*') travelling as-is.
     if (
       table === 'user_settings' &&
       typeof row.key === 'string' &&

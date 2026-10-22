@@ -50,7 +50,12 @@ function mountWith(values: Record<string, unknown>) {
     },
   } as never;
   // The bundled set, as if its manifest had loaded.
-  useAvatarSetsStore().builtinManifests = { default: { count: 32, ext: 'webp' } };
+  // Every bundled tile set, as if its manifest had loaded (no fetch here).
+  useAvatarSetsStore().builtinManifests = {
+    default: { count: 32, ext: 'webp' },
+    'plain-light': { count: 1, ext: 'webp' },
+    'plain-dark': { count: 1, ext: 'webp' },
+  };
   const b = useBuffersStore().ensure(1, '#chan', 9);
   b.members = [];
   b.messages = [message(1, 'alice', 0), message(2, 'alice', 0, 30), message(3, 'bob', 2)] as never;
@@ -90,6 +95,22 @@ describe('MessageList — compact avatars', () => {
     const bob = avatarOf(3) as HTMLElement;
     expect(bob.querySelector('img')?.getAttribute('src')).toBe('/api/link-preview/media/tok.sig');
     expect(bob.classList.contains('metadata')).toBe(true);
+  });
+
+  it('draws the first letter of the shown name for an Initial set', () => {
+    mountWith({
+      'look.message.layout': 'compact',
+      'look.message.avatars': true,
+      'look.avatars.set': 'initial-light',
+    });
+    useNetworksStore().applyUserMetadata(1, 'alice', { displayName: 'Wonderland Alice' });
+    return wrapper!.vm.$nextTick().then(() => {
+      const tile = avatarOf(1) as HTMLElement;
+      expect(tile.querySelector('img')).toBeNull();
+      const letter = tile.querySelector('.initial');
+      expect(letter?.textContent).toBe('W');
+      expect(letter?.classList.contains('light')).toBe(true);
+    });
   });
 
   it('draws nothing with the setting off, and nothing in the standard layout', () => {

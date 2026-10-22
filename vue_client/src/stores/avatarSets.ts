@@ -34,6 +34,8 @@ export interface AvatarSetEntry {
   builtin: boolean;
   baseUrl: string;
   ext: string;
+  // An Initial set draws a letter in this ink instead of a tile.
+  initialInk?: 'light' | 'dark';
 }
 
 export const useAvatarSetsStore = defineStore('avatarSets', {
@@ -48,14 +50,26 @@ export const useAvatarSetsStore = defineStore('avatarSets', {
   getters: {
     /** The bundled sets first, then the uploaded ones (server keeps them name-sorted). */
     all(state): AvatarSetEntry[] {
-      const bundled: AvatarSetEntry[] = BUILTIN_AVATAR_SETS.map((set) => ({
-        id: set.id,
-        name: set.name,
-        count: state.builtinManifests[set.id]?.count ?? 0,
-        builtin: true,
-        baseUrl: set.url,
-        ext: state.builtinManifests[set.id]?.ext ?? AVATAR_TILE_EXT,
-      }));
+      const bundled: AvatarSetEntry[] = BUILTIN_AVATAR_SETS.map((set) =>
+        set.kind === 'initial'
+          ? {
+              id: set.id,
+              name: set.name,
+              count: 1,
+              builtin: true,
+              baseUrl: '',
+              ext: '',
+              initialInk: set.ink,
+            }
+          : {
+              id: set.id,
+              name: set.name,
+              count: state.builtinManifests[set.id]?.count ?? 0,
+              builtin: true,
+              baseUrl: set.url ?? '',
+              ext: state.builtinManifests[set.id]?.ext ?? AVATAR_TILE_EXT,
+            },
+      );
       return [
         ...bundled,
         ...state.saved.map((s) => ({
@@ -85,7 +99,7 @@ export const useAvatarSetsStore = defineStore('avatarSets', {
     tileFor(): (nick: string) => string | null {
       return (nick: string) => {
         const set = this.activeSet;
-        if (!set || set.count <= 0) return null;
+        if (!set || set.count <= 0 || set.initialInk) return null;
         const settings = useSettingsStore();
         const stopChars = String(
           settings.effective('look.nick.color_stop_chars') ?? DEFAULT_STOP_CHARS,
@@ -104,7 +118,9 @@ export const useAvatarSetsStore = defineStore('avatarSets', {
     ensureBuiltins(): Promise<void> {
       if (this.builtinLoad) return this.builtinLoad;
       if (typeof fetch !== 'function') return Promise.resolve();
-      const missing = BUILTIN_AVATAR_SETS.filter((set) => !this.builtinManifests[set.id]);
+      const missing = BUILTIN_AVATAR_SETS.filter(
+        (set) => set.kind === 'tiles' && !this.builtinManifests[set.id],
+      );
       if (missing.length === 0) return Promise.resolve();
       this.builtinLoad = (async () => {
         await Promise.all(
