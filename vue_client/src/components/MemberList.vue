@@ -14,7 +14,7 @@
         @contextmenu.prevent="onRowContextMenu($event, m)"
       >
         <span class="prefix">{{ prefixOf(m) }}</span>
-        <span class="nick" :style="nickStyle(m)" :title="nickOf(m)">{{ nickOf(m) }}</span>
+        <span class="nick" :style="nickStyle(m)" :title="nickOf(m)">{{ labelOf(m) }}</span>
         <button
           type="button"
           class="row-actions"
@@ -43,6 +43,7 @@ import { computed, ref, watch } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore, type BufferMember } from '../stores/buffers.js';
 import { useNickColors } from '../composables/useNickColors.js';
+import { useDisplayNames } from '../composables/useDisplayNames.js';
 import { useMemberActions } from '../composables/useMemberActions.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import {
@@ -56,6 +57,7 @@ import { EllipsisVerticalIcon } from '@lucide/vue';
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
 const nicks = useNickColors();
+const displayNames = useDisplayNames();
 const memberActions = useMemberActions();
 const ignores = useIgnoresStore();
 const modalMember = ref<BufferMember | null>(null);
@@ -102,6 +104,11 @@ function nickStyle(m: BufferMember): { color: string } | null {
 
 function nickOf(m: BufferMember): string {
   return m.nick;
+}
+// What the row prints (#607): the display name, plain, else the nick. The
+// row's key, sort, colour and title all stay on the nick.
+function labelOf(m: BufferMember): string {
+  return displayNames.labelFor(buffer.value?.networkId, nickOf(m));
 }
 function userOf(m: BufferMember): string | null {
   return m.user ?? null;

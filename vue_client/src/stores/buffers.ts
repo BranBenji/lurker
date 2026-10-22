@@ -287,6 +287,15 @@ export interface Buffer {
   // Who set the topic and when (ISO); null when the server hasn't said.
   topicSetBy?: string | null;
   topicSetAt?: string | null;
+  // IRCv3 metadata on the channel itself (#607): its display name and avatar
+  // (server-minted URL, opaque). Seeded by the snapshot, replaced whole by
+  // `channel-metadata` frames.
+  metadata?: ChannelMetadataEntry;
+}
+
+export interface ChannelMetadataEntry {
+  displayName?: string;
+  avatarUrl?: string | null;
 }
 
 // A message from `nick` ends their typing indicator — whether or not its row
@@ -1222,6 +1231,14 @@ export const useBuffersStore = defineStore('buffers', {
         buf.modeParams = extra.modeParams ?? {};
         buf.createdAt = extra.createdAt ?? null;
       }
+    },
+    setChannelMetadata(
+      networkId: number | string,
+      target: string,
+      values: ChannelMetadataEntry | null | undefined,
+    ) {
+      const buf = ensureBuffer(this, networkId, target);
+      buf.metadata = values ?? {};
     },
     removeMember(networkId: number | string, target: string, nick: string) {
       const buf = ensureBuffer(this, networkId, target);

@@ -172,6 +172,11 @@ import { parseDccCommand } from '../lib/commands/dcc.js';
 import { parseXdccCommand } from '../lib/commands/xdcc.js';
 import { isXdccPlaceholder } from '../../../shared/xdcc.js';
 import { bufferPeer } from '../lib/commands/ping.js';
+import {
+  parseAvatarCommand,
+  parseDisplayNameCommand,
+  parseMetadataCommand,
+} from '../lib/commands/metadata.js';
 import { parseThemeCommand } from '../lib/commands/theme.js';
 import { parseSheepCommand, SHEEP_USAGE_LINES } from '../lib/commands/sheep.js';
 import { useSheepStore } from '../stores/sheep.js';
@@ -2706,6 +2711,9 @@ const COMMANDS_LINES = [
   '  /whois <nick>          — query user info (renders in server buffer)',
   '  /ctcp <nick> <type>    — CTCP query (VERSION/PING/TIME/CLIENTINFO/SOURCE)',
   '  /accept [nick…]        — caller ID (+g): let nicks message you; -nick removes; no arg lists',
+  '  /displayname <name>|off — the name shown for you on networks with IRCv3 metadata',
+  '  /avatar <url>|off      — your avatar image (an https URL) on networks with IRCv3 metadata',
+  '  /metadata set|del|list|clear — any IRCv3 metadata key: set <key> <value> · del <key> · list [nick|#chan]',
   '  /ping [nick]           — CTCP ping a user for round-trip latency',
   '  /kick <nick> [reason]  — kick from current channel',
   '  /kickban <nick> [msg]  — kick and ban in one step',
@@ -4283,6 +4291,31 @@ function handleCommand(line: string, networkId: number | null, target: string): 
         { type: 'raw', networkId, line: nicks ? `ACCEPT ${nicks}` : 'ACCEPT *' },
         line,
       );
+    }
+    // IRCv3 metadata (#607): our own keys. The reply (a 761, or a FAIL) is
+    // echoed by the server where a /command's reply goes.
+    case 'metadata':
+    case 'avatar':
+    case 'displayname': {
+      if (networkId == null) {
+        localInfo(
+          networkId,
+          target,
+          `/${verb}: there's no network here. Run it in a network's buffer.`,
+        );
+        return true;
+      }
+      const parsed =
+        verb === 'avatar'
+          ? parseAvatarCommand(argLine)
+          : verb === 'displayname'
+            ? parseDisplayNameCommand(argLine)
+            : parseMetadataCommand(argLine);
+      if ('error' in parsed) {
+        localInfo(networkId, target, parsed.error);
+        return true;
+      }
+      return sendOrToast({ type: 'raw', networkId, line: parsed.line }, line);
     }
     case 'whois': {
       const who = rest[0];

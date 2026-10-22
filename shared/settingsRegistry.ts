@@ -701,6 +701,19 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'Show the channel user-mode prefix (@ op, + voice, % halfop, ~ owner, & admin) before a ' +
       "speaker's nick in the message list. Reflects the user's current status in that channel.",
   },
+  {
+    key: 'look.nick.display_names',
+    label: 'Show display names',
+    category: 'appearance',
+    group: 'nicks',
+    type: 'bool',
+    default: true,
+    description:
+      'On networks that carry IRCv3 metadata, show the name a user set for themselves ' +
+      '(display-name) in place of their nick in the message list, the member list and DM ' +
+      'rows. The nick stays the identity: it shows on hover and in the profile, colors are ' +
+      'keyed on it, and mentions still match it. Off = nicks everywhere.',
+  },
 
   // ─── Misc look ────────────────────────────────────────────────────────
   {

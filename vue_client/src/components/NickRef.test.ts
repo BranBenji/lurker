@@ -79,3 +79,41 @@ describe('NickRef — mode glyph', () => {
     expect(glyph({ modes: ['v'] }).classes()).toContain('mode-voice');
   });
 });
+
+// IRCv3 display names (#607): printed in place of the nick, formatting drawn,
+// the nick kept in the title; off with the setting, and never for a nick
+// without one.
+describe('NickRef — display names', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    useSettingsStore().values = { 'look.nick.self_color': SELF } as never;
+    openBufferAs('me');
+    useNetworksStore().applyUserMetadata(1, 'bob', { displayName: '\x02Bob\x02 the Builder' });
+  });
+
+  it('prints the display name with its formatting, and the nick on hover', () => {
+    const el = mount(NickRef, { props: { nick: 'bob' } }).element as HTMLElement;
+    expect(el.textContent).toBe('Bob the Builder');
+    expect(el.getAttribute('title')).toBe('bob');
+    expect(el.querySelector('span[style]')?.textContent).toBe('Bob');
+  });
+
+  it('prints the nick for someone without one, and for everyone when the setting is off', () => {
+    const plain = mount(NickRef, { props: { nick: 'carol' } }).element as HTMLElement;
+    expect(plain.textContent).toBe('carol');
+    expect(plain.getAttribute('title')).toBeNull();
+    useSettingsStore().values = {
+      'look.nick.self_color': SELF,
+      'look.nick.display_names': false,
+    } as never;
+    expect((mount(NickRef, { props: { nick: 'bob' } }).element as HTMLElement).textContent).toBe(
+      'bob',
+    );
+  });
+
+  it('reads the network it is told, not the open buffer’s', () => {
+    useNetworksStore().applyUserMetadata(2, 'bob', { displayName: 'Other Bob' });
+    const el = mount(NickRef, { props: { nick: 'bob', networkId: 2 } }).element as HTMLElement;
+    expect(el.textContent).toBe('Other Bob');
+  });
+});

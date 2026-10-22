@@ -4667,9 +4667,10 @@ export class IrcConnection {
     this.publishUserMetadata(nick, null);
   }
 
-  // After we leave a channel: everyone we only knew from there.
+  // After we leave a channel: everyone we only knew from there. Deleting the
+  // current key while iterating a Map is defined behaviour.
   private sweepUserMetadata(): void {
-    for (const lower of [...this.userMetadata.keys()]) this.forgetUserMetadata(lower);
+    for (const lower of this.userMetadata.keys()) this.forgetUserMetadata(lower);
   }
 
   // Bail-out for transition writes: gate by tracked-peer set and self-nick.

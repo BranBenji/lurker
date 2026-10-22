@@ -357,6 +357,7 @@ import { usePinsStore } from '../stores/pins.js';
 import { useFavoritesStore, type FavoriteEntry } from '../stores/favorites.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useDisplayNames } from '../composables/useDisplayNames.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useBufferActions } from '../composables/useBufferActions.js';
 import { useNetworkActions } from '../composables/useNetworkActions.js';
@@ -385,6 +386,7 @@ const pins = usePinsStore();
 const favorites = useFavoritesStore();
 const ignores = useIgnoresStore();
 const settings = useSettingsStore();
+const displayNames = useDisplayNames();
 const auth = useAuthStore();
 const bufferActions = useBufferActions();
 const networkActions = useNetworkActions();
@@ -506,6 +508,11 @@ function hasDraft(buf: Buffer): boolean {
 }
 
 function labelFor(buf: Buffer): string {
+  // A DM row prints the peer's display name when they set one (#607); the
+  // row's key and sort stay on the target.
+  if (isDmBuffer(buf) && buf.networkId != null) {
+    return displayNames.labelFor(buf.networkId, buf.target);
+  }
   return buf.target;
 }
 

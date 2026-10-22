@@ -4,9 +4,15 @@
 -->
 
 <template>
-  <span class="nick-ref" :class="{ interactive }" :style="style"
+  <span
+    class="nick-ref"
+    :class="{ interactive }"
+    :style="style"
+    :title="displayName ? nick : undefined"
     ><span v-if="glyph" class="mode-glyph" :class="glyphClass">{{ glyph }}</span
-    >{{ nick }}</span
+    ><RenderSegments v-if="displayName" :segments="nameSegments" /><template v-else>{{
+      nick
+    }}</template></span
   >
 </template>
 
@@ -15,8 +21,11 @@ import { computed } from 'vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNickColors } from '../composables/useNickColors.js';
+import { useDisplayNames } from '../composables/useDisplayNames.js';
 import type { PrefixMode } from '../../../shared/channelModes.js';
 import { prefixClass, prefixOf } from '../utils/memberPrefix.js';
+import { formattingSegments } from '../utils/nickColor.js';
+import RenderSegments from './RenderSegments.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -38,6 +47,9 @@ const props = withDefaults(
     // quote carries it). Otherwise guessed from the open buffer's network nick —
     // wrong for a nick shown from another network (a search hit's quote, #998).
     self?: boolean;
+    // The network the nick is on, for its display name (#607). Absent, the open
+    // buffer's network is assumed — right wherever `self` is guessed the same way.
+    networkId?: number | null;
   }>(),
   // An explicit undefined: Vue casts an absent Boolean prop to false, which
   // would read as "not you" and switch the guess off everywhere.
@@ -47,8 +59,23 @@ const props = withDefaults(
 const networks = useNetworksStore();
 const buffers = useBuffersStore();
 const nicks = useNickColors();
+const displayNames = useDisplayNames();
 
 const glyph = computed(() => (props.showPrefix ? prefixOf(props.modes, props.prefix) : ''));
+
+// The network the nick is on: told, else the open buffer's.
+const networkId = computed(() => {
+  if (props.networkId != null) return props.networkId;
+  const key = networks.activeKey;
+  const buf = key ? buffers.byKey(key) : null;
+  return buf?.networkId ?? null;
+});
+// A display name (#607) prints in place of the nick, in the nick's colour, with
+// its own mIRC formatting on top; the nick itself moves to the title.
+const displayName = computed(() =>
+  props.nick ? displayNames.displayNameFor(networkId.value, props.nick) : null,
+);
+const nameSegments = computed(() => formattingSegments(displayName.value ?? ''));
 const glyphClass = computed(() => prefixClass(props.modes, props.prefix));
 
 const selfLower = computed(() => {

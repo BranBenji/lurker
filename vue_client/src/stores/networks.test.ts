@@ -120,3 +120,47 @@ describe('DCC chat state — secure sessions', () => {
     expect(s.states[1]!.dccSecureChats).toEqual(['bob']);
   });
 });
+
+// IRCv3 metadata (#607): a nick's record, whole, keyed like peerPresence.
+describe('user metadata', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+  });
+
+  it('keeps one record per lowercase nick and answers lookups in any case', () => {
+    const networks = useNetworksStore();
+    networks.applyUserMetadata(1, 'Bob', { displayName: 'Bob the Builder', avatarUrl: null });
+    expect(networks.metadataFor(1, 'bob')).toEqual({
+      displayName: 'Bob the Builder',
+      avatarUrl: null,
+    });
+    expect(networks.metadataFor(1, 'BOB')?.displayName).toBe('Bob the Builder');
+    expect(networks.metadataFor(2, 'bob')).toBeNull();
+    expect(networks.metadataFor(null, 'bob')).toBeNull();
+  });
+
+  it('replaces the record whole, and forgets on null (a rename sends both)', () => {
+    const networks = useNetworksStore();
+    networks.applyUserMetadata(1, 'bob', { displayName: 'Bob', pronouns: 'he/him' });
+    networks.applyUserMetadata(1, 'bob', { pronouns: 'he/him' });
+    expect(networks.metadataFor(1, 'bob')).toEqual({ pronouns: 'he/him' });
+    networks.applyUserMetadata(1, 'bob', null);
+    networks.applyUserMetadata(1, 'bob2', { pronouns: 'he/him' });
+    expect(networks.metadataFor(1, 'bob')).toBeNull();
+    expect(networks.metadataFor(1, 'bob2')).toEqual({ pronouns: 'he/him' });
+  });
+
+  it('is seeded by the snapshot', () => {
+    const networks = useNetworksStore();
+    networks.applySnapshot([
+      {
+        networkId: 1,
+        channels: [],
+        userMetadata: { carol: { displayName: 'Carol' } },
+        metadataLimits: { maxSubs: 10, maxKeys: 10, maxValueBytes: 512, beforeConnect: false },
+      } as never,
+    ]);
+    expect(networks.metadataFor(1, 'Carol')).toEqual({ displayName: 'Carol' });
+    expect(networks.states[1]?.metadataLimits?.maxSubs).toBe(10);
+  });
+});

@@ -386,6 +386,14 @@ function applyEvent(event: any): boolean {
     case 'member-update':
       buffers.updateMember(event.networkId, event.target, event.member?.nick, event.member);
       break;
+    // IRCv3 metadata (#607): a nick's whole record (null forgets it), or a
+    // channel's. State, not history: neither is persisted or rendered as a row.
+    case 'user-metadata':
+      networks.applyUserMetadata(event.networkId, event.nick, event.values ?? null);
+      break;
+    case 'channel-metadata':
+      buffers.setChannelMetadata(event.networkId, event.target, event.values);
+      break;
     case 'channel-joined':
       buffers.ensure(event.networkId, event.target);
       buffers.setJoined(event.networkId, event.target, true);
@@ -825,6 +833,8 @@ function applySnapshot(snapshot: any[], globalIgnores: any[] = []): void {
         modeParams: ch.modeParams,
         createdAt: ch.createdAt,
       });
+      // Absent from a server that predates metadata (#607): an empty record.
+      buffers.setChannelMetadata(net.networkId, ch.name, ch.metadata);
     }
   }
 }

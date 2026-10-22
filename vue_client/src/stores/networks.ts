@@ -33,6 +33,24 @@ export interface ClientCertDigest {
 }
 export type ClientCertInfo = ClientCertDigest | { unusable: true };
 
+// IRCv3 metadata on a nick (#607), as the server shapes it: `avatarUrl` is
+// server-minted and opaque (the media proxy or a CDN), null when the server
+// can't serve it — the generated tile stands in then. Never the origin URL.
+export interface UserMetadataEntry {
+  displayName?: string;
+  avatarUrl?: string | null;
+  pronouns?: string;
+  homepage?: string;
+  status?: string;
+}
+
+export interface MetadataLimits {
+  maxSubs: number | null;
+  maxKeys: number | null;
+  maxValueBytes: number | null;
+  beforeConnect: boolean;
+}
+
 export interface PeerPresenceEntry {
   nick: string;
   state: string | null;
@@ -60,6 +78,13 @@ export interface NetworkState {
   userModes?: string;
   away?: AwayState | null;
   peerPresence?: Record<string, PeerPresenceEntry>;
+  // IRCv3 metadata per nick, keyed by lowercase nick like peerPresence (#607).
+  // Seeded by the snapshot, replaced record-by-record by `user-metadata`
+  // frames (values: null forgets the nick).
+  userMetadata?: Record<string, UserMetadataEntry>;
+  // What the network's draft/metadata-2 cap advertised; null/absent when the
+  // network doesn't speak it. Seeded by the snapshot.
+  metadataLimits?: MetadataLimits | null;
   // Display nicks of peers with a live DCC chat session on this network. Seeded
   // by every snapshot — including a disconnected network's, since a chat socket
   // outlives the IRC link — and kept current by `dcc-chat-state` events.
@@ -205,6 +230,13 @@ export const useNetworksStore = defineStore('networks', {
         if (netState && netState.state !== 'connected')
           return { nick, state: 'offline', stateAt: null, awayMessage: null };
         return netState?.peerPresence?.[nick.toLowerCase()] ?? null;
+      },
+    // A nick's IRCv3 metadata on a network (#607), or null when none is known.
+    metadataFor:
+      (state) =>
+      (networkId: number | string | null | undefined, nick: string): UserMetadataEntry | null => {
+        if (networkId == null || !nick) return null;
+        return state.states[networkId]?.userMetadata?.[nick.toLowerCase()] ?? null;
       },
     // Whether a `=nick` buffer (or a bare peer nick) has a live DCC session.
     // The DCC counterpart to peerFor, and deliberately independent of the IRC
@@ -432,6 +464,16 @@ export const useNetworksStore = defineStore('networks', {
         awayMessage: payload?.awayMessage || null,
       };
       this.states[networkId] = { ...existing, peerPresence };
+    },
+    // One nick's whole metadata record (#607), or null to forget it — a rename
+    // sends the old nick's null and the new nick's record.
+    applyUserMetadata(networkId: number | string, nick: string, values: UserMetadataEntry | null) {
+      if (!networkId || !nick) return;
+      const existing = this.states[networkId] || { networkId: Number(networkId), channels: [] };
+      const userMetadata = { ...existing.userMetadata };
+      if (values) userMetadata[nick.toLowerCase()] = values;
+      else delete userMetadata[nick.toLowerCase()];
+      this.states[networkId] = { ...existing, userMetadata };
     },
     applyDccChatState(networkId: number | string, nick: string, live: boolean, secure = false) {
       if (!networkId || !nick) return;
