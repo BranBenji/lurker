@@ -44,6 +44,7 @@ import {
 import { getOption } from './settingsRegistry.js';
 import { isBuiltinThemeId, THEME_POINTER_KEYS } from '../../shared/themePresets.js';
 import themesService from './themesService.js';
+import avatarSetsService, { AVATAR_SET_POINTER_KEY } from './avatarSetsService.js';
 import { encryptSecret } from '../utils/secretCrypto.js';
 import {
   importRow as importBufferRow,
@@ -371,6 +372,29 @@ function insertTable(
       }
     }
 
+    // The avatar-set pointer (#607): same shape as the theme pointers, with
+    // 'default' as the built-in id that travels as-is.
+    if (
+      table === 'user_settings' &&
+      typeof row.key === 'string' &&
+      row.key === AVATAR_SET_POINTER_KEY
+    ) {
+      let oldId: unknown;
+      try {
+        oldId = JSON.parse(String(row.value));
+      } catch {
+        continue;
+      }
+      if (typeof oldId !== 'string') continue;
+      if (oldId !== 'default') {
+        const n = Number(oldId);
+        if (!Number.isInteger(n) || String(n) !== oldId) continue;
+        const mapped = idMaps.avatar_sets?.get(n);
+        if (mapped === undefined) continue;
+        row.value = JSON.stringify(String(mapped));
+      }
+    }
+
     // Saved themes route through the service (same reasoning as ignored_masks
     // below): a crafted/edited archive must not plant what POST /api/themes
     // would 400 — non-themed keys, type-invalid values, reserved/over-long
@@ -601,6 +625,7 @@ function resetImportedData(userId: number): void {
     db.prepare('DELETE FROM highlight_rules WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM user_settings WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM user_themes WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM avatar_sets WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM upload_history WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM network_away_state WHERE user_id = ?').run(userId);
     // Network-scoped buffers cascade with networks above, but an app-scoped row
@@ -699,10 +724,37 @@ export async function importFromZipFile(
       const m = name.match(/^thumbnails\/(\d+)\.(?:jpg|webp)$/);
       if (m) thumbs.set(parseInt(m[1], 10), await readEntryBuffer(zip, entry));
     }
+    // ---- avatar set tiles (#607), by the archive's set id. They go back
+    // through the service with the rows, which re-judges every image the way
+    // an upload is judged, so a crafted archive can't plant what POST
+    // /api/avatar-sets would refuse. ----
+    const avatarTiles = new Map<number, Array<{ name: string; data: Buffer }>>();
+    for (const [name, entry] of entries) {
+      const m = name.match(/^avatar_sets\/(\d+)\/(\d{3})\.webp$/);
+      if (!m) continue;
+      const setId = parseInt(m[1], 10);
+      const list = avatarTiles.get(setId) ?? [];
+      list.push({ name: m[2], data: await readEntryBuffer(zip, entry) });
+      avatarTiles.set(setId, list);
+    }
 
     const counts: Record<string, number> = {};
     const idMaps: Record<string, Map<unknown, unknown>> = {};
     let thumbnailsAttached = 0;
+
+    // ---- avatar sets (#607): through the service, ahead of Phase A, since
+    // the image normaliser is async and Phase A is one synchronous
+    // transaction. An invalid set drops alone; the pointer rewrite in Phase A
+    // then misses and falls back to the bundled set. The wipe below runs
+    // first, so a retried import can't collide on the NOCASE UNIQUE name.
+    const avatarSetIds = new Map<unknown, unknown>();
+    db.prepare('DELETE FROM avatar_sets WHERE user_id = ?').run(targetUserId);
+    for (const row of (data.avatar_sets ?? []) as Array<Record<string, unknown>>) {
+      const oldId = Number(row.id);
+      const tiles = avatarTiles.get(oldId) ?? [];
+      const result = await avatarSetsService.createFromImages(targetUserId, row.name, tiles);
+      if (result.ok) avatarSetIds.set(row.id, result.set.id);
+    }
 
     try {
       // ---- Phase A: data.json tables that don't depend on messages (one tx). ----
@@ -714,6 +766,7 @@ export async function importFromZipFile(
         // archive's on the NOCASE UNIQUE constraint (or silently merge).
         db.prepare('DELETE FROM user_settings WHERE user_id = ?').run(targetUserId);
         db.prepare('DELETE FROM user_themes WHERE user_id = ?').run(targetUserId);
+        // avatar_sets were wiped and re-ingested just above, outside this tx.
         for (const table of IMPORT_ORDER) {
           const def = EXPORT_TABLES[table as keyof typeof EXPORT_TABLES] as
             | ExportTableDefFull
@@ -721,6 +774,13 @@ export async function importFromZipFile(
           if (!def || def.mode === 'skip') continue;
           if (def.section && def.section !== 'data') continue;
           if (dependsOnMessages(def)) continue;
+          if (table === 'avatar_sets') {
+            // Ingested before the transaction (the normaliser is async); the
+            // sets are already in, so only the id map is needed here.
+            idMaps.avatar_sets = avatarSetIds;
+            counts.avatar_sets = avatarSetIds.size;
+            continue;
+          }
           insertTable(table, data, idMaps, counts, targetUserId);
         }
       })();

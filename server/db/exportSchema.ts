@@ -517,6 +517,27 @@ export const EXPORT_TABLES = Object.freeze({
     columns: ['id', 'user_id', 'name', 'values_json', 'created_at', 'updated_at'],
   },
 
+  // Uploaded avatar tile sets (#607). The look.avatars.set user_settings value
+  // references the id (as a decimal string, 'default' meaning the bundled set),
+  // so the id exports and rekeyOnImport builds the map the importer uses to
+  // rewrite that pointer. The tiles themselves travel as zip entries
+  // (avatar_sets/<id>/<nnn>.webp) rather than inline, see exportService.
+  avatar_sets: {
+    mode: 'export',
+    scope: 'user_id',
+    section: 'data',
+    pk: 'id',
+    rekeyOnImport: true,
+    fkRekey: { user_id: 'users' },
+    columns: ['id', 'user_id', 'name', 'count', 'bytes', 'created_at'],
+  },
+  avatar_set_tiles: {
+    mode: 'skip',
+    reason:
+      'the tiles of avatar_sets, blobs; carried as avatar_sets/<id>/<nnn>.webp zip entries by ' +
+      'exportService and re-ingested through avatarSetsService on import, not as rows',
+  },
+
   // A user's OWN configured uploaders (#514). This became exportable the moment
   // the legacy uploads.* user_settings keys were deleted: those keys used to be
   // what carried a user's provider config across an export, and with them gone
@@ -855,6 +876,8 @@ export const IMPORT_ORDER = Object.freeze([
   // Before user_settings too: the look.theme.* pointer values rewrite through
   // this table's id map.
   'user_themes',
+  // And the look.avatars.set pointer through this one's (#607).
+  'avatar_sets',
   'user_settings',
   'ignored_masks',
   'user_nick_notes',

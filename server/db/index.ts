@@ -751,6 +751,32 @@ function migrate() {
     );
     CREATE INDEX IF NOT EXISTS idx_user_themes_user ON user_themes(user_id);
 
+    -- Uploaded avatar tile sets (#607): a named set of square WebP tiles a user
+    -- uploaded as a zip, behind generated avatars. Tiles are blobs here rather
+    -- than files on disk: a hosted cell has no app-owned file store that
+    -- survives, and the export/import path carries blobs already. The
+    -- look.avatars.set user_settings value points at a set id as a decimal
+    -- string ('default' is the bundled set); deleting a set resets a pointer
+    -- aimed at it (service-side), so no FK exists for that relationship.
+    CREATE TABLE IF NOT EXISTS avatar_sets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL COLLATE NOCASE,
+      count INTEGER NOT NULL,
+      bytes INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      UNIQUE (user_id, name),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_avatar_sets_user ON avatar_sets(user_id);
+    CREATE TABLE IF NOT EXISTS avatar_set_tiles (
+      set_id INTEGER NOT NULL,
+      idx INTEGER NOT NULL,
+      data BLOB NOT NULL,
+      PRIMARY KEY (set_id, idx),
+      FOREIGN KEY (set_id) REFERENCES avatar_sets(id) ON DELETE CASCADE
+    );
+
     -- Per-user bearer tokens for the HTTP API + MCP server. token_hash is the
     -- hex SHA-256 of the raw token; the raw value is shown once at creation
     -- time and never stored. scope is 'read' (read-only verbs) or 'read-write'

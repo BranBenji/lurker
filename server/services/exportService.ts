@@ -292,6 +292,19 @@ export async function buildExportZip(
     }
   }
 
+  // ---- avatar set tiles (#607): each as its own entry, by set and index, so
+  // the importer can hand them back to the service in order. ----
+  for (const set of (data.avatar_sets ?? []) as Array<{ id: number }>) {
+    const tiles = db
+      .prepare('SELECT idx, data FROM avatar_set_tiles WHERE set_id = ? ORDER BY idx')
+      .all(set.id) as Array<{ idx: number; data: Buffer }>;
+    for (const tile of tiles) {
+      archive.append(tile.data, {
+        name: `avatar_sets/${set.id}/${String(tile.idx).padStart(3, '0')}.webp`,
+      });
+    }
+  }
+
   // ---- messages.ndjson ----
   if (includeMessages) {
     sections.push('messages');

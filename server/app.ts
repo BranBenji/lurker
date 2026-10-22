@@ -24,6 +24,7 @@ import activityRouter from './routes/activity.js';
 import bookmarksRouter from './routes/bookmarks.js';
 import searchRouter from './routes/search.js';
 import themesRouter from './routes/themes.js';
+import avatarSetsRouter from './routes/avatarSets.js';
 import pushRouter from './routes/push.js';
 import adminRouter from './routes/admin.js';
 import uploadsRouter from './routes/uploads.js';
@@ -123,6 +124,7 @@ export function buildApp(sessionSecret: string, options: BuildAppOptions = {}): 
   app.use('/api/bookmarks', bookmarksRouter);
   app.use('/api/search', searchRouter);
   app.use('/api/themes', themesRouter);
+  app.use('/api/avatar-sets', avatarSetsRouter);
   app.use('/api/push', pushRouter);
   app.use('/api/admin', adminRouter);
   app.use('/api/uploads', uploadsRouter);
