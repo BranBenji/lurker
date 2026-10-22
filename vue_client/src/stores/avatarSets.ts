@@ -105,8 +105,10 @@ export const useAvatarSetsStore = defineStore('avatarSets', {
       if (this.defaultManifest || typeof fetch !== 'function') return Promise.resolve();
       this.defaultLoad = (async () => {
         try {
+          // Revalidated every time: a rebuilt set changes the count, and a
+          // copy the browser kept would point tiles at files that are gone.
           const res = await fetch(`${DEFAULT_AVATAR_SET_URL}/manifest.json`, {
-            cache: 'force-cache',
+            cache: 'no-cache',
           });
           if (!res.ok) return;
           const body = (await res.json()) as Partial<AvatarSetManifest>;
