@@ -878,3 +878,19 @@ describe('METADATA queries on the wire together', () => {
     expect(hear(':irc.test 761 me me avatar * :https://x/me.png')).toBe(user);
   });
 });
+
+// A metadata query's replies are the lines tagged with ITS batch, not whatever
+// arrives while the batch is open.
+describe('METADATA replies and the batch tag', () => {
+  it('leaves a bare 761 for someone else unasked while a LIST batch is open', () => {
+    const { router, hear } = setup();
+    const user = new Client();
+    router.send(user, 'METADATA bob LIST');
+    expect(hear(':irc.test BATCH +m1 metadata bob')).toBe(user);
+    expect(hear(':irc.test 761 * carol avatar * :https://x/c.png')).toBe('unasked');
+    expect(hear('@batch=m1 :irc.test 761 me bob display-name * :Bob')).toBe(user);
+    // A different batch's line, interleaved, isn't its either.
+    expect(hear('@batch=zz :irc.test 761 * dave status * :hi')).toBe('unasked');
+    expect(hear(':irc.test BATCH -m1')).toBe(user);
+  });
+});

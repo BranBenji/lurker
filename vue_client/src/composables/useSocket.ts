@@ -9,7 +9,7 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useThemesStore } from '../stores/themes.js';
-import { useAvatarSetsStore } from '../stores/avatarSets.js';
+import { AVATAR_SET_POINTER_KEY, useAvatarSetsStore } from '../stores/avatarSets.js';
 import { THEME_POINTER_KEYS } from '../../../shared/themePresets.js';
 import { WS_CLOSE_SESSION_REVOKED } from '../../../shared/wsCloseCodes.js';
 import { primePreviews } from './useLinkPreview.js';
@@ -1010,6 +1010,17 @@ function handleMessage(raw: string): void {
     const themes = useThemesStore();
     if (THEME_POINTER_KEYS.some((k) => k in changed && !themes.byId(String(changed[k])))) {
       themes.fetchAll().catch(() => {});
+    }
+    // The avatar-set pointer (#607), the same way: a set this tab hasn't
+    // fetched resolves as the bundled one until the list arrives.
+    const avatarSets = useAvatarSetsStore();
+    if (
+      AVATAR_SET_POINTER_KEY in changed &&
+      !avatarSets.byId(String(changed[AVATAR_SET_POINTER_KEY]))
+    ) {
+      avatarSets.fetchAll().catch(() => {
+        /* ignore — the next avatar-sets-changed or connect refetches */
+      });
     }
     return;
   }

@@ -112,6 +112,7 @@
             class="avatar"
             :nick="row.m?.nick ?? ''"
             :network-id="buffer?.networkId ?? null"
+            :plain="!!row.m?.relaySource"
             interactive
             @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
           />
@@ -126,6 +127,7 @@
                 :modes="authorModes(row.m)"
                 :show-prefix="showModePrefix"
                 :prefix="memberPrefix"
+                :plain="!!row.m?.relaySource"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
             /></span>
@@ -137,6 +139,7 @@
             <ReplyQuote
               v-if="row.m?.replyTo && !row.replyContinued"
               :parent="row.replyParent ?? null"
+              :network-id="buffer?.networkId ?? null"
               @jump="onReplyContextClick"
             />
             <span
@@ -182,6 +185,7 @@
                 :modes="authorModes(row.m)"
                 :show-prefix="showModePrefix"
                 :prefix="memberPrefix"
+                :plain="!!row.m?.relaySource"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /></template
             ><template v-else>{{ row.continuationAuthor ? '' : prefixText(row.m) }}</template></span
@@ -192,6 +196,7 @@
             <ReplyQuote
               v-if="row.m?.replyTo && !row.replyContinued"
               :parent="row.replyParent ?? null"
+              :network-id="buffer?.networkId ?? null"
               @jump="onReplyContextClick"
             />
             <span
@@ -2975,13 +2980,23 @@ watch(
    rows and event rows too, so bodies stay on one edge — with the tile drawn
    at the top of a run's first row. Absolute so the row's grid is untouched.
    The size is in em (one font size everywhere), smaller on a phone where
-   compact is the default and width is scarce. */
+   compact is the default and width is scarce. A hairline down the gutter's
+   right edge makes it read as a panel beside the text, continuous through
+   the row gaps: painted on the scroller, repeating down the scrolled content
+   (background-attachment: local), at the list's own left padding plus the
+   tile and a gap. */
 .message-list.compact.avatars {
   --avatar-size: 2.25em;
+  --avatar-gutter: calc(var(--avatar-size) + var(--space-3));
+  background-image: linear-gradient(var(--border), var(--border));
+  background-size: 1px 100%;
+  background-repeat: repeat-y;
+  background-position: calc(var(--space-4) + var(--avatar-gutter)) 0;
+  background-attachment: local;
 }
 .message-list.compact.avatars .line {
   position: relative;
-  padding-left: calc(var(--avatar-size) + var(--space-4));
+  padding-left: calc(var(--avatar-gutter) + var(--space-5));
 }
 .message-list.compact.avatars .line > .avatar {
   position: absolute;

@@ -108,13 +108,6 @@ function readZipImages(
           zip.readEntry();
           return;
         }
-        // Past the tile limit nothing more is read; the name is still listed
-        // in the skips, so the author knows which ones were left out.
-        if (images.length >= AVATAR_SET_MAX_TILES) {
-          skipped.push({ name, reason: `past the ${AVATAR_SET_MAX_TILES}-tile limit` });
-          zip.readEntry();
-          return;
-        }
         // The whole zip's decompressed bytes, held at once: a cap the sizes
         // in the headers can't talk their way past, since the stream below
         // counts what actually comes out.

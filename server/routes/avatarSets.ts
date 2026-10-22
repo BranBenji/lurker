@@ -38,7 +38,9 @@ const storage = multer.diskStorage({
 const zipToDisk = (req: Request, res: Response, next: NextFunction): void => {
   const handler = multer({
     storage,
-    limits: { fileSize: AVATAR_SET_ZIP_MAX_BYTES, files: 1 },
+    // One name and one zip: the text fields multer keeps in memory are bounded
+    // too, not just the file.
+    limits: { fileSize: AVATAR_SET_ZIP_MAX_BYTES, files: 1, fields: 1, fieldSize: 256, parts: 2 },
     defParamCharset: 'utf8',
   }).single('zip');
   handler(req, res, (err: unknown) => {

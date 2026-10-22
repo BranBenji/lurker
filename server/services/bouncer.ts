@@ -919,6 +919,7 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   private readonly metadataSubs = new Set<string>();
   private metadataBatchSeq = 0;
   private onUpstreamCaps: (() => void) | null = null;
+  private onUpstreamMetadata: ((change: Record<string, unknown>) => void) | null = null;
   private regTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(socket: net.Socket) {
@@ -1678,6 +1679,22 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     };
     conn.client.on('cap ack', this.onUpstreamCaps);
     conn.client.on('cap del', this.onUpstreamCaps);
+    // A metadata change that came as somebody else's reply (#607): the raw
+    // relay gave it to its asker alone, so it's said here to everyone else
+    // who subscribed to the key and can see the target.
+    this.onUpstreamMetadata = (change) => {
+      const { owner } = change;
+      const target = String(change.target ?? '');
+      const key = String(change.key ?? '');
+      const value = change.value == null ? null : String(change.value);
+      if (this.closed || conn.disposed || owner === this || !target || !key) return;
+      const line =
+        value === null
+          ? `:${SERVER_NAME} 766 * ${target} ${key} :Key deleted`
+          : `:${SERVER_NAME} 761 * ${target} ${key} * :${value}`;
+      if (this.wantsMetadataLine(line)) this.write(line);
+    };
+    conn.client.on('lurker metadata', this.onUpstreamMetadata);
   }
 
   // --- control (unbound) connection ------------------------------------------
@@ -2196,10 +2213,19 @@ class BouncerSession implements MonitorHolder, ReplyClient {
             return;
           }
         }
-        const fresh = keys.filter((key) => !this.metadataSubs.has(key));
-        for (const key of keys) this.metadataSubs.add(key);
-        conn.addMetadataKeys(keys);
-        if (keys.length > 0) this.write(`:${SERVER_NAME} 770 ${nick} ${keys.join(' ')}`);
+        // Only what the socket can carry gets a 770; the rest a
+        // TOO_MANY_SUBS, as the spec has it, naming the first key that
+        // didn't fit. The list is processed in order, so the ones before it
+        // stand.
+        const { accepted, refused } = conn.addMetadataKeys(keys, this);
+        const fresh = accepted.filter((key) => !this.metadataSubs.has(key));
+        for (const key of accepted) this.metadataSubs.add(key);
+        if (accepted.length > 0) this.write(`:${SERVER_NAME} 770 ${nick} ${accepted.join(' ')}`);
+        if (refused.length > 0) {
+          this.write(
+            `:${SERVER_NAME} FAIL METADATA TOO_MANY_SUBS ${refused[0]} :Too many subscriptions`,
+          );
+        }
         // The current values for what it just asked for, as the spec has a
         // server send on a SUB.
         if (fresh.length > 0) this.replayMetadata(new Set(fresh));
@@ -2208,7 +2234,31 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       case 'UNSUB': {
         const keys = msg.params.slice(2).map((k) => k.toLowerCase());
         for (const key of keys) this.metadataSubs.delete(key);
+        conn.removeMetadataKeys(keys, this);
         if (keys.length > 0) this.write(`:${SERVER_NAME} 771 ${nick} ${keys.join(' ')}`);
+        return;
+      }
+      case 'SYNC': {
+        // Answered from what the connection holds, for this client's keys
+        // only: relaying it would return the socket's whole subscription —
+        // every client's keys — to whoever asked. `*ALL` is ergo's everything.
+        const target = msg.params[0] === '*' ? nick : msg.params[0];
+        const ref = `lm${++this.metadataBatchSeq}`;
+        this.write(`:${SERVER_NAME} BATCH +${ref} metadata ${target}`);
+        const targets: string[] = [];
+        if (target === '*ALL') {
+          targets.push(nick);
+          for (const ch of conn.channels.values()) {
+            targets.push(ch.name, ...[...ch.members.values()].map((m) => m.nick));
+          }
+        } else if (isChannelTarget(target)) {
+          const ch = conn.channelState(target);
+          if (ch) targets.push(ch.name, ...[...ch.members.values()].map((m) => m.nick));
+        } else {
+          targets.push(target);
+        }
+        this.replayMetadata(undefined, targets, ref);
+        this.write(`:${SERVER_NAME} BATCH -${ref}`);
         return;
       }
       case 'SUBS': {
@@ -2256,29 +2306,37 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   }
 
   // What the connection knows, as 761s, for this client's keys (or `only`
-  // those): every channel's own record, every member's, and ours.
-  private replayMetadata(only?: Set<string>): void {
+  // those): every channel's own record, every member's, the nicks it
+  // watches, and ours — or just `targets`, tagged into batch `ref`.
+  private replayMetadata(only?: Set<string>, targets?: string[], ref?: string): void {
     const conn = this.conn;
     if (!conn || !this.caps.has(METADATA_CAP) || this.metadataSubs.size === 0) return;
     const nick = this.currentNick() || '*';
+    const head = ref ? `@batch=${ref} :${SERVER_NAME}` : `:${SERVER_NAME}`;
     const wanted = (key: string) => this.metadataSubs.has(key) && (!only || only.has(key));
     const say = (target: string, record: Record<string, string> | null | undefined) => {
       for (const [key, value] of Object.entries(record ?? {})) {
-        if (wanted(key)) this.write(`:${SERVER_NAME} 761 ${nick} ${target} ${key} * :${value}`);
+        if (wanted(key)) this.write(`${head} 761 ${nick} ${target} ${key} * :${value}`);
       }
     };
     const seen = new Set<string>();
-    const sayNick = (n: string) => {
-      const lower = n.toLowerCase();
+    const sayTarget = (t: string) => {
+      const lower = t.toLowerCase();
       if (seen.has(lower)) return;
       seen.add(lower);
-      say(n, conn.userMetadataRecord(n));
+      if (isChannelTarget(t)) say(conn.channelState(t)?.name ?? t, conn.channelState(t)?.metadata);
+      else say(t, conn.userMetadataRecord(t));
     };
-    sayNick(nick);
-    for (const ch of conn.channels.values()) {
-      say(ch.name, ch.metadata);
-      for (const member of ch.members.values()) sayNick(member.nick);
+    if (targets) {
+      for (const t of targets) sayTarget(t);
+      return;
     }
+    sayTarget(nick);
+    for (const ch of conn.channels.values()) {
+      sayTarget(ch.name);
+      for (const member of ch.members.values()) sayTarget(member.nick);
+    }
+    for (const watched of this.monitored.values()) sayTarget(watched);
   }
 
   // A channel's 353 lines and 366, in their fullest form like the rest of the
@@ -3269,6 +3327,11 @@ class BouncerSession implements MonitorHolder, ReplyClient {
           this.conn.client.off('cap ack', this.onUpstreamCaps);
           this.conn.client.off('cap del', this.onUpstreamCaps);
         }
+        if (this.onUpstreamMetadata) {
+          this.conn.client.off('lurker metadata', this.onUpstreamMetadata);
+        }
+        // The keys only this client held go off the socket with it.
+        this.conn.releaseMetadataHolder(this);
       } catch {
         /* ignore */
       }

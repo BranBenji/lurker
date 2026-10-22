@@ -20,6 +20,7 @@ import { normalizeCasemapping } from '../db/casemapping.js';
 import {
   METADATA_CAP,
   METADATA_NUMERICS,
+  METADATA_SUB_KEYS,
   channelMetadataView,
   isChannelMetadataTarget,
   metadataSubKeysFor,
@@ -935,11 +936,12 @@ export class IrcConnection {
   private userMetadata: Map<string, MetadataRecord>;
   // Pending `METADATA <target> SYNC`s a 774 asked for, by target.
   private metadataSyncTimers: Map<string, ReturnType<typeof setTimeout>>;
-  // Keys bouncer clients subscribed to beyond Lurker's own (addMetadataKeys).
-  // The network gives the socket one subscription list, so the union goes up;
-  // the bouncer relays each key to the clients that asked for it. Kept for the
-  // connection's life: a re-registration SUBs them again with ours.
-  private metadataExtraKeys: Set<string>;
+  // Keys bouncer clients subscribed to beyond Lurker's own, each with the
+  // clients holding it (addMetadataKeys / removeMetadataKeys). The network
+  // gives the socket one subscription list, so the union goes up; a key's
+  // last holder leaving takes it back off. A re-registration SUBs them again
+  // with ours.
+  private metadataExtraKeys: Map<string, Set<object>>;
   // One presence watch list keyed by lowercased nick. Each entry records WHY
   // we're watching it. The MONITOR watch and the shared peer_presence_state row
   // are reference-counted against those reasons — added when the first reason
@@ -1417,7 +1419,7 @@ export class IrcConnection {
     this.client.requestCap(METADATA_CAP);
     this.userMetadata = new Map();
     this.metadataSyncTimers = new Map();
-    this.metadataExtraKeys = new Set();
+    this.metadataExtraKeys = new Map();
     this.state = 'disconnected';
     this.channels = new Map();
     this.joinedFoldedCache = null;
@@ -4581,8 +4583,20 @@ export class IrcConnection {
   private subscribeMetadata(): void {
     const limits = this.metadataLimits();
     if (!limits) return;
-    const keys = this.metadataKeysToSub(limits, [...this.metadataExtraKeys]);
+    const keys = this.metadataKeysToSub(limits, [...this.metadataExtraKeys.keys()]);
     for (const line of subLines(keys)) this.replies.send('lurker', line);
+  }
+
+  // Every channel's metadata and its members', and our own, after an engine
+  // re-attach: this process holds nothing, and a repeated SUB on a socket that
+  // already has the subscriptions is answered with nothing to sync. Lurker's
+  // own queries, paced in the low lane behind what the user says.
+  private syncMetadataAfterRestore(): void {
+    if (!this.metadataLimits()) return;
+    this.replies.send('lurker', 'METADATA * SYNC');
+    for (const ch of this.channels.values()) {
+      this.replies.send('lurker', `METADATA ${ch.name} SYNC`);
+    }
   }
 
   // Ours first, then the bouncer clients', within max-subs.
@@ -4595,25 +4609,69 @@ export class IrcConnection {
 
   // A bouncer client's SUB: keys beyond Lurker's own go up on this socket too,
   // now if it's registered with the cap, and again with ours on every
-  // registration. Keys Lurker doesn't show pass through its state untouched
-  // (vetMetadataValue keeps the record to the keys it shows).
-  addMetadataKeys(keys: string[]): void {
+  // registration. Answers which keys the socket can carry — ours always, the
+  // rest while max-subs and the extra-key ceiling leave room — so the client
+  // is told the truth rather than a 770 for a key nobody will send.
+  addMetadataKeys(keys: string[], holder: object): { accepted: string[]; refused: string[] } {
+    const limits = this.metadataLimits();
+    const own = new Set(limits ? metadataSubKeysFor(limits) : METADATA_SUB_KEYS);
+    const accepted: string[] = [];
+    const refused: string[] = [];
     const fresh: string[] = [];
     for (const key of keys) {
-      if (this.metadataExtraKeys.has(key)) continue;
-      // Bounded: a client can ask for anything, and a key no one shows is
-      // kept for the connection's life (the bouncer answers its UNSUB alone).
-      if (this.metadataExtraKeys.size >= MAX_EXTRA_METADATA_KEYS) break;
-      this.metadataExtraKeys.add(key);
+      if (own.has(key)) {
+        accepted.push(key);
+        continue;
+      }
+      const holders = this.metadataExtraKeys.get(key);
+      if (holders) {
+        holders.add(holder);
+        accepted.push(key);
+        continue;
+      }
+      const room =
+        limits?.maxSubs === null || limits?.maxSubs === undefined
+          ? Infinity
+          : Math.max(0, limits.maxSubs) - own.size;
+      if (
+        this.metadataExtraKeys.size >= MAX_EXTRA_METADATA_KEYS ||
+        this.metadataExtraKeys.size >= room
+      ) {
+        refused.push(key);
+        continue;
+      }
+      this.metadataExtraKeys.set(key, new Set([holder]));
+      accepted.push(key);
       fresh.push(key);
     }
-    const limits = this.metadataLimits();
-    if (fresh.length === 0 || !limits || !this.sawRegistered) return;
-    // Only what max-subs leaves room for beside ours, as the registration SUB.
-    const allowed = new Set(this.metadataKeysToSub(limits, [...this.metadataExtraKeys]));
-    const own = new Set(metadataSubKeysFor(limits));
-    const toSend = fresh.filter((key) => allowed.has(key) && !own.has(key));
-    for (const line of subLines(toSend)) this.replies.send('lurker', line);
+    if (fresh.length > 0 && limits && this.sawRegistered) {
+      for (const line of subLines(fresh)) this.replies.send('lurker', line);
+    }
+    return { accepted, refused };
+  }
+
+  // A client's UNSUB (or its leaving): a key with no holder left is taken off
+  // the socket, unless it's one of ours.
+  removeMetadataKeys(keys: string[], holder: object): void {
+    const gone: string[] = [];
+    for (const key of keys) {
+      const holders = this.metadataExtraKeys.get(key);
+      if (!holders) continue;
+      holders.delete(holder);
+      if (holders.size > 0) continue;
+      this.metadataExtraKeys.delete(key);
+      gone.push(key);
+    }
+    if (gone.length > 0 && this.metadataLimits() && this.sawRegistered) {
+      this.replies.send('lurker', `METADATA * UNSUB ${gone.join(' ')}`);
+    }
+  }
+
+  releaseMetadataHolder(holder: object): void {
+    const held = [...this.metadataExtraKeys]
+      .filter(([, holders]) => holders.has(holder))
+      .map(([key]) => key);
+    if (held.length > 0) this.removeMetadataKeys(held, holder);
   }
 
   /** A nick's metadata as the network set it (origin URLs and all), for the bouncer's replay. */
@@ -4695,6 +4753,7 @@ export class IrcConnection {
         target: ch.name,
         values: channelMetadataView(ch.metadata, avatarClientUrl),
       });
+      this.noteOwnedMetadataChange(ch.name, change.key, value);
       return;
     }
     const nick = change.target === '*' ? this.currentNick : change.target;
@@ -4707,6 +4766,18 @@ export class IrcConnection {
     if (Object.keys(record).length === 0) this.userMetadata.delete(lower);
     else this.userMetadata.set(lower, record);
     this.publishUserMetadata(nick, record);
+    this.noteOwnedMetadataChange(nick, change.key, value);
+  }
+
+  // A change that came as somebody's reply — the web user's SET, Lurker's
+  // SYNC, a bouncer client's — reaches no other bouncer client through the
+  // raw relay, which hands a reply to its asker alone. Say it on the client
+  // emitter so the other sessions can tell theirs (bouncer.ts). An unasked
+  // line is relayed raw already, so it isn't said twice.
+  private noteOwnedMetadataChange(target: string, key: string, value: string | null): void {
+    const owner = this.replyOwner;
+    if (owner == null || owner === 'unasked') return;
+    this.client.emit('lurker metadata', { target, key, value, owner });
   }
 
   // Aimed at the server pseudo-buffer like peer-presence, so a closed DM's
@@ -5268,6 +5339,8 @@ export class IrcConnection {
     if (existing && existing.reasons.size > 0) return; // still held → keep
     this.trackedPeers.delete(lower);
     this.teardownPeerWatch(nick);
+    // Nothing watches them now; what we hold of their metadata only goes stale.
+    this.forgetUserMetadata(nick);
   }
 
   // DM activate triggers this via the `probe-presence` ws message. With
@@ -6246,6 +6319,10 @@ export class IrcConnection {
         // nothing here knows what it was last told. The 305/306 is Lurker's.
         this.sendAwayState();
         this.requestUnnegotiatedCaps();
+        // The held socket kept its metadata subscriptions, so the SUB the
+        // replayed 001 drew adds nothing and ergo answers it with no 774
+        // (only NEW keys are synced). Ask for everything outright (#607).
+        this.syncMetadataAfterRestore();
         this.restoreQueue = [...this.channels.values()].map((ch) => ch.name);
         // Every queued channel is marked quiet now: the LAST process may have
         // let go with a step in flight, and that step's replies sit in the

@@ -878,13 +878,16 @@ export class FakeIrcd extends EventEmitter {
     switch (sub) {
       case 'SUB': {
         const keys = p.slice(2);
+        let added = 0;
         for (const key of keys) {
           if (!METADATA_KEY_RE.test(key)) return fail('INVALID_KEY', key, ':Invalid key name');
+          if (!c.metadataSubs.has(key)) added++;
           c.metadataSubs.add(key);
         }
         if (keys.length) this.num(c, '770', ...keys);
-        // ergo: the current values come by a SYNC the client asks for.
-        this.raw(c, `:${this.serverName} 774 * *ALL 0 :Try again later`);
+        // ergo: the current values come by a SYNC the client asks for — and
+        // only when the SUB added a key. A repeated SUB draws nothing more.
+        if (added > 0) this.raw(c, `:${this.serverName} 774 * *ALL 0 :Try again later`);
         return;
       }
       case 'UNSUB': {

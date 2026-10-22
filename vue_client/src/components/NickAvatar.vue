@@ -36,8 +36,11 @@ const props = withDefaults(
     networkId?: number | null;
     // Pointer affordance; the click handler is the consumer's (attribute fallthrough).
     interactive?: boolean;
+    // No metadata avatar: the nick is a relay bot's envelope (someone on
+    // another network); the generated tile still shows.
+    plain?: boolean;
   }>(),
-  { networkId: null, interactive: false },
+  { networkId: null, interactive: false, plain: false },
 );
 
 const networks = useNetworksStore();
@@ -48,7 +51,9 @@ onMounted(() => {
   void avatarSets.ensureDefault();
 });
 
-const meta = computed(() => networks.metadataFor(props.networkId, props.nick));
+const meta = computed(() =>
+  props.plain ? null : networks.metadataFor(props.networkId, props.nick),
+);
 const failed = ref(false);
 // A new URL gets its own chance.
 watch(

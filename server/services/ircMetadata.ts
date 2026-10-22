@@ -139,7 +139,7 @@ function isHttpUrl(value: string): boolean {
 export function vetMetadataValue(
   key: string,
   raw: string | null,
-  extra?: ReadonlySet<string>,
+  extra?: { has(key: string): boolean },
 ): string | null {
   if (raw === null) return null;
   const max = MAX_VALUE_CHARS[key] ?? (extra?.has(key) ? EXTRA_VALUE_CHARS : undefined);

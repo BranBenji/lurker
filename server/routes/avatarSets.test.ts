@@ -186,3 +186,19 @@ describe('DELETE /api/avatar-sets/:id', () => {
     expect((await aliceAgent.delete('/api/avatar-sets/zero')).status).toBe(400);
   });
 });
+
+describe('a zip that is mostly junk', () => {
+  it('finds the images past hundreds of files that are not', async () => {
+    const entries: Record<string, Buffer> = {};
+    for (let i = 0; i < 300; i++)
+      entries[`junk${String(i).padStart(3, '0')}.txt`] = Buffer.from('x');
+    entries['zz1.png'] = await png('#111111');
+    entries['zz2.png'] = await png('#222222');
+    entries['zz3.png'] = await png('#333333');
+    entries['zz4.png'] = await png('#444444');
+    const res = await post(aliceAgent, 'Needle', await zipOf(entries));
+    expect(res.status).toBe(201);
+    expect(res.body.set.count).toBe(4);
+    expect(res.body.skipped).toHaveLength(300);
+  });
+});

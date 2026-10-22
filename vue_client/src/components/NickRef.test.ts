@@ -117,3 +117,19 @@ describe('NickRef — display names', () => {
     expect(el.textContent).toBe('Other Bob');
   });
 });
+
+// A relay bot's envelope names someone on another network; a local nick it
+// happens to spell must not lend them its display name (#607).
+describe('NickRef — plain', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    useSettingsStore().values = { 'look.nick.self_color': SELF } as never;
+    openBufferAs('me');
+    useNetworksStore().applyUserMetadata(1, 'bob', { displayName: 'Local Bob' });
+  });
+  it('prints the nick itself', () => {
+    const el = mount(NickRef, { props: { nick: 'bob', plain: true } }).element as HTMLElement;
+    expect(el.textContent).toBe('bob');
+    expect(el.getAttribute('title')).toBeNull();
+  });
+});

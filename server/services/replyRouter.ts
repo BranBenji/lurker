@@ -276,6 +276,17 @@ interface Settle {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
+// The `batch=<ref>` tag on a line, or undefined.
+function batchTagOf(line: string): string | undefined {
+  if (!line.startsWith('@')) return undefined;
+  const end = line.indexOf(' ');
+  const tags = line.slice(1, end < 0 ? undefined : end).split(';');
+  for (const tag of tags) {
+    if (tag.startsWith('batch=')) return tag.slice('batch='.length) || undefined;
+  }
+  return undefined;
+}
+
 function spec(form: Form, command: string, fields: Partial<Spec> = {}): Spec {
   return {
     form,
@@ -310,6 +321,8 @@ export class ReplyRouter {
   // Folded channel → the last 324 and 329 lines the network sent for it, until
   // a mode change or our own JOIN makes them stale.
   private readonly modes = new Map<string, { mode: string; created: string | null }>();
+  // The `batch=` tag of the line being noted (see noteServerLine).
+  private lineBatch: string | undefined;
 
   constructor(opts: ReplyRouterOptions) {
     this.opts = opts;
@@ -354,6 +367,9 @@ export class ReplyRouter {
   /** Who a line from the server is for. Call for every line, in order. */
   noteServerLine(line: string, command: string, params: string[], source?: string): ReplyOwner {
     this.noteModes(line, command, params, source);
+    // The batch this line is inside, if any: a metadata query's replies are
+    // the lines tagged with ITS batch, not whatever arrives while it's open.
+    this.lineBatch = batchTagOf(line);
     let owner: ReplyOwner | undefined;
     // This is the line the last query's end was waiting on, or the wait is over.
     const settle = this.settle;
@@ -680,8 +696,16 @@ export class ReplyRouter {
           return ref.startsWith('-') && query.batchRef === ref.slice(1) ? 'end' : null;
         }
         if (query.batchRef) {
-          // Inside the query's batch: its, whatever it is.
-          return command === '761' || command === '766' || command === '772' ? 'body' : null;
+          // Inside the query's batch — tagged with its reference — its,
+          // whatever shape the server chose. A bare line while the batch is
+          // open is someone else's.
+          if (this.lineBatch !== query.batchRef) return null;
+          return command === '761' ||
+            command === '766' ||
+            command === '772' ||
+            command === 'METADATA'
+            ? 'body'
+            : null;
         }
         // A bare 761/766 naming the target is a SET's whole reply.
         if ((command === '761' || command === '766') && query.sub === 'SET') {

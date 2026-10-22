@@ -50,6 +50,9 @@ const props = withDefaults(
     // The network the nick is on, for its display name (#607). Absent, the open
     // buffer's network is assumed — right wherever `self` is guessed the same way.
     networkId?: number | null;
+    // No display name lookup: the nick is a relay bot's envelope (someone on
+    // another network), which may happen to spell a local nick.
+    plain?: boolean;
   }>(),
   // An explicit undefined: Vue casts an absent Boolean prop to false, which
   // would read as "not you" and switch the guess off everywhere.
@@ -73,7 +76,7 @@ const networkId = computed(() => {
 // A display name (#607) prints in place of the nick, in the nick's colour, with
 // its own mIRC formatting on top; the nick itself moves to the title.
 const displayName = computed(() =>
-  props.nick ? displayNames.displayNameFor(networkId.value, props.nick) : null,
+  props.nick && !props.plain ? displayNames.displayNameFor(networkId.value, props.nick) : null,
 );
 const nameSegments = computed(() => formattingSegments(displayName.value ?? ''));
 const glyphClass = computed(() => prefixClass(props.modes, props.prefix));

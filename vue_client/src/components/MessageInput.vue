@@ -249,6 +249,7 @@ import {
 import { shouldRepinOnSend } from '../utils/sendScroll.js';
 import { applySpoilerMarkup } from '../utils/spoilerMarkup.js';
 import { buildNickCandidates } from '../utils/nickCompletion.js';
+import { useDisplayNames } from '../composables/useDisplayNames.js';
 import { buildChannelCandidates } from '../utils/channelCompletion.js';
 import { parseAwayFlag } from '../utils/awayFlag.js';
 import {
@@ -306,6 +307,7 @@ const highlightRules = useHighlightRulesStore();
 const chanlist = useChanlistStore();
 const channelListModal = useChannelListModal();
 const nickColors = useNickColors();
+const displayNames = useDisplayNames();
 
 // The ignore rules visible from this network, in /ignore-listing order: globals
 // first (scope null), then this network's own (scope = networkId). The index a
@@ -998,7 +1000,9 @@ function buildNickMatches(buf: Buffer, networkId: number, prefix: string): strin
   const own = networks.states[networkId]?.nick || '';
   const isIgnored = (nick: string, userhost: string | null) =>
     ignores.isIgnored(networkId, nick, userhost ?? '');
-  return buildNickCandidates(buf, own, prefix, isIgnored).map((c) => c.nick);
+  return buildNickCandidates(buf, own, prefix, isIgnored, (nick) =>
+    displayNames.plainDisplayNameFor(networkId, nick),
+  ).map((c) => c.nick);
 }
 
 // Strip-flavored variant: caps at 30 chips and pre-computes the per-nick
@@ -1007,7 +1011,9 @@ function buildNickStripItems(buf: Buffer, networkId: number, prefix: string): Ni
   const own = networks.states[networkId]?.nick || '';
   const isIgnored = (nick: string, userhost: string | null) =>
     ignores.isIgnored(networkId, nick, userhost ?? '');
-  return buildNickCandidates(buf, own, prefix, isIgnored)
+  return buildNickCandidates(buf, own, prefix, isIgnored, (nick) =>
+    displayNames.plainDisplayNameFor(networkId, nick),
+  )
     .slice(0, 30)
     .map((c) => ({ nick: c.nick, color: nickColors.color(c.nick) }));
 }

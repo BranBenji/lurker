@@ -251,3 +251,74 @@ describe('bouncer metadata', () => {
     );
   });
 });
+
+describe('bouncer metadata, the harder cases', () => {
+  it('answers a SYNC from what the connection holds, for that client’s keys only', async () => {
+    const acct = await seedAccount();
+    await join(acct, '#synced');
+    const peer = await rawClient(ircd.port, `sp${seq}`);
+    cleanups.push(() => peer.socket.destroy());
+    peer.send('JOIN #synced');
+    await until(() => acct.conn.channelState('#synced')?.members.has(`sp${seq}`) ?? false, 5000);
+    ircd.setMetadata(`sp${seq}`, 'display-name', 'Synced Peer');
+    ircd.setMetadata(`sp${seq}`, 'pronouns', 'she/her');
+    await until(() => acct.conn.userMetadataRecord(`sp${seq}`)?.pronouns === 'she/her');
+
+    const a = await attach(acct, ['draft/metadata-2', 'batch']);
+    a.send('METADATA * SUB display-name');
+    await a.waitForCommand('770');
+    const me = ircd.client(acct.nick)!;
+    const upstreamBefore = me.sent.filter((l) => l.includes('SYNC')).length;
+    a.send('METADATA #synced SYNC');
+    const start = await a.waitFor((l) => commandOf(l) === 'BATCH' && l.includes('+'), 5000);
+    const ref = start.split(' ')[2].slice(1);
+    await a.waitFor((l) => l.includes(`BATCH -${ref}`), 5000);
+    const inBatch = a.lines.filter((l) => l.startsWith(`@batch=${ref}`));
+    expect(inBatch).toHaveLength(1);
+    expect(inBatch[0]).toContain(`761 ${acct.nick} sp${seq} display-name * :Synced Peer`);
+    // Nothing went up: the answer came from state.
+    expect(me.sent.filter((l) => l.includes('SYNC'))).toHaveLength(upstreamBefore);
+  });
+
+  it('takes a key off the socket when its last holder lets go, and refuses past max-subs', async () => {
+    const acct = await seedAccount();
+    const me = ircd.client(acct.nick)!;
+    const a = await attach(acct, ['draft/metadata-2']);
+    const b = await attach(acct, ['draft/metadata-2']);
+    a.send('METADATA * SUB bot');
+    b.send('METADATA * SUB bot');
+    await a.waitForCommand('770');
+    await b.waitForCommand('770');
+    await until(() => me.sent.some((l) => l === 'METADATA * SUB bot'), 5000, 'bot up');
+    a.send('METADATA * UNSUB bot');
+    await a.waitForCommand('771');
+    await roundTrip(a);
+    expect(me.sent.some((l) => l.startsWith('METADATA * UNSUB'))).toBe(false);
+    b.send('METADATA * UNSUB bot');
+    await b.waitForCommand('771');
+    await until(() => me.sent.some((l) => l === 'METADATA * UNSUB bot'), 5000, 'bot off');
+
+    // The fake allows 10; Lurker's five leave room for five more.
+    a.send('METADATA * SUB k1 k2 k3 k4 k5 k6');
+    // Not waitForCommand: the 770 for `bot` above is already there to match.
+    const ok = await a.waitFor((l) => commandOf(l) === '770' && l.includes('k1'), 5000);
+    expect(ok).toContain('770 ' + acct.nick + ' k1 k2 k3 k4 k5');
+    expect(await a.waitForCommand('FAIL')).toContain('FAIL METADATA TOO_MANY_SUBS k6');
+    // A client leaving releases what only it held.
+    a.close();
+    await until(() => me.sent.some((l) => l.startsWith('METADATA * UNSUB k1')), 5000, 'released');
+  });
+
+  it("relays the web user's own SET to the other clients that subscribed", async () => {
+    const acct = await seedAccount();
+    const a = await attach(acct, ['draft/metadata-2']);
+    a.send('METADATA * SUB display-name');
+    await a.waitForCommand('770');
+    acct.conn.raw('METADATA * SET display-name :Web Me');
+    const got = await a.waitFor((l) => l.includes('Web Me'), 5000);
+    expect(got).toContain(`761 * ${acct.nick} display-name * :Web Me`);
+    // Once, not twice (the raw relay gave it to nobody: the user asked).
+    await roundTrip(a);
+    expect(a.lines.filter((l) => l.includes('Web Me'))).toHaveLength(1);
+  });
+});
