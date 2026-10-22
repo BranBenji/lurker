@@ -34,11 +34,13 @@ function message(id: number, nick: string, minute: number, second = 0) {
   };
 }
 
-function mountCompact() {
-  useSettingsStore().values = {
-    'look.message.layout': 'compact',
-    'look.message.collapse_timestamps': true,
-  } as never;
+function mountCompact(opts: { keepSettings?: boolean } = {}) {
+  if (!opts.keepSettings) {
+    useSettingsStore().values = {
+      'look.message.layout': 'compact',
+      'look.message.collapse_timestamps': true,
+    } as never;
+  }
   const networks = useNetworksStore();
   networks.networks = [{ id: 1, name: 'testnet' }] as never;
   networks.states = { 1: { nick: 'me', state: 'connected', peerPresence: {} } } as never;
@@ -102,6 +104,20 @@ describe('MessageList — compact head timestamp', () => {
     // The track is still in the DOM (the standard layout reads it) but blank
     // of meaning here: compact hides it.
     expect(join.leading).toBe(join.trailing);
+  });
+
+  // The fixture is dated 2026-10-05, which is never today: the date leads.
+  it('puts the date before the time on a line from another day, in the set format', () => {
+    mountCompact();
+    expect(row(1).headTime).toMatch(/^2026-10-05 \d\d:\d\d$/);
+    expect(eventRow(5).trailing).toMatch(/^2026-10-05 /);
+    wrapper!.unmount();
+    useSettingsStore().values = {
+      'look.message.layout': 'compact',
+      'look.buffer.date_format_compact': '',
+    } as never;
+    mountCompact({ keepSettings: true });
+    expect(row(1).headTime).toMatch(/^\d\d:\d\d$/);
   });
 
   it('ignores timestamp collapsing: a head in the same minute still shows its time', () => {

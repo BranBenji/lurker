@@ -776,10 +776,21 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description:
       'Time format used in chat buffers when the compact message layout is ' +
       'active (look.message.layout = compact, or = auto on mobile). ' +
-      "Defaults to HH:mm — compact's right-aligned timestamp is " +
-      'tight on small viewports and seconds are rarely useful at a glance. ' +
+      "Defaults to HH:mm — compact's timestamp sits by the nick, and " +
+      'seconds are rarely useful at a glance. ' +
       'Tokens: YYYY MM DD HH H hh h mm ss a A — hh/h are 12-hour and a/A ' +
-      'are am/pm, e.g. "hh:mm a". Empty string hides the column.',
+      'are am/pm, e.g. "hh:mm a". Empty string hides the time.',
+  },
+  {
+    key: 'look.buffer.date_format_compact',
+    label: 'Compact-layout date format',
+    category: 'appearance',
+    group: 'misc',
+    type: 'string',
+    default: 'YYYY-MM-DD',
+    description:
+      'In the compact layout, the date shown before the time on lines from a day other than ' +
+      'today. Same tokens as the time formats. Empty string never shows a date.',
   },
   {
     key: 'look.bar.time_format',

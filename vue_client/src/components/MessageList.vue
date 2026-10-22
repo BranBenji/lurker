@@ -745,8 +745,17 @@ const nickSet = computed((): Set<string> => {
   return set;
 });
 
+// Compact rows from a day other than today carry the date before the time,
+// as Discord's do (look.buffer.date_format_compact; empty = never).
+const compactDateFormat = computed(() =>
+  compactMode.value ? String(settings.effective('look.buffer.date_format_compact') ?? '') : '',
+);
 function time(iso: string | undefined): string {
-  return formatTimestamp(iso ?? '', (tsFormat.value as string) ?? '');
+  const t = formatTimestamp(iso ?? '', (tsFormat.value as string) ?? '');
+  const dateFmt = compactDateFormat.value;
+  if (!t || !dateFmt || !iso) return t;
+  if (formatDate(iso) === formatDate(new Date().toISOString())) return t;
+  return `${formatTimestamp(iso, dateFmt)} ${t}`;
 }
 
 // Drops the /clear marker for the currently-active buffer. Wired to the
