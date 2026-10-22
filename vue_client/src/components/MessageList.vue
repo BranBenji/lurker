@@ -135,6 +135,15 @@
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
             /></span>
+            <!-- Where the relayed speaker is from, beside the name it qualifies
+                 (as the iOS app places it), muted and unbracketed; the bot
+                 itself is the tooltip. -->
+            <span
+              v-if="row.m?.relaySource"
+              class="relay-source"
+              :title="'Relayed via ' + row.m.relayBot"
+              >{{ row.m.relaySource }}</span
+            >
             <span class="time">{{ time(row.m?.time) }}</span>
           </div>
           <span class="body" :class="bodyClass(row.m)">
@@ -146,12 +155,7 @@
               :network-id="buffer?.networkId ?? null"
               @jump="onReplyContextClick"
             />
-            <span
-              v-if="row.m?.relaySource && !row.continuationAuthor"
-              class="relay-via"
-              :title="'Relayed via ' + row.m.relayBot"
-              >[{{ relayLabel(row.m) }}]</span
-            ><MessageBody
+            <MessageBody
               v-if="previewBody(row.m)"
               :text="row.m?.text"
               :segments="textSegments(row.m)"
@@ -967,6 +971,10 @@ const memberPrefix = computed(() => networks.prefixFor(buffer.value?.networkId))
 // default) to skip the per-row member-list scan entirely.
 function authorModes(m: ChatMessage | undefined): string[] | undefined {
   if (!showModePrefix.value || !m?.nick) return undefined;
+  // A relayed name isn't a channel member: a nicklist hit would be a
+  // spelling coincidence decorating a visitor with a local `@`. Here, so
+  // every layout's head agrees.
+  if (m.relaySource) return undefined;
   const b = buffer.value;
   if (!b || !isChannelTarget(b.target)) return undefined;
   return nickMember(m.nick)?.modes;
@@ -1071,9 +1079,11 @@ function openRelayNickMenu(
   contextMenu.open(items, x, y, triggerEl);
 }
 
-// The "via" affordance shown next to a re-attributed relay line (#277): the
-// `[source]` platform tag. Only rendered when the envelope actually carried a
-// source (the template gates on relaySource), so a bare `<nick> message` relay
+// The "via" affordance shown next to a re-attributed relay line (#277) in the
+// standard layout: the bracketed `[source]` tag at the head of the body (the
+// compact head prints the source beside the nick, unbracketed). Only rendered
+// when the envelope actually carried a source (the template gates on
+// relaySource), so a bare `<nick> message` relay
 // shows no tag and the re-attributed nick just reads as the speaker. The title
 // (set in the template) still names the bot, so provenance is one hover away.
 function relayLabel(m: ChatMessage | undefined): string {
@@ -2833,6 +2843,18 @@ watch(
 .relay-via {
   color: var(--fg-muted);
   margin-right: 1ch;
+  white-space: nowrap;
+}
+/* Compact: the source sits in the head beside the nick instead (see the
+   template); it qualifies the name, so it reads as part of the name line.
+   A bridge can hand over any length of source, so on a narrow head it gives
+   way before the nick does (shrinks twice as readily, then ellipsis). */
+.message-list.compact .line > .head .relay-source {
+  color: var(--fg-muted);
+  flex-shrink: 2;
+  min-width: 4ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 /* Vertical separator between the nick and body columns. Drawn from .body
