@@ -125,16 +125,27 @@
              author continuations so a run of same-author messages reads as
              one block under one time; continuation rows show no time. -->
           <div v-if="!row.continuationAuthor" class="head">
+            <!-- No mode glyph on a relayed name: it isn't a channel member, so a
+                 nicklist hit would be a spelling coincidence. -->
             <span class="prefix" :class="prefixClass(row.m)"
               ><NickRef
                 :nick="row.m?.nick ?? ''"
                 :modes="authorModes(row.m)"
-                :show-prefix="showModePrefix"
+                :show-prefix="showModePrefix && !row.m?.relaySource"
                 :prefix="memberPrefix"
                 :plain="!!row.m?.relaySource"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
             /></span>
+            <!-- Where the relayed speaker is from, beside the name it qualifies
+                 (as the iOS app places it), muted and unbracketed; the bot
+                 itself is the tooltip. -->
+            <span
+              v-if="row.m?.relaySource"
+              class="relay-source"
+              :title="'Relayed via ' + row.m.relayBot"
+              >{{ relayLabel(row.m) }}</span
+            >
             <span class="time">{{ time(row.m?.time) }}</span>
           </div>
           <span class="body" :class="bodyClass(row.m)">
@@ -146,12 +157,7 @@
               :network-id="buffer?.networkId ?? null"
               @jump="onReplyContextClick"
             />
-            <span
-              v-if="row.m?.relaySource && !row.continuationAuthor"
-              class="relay-via"
-              :title="'Relayed via ' + row.m.relayBot"
-              >[{{ relayLabel(row.m) }}]</span
-            ><MessageBody
+            <MessageBody
               v-if="previewBody(row.m)"
               :text="row.m?.text"
               :segments="textSegments(row.m)"
@@ -2834,6 +2840,12 @@ watch(
   color: var(--fg-muted);
   margin-right: 1ch;
   white-space: nowrap;
+}
+/* Compact: the source sits in the head beside the nick instead (see the
+   template); it qualifies the name, so it reads as part of the name line. */
+.message-list.compact .line > .head .relay-source {
+  color: var(--fg-muted);
+  flex-shrink: 0;
 }
 /* Vertical separator between the nick and body columns. Drawn from .body
    so it stretches the full height of the body cell — including wrapped

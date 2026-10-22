@@ -52,6 +52,7 @@ function mountCompact(opts: { keepSettings?: boolean } = {}) {
     message(3, 'alice', 2),
     message(4, 'bob', 2, 10),
     { ...message(5, 'carol', 3), type: 'join' },
+    { ...message(6, 'dave', 4), relayBot: 'bridge', relaySource: 'github' },
   ] as never;
   b.joined = true;
   b.hasMoreOlder = false;
@@ -118,6 +119,17 @@ describe('MessageList — compact head timestamp', () => {
     } as never;
     mountCompact({ keepSettings: true });
     expect(row(1).headTime).toMatch(/^\d\d:\d\d$/);
+  });
+
+  // A relayed line names where the speaker is from beside the name, as the
+  // iOS app does — not in the body, where it reads as part of what was said.
+  it('puts a relayed line’s source in the head, next to the nick', () => {
+    mountCompact();
+    const el = wrapper!.find('[data-msg-id="6"]').element;
+    const source = el.querySelector(':scope > .head .relay-source');
+    expect(source?.textContent).toBe('github');
+    expect(source?.getAttribute('title')).toBe('Relayed via bridge');
+    expect(el.querySelector(':scope > .body .relay-via')).toBeNull();
   });
 
   it('ignores timestamp collapsing: a head in the same minute still shows its time', () => {
