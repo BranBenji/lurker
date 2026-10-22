@@ -19,6 +19,10 @@
 //     chroma, the distance from grey, so a pink fringe goes with the red it
 //     came from. --chroma <0-255> (default 48) is where a pixel counts as
 //     coloured; the fade runs from half of it.
+//     --min-key <percent> (default 20 when keying) leaves out an image whose
+//     keyed area is smaller than that: too little of the nick colour would
+//     show through for the tile to read as one. Every image's keyed share is
+//     printed, so the bar can be set by looking at the list.
 //
 //   node tools/build-avatar-set.mjs --placeholder <out-dir> [count]
 //     A stand-in set of geometric compositions, until the real art lands.
@@ -41,19 +45,25 @@ function usage() {
   console.error(
     'usage: build-avatar-set.mjs <input-dir> <out-dir> [--key <hex> [--fuzz <deg>]]\n' +
       '       build-avatar-set.mjs <input-dir> <out-dir> --key any [--chroma <0-255>]\n' +
+      '         either key form also takes --min-key <percent> (default 20)\n' +
       '       build-avatar-set.mjs --placeholder <out-dir> [count]',
   );
   process.exit(2);
 }
 
-async function writeTile(outDir, index, input, key = null) {
+// Writes tile `index`, or nothing when the key clears less of the image than
+// `minKey` percent. Answers the keyed share (0–100), or null without a key.
+async function writeTile(outDir, index, input, key = null, minKey = 0) {
   const file = path.join(outDir, `${String(index).padStart(3, '0')}.${EXT}`);
-  const source = key ? await keyOut(input, key) : sharp(input);
+  let source = sharp(input);
+  let keyed = null;
+  if (key) ({ image: source, keyed } = await keyOut(input, key));
+  if (keyed !== null && keyed < minKey) return { written: false, keyed };
   await source
     .resize(SIZE, SIZE, { fit: 'cover' })
     .webp({ quality: 82, alphaQuality: 90 })
     .toFile(file);
-  return file;
+  return { written: true, keyed };
 }
 
 // `#rrggbb` → its hue in degrees, or null for a grey (no hue to key on).
@@ -91,6 +101,9 @@ async function keyOut(input, { hue, fuzz, chroma }) {
     .raw()
     .toBuffer({ resolveWithObject: true });
   const soft = fuzz / 3;
+  // The share of the image the key cleared, by alpha taken away.
+  let cleared = 0;
+  const pixels = data.length / 4;
   for (let p = 0; p < data.length; p += 4) {
     if (chroma !== undefined) {
       // Any colour at all: how far from grey, in 0–255.
@@ -99,6 +112,7 @@ async function keyOut(input, { hue, fuzz, chroma }) {
       const lo = chroma / 2;
       if (c <= lo) continue;
       const keep = c >= chroma ? 0 : 1 - (c - lo) / (chroma - lo);
+      cleared += (1 - keep) * (data[p + 3] / 255);
       data[p + 3] = Math.round(data[p + 3] * keep);
       continue;
     }
@@ -109,9 +123,13 @@ async function keyOut(input, { hue, fuzz, chroma }) {
     if (dist > fuzz) continue;
     // Fully clear inside the window, fading out over its last third.
     const keep = dist > fuzz - soft ? (dist - (fuzz - soft)) / soft : 0;
+    cleared += (1 - keep) * (data[p + 3] / 255);
     data[p + 3] = Math.round(data[p + 3] * keep);
   }
-  return sharp(data, { raw: { width: info.width, height: info.height, channels: 4 } });
+  return {
+    image: sharp(data, { raw: { width: info.width, height: info.height, channels: 4 } }),
+    keyed: (cleared / pixels) * 100,
+  };
 }
 
 function writeManifest(outDir, count) {
@@ -121,7 +139,7 @@ function writeManifest(outDir, count) {
   );
 }
 
-async function fromFolder(inputDir, outDir, key) {
+async function fromFolder(inputDir, outDir, key, minKey) {
   const names = fs
     .readdirSync(inputDir)
     .filter((n) => IMAGE_RE.test(n))
@@ -131,13 +149,25 @@ async function fromFolder(inputDir, outDir, key) {
     process.exit(1);
   }
   fs.mkdirSync(outDir, { recursive: true });
+  // Stale tiles from a previous, larger build would outlive the manifest.
+  for (const old of fs.readdirSync(outDir)) {
+    if (/^\d{3}\.\w+$/.test(old)) fs.unlinkSync(path.join(outDir, old));
+  }
   let i = 0;
+  const left = [];
   for (const name of names) {
-    await writeTile(outDir, i, path.join(inputDir, name), key);
-    i++;
+    const { written, keyed } = await writeTile(outDir, i, path.join(inputDir, name), key, minKey);
+    const share = keyed === null ? '' : ` ${keyed.toFixed(0).padStart(3)}% keyed`;
+    if (written) {
+      console.log(`${String(i).padStart(3, '0')}  ${name}${share}`);
+      i++;
+    } else {
+      left.push(name);
+      console.log(`---  ${name}${share}  left out (under ${minKey}%)`);
+    }
   }
   writeManifest(outDir, i);
-  console.log(`${i} tiles → ${outDir}`);
+  console.log(`${i} tiles → ${outDir}${left.length ? `, ${left.length} left out` : ''}`);
 }
 
 // A small deterministic PRNG (mulberry32), so a rebuild gives the same tiles.
@@ -201,10 +231,12 @@ const positional = [];
 let keyHex = null;
 let fuzz = 18;
 let chroma = 48;
+let minKey = null;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--key') keyHex = args[++i];
   else if (args[i] === '--fuzz') fuzz = Number(args[++i]);
   else if (args[i] === '--chroma') chroma = Number(args[++i]);
+  else if (args[i] === '--min-key') minKey = Number(args[++i]);
   else positional.push(args[i]);
 }
 if (positional[0] === '--placeholder') {
@@ -222,7 +254,8 @@ if (positional[0] === '--placeholder') {
     if (hue === null || !Number.isFinite(fuzz) || fuzz <= 0 || fuzz > 90) usage();
     key = { hue, fuzz };
   }
-  await fromFolder(positional[0], positional[1], key);
+  if (minKey !== null && (!Number.isFinite(minKey) || minKey < 0 || minKey > 100)) usage();
+  await fromFolder(positional[0], positional[1], key, key ? (minKey ?? 20) : 0);
 } else {
   usage();
 }
