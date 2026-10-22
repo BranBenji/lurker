@@ -15,6 +15,10 @@
 //     degrees of the key's hue (default 18) with enough saturation is cleared,
 //     with a soft edge over the last third of that window. The nick colour
 //     shows through where it was.
+//     --key any clears every pixel that isn't black, white or grey — by
+//     chroma, the distance from grey, so a pink fringe goes with the red it
+//     came from. --chroma <0-255> (default 48) is where a pixel counts as
+//     coloured; the fade runs from half of it.
 //
 //   node tools/build-avatar-set.mjs --placeholder <out-dir> [count]
 //     A stand-in set of geometric compositions, until the real art lands.
@@ -35,7 +39,8 @@ const IMAGE_RE = /\.(png|webp|jpe?g|gif|avif)$/i;
 
 function usage() {
   console.error(
-    'usage: build-avatar-set.mjs <input-dir> <out-dir>\n' +
+    'usage: build-avatar-set.mjs <input-dir> <out-dir> [--key <hex> [--fuzz <deg>]]\n' +
+      '       build-avatar-set.mjs <input-dir> <out-dir> --key any [--chroma <0-255>]\n' +
       '       build-avatar-set.mjs --placeholder <out-dir> [count]',
   );
   process.exit(2);
@@ -80,13 +85,23 @@ function rgbToHsv(r, g, b) {
 
 // The image with every pixel near the key's hue made transparent. Done at the
 // source size, before the resize, so the edge is judged on real pixels.
-async function keyOut(input, { hue, fuzz }) {
+async function keyOut(input, { hue, fuzz, chroma }) {
   const { data, info } = await sharp(input)
     .ensureAlpha()
     .raw()
     .toBuffer({ resolveWithObject: true });
   const soft = fuzz / 3;
   for (let p = 0; p < data.length; p += 4) {
+    if (chroma !== undefined) {
+      // Any colour at all: how far from grey, in 0–255.
+      const c =
+        Math.max(data[p], data[p + 1], data[p + 2]) - Math.min(data[p], data[p + 1], data[p + 2]);
+      const lo = chroma / 2;
+      if (c <= lo) continue;
+      const keep = c >= chroma ? 0 : 1 - (c - lo) / (chroma - lo);
+      data[p + 3] = Math.round(data[p + 3] * keep);
+      continue;
+    }
     const [h, s, v] = rgbToHsv(data[p], data[p + 1], data[p + 2]);
     // Greys and near-blacks have no hue worth keying.
     if (s < 0.35 || v < 0.12) continue;
@@ -185,9 +200,11 @@ const args = process.argv.slice(2);
 const positional = [];
 let keyHex = null;
 let fuzz = 18;
+let chroma = 48;
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--key') keyHex = args[++i];
   else if (args[i] === '--fuzz') fuzz = Number(args[++i]);
+  else if (args[i] === '--chroma') chroma = Number(args[++i]);
   else positional.push(args[i]);
 }
 if (positional[0] === '--placeholder') {
@@ -197,7 +214,10 @@ if (positional[0] === '--placeholder') {
   await placeholder(positional[1], count);
 } else if (positional.length === 2) {
   let key = null;
-  if (keyHex) {
+  if (keyHex === 'any') {
+    if (!Number.isFinite(chroma) || chroma <= 0 || chroma > 255) usage();
+    key = { chroma };
+  } else if (keyHex) {
     const hue = hueOf(keyHex);
     if (hue === null || !Number.isFinite(fuzz) || fuzz <= 0 || fuzz > 90) usage();
     key = { hue, fuzz };
