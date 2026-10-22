@@ -127,6 +127,41 @@ describe('ClientLineFilter', () => {
     expect(filterFor([cap], IN_A_CHANNEL).apply(line)).toEqual([line]);
   });
 
+  // draft/metadata-2 (#607): its numerics and batches reach only a client that
+  // has the cap. Which keys and targets is the bouncer session's decision.
+  describe('metadata numerics and batches', () => {
+    it('keeps 760–775 from a client without the cap', () => {
+      for (const line of [
+        ':irc.test 761 * bob avatar * :https://example.test/a.png',
+        ':irc.test 766 * bob avatar :Key deleted',
+        ':irc.test 770 me :avatar',
+        ':irc.test 774 me *ALL 0 :Try again later',
+        ':irc.test 760 me bob pronouns * :they/them',
+      ]) {
+        expect(filterFor([]).apply(line)).toEqual([]);
+        expect(filterFor(['draft/metadata-2']).apply(line)).toEqual([line]);
+      }
+    });
+
+    it('opens a metadata batch only for a client with both batch and the cap', () => {
+      const open = ':irc.test BATCH +m1 metadata #c';
+      const inner = '@batch=m1 :irc.test 761 me #c display-name * :The C';
+      const close = ':irc.test BATCH -m1';
+      const without = filterFor(['batch']);
+      expect(without.apply(open)).toEqual([]);
+      expect(without.apply(inner)).toEqual([]);
+      expect(without.apply(close)).toEqual([]);
+      const withCap = filterFor(['batch', 'draft/metadata-2']);
+      expect(withCap.apply(open)).toEqual([open]);
+      expect(withCap.apply(inner)).toEqual([inner]);
+      expect(withCap.apply(close)).toEqual([close]);
+      // The cap without batch: the lines, unwrapped.
+      const noBatch = filterFor(['draft/metadata-2']);
+      expect(noBatch.apply(open)).toEqual([]);
+      expect(noBatch.apply(inner)).toEqual([':irc.test 761 me #c display-name * :The C']);
+    });
+  });
+
   // The network's one MONITOR list has Lurker's nicks and every client's, so a
   // presence line can be about someone this client neither shares a channel
   // with nor watches.

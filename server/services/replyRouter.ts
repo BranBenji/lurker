@@ -210,7 +210,12 @@ type Form =
   | 'ison'
   | 'userhost'
   | 'away'
-  | 'accept';
+  | 'accept'
+  // METADATA (draft/metadata-2): SUB/UNSUB answer with a 770/771, SUBS with a
+  // `metadata-subs` batch, and GET/LIST/SYNC/CLEAR/SET with a `metadata` batch
+  // (a SET's single 761 comes bare on ergo). The batch's own BATCH lines carry
+  // the query; a 774 ends a SYNC the server postpones.
+  | 'metadata';
 
 // The kinds whose replies name nothing to match them by. One of these waits for
 // the last of its kind to be answered. A 221 names nothing either: without its
@@ -241,6 +246,11 @@ interface Spec {
   anyChannel: boolean;
   // What a client is sent if the query ends without its end numeric.
   abort: { numeric: string; params: string[] } | null;
+  // The reference of the batch a metadata query's replies arrive in, once its
+  // BATCH + line has come; the matching BATCH - ends the query.
+  batchRef: string;
+  // A METADATA query's subcommand: what ends it differs by one.
+  sub: string;
 }
 
 interface Query extends Spec {
@@ -266,6 +276,17 @@ interface Settle {
   timer: ReturnType<typeof setTimeout> | null;
 }
 
+// The `batch=<ref>` tag on a line, or undefined.
+function batchTagOf(line: string): string | undefined {
+  if (!line.startsWith('@')) return undefined;
+  const end = line.indexOf(' ');
+  const tags = line.slice(1, end < 0 ? undefined : end).split(';');
+  for (const tag of tags) {
+    if (tag.startsWith('batch=')) return tag.slice('batch='.length) || undefined;
+  }
+  return undefined;
+}
+
 function spec(form: Form, command: string, fields: Partial<Spec> = {}): Spec {
   return {
     form,
@@ -276,6 +297,8 @@ function spec(form: Form, command: string, fields: Partial<Spec> = {}): Spec {
     letter: '',
     anyChannel: false,
     abort: null,
+    batchRef: '',
+    sub: '',
     ...fields,
   };
 }
@@ -298,6 +321,8 @@ export class ReplyRouter {
   // Folded channel → the last 324 and 329 lines the network sent for it, until
   // a mode change or our own JOIN makes them stale.
   private readonly modes = new Map<string, { mode: string; created: string | null }>();
+  // The `batch=` tag of the line being noted (see noteServerLine).
+  private lineBatch: string | undefined;
 
   constructor(opts: ReplyRouterOptions) {
     this.opts = opts;
@@ -342,6 +367,9 @@ export class ReplyRouter {
   /** Who a line from the server is for. Call for every line, in order. */
   noteServerLine(line: string, command: string, params: string[], source?: string): ReplyOwner {
     this.noteModes(line, command, params, source);
+    // The batch this line is inside, if any: a metadata query's replies are
+    // the lines tagged with ITS batch, not whatever arrives while it's open.
+    this.lineBatch = batchTagOf(line);
     let owner: ReplyOwner | undefined;
     // This is the line the last query's end was waiting on, or the wait is over.
     const settle = this.settle;
@@ -644,6 +672,51 @@ export class ReplyRouter {
       case 'accept':
         if (command === '281') return 'body';
         return command === '282' ? 'end' : null;
+      case 'metadata': {
+        // Several METADATA queries can be on the wire at once — the user's
+        // LIST, Lurker's SUB, a bouncer client's SYNC — so every reply is
+        // matched on what it names, by subcommand, as the other forms are.
+        if (command === 'BATCH') {
+          const ref = params[0] ?? '';
+          const type = params[1] ?? '';
+          if (ref.startsWith('+')) {
+            if (query.batchRef) return null;
+            const mine =
+              (type === 'metadata-subs' && query.sub === 'SUBS') ||
+              (type === 'metadata' &&
+                (query.sub === 'GET' ||
+                  query.sub === 'LIST' ||
+                  query.sub === 'SYNC' ||
+                  query.sub === 'CLEAR') &&
+                names(2));
+            if (!mine) return null;
+            query.batchRef = ref.slice(1);
+            return 'body';
+          }
+          return ref.startsWith('-') && query.batchRef === ref.slice(1) ? 'end' : null;
+        }
+        if (query.batchRef) {
+          // Inside the query's batch — tagged with its reference — its,
+          // whatever shape the server chose. A bare line while the batch is
+          // open is someone else's.
+          if (this.lineBatch !== query.batchRef) return null;
+          return command === '761' ||
+            command === '766' ||
+            command === '772' ||
+            command === 'METADATA'
+            ? 'body'
+            : null;
+        }
+        // A bare 761/766 naming the target is a SET's whole reply.
+        if ((command === '761' || command === '766') && query.sub === 'SET') {
+          return names(1) ? 'end' : null;
+        }
+        if (command === '770') return query.sub === 'SUB' ? 'end' : null;
+        if (command === '771') return query.sub === 'UNSUB' ? 'end' : null;
+        // RPL_METADATASYNCLATER for a SYNC's target: the sync is postponed.
+        if (command === '774') return query.sub === 'SYNC' && names(1) ? 'end' : null;
+        return null;
+      }
     }
   }
 
@@ -809,6 +882,18 @@ export class ReplyRouter {
         return params[0] === '*'
           ? spec('accept', command, { abort: { numeric: '282', params: [] } })
           : null;
+      case 'METADATA': {
+        // METADATA <target> <sub> …: every subcommand answers something, so
+        // each is a query. A SET's reply is a bare 761 naming the target
+        // (`*` for ourselves, which the server answers with our nick).
+        const target = params[0] ?? '';
+        const sub = (params[1] ?? '').toUpperCase();
+        if (!target || !sub) return null;
+        // `*` is us (the server answers with our nick); `*ALL` is ergo's
+        // sync-everything target, answered with a batch labelled the same.
+        const own = target === '*' ? [this.opts.ownNick()] : [];
+        return spec('metadata', command, { targets: fold([target, ...own]), sub });
+      }
       default:
         return null;
     }

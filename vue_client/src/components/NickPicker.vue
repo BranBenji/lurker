@@ -24,7 +24,10 @@
     @close="emit('close')"
   >
     <template #row="{ row }">
-      <span class="nick" :style="row.color ? { color: row.color } : null">{{ row.nick }}</span>
+      <span class="nick" :style="row.color ? { color: row.color } : null">{{
+        row.displayName ?? row.nick
+      }}</span>
+      <span v-if="row.displayName" class="badge">{{ row.nick }}</span>
       <span v-if="row.recent" class="badge">recent</span>
     </template>
   </VerticalPopover>
@@ -35,6 +38,7 @@ import { ref, computed } from 'vue';
 import { buildNickCandidates } from '../utils/nickCompletion.js';
 import { useIgnoresStore } from '../stores/ignores.js';
 import { useNickColors } from '../composables/useNickColors.js';
+import { useDisplayNames } from '../composables/useDisplayNames.js';
 import VerticalPopover from './VerticalPopover.vue';
 import type { PopoverNav } from './popoverNav.js';
 import type { Buffer } from '../stores/buffers.js';
@@ -44,6 +48,7 @@ interface NickRow {
   lc: string;
   recent: boolean;
   color: string | null;
+  displayName?: string;
 }
 
 const props = withDefaults(
@@ -70,6 +75,7 @@ const emit = defineEmits<{
 
 const ignores = useIgnoresStore();
 const nickColors = useNickColors();
+const displayNames = useDisplayNames();
 
 const rows = computed<NickRow[]>(() => {
   // Bail before touching buffer/query/ignores while closed: a computed only
@@ -82,13 +88,17 @@ const rows = computed<NickRow[]>(() => {
   const isIgnored = networkId
     ? (nick: string, userhost: string | null) => ignores.isIgnored(networkId, nick, userhost ?? '')
     : null;
-  return buildNickCandidates(props.buffer, props.selfNick, props.query, isIgnored)
+  // Display names match too (#607): `@bra` finds the user shown as "Brad
+  // Root"; the nick is what gets inserted.
+  const nameOf = (nick: string) => displayNames.plainDisplayNameFor(networkId, nick);
+  return buildNickCandidates(props.buffer, props.selfNick, props.query, isIgnored, nameOf)
     .slice(0, 50)
     .map((c) => ({
       nick: c.nick,
       lc: c.nick.toLowerCase(),
       recent: c.recent,
       color: nickColors.color(c.nick),
+      ...(c.displayName ? { displayName: c.displayName } : {}),
     }));
 });
 

@@ -1635,3 +1635,47 @@ describe('user_themes — export/import', () => {
     expect(themesService.list(bob.id)[0].values['look.color.bg']).toBe('#101010');
   });
 });
+
+// Uploaded avatar sets (#607): the rows travel in data.json, the tiles as
+// avatar_sets/<id>/<nnn>.webp entries, and the look.avatars.set pointer
+// rewrites through the id map like a theme pointer.
+describe('importFromZipBuffer — avatar sets', () => {
+  it('round-trips a set with its tiles and the pointer at it', async () => {
+    const { alice } = seedAlice();
+    const avatarSets = (await import('./avatarSetsService.js')).default;
+    const square = (color: string) =>
+      sharp({ create: { width: 16, height: 16, channels: 4, background: color } })
+        .png()
+        .toBuffer();
+    const made = await avatarSets.createFromImages(alice.id, 'Blocks', [
+      { name: 'a.png', data: await square('#ff0000') },
+      { name: 'b.png', data: await square('#00ff00') },
+      { name: 'c.png', data: await square('#0000ff') },
+      { name: 'd.png', data: await square('#ffffff') },
+    ]);
+    expect(made.ok).toBe(true);
+    const setId = made.ok ? made.set.id : 0;
+    setUserSetting(alice.id, 'look.avatars.set', String(setId));
+
+    const bob = createUser(`bob_avatars_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    const buf = await exportToBuffer(alice.id, { includeMessages: false });
+    const names = [...(await unzipToMap(buf)).keys()].filter((n) => n.startsWith('avatar_sets/'));
+    expect(names).toEqual([0, 1, 2, 3].map((i) => `avatar_sets/${setId}/00${i}.webp`));
+
+    await importFromZipBuffer(bob.id, buf);
+    const bobSets = avatarSets.list(bob.id);
+    expect(bobSets).toHaveLength(1);
+    expect(bobSets[0]).toMatchObject({ name: 'Blocks', count: 4 });
+    expect(bobSets[0].id).not.toBe(setId);
+    // Same bytes, tile for tile (the normaliser is deterministic on its own output).
+    for (let i = 0; i < 4; i++) {
+      const a = avatarSets.tile(alice.id, setId, i)!;
+      const b = avatarSets.tile(bob.id, bobSets[0].id, i)!;
+      expect(Buffer.compare(Buffer.from(a), Buffer.from(b))).toBe(0);
+    }
+    const pointer = db
+      .prepare('SELECT value FROM user_settings WHERE user_id = ? AND key = ?')
+      .get(bob.id, 'look.avatars.set') as { value: string };
+    expect(JSON.parse(pointer.value)).toBe(String(bobSets[0].id));
+  });
+});

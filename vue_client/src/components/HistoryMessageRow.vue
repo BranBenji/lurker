@@ -44,7 +44,12 @@
     <div v-else class="body">
       <!-- IRCv3 reply (#998): the line it answers, as in the timeline. Static —
            the row's click jumps to the reply, where the quote jumps on. -->
-      <ReplyQuote v-if="message.replyTo" :parent="shown.parent" static />
+      <ReplyQuote
+        v-if="message.replyTo"
+        :parent="shown.parent"
+        :network-id="message.networkId"
+        static
+      />
       <span class="nick" :style="nickStyle">{{ line.nick }}</span>
       <span class="sep">|</span>
       <span class="text"

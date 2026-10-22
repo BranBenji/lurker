@@ -732,3 +732,23 @@ export function splitTextByTokens(
   }
   return out.length ? out : [{ text: '' }];
 }
+
+// Formatting only: the runs of `text` as segments, with no URL, nick or
+// channel detection. For text that is a name, not a message — a display name
+// (#607) keeps its mIRC colours but "foo.com" in one is not a link.
+export function formattingSegments(text: string): RenderSegment[] {
+  const out: RenderSegment[] = [];
+  for (const run of parseIrcFormatting(text)) {
+    if (!run.text) continue;
+    const seg: RenderSegment = { text: run.text };
+    if (run.bold) seg.bold = true;
+    if (run.italic) seg.italic = true;
+    if (run.underline) seg.underline = true;
+    if (run.strike) seg.strike = true;
+    if (run.reverse) seg.reverse = true;
+    if (run.fg != null) seg.fg = run.fg;
+    if (run.bg != null) seg.bg = run.bg;
+    out.push(seg);
+  }
+  return out.length ? out : [{ text: '' }];
+}

@@ -701,6 +701,19 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'Show the channel user-mode prefix (@ op, + voice, % halfop, ~ owner, & admin) before a ' +
       "speaker's nick in the message list. Reflects the user's current status in that channel.",
   },
+  {
+    key: 'look.nick.display_names',
+    label: 'Show display names',
+    category: 'appearance',
+    group: 'nicks',
+    type: 'bool',
+    default: true,
+    description:
+      'On networks that carry IRCv3 metadata, show the name a user set for themselves ' +
+      '(display-name) in place of their nick in the message list, the member list and DM ' +
+      'rows. The nick stays the identity: it shows on hover and in the profile, colors are ' +
+      'keyed on it, and mentions still match it. Off = nicks everywhere.',
+  },
 
   // ─── Misc look ────────────────────────────────────────────────────────
   {
@@ -763,10 +776,21 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     description:
       'Time format used in chat buffers when the compact message layout is ' +
       'active (look.message.layout = compact, or = auto on mobile). ' +
-      "Defaults to HH:mm — compact's right-aligned timestamp is " +
-      'tight on small viewports and seconds are rarely useful at a glance. ' +
+      "Defaults to HH:mm — compact's timestamp sits by the nick, and " +
+      'seconds are rarely useful at a glance. ' +
       'Tokens: YYYY MM DD HH H hh h mm ss a A — hh/h are 12-hour and a/A ' +
-      'are am/pm, e.g. "hh:mm a". Empty string hides the column.',
+      'are am/pm, e.g. "hh:mm a". Empty string hides the time.',
+  },
+  {
+    key: 'look.buffer.date_format_compact',
+    label: 'Compact-layout date format',
+    category: 'appearance',
+    group: 'misc',
+    type: 'string',
+    default: 'YYYY-MM-DD',
+    description:
+      'In the compact layout, the date shown before the time on lines from a day other than ' +
+      'today. Same tokens as the time formats. Empty string never shows a date.',
   },
   {
     key: 'look.bar.time_format',
@@ -1852,6 +1876,34 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'light mode, look.theme.dark when it is in dark mode. The preference is ' +
       'read per device, so a phone in light mode and a desktop in dark mode ' +
       'each get their assigned theme from the same synced settings.',
+  },
+  // ─── Avatars (#607) ─────────────────────────────────────────────────────
+  // `avatars` is absent from CATEGORIES so the registry pane never renders
+  // these; the Appearance pane's Avatars section does, beside the sets. The
+  // pointer works like the theme pointers: the bundled ids are in
+  // avatarTiles.ts, anything else is the id of a set the user uploaded.
+  {
+    key: 'look.message.avatars',
+    label: 'Show avatars',
+    category: 'avatars',
+    group: 'sets',
+    type: 'bool',
+    default: false,
+    description:
+      'An avatar beside each author in the compact layout. The standard layout has no room ' +
+      'for one.',
+  },
+  {
+    key: 'look.avatars.set',
+    label: 'Avatar set',
+    category: 'avatars',
+    group: 'sets',
+    type: 'string',
+    default: 'initial-dark',
+    description:
+      'Which set generated avatars draw from: "initial-light" or "initial-dark" for the first ' +
+      'letter of the name, "plain-light" or "plain-dark" for a bust silhouette, "ealain" for the ' +
+      'bundled art, or the id of a set you uploaded.',
   },
   {
     key: 'look.theme.active',

@@ -44,6 +44,13 @@ import {
 import { getOption } from './settingsRegistry.js';
 import { isBuiltinThemeId, THEME_POINTER_KEYS } from '../../shared/themePresets.js';
 import themesService from './themesService.js';
+import avatarSetsService, { AVATAR_SET_POINTER_KEY } from './avatarSetsService.js';
+import {
+  AVATAR_SET_IMAGE_MAX_BYTES,
+  AVATAR_SET_MAX_TILES,
+  AVATAR_SET_UNPACKED_MAX_BYTES,
+} from '../../shared/avatarSets.js';
+import { isBuiltinAvatarSetId } from '../../shared/avatarTiles.js';
 import { encryptSecret } from '../utils/secretCrypto.js';
 import {
   importRow as importBufferRow,
@@ -129,10 +136,22 @@ function openEntryStream(zip: ZipFile, entry: Entry): Promise<NodeJS.ReadableStr
   });
 }
 
-async function readEntryBuffer(zip: ZipFile, entry: Entry): Promise<Buffer> {
+async function readEntryBuffer(zip: ZipFile, entry: Entry): Promise<Buffer>;
+async function readEntryBuffer(zip: ZipFile, entry: Entry, max: number): Promise<Buffer | null>;
+// With `max`, an entry whose bytes run past it (whatever its header said)
+// answers null, read no further than that.
+async function readEntryBuffer(zip: ZipFile, entry: Entry, max?: number): Promise<Buffer | null> {
   const stream = await openEntryStream(zip, entry);
   const chunks: Buffer[] = [];
-  for await (const chunk of stream) chunks.push(chunk as Buffer);
+  let size = 0;
+  for await (const chunk of stream) {
+    size += (chunk as Buffer).length;
+    if (max !== undefined && size > max) {
+      (stream as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+      return null;
+    }
+    chunks.push(chunk as Buffer);
+  }
   return Buffer.concat(chunks);
 }
 
@@ -371,6 +390,29 @@ function insertTable(
       }
     }
 
+    // The avatar-set pointer (#607): same shape as the theme pointers, with
+    // the built-in ids ('default', 'plain-*', 'initial-*') travelling as-is.
+    if (
+      table === 'user_settings' &&
+      typeof row.key === 'string' &&
+      row.key === AVATAR_SET_POINTER_KEY
+    ) {
+      let oldId: unknown;
+      try {
+        oldId = JSON.parse(String(row.value));
+      } catch {
+        continue;
+      }
+      if (typeof oldId !== 'string') continue;
+      if (!isBuiltinAvatarSetId(oldId)) {
+        const n = Number(oldId);
+        if (!Number.isInteger(n) || String(n) !== oldId) continue;
+        const mapped = idMaps.avatar_sets?.get(n);
+        if (mapped === undefined) continue;
+        row.value = JSON.stringify(String(mapped));
+      }
+    }
+
     // Saved themes route through the service (same reasoning as ignored_masks
     // below): a crafted/edited archive must not plant what POST /api/themes
     // would 400 — non-themed keys, type-invalid values, reserved/over-long
@@ -601,6 +643,7 @@ function resetImportedData(userId: number): void {
     db.prepare('DELETE FROM highlight_rules WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM user_settings WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM user_themes WHERE user_id = ?').run(userId);
+    db.prepare('DELETE FROM avatar_sets WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM upload_history WHERE user_id = ?').run(userId);
     db.prepare('DELETE FROM network_away_state WHERE user_id = ?').run(userId);
     // Network-scoped buffers cascade with networks above, but an app-scoped row
@@ -699,12 +742,59 @@ export async function importFromZipFile(
       const m = name.match(/^thumbnails\/(\d+)\.(?:jpg|webp)$/);
       if (m) thumbs.set(parseInt(m[1], 10), await readEntryBuffer(zip, entry));
     }
+    // ---- avatar set tiles (#607), by the archive's set id. They go back
+    // through the service with the rows, which re-judges every image the way
+    // an upload is judged, so a crafted archive can't plant what POST
+    // /api/avatar-sets would refuse. ----
+    // Bounded like an upload: only sets the archive's data.json names, at
+    // most the tile limit per set, each entry no larger than one image, and
+    // the whole lot no more than one upload may unpack to. A crafted
+    // archive's oversize entries are left in the zip unread.
+    const avatarTiles = new Map<number, Array<{ name: string; data: Buffer }>>();
+    const archivedSets = new Set(
+      ((data.avatar_sets ?? []) as Array<Record<string, unknown>>)
+        .map((row) => Number(row?.id))
+        .filter((id) => Number.isInteger(id)),
+    );
+    let tileBytes = 0;
+    for (const [name, entry] of entries) {
+      const m = name.match(/^avatar_sets\/(\d+)\/(\d{3})\.webp$/);
+      if (!m) continue;
+      const setId = parseInt(m[1], 10);
+      if (!archivedSets.has(setId)) continue;
+      const list = avatarTiles.get(setId) ?? [];
+      if (list.length >= AVATAR_SET_MAX_TILES) continue;
+      if (entry.uncompressedSize > AVATAR_SET_IMAGE_MAX_BYTES) continue;
+      if (tileBytes + entry.uncompressedSize > AVATAR_SET_UNPACKED_MAX_BYTES) break;
+      const buf = await readEntryBuffer(zip, entry, AVATAR_SET_IMAGE_MAX_BYTES);
+      if (!buf) continue;
+      tileBytes += buf.length;
+      list.push({ name: m[2], data: buf });
+      avatarTiles.set(setId, list);
+    }
 
     const counts: Record<string, number> = {};
     const idMaps: Record<string, Map<unknown, unknown>> = {};
     let thumbnailsAttached = 0;
 
+    const avatarSetIds = new Map<unknown, unknown>();
     try {
+      // ---- avatar sets (#607): through the service, ahead of Phase A, since
+      // the image normaliser is async and Phase A is one synchronous
+      // transaction. An invalid set drops alone; the pointer rewrite in Phase
+      // A then misses and falls back to the bundled set. The wipe runs first,
+      // so a retried import can't collide on the NOCASE UNIQUE name. Inside
+      // the try: a failure after the first set is rolled back with the rest.
+      db.prepare('DELETE FROM avatar_sets WHERE user_id = ?').run(targetUserId);
+      for (const row of (data.avatar_sets ?? []) as Array<Record<string, unknown>>) {
+        if (!row || typeof row !== 'object') continue;
+        const oldId = Number(row.id);
+        if (!Number.isInteger(oldId)) continue;
+        const tiles = avatarTiles.get(oldId) ?? [];
+        const result = await avatarSetsService.createFromImages(targetUserId, row.name, tiles);
+        if (result.ok) avatarSetIds.set(row.id, result.set.id);
+      }
+
       // ---- Phase A: data.json tables that don't depend on messages (one tx). ----
       db.transaction(() => {
         // Fresh accounts usually have an auto-synced system.timezone row; wipe
@@ -714,6 +804,7 @@ export async function importFromZipFile(
         // archive's on the NOCASE UNIQUE constraint (or silently merge).
         db.prepare('DELETE FROM user_settings WHERE user_id = ?').run(targetUserId);
         db.prepare('DELETE FROM user_themes WHERE user_id = ?').run(targetUserId);
+        // avatar_sets were wiped and re-ingested just above, outside this tx.
         for (const table of IMPORT_ORDER) {
           const def = EXPORT_TABLES[table as keyof typeof EXPORT_TABLES] as
             | ExportTableDefFull
@@ -721,6 +812,13 @@ export async function importFromZipFile(
           if (!def || def.mode === 'skip') continue;
           if (def.section && def.section !== 'data') continue;
           if (dependsOnMessages(def)) continue;
+          if (table === 'avatar_sets') {
+            // Ingested before the transaction (the normaliser is async); the
+            // sets are already in, so only the id map is needed here.
+            idMaps.avatar_sets = avatarSetIds;
+            counts.avatar_sets = avatarSetIds.size;
+            continue;
+          }
           insertTable(table, data, idMaps, counts, targetUserId);
         }
       })();

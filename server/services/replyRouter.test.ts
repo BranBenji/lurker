@@ -330,6 +330,29 @@ describe('who a reply is for', () => {
       'ACCEPT *',
       [':irc.test 281 me alice bob', ':irc.test 282 me :End of /ACCEPT list.'],
     ],
+    // draft/metadata-2 (#607): a SET's reply is one bare 761 naming the
+    // target (`*` means us); a LIST is a `metadata` batch; a SUB ends on its 770.
+    [
+      'METADATA SET',
+      'METADATA * SET avatar :https://x/a.png',
+      [':irc.test 761 me me avatar * :https://x/a.png'],
+    ],
+    [
+      'METADATA LIST',
+      'METADATA bob LIST',
+      [
+        ':irc.test BATCH +m1 metadata bob',
+        '@batch=m1 :irc.test 761 me bob display-name * :Bob',
+        '@batch=m1 :irc.test 766 me bob avatar :key not set',
+        ':irc.test BATCH -m1',
+      ],
+    ],
+    [
+      'METADATA SUB',
+      'METADATA * SUB avatar display-name',
+      [':irc.test 770 me avatar display-name'],
+    ],
+    ['METADATA SYNC postponed', 'METADATA #c SYNC', [':irc.test 774 me #c 5']],
   ];
 
   it.each(cases)(
@@ -815,5 +838,59 @@ describe('the wire is in the order lines went', () => {
     const line = ':irc.example.test 403 me #c :No such channel';
     const msg = ircLineParser(line)!;
     expect(router.noteServerLine(line, msg.command, msg.params, 'irc.example.test')).toBe(client);
+  });
+});
+
+// Several METADATA queries share the wire (#607): the user's LIST, Lurker's
+// SUB, a bouncer client's SYNC. Each reply goes to the one it names.
+describe('METADATA queries on the wire together', () => {
+  it('gives a SUB its 770 and leaves the 774 after it unasked', () => {
+    const { router, hear } = setup();
+    const user = new Client();
+    router.send(user, 'METADATA bob LIST');
+    router.send('lurker', 'METADATA * SUB color');
+    expect(hear(':irc.test 770 me :color')).toBe('lurker');
+    // ergo's "sync everything later" answers nobody's query by name.
+    expect(hear(':irc.test 774 * *ALL 0 :Try again later')).toBe('unasked');
+    // The LIST is still waiting, and its batch is its.
+    expect(hear(':irc.test BATCH +m1 metadata bob')).toBe(user);
+    expect(hear('@batch=m1 :irc.test 761 me bob display-name * :Bob')).toBe(user);
+    expect(hear(':irc.test BATCH -m1')).toBe(user);
+  });
+
+  it('gives a *ALL SYNC its batch, not a LIST for someone else', () => {
+    const { router, hear } = setup();
+    const user = new Client();
+    router.send(user, 'METADATA bob LIST');
+    router.send('lurker', 'METADATA *ALL SYNC');
+    expect(hear(':irc.test BATCH +s1 metadata *ALL')).toBe('lurker');
+    expect(hear('@batch=s1 :irc.test 761 * bob display-name * :Bob')).toBe('lurker');
+    expect(hear(':irc.test BATCH -s1')).toBe('lurker');
+    expect(hear(':irc.test BATCH +m2 metadata bob')).toBe(user);
+  });
+
+  it("does not let a peer's bare 761 end a LIST, only a SET's", () => {
+    const { router, hear } = setup();
+    const user = new Client();
+    router.send(user, 'METADATA bob LIST');
+    expect(hear(':irc.test 761 * bob avatar * :https://x/a.png')).toBe('unasked');
+    router.send(user, 'METADATA * SET avatar :https://x/me.png');
+    expect(hear(':irc.test 761 me me avatar * :https://x/me.png')).toBe(user);
+  });
+});
+
+// A metadata query's replies are the lines tagged with ITS batch, not whatever
+// arrives while the batch is open.
+describe('METADATA replies and the batch tag', () => {
+  it('leaves a bare 761 for someone else unasked while a LIST batch is open', () => {
+    const { router, hear } = setup();
+    const user = new Client();
+    router.send(user, 'METADATA bob LIST');
+    expect(hear(':irc.test BATCH +m1 metadata bob')).toBe(user);
+    expect(hear(':irc.test 761 * carol avatar * :https://x/c.png')).toBe('unasked');
+    expect(hear('@batch=m1 :irc.test 761 me bob display-name * :Bob')).toBe(user);
+    // A different batch's line, interleaved, isn't its either.
+    expect(hear('@batch=zz :irc.test 761 * dave status * :hi')).toBe('unasked');
+    expect(hear(':irc.test BATCH -m1')).toBe(user);
   });
 });

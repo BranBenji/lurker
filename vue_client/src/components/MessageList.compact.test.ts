@@ -34,11 +34,13 @@ function message(id: number, nick: string, minute: number, second = 0) {
   };
 }
 
-function mountCompact() {
-  useSettingsStore().values = {
-    'look.message.layout': 'compact',
-    'look.message.collapse_timestamps': true,
-  } as never;
+function mountCompact(opts: { keepSettings?: boolean } = {}) {
+  if (!opts.keepSettings) {
+    useSettingsStore().values = {
+      'look.message.layout': 'compact',
+      'look.message.collapse_timestamps': true,
+    } as never;
+  }
   const networks = useNetworksStore();
   networks.networks = [{ id: 1, name: 'testnet' }] as never;
   networks.states = { 1: { nick: 'me', state: 'connected', peerPresence: {} } } as never;
@@ -49,6 +51,7 @@ function mountCompact() {
     message(2, 'alice', 0, 30),
     message(3, 'alice', 2),
     message(4, 'bob', 2, 10),
+    { ...message(5, 'carol', 3), type: 'join' },
   ] as never;
   b.joined = true;
   b.hasMoreOlder = false;
@@ -62,6 +65,16 @@ function row(id: number) {
   return {
     headTime: el.querySelector(':scope > .head .time')?.textContent ?? null,
     bodyTime: el.querySelector(':scope > .time')?.textContent ?? null,
+  };
+}
+
+// An event row (a join) in the compact layout: the time trails the text
+// inside the body; the right-edge time track carries nothing readable.
+function eventRow(id: number) {
+  const el = wrapper!.find(`[data-msg-id="${id}"]`).element;
+  return {
+    trailing: el.querySelector(':scope > .body .time.trailing')?.textContent ?? null,
+    leading: el.querySelector(':scope > .time')?.textContent ?? null,
   };
 }
 
@@ -82,6 +95,29 @@ describe('MessageList — compact head timestamp', () => {
     mountCompact();
     expect(row(2)).toEqual({ headTime: null, bodyTime: null });
     expect(row(3)).toEqual({ headTime: null, bodyTime: null });
+  });
+
+  it('trails an event row’s time after its text, not at the right edge', () => {
+    mountCompact();
+    const join = eventRow(5);
+    expect(join.trailing).toBeTruthy();
+    // The track is still in the DOM (the standard layout reads it) but blank
+    // of meaning here: compact hides it.
+    expect(join.leading).toBe(join.trailing);
+  });
+
+  // The fixture is dated 2026-10-05, which is never today: the date leads.
+  it('puts the date before the time on a line from another day, in the set format', () => {
+    mountCompact();
+    expect(row(1).headTime).toMatch(/^2026-10-05 \d\d:\d\d$/);
+    expect(eventRow(5).trailing).toMatch(/^2026-10-05 /);
+    wrapper!.unmount();
+    useSettingsStore().values = {
+      'look.message.layout': 'compact',
+      'look.buffer.date_format_compact': '',
+    } as never;
+    mountCompact({ keepSettings: true });
+    expect(row(1).headTime).toMatch(/^\d\d:\d\d$/);
   });
 
   it('ignores timestamp collapsing: a head in the same minute still shows its time', () => {

@@ -69,6 +69,7 @@ export const UPSTREAM_CAPS = [
   'chghost',
   'echo-message',
   'extended-monitor',
+  'draft/metadata-2',
 ];
 
 // Minimal stand-in for IrcConnection covering exactly what bouncer.ts reads.
@@ -118,6 +119,15 @@ export class FakeUpstream {
   mayBeJoined = (name: string): boolean => this.isChannelJoined(name);
   // IrcConnection.restoring: true while an engine re-attach replays the session.
   restoring = false;
+  // IRCv3 metadata (#607), as much as the bouncer reads: the network's limits
+  // (null = the cap isn't on), the keys clients asked for, and per-nick
+  // records. A test models the network's lines with pushUpstream.
+  metadataLimits = (): null => null;
+  readonly metadataKeys: string[] = [];
+  addMetadataKeys = (keys: string[]): void => {
+    this.metadataKeys.push(...keys);
+  };
+  userMetadataRecord = (_nick: string): Record<string, string> | null => null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   client: any;
 

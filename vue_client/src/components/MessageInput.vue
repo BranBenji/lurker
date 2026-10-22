@@ -172,6 +172,13 @@ import { parseDccCommand } from '../lib/commands/dcc.js';
 import { parseXdccCommand } from '../lib/commands/xdcc.js';
 import { isXdccPlaceholder } from '../../../shared/xdcc.js';
 import { bufferPeer } from '../lib/commands/ping.js';
+import {
+  parseAvatarCommand,
+  parseDisplayNameCommand,
+  parseMetadataCommand,
+} from '../lib/commands/metadata.js';
+import { parseAvatarsCommand } from '../lib/commands/avatars.js';
+import { useAvatarSetsStore } from '../stores/avatarSets.js';
 import { parseThemeCommand } from '../lib/commands/theme.js';
 import { parseSheepCommand, SHEEP_USAGE_LINES } from '../lib/commands/sheep.js';
 import { useSheepStore } from '../stores/sheep.js';
@@ -242,6 +249,7 @@ import {
 import { shouldRepinOnSend } from '../utils/sendScroll.js';
 import { applySpoilerMarkup } from '../utils/spoilerMarkup.js';
 import { buildNickCandidates } from '../utils/nickCompletion.js';
+import { useDisplayNames } from '../composables/useDisplayNames.js';
 import { buildChannelCandidates } from '../utils/channelCompletion.js';
 import { parseAwayFlag } from '../utils/awayFlag.js';
 import {
@@ -299,6 +307,7 @@ const highlightRules = useHighlightRulesStore();
 const chanlist = useChanlistStore();
 const channelListModal = useChannelListModal();
 const nickColors = useNickColors();
+const displayNames = useDisplayNames();
 
 // The ignore rules visible from this network, in /ignore-listing order: globals
 // first (scope null), then this network's own (scope = networkId). The index a
@@ -991,7 +1000,9 @@ function buildNickMatches(buf: Buffer, networkId: number, prefix: string): strin
   const own = networks.states[networkId]?.nick || '';
   const isIgnored = (nick: string, userhost: string | null) =>
     ignores.isIgnored(networkId, nick, userhost ?? '');
-  return buildNickCandidates(buf, own, prefix, isIgnored).map((c) => c.nick);
+  return buildNickCandidates(buf, own, prefix, isIgnored, (nick) =>
+    displayNames.plainDisplayNameFor(networkId, nick),
+  ).map((c) => c.nick);
 }
 
 // Strip-flavored variant: caps at 30 chips and pre-computes the per-nick
@@ -1000,7 +1011,9 @@ function buildNickStripItems(buf: Buffer, networkId: number, prefix: string): Ni
   const own = networks.states[networkId]?.nick || '';
   const isIgnored = (nick: string, userhost: string | null) =>
     ignores.isIgnored(networkId, nick, userhost ?? '');
-  return buildNickCandidates(buf, own, prefix, isIgnored)
+  return buildNickCandidates(buf, own, prefix, isIgnored, (nick) =>
+    displayNames.plainDisplayNameFor(networkId, nick),
+  )
     .slice(0, 30)
     .map((c) => ({ nick: c.nick, color: nickColors.color(c.nick) }));
 }
@@ -2706,6 +2719,10 @@ const COMMANDS_LINES = [
   '  /whois <nick>          — query user info (renders in server buffer)',
   '  /ctcp <nick> <type>    — CTCP query (VERSION/PING/TIME/CLIENTINFO/SOURCE)',
   '  /accept [nick…]        — caller ID (+g): let nicks message you; -nick removes; no arg lists',
+  '  /displayname <name>|off — the name shown for you on networks with IRCv3 metadata',
+  '  /avatar <url>|off      — your avatar image (an https URL) on networks with IRCv3 metadata',
+  '  /metadata set|del|list|clear — any IRCv3 metadata key: set <key> <value> · del <key> · list [nick|#chan]',
+  '  /avatars [list|use <set>|delete <set>] — the tile set behind generated avatars (Settings › Appearance)',
   '  /ping [nick]           — CTCP ping a user for round-trip latency',
   '  /kick <nick> [reason]  — kick from current channel',
   '  /kickban <nick> [msg]  — kick and ban in one step',
@@ -3409,6 +3426,53 @@ function runSheep(argLine: string, networkId: number | null, target: string): vo
 // User-wide like /set, so it runs from anywhere including the system buffer.
 // REST-backed + async → fire-and-forget from handleCommand, reports when
 // settled.
+// /avatars (#607): list the tile sets, point at one, or delete an upload.
+// Names match case-insensitively; a bundled id works as a name too.
+async function runAvatars(
+  argLine: string,
+  networkId: number | null,
+  target: string,
+): Promise<void> {
+  const cmd = parseAvatarsCommand(argLine);
+  const reply = (msg: string) => localInfo(networkId, target, msg);
+  if (cmd.kind === 'error') return reply(`/avatars: ${cmd.message}`);
+  const avatarSets = useAvatarSetsStore();
+  const findByName = (name: string) =>
+    avatarSets.all.find(
+      (s) => s.name.toLowerCase() === name.toLowerCase() || s.id === name.toLowerCase(),
+    ) || null;
+  if (cmd.kind === 'list') {
+    reply(`avatar sets (${avatarSets.all.length}):`);
+    for (const s of avatarSets.all) {
+      const active = s.id === avatarSets.activeSetId;
+      const marks = [s.builtin ? 'built-in' : '', active ? 'active' : '']
+        .filter(Boolean)
+        .join(', ');
+      reply(`  ${active ? '*' : ' '} ${s.name} — ${s.count} tiles${marks ? `  (${marks})` : ''}`);
+    }
+    const on = settings.effective('look.message.avatars') === true;
+    reply(
+      on
+        ? '  avatars are on (compact layout)'
+        : '  avatars are off — Settings › Appearance › Avatars, or /set look.message.avatars true',
+    );
+    return;
+  }
+  try {
+    const s = findByName(cmd.name);
+    if (!s) return reply(`/avatars: no set named "${cmd.name}" — /avatars lists them`);
+    if (cmd.kind === 'use') {
+      await avatarSets.use(s.id);
+      return reply(`generated avatars now use ${s.name}.`);
+    }
+    if (s.builtin) return reply('/avatars: the built-in set cannot be deleted');
+    await avatarSets.remove(Number(s.id));
+    return reply(`deleted avatar set ${s.name}.`);
+  } catch (e: any) {
+    reply(`/avatars: ${e?.message || 'failed'}`);
+  }
+}
+
 async function runTheme(argLine: string, networkId: number | null, target: string): Promise<void> {
   const cmd = parseThemeCommand(argLine);
   const reply = (msg: string) => localInfo(networkId, target, msg);
@@ -4007,6 +4071,10 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       // Theme presets. App-scoped like /set; async like /dcc.
       void runTheme(argLine, networkId, target);
       return true;
+    case 'avatars':
+      // Avatar tile sets (#607). App-scoped and async like /theme.
+      void runAvatars(argLine, networkId, target);
+      return true;
     case 'sheep':
       // Undocumented. App-scoped; runs from anywhere, including the system buffer.
       runSheep(argLine, networkId, target);
@@ -4283,6 +4351,31 @@ function handleCommand(line: string, networkId: number | null, target: string): 
         { type: 'raw', networkId, line: nicks ? `ACCEPT ${nicks}` : 'ACCEPT *' },
         line,
       );
+    }
+    // IRCv3 metadata (#607): our own keys. The reply (a 761, or a FAIL) is
+    // echoed by the server where a /command's reply goes.
+    case 'metadata':
+    case 'avatar':
+    case 'displayname': {
+      if (networkId == null) {
+        localInfo(
+          networkId,
+          target,
+          `/${verb}: there's no network here. Run it in a network's buffer.`,
+        );
+        return true;
+      }
+      const parsed =
+        verb === 'avatar'
+          ? parseAvatarCommand(argLine)
+          : verb === 'displayname'
+            ? parseDisplayNameCommand(argLine)
+            : parseMetadataCommand(argLine);
+      if ('error' in parsed) {
+        localInfo(networkId, target, parsed.error);
+        return true;
+      }
+      return sendOrToast({ type: 'raw', networkId, line: parsed.line }, line);
     }
     case 'whois': {
       const who = rest[0];

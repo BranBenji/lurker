@@ -9,6 +9,7 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useThemesStore } from '../stores/themes.js';
+import { AVATAR_SET_POINTER_KEY, useAvatarSetsStore } from '../stores/avatarSets.js';
 import { THEME_POINTER_KEYS } from '../../../shared/themePresets.js';
 import { WS_CLOSE_SESSION_REVOKED } from '../../../shared/wsCloseCodes.js';
 import { primePreviews } from './useLinkPreview.js';
@@ -385,6 +386,14 @@ function applyEvent(event: any): boolean {
     // Incremental nicklist patch — not persisted, so no pushMessage/dedupe.
     case 'member-update':
       buffers.updateMember(event.networkId, event.target, event.member?.nick, event.member);
+      break;
+    // IRCv3 metadata (#607): a nick's whole record (null forgets it), or a
+    // channel's. State, not history: neither is persisted or rendered as a row.
+    case 'user-metadata':
+      networks.applyUserMetadata(event.networkId, event.nick, event.values ?? null);
+      break;
+    case 'channel-metadata':
+      buffers.setChannelMetadata(event.networkId, event.target, event.values);
       break;
     case 'channel-joined':
       buffers.ensure(event.networkId, event.target);
@@ -805,6 +814,12 @@ function applySnapshot(snapshot: any[], globalIgnores: any[] = []): void {
     .catch(() => {
       /* ignore — the bootstrap list (or the last successful fetch) keeps rendering */
     });
+  // Uploaded avatar sets (#607): same reasoning.
+  useAvatarSetsStore()
+    .fetchAll()
+    .catch(() => {
+      /* ignore — the last successful fetch keeps rendering */
+    });
   for (const net of snapshot) {
     for (const ch of net.channels) {
       // Snapshot members are already { nick, modes } objects from the server.
@@ -825,6 +840,8 @@ function applySnapshot(snapshot: any[], globalIgnores: any[] = []): void {
         modeParams: ch.modeParams,
         createdAt: ch.createdAt,
       });
+      // Absent from a server that predates metadata (#607): an empty record.
+      buffers.setChannelMetadata(net.networkId, ch.name, ch.metadata);
     }
   }
 }
@@ -994,6 +1011,26 @@ function handleMessage(raw: string): void {
     if (THEME_POINTER_KEYS.some((k) => k in changed && !themes.byId(String(changed[k])))) {
       themes.fetchAll().catch(() => {});
     }
+    // The avatar-set pointer (#607), the same way: a set this tab hasn't
+    // fetched resolves as the bundled one until the list arrives.
+    const avatarSets = useAvatarSetsStore();
+    if (
+      AVATAR_SET_POINTER_KEY in changed &&
+      !avatarSets.byId(String(changed[AVATAR_SET_POINTER_KEY]))
+    ) {
+      avatarSets.fetchAll().catch(() => {
+        /* ignore — the next avatar-sets-changed or connect refetches */
+      });
+    }
+    return;
+  }
+  if (payload.kind === 'avatar-sets-changed') {
+    // Uploaded avatar sets changed somewhere (#607): refetch, the themes contract.
+    useAvatarSetsStore()
+      .fetchAll()
+      .catch(() => {
+        /* ignore — the last successful fetch keeps rendering */
+      });
     return;
   }
   if (payload.kind === 'themes-changed') {

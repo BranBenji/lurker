@@ -34,10 +34,33 @@
       <!-- Identity + activity merged into one headerless table; the status pills
            sit under the table (below Channels), then the note section follows. -->
       <section v-if="hasDetails" class="section">
+        <!-- IRCv3 metadata (#607): the avatar the user set, served through the
+             media proxy (never the origin), beside what they said about themselves. -->
+        <img v-if="meta?.avatarUrl" class="avatar" :src="meta.avatarUrl" alt="" />
         <dl>
+          <template v-if="meta?.displayName">
+            <dt>Display name</dt>
+            <dd><RenderSegments :segments="displayNameSegments" /></dd>
+          </template>
           <template v-if="whois?.real_name">
             <dt>Real name</dt>
             <dd>{{ whois.real_name }}</dd>
+          </template>
+          <template v-if="meta?.pronouns">
+            <dt>Pronouns</dt>
+            <dd>{{ meta.pronouns }}</dd>
+          </template>
+          <template v-if="meta?.status">
+            <dt>Status</dt>
+            <dd>{{ meta.status }}</dd>
+          </template>
+          <template v-if="meta?.homepage">
+            <dt>Homepage</dt>
+            <dd>
+              <a class="msg-link" :href="meta.homepage" target="_blank" rel="noreferrer noopener">{{
+                meta.homepage
+              }}</a>
+            </dd>
           </template>
           <template v-if="hostmask">
             <dt>Hostmask</dt>
@@ -166,6 +189,8 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { socketSend } from '../composables/useSocket.js';
 import { formatDateTime } from '../utils/timestamp.js';
 import { splitChannelToken } from '../utils/memberPrefix.js';
+import { formattingSegments } from '../utils/nickColor.js';
+import RenderSegments from './RenderSegments.vue';
 import { isPeerAway, isPeerOffline, isPeerOnline } from '../utils/peerPresence.js';
 import {
   BadgeCheckIcon,
@@ -204,6 +229,11 @@ const isRelay = computed(() => relayBots.isRelay(props.networkId, props.nick));
 
 const entry = computed(() => whoisStore.entryFor(props.networkId, props.nick));
 const whois = computed(() => entry.value?.data ?? null);
+
+// IRCv3 metadata (#607), live from the networks store: a WHOIS's 760 lines
+// land there too, so this is current whether or not the reply has come.
+const meta = computed(() => networks.metadataFor(props.networkId, props.nick));
+const displayNameSegments = computed(() => formattingSegments(meta.value?.displayName ?? ''));
 
 const selfNick = computed(() => networks.states[props.networkId]?.nick ?? null);
 const isSelf = computed(
@@ -364,6 +394,14 @@ const statusLine = computed<'not-found' | 'waiting' | null>(() => {
 // have anything at all to display.
 const hasDetails = computed(
   () =>
+    !!(
+      meta.value &&
+      (meta.value.displayName ||
+        meta.value.avatarUrl ||
+        meta.value.pronouns ||
+        meta.value.status ||
+        meta.value.homepage)
+    ) ||
     !!(
       whois.value &&
       (whois.value.real_name ||
@@ -532,6 +570,17 @@ function copyHostmask() {
   padding-top: var(--space-7);
 }
 
+/* The metadata avatar (#607): a square at the top right of the details, the
+   rows flowing beside it. Sized in em so it follows the one font size. */
+.avatar {
+  float: right;
+  width: 4em;
+  height: 4em;
+  object-fit: cover;
+  border-radius: var(--radius-md);
+  margin: 0 0 var(--space-3) var(--space-5);
+  background: var(--bg-soft);
+}
 dl {
   display: grid;
   grid-template-columns: max-content 1fr;

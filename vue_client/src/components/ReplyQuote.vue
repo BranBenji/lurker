@@ -31,7 +31,13 @@
     ><span class="reply-mark" role="img" aria-label="In reply to">╭─</span
     ><span class="reply-text"
       ><template v-if="parent"
-        >{{ marks[0] }}<NickRef :nick="parent.nick" :self="parent.self" />{{ marks[1] }}
+        >{{ marks[0]
+        }}<NickRef
+          :nick="parent.nick"
+          :self="parent.self"
+          :network-id="networkId"
+          :plain="!!parent.relaySource"
+        />{{ marks[1] }}
         <span
           v-if="parent.relaySource"
           class="reply-relay"
@@ -55,6 +61,9 @@ const props = defineProps<{
   // A relayed line comes unwrapped (QuotedLine), `self` then saying whether
   // the person in it is you (useReplyQuote).
   parent: QuotedLine | null;
+  // The network the quoted line is on, for its author's display name (#607);
+  // a search or history result can come from a network other than the open one.
+  networkId?: number | null;
   // Not a control of its own: clicks fall through to what it sits in.
   static?: boolean;
 }>();

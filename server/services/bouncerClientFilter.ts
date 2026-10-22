@@ -182,6 +182,14 @@ const PRESENCE_COMMANDS = new Set(['AWAY', 'ACCOUNT', 'CHGHOST', 'SETNAME']);
 const MULTILINE_BATCH = 'draft/multiline';
 const MULTILINE_CONCAT = 'draft/multiline-concat';
 
+// draft/metadata-2 (#607): the numerics 760–775 and the batches that carry them
+// mean nothing to a client without the cap, and the spec sends them only to one
+// with it. The bouncer decides WHICH keys and targets each client gets
+// (BouncerSession.wantsMetadataLine); this is the cap gate alone.
+const METADATA_CAP = 'draft/metadata-2';
+const METADATA_BATCH_TYPES = new Set(['metadata', 'metadata-subs']);
+const METADATA_NUMERIC = /^7(6\d|7[0-5])$/;
+
 // Commands a client gets only after negotiating the cap (soju's SendMessage).
 // Lurker doesn't ask networks for some of these caps, so their commands can't
 // arrive today. They're listed anyway: asking a network for a cap changes what
@@ -250,7 +258,10 @@ export class ClientLineFilter {
     if (msg.command === 'BATCH') {
       const [refParam = '', type = ''] = msg.params;
       if (refParam.startsWith('+')) {
-        const opened = caps.has('batch') && type !== MULTILINE_BATCH;
+        const opened =
+          caps.has('batch') &&
+          type !== MULTILINE_BATCH &&
+          !(METADATA_BATCH_TYPES.has(type) && !caps.has(METADATA_CAP));
         this.batches.set(refParam.slice(1), {
           type,
           opened,
@@ -272,6 +283,7 @@ export class ClientLineFilter {
     if (gate && !caps.has(gate)) {
       return msg.command === 'CHGHOST' ? this.chghostFallback(msg, relayedAt) : [];
     }
+    if (METADATA_NUMERIC.test(msg.command) && !caps.has(METADATA_CAP)) return [];
     if (PRESENCE_COMMANDS.has(msg.command) && !this.inAudience(msg)) return [];
 
     if (msg.command === 'INVITE' && !caps.has('invite-notify')) {

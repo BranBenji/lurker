@@ -24,6 +24,13 @@ If you know the command, you never need to reach for the mouse.
   `/away` with no message) clears it. Add `-all` for every network. The **Scope
   away to all networks by default** setting flips this, and `-one` then limits it
   to the current network.
+- `/displayname <name>` and `/avatar <https://…/image.png>` — the name and
+  picture other people see for you on networks that keep profile data (IRCv3
+  metadata; Ergo does). `off` clears either. `/metadata set|del|list|clear`
+  reaches any key.
+- `/avatars` — list the tile sets behind generated avatars; `/avatars use <set>`
+  picks one, `/avatars delete <set>` removes an upload. The sets live in
+  Settings › Appearance › Avatars.
 
 ## Reference
 

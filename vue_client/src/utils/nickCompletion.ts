@@ -46,6 +46,19 @@ interface BufferForCompletion {
 export interface NickCandidate {
   nick: string;
   recent: boolean;
+  // The plain display name the match was made on, when there is one (#607):
+  // what the row shows beside the nick. The nick is what gets inserted.
+  displayName?: string;
+}
+
+// A prefix matches a nick, or a display name by its start or the start of any
+// word in it: `bra` and `root` both find the user shown as "Brad Root".
+function matches(lower: string, nick: string, displayName: string | null): boolean {
+  if (nick.toLowerCase().startsWith(lower)) return true;
+  if (!displayName) return false;
+  const name = displayName.toLowerCase();
+  if (name.startsWith(lower)) return true;
+  return name.split(/\s+/).some((word) => word.startsWith(lower));
 }
 
 export function buildNickCandidates(
@@ -53,11 +66,14 @@ export function buildNickCandidates(
   selfNick: string | null | undefined,
   prefix: string | null | undefined,
   isIgnored?: ((nick: string, userhost: string | null) => boolean) | null,
+  // The plain display name for a nick, where the network carries one (#607).
+  displayNameOf?: ((nick: string) => string | null) | null,
 ): NickCandidate[] {
   if (!buf) return [];
   const lower = (prefix || '').toLowerCase();
   const seen = new Set<string>();
   if (selfNick) seen.add(selfNick.toLowerCase());
+  const nameOf = (nick: string) => displayNameOf?.(nick) ?? null;
 
   const memberNames = (buf.members || [])
     .map((m) => (typeof m === 'string' ? m : m.nick))
@@ -82,21 +98,23 @@ export function buildNickCandidates(
   for (const s of speakers) {
     const lc = s.nick.toLowerCase();
     if (seen.has(lc)) continue;
-    if (!lc.startsWith(lower)) continue;
+    const name = nameOf(s.nick);
+    if (!matches(lower, s.nick, name)) continue;
     if (filterSpeakersByMembership && !memberLcSet.has(lc)) continue;
     if (isIgnored && isIgnored(s.nick, memberUserhost(s.nick))) continue;
     seen.add(lc);
-    out.push({ nick: s.nick, recent: true });
+    out.push({ nick: s.nick, recent: true, ...(name ? { displayName: name } : {}) });
   }
 
   const sortedMembers = memberNames.toSorted((a, b) => a.localeCompare(b));
   for (const n of sortedMembers) {
     const lc = n.toLowerCase();
     if (seen.has(lc)) continue;
-    if (!lc.startsWith(lower)) continue;
+    const name = nameOf(n);
+    if (!matches(lower, n, name)) continue;
     if (isIgnored && isIgnored(n, memberUserhost(n))) continue;
     seen.add(lc);
-    out.push({ nick: n, recent: false });
+    out.push({ nick: n, recent: false, ...(name ? { displayName: name } : {}) });
   }
 
   return out;

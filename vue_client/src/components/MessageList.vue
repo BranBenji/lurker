@@ -7,7 +7,7 @@
   <div
     ref="scroller"
     class="message-list"
-    :class="{ compact: compactMode }"
+    :class="{ compact: compactMode, avatars: showAvatars }"
     @scroll="onScroll"
     @wheel="onWheel"
   >
@@ -94,6 +94,10 @@
             ><template v-else-if="g.kind === 'joinedAndLeft'"> joined briefly</template
             ><template v-else-if="g.kind === 'rehosted'"> changed host</template
             ><template v-else-if="g.letter">{{ modePhrase(g) }}</template></template
+          ><!-- Compact: the time follows the text, as on every compact row. --><span
+            v-if="compactMode && !row.continuationTime"
+            class="time trailing"
+            >{{ time(row.time) }}</span
           >
         </span>
       </div>
@@ -105,6 +109,17 @@
         @click="onMessageRowClick($event, row.m)"
       >
         <template v-if="compactMode && row.m?.type === 'message'">
+          <!-- The author's avatar (#607), in the gutter every row reserves
+               while avatars are on; only the run's first row draws one. -->
+          <NickAvatar
+            v-if="showAvatars && !row.continuationAuthor"
+            class="avatar"
+            :nick="row.m?.nick ?? ''"
+            :network-id="buffer?.networkId ?? null"
+            :plain="!!row.m?.relaySource"
+            interactive
+            @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
+          />
           <!-- Compact-mode message rows: nick and a right-aligned timestamp
              on a head line above the body. The head is omitted entirely on
              author continuations so a run of same-author messages reads as
@@ -116,6 +131,7 @@
                 :modes="authorModes(row.m)"
                 :show-prefix="showModePrefix"
                 :prefix="memberPrefix"
+                :plain="!!row.m?.relaySource"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
             /></span>
@@ -127,6 +143,7 @@
             <ReplyQuote
               v-if="row.m?.replyTo && !row.replyContinued"
               :parent="row.replyParent ?? null"
+              :network-id="buffer?.networkId ?? null"
               @jump="onReplyContextClick"
             />
             <span
@@ -172,6 +189,7 @@
                 :modes="authorModes(row.m)"
                 :show-prefix="showModePrefix"
                 :prefix="memberPrefix"
+                :plain="!!row.m?.relaySource"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /></template
             ><template v-else>{{ row.continuationAuthor ? '' : prefixText(row.m) }}</template></span
@@ -182,6 +200,7 @@
             <ReplyQuote
               v-if="row.m?.replyTo && !row.replyContinued"
               :parent="row.replyParent ?? null"
+              :network-id="buffer?.networkId ?? null"
               @jump="onReplyContextClick"
             />
             <span
@@ -320,6 +339,13 @@
             <template v-else-if="row.m?.type === 'error'"
               ><LinkedText :text="row.m.text ?? ''"
             /></template>
+            <!-- Compact: every row keeps its time by its text, where the head keeps it by
+                 the nick — nothing sits at the right edge. After the chain's last branch
+                 (see the note below), so it starts a chain of its own. --><span
+              v-if="compactMode && !row.continuationTime"
+              class="time trailing"
+              >{{ time(row.m?.time) }}</span
+            >
             <!-- ⚠ Attachments used to be mounted HERE, outside the chain, and the reason is
                  worth keeping: a `v-if` sitting between RenderSegments and the first
                  `v-else-if` re-parents the ENTIRE event chain (join/part/quit/kick/…) onto
@@ -410,6 +436,7 @@ import { smartHidesMode } from '../../../shared/modes.js';
 import { describeMode } from '../../../shared/modeNarration.js';
 import type { ModeChange } from '../../../shared/modes.js';
 import NickRef from './NickRef.vue';
+import NickAvatar from './NickAvatar.vue';
 import LinkedText from './LinkedText.vue';
 import RenderSegments from './RenderSegments.vue';
 import MessageBody from './MessageBody.vue';
@@ -718,8 +745,17 @@ const nickSet = computed((): Set<string> => {
   return set;
 });
 
+// Compact rows from a day other than today carry the date before the time,
+// as Discord's do (look.buffer.date_format_compact; empty = never).
+const compactDateFormat = computed(() =>
+  compactMode.value ? String(settings.effective('look.buffer.date_format_compact') ?? '') : '',
+);
 function time(iso: string | undefined): string {
-  return formatTimestamp(iso ?? '', (tsFormat.value as string) ?? '');
+  const t = formatTimestamp(iso ?? '', (tsFormat.value as string) ?? '');
+  const dateFmt = compactDateFormat.value;
+  if (!t || !dateFmt || !iso) return t;
+  if (formatDate(iso) === formatDate(new Date().toISOString())) return t;
+  return `${formatTimestamp(iso, dateFmt)} ${t}`;
 }
 
 // Drops the /clear marker for the currently-active buffer. Wired to the
@@ -1107,6 +1143,12 @@ const compactMode = computed(() => {
 // It ignores timestamp collapsing: a message's time lives on its head, so
 // every head shows one and continuation rows show none.
 const effectiveCollapseAuthors = computed(() => compactMode.value || collapseAuthorsEnabled.value);
+// Avatars (#607) live in the compact layout only: the standard grid has no
+// column for them. The setting is read here so the gutter class and the tile
+// agree.
+const showAvatars = computed(
+  () => compactMode.value && settings.effective('look.message.avatars') === true,
+);
 const effectiveCollapseTimestamps = computed(
   () => !compactMode.value && collapseTimestampsEnabled.value,
 );
@@ -2576,7 +2618,10 @@ watch(
      prepend watcher in <script setup> handles position preservation
      manually with a known-stable anchor (the OLD first message). */
   overflow-anchor: none;
-  padding: var(--space-2) var(--space-6);
+  /* The side margin is each ROW's padding, not the list's, so a row's hover
+     and highlight backgrounds paint edge to edge (a subgrid row's padding is
+     taken up by the shared first and last tracks, so columns stay aligned). */
+  padding: var(--space-2) 0;
   display: grid;
   /* Nick column has a 16ch floor (matching the most common modern NICKLEN)
      so the layout is consistent across buffers regardless of who's talking,
@@ -2595,6 +2640,7 @@ watch(
   grid-template-columns: subgrid;
   align-items: baseline;
   position: relative;
+  padding-inline: var(--space-6);
 }
 /* Alt-row striping is a standard-mode helper for telling adjacent same-type
    rows apart in a dense column. In compact mode, message groups already
@@ -2852,7 +2898,10 @@ watch(
 @media (max-width: 768px) {
   .message-list:not(.compact) {
     grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
-    padding: var(--space-2) var(--space-4);
+  }
+  .message-list:not(.compact) .line,
+  .message-list:not(.compact) > .notice {
+    padding-inline: var(--space-4);
   }
   .message-list:not(.compact) .time {
     display: none;
@@ -2874,7 +2923,6 @@ watch(
 .message-list.compact {
   /* Single content column — the 3-col subgrid alignment goes away. */
   grid-template-columns: minmax(0, 1fr);
-  padding: var(--space-2) var(--space-4);
 }
 .message-list.compact .line {
   /* Per-row grid: head spans every column above the body row; body row
@@ -2892,7 +2940,7 @@ watch(
   align-items: baseline;
   column-gap: 0.75ch;
   row-gap: 0;
-  padding: var(--space-1) 0;
+  padding: var(--space-1) var(--space-4);
   /* Group separator: every non-continuation line marks the start of a new
      visual cluster (message head, action, notice, system event,
      consolidation summary). Transparent (not padding) so adjacent hover
@@ -2906,9 +2954,11 @@ watch(
   margin-top: 0;
 }
 /* Client-side dividers (unread/away/back/date) also mark a cluster boundary,
-   so give them the same top gap as .line in compact mode. */
-.message-list.compact .notice {
+   so give them the same top gap as .line in compact mode, and the same side
+   padding. */
+.message-list.compact > .notice {
   margin-top: var(--space-5);
+  padding-inline: var(--space-4);
 }
 .message-list.compact .line > .head {
   grid-area: head;
@@ -2927,11 +2977,10 @@ watch(
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* The head's time takes the far right edge, lining up with the times on
-   event rows. */
+/* The head's time sits right after the nick, as Slack and Discord place
+   it; nothing in the compact layout sits at the right edge. */
 .message-list.compact .line > .head .time {
   flex-shrink: 0;
-  margin-left: auto;
   padding-right: 0;
 }
 .message-list.compact .line > .prefix {
@@ -2944,15 +2993,70 @@ watch(
   padding-left: 0;
 }
 .message-list.compact .line > .time {
-  grid-area: time;
+  /* The right-edge time track goes unused: an event row's time follows its
+     text instead (.time.trailing), and a head's follows the nick. */
+  display: none;
+}
+.message-list.compact .time.trailing {
   color: var(--fg-muted);
-  padding-right: 0;
   padding-left: 0.75ch;
+  white-space: nowrap;
 }
 /* The vertical separator between nick and body columns belongs to the
    3-column standard layout — drop it in compact mode. */
 .message-list.compact .line > .body::before {
   display: none;
+}
+/* Avatars (#607): a gutter on the left of EVERY compact row — continuation
+   rows and event rows too, so bodies stay on one edge — with the tile drawn
+   at the top of a run's first row. Absolute so the row's grid is untouched.
+   The size is in em (one font size everywhere), smaller on a phone where
+   compact is the default and width is scarce. A hairline down the gutter's
+   right edge makes it read as a panel beside the text, continuous through
+   the row gaps: painted on the scroller, repeating down the scrolled content
+   (background-attachment: local), at the row's own left padding plus the
+   tile and a gap. */
+.message-list.compact.avatars {
+  --avatar-size: 2.9em;
+  /* The same space on the tile's right as the list's own padding gives it on
+     the left, so the tile sits centred in its panel. */
+  --avatar-gutter: calc(var(--avatar-size) + var(--space-4));
+  background-image: linear-gradient(var(--border), var(--border));
+  background-size: 1px 100%;
+  background-repeat: repeat-y;
+  background-position: calc(var(--space-4) + var(--avatar-gutter)) 0;
+  background-attachment: local;
+}
+.message-list.compact.avatars .line {
+  position: relative;
+  padding-left: calc(var(--space-4) + var(--avatar-gutter) + var(--space-5));
+}
+/* A touch below the row's own top padding: the head line's text sits a
+   little way into its line box, and a tile flush with the padding reads as
+   floating above the nick. In em, so it follows the font. */
+.message-list.compact.avatars .line > .avatar {
+  position: absolute;
+  left: var(--space-4);
+  top: calc(var(--space-1) + 0.2em);
+}
+/* With the body flush under the nick, weight is what tells the head line
+   from the text — the same job the standard grid's column gap does. */
+.message-list.compact.avatars .line > .head .prefix {
+  font-weight: 600;
+}
+/* A message row has no line-level prefix, so its body sits in the second
+   track behind an empty first one — and the grid's column gap between them
+   indents it by a character. Beside the gutter's hairline that reads as a
+   stray margin: let the body span both tracks so it starts at the edge.
+   Event rows keep their prefix and its gap. */
+.message-list.compact.avatars .line > .head ~ .body,
+.message-list.compact.avatars .line.cont-author > .body {
+  grid-column: 1 / 3;
+}
+@media (max-width: 768px) {
+  .message-list.compact.avatars {
+    --avatar-size: 2.25em;
+  }
 }
 
 .notice {
@@ -2962,6 +3066,10 @@ watch(
   font-style: italic;
   padding: var(--space-3) 0;
   margin: 0;
+}
+/* The same side padding the rows carry, after every divider's own shorthand. */
+.message-list > .notice {
+  padding-inline: var(--space-6);
 }
 
 /* Boundary between read and unread messages. Pinned to the lastReadId

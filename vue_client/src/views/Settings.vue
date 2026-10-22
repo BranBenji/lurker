@@ -144,7 +144,11 @@ const appearanceSubsections = computed<SettingsSubsection[]>(() => {
   const seen = new Set<string>();
   // Themes leads the pane but isn't a registry group — ThemesSection renders
   // its own [data-setting-group="themes"] heading for the scroll-spy.
-  const subsections: SettingsSubsection[] = [{ id: 'themes', label: 'Themes' }];
+  // Avatars (#607) likewise: AvatarsSection's own heading.
+  const subsections: SettingsSubsection[] = [
+    { id: 'themes', label: 'Themes' },
+    { id: 'avatars', label: 'Avatars' },
+  ];
   for (const opt of REGISTRY) {
     if (opt.category !== 'appearance') continue;
     const id = opt.group || '_';

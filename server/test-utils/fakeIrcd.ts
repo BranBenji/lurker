@@ -75,6 +75,10 @@ export interface FakeIrcdOptions {
   creationTime?: boolean;
   // Extra ISUPPORT tokens for the 005 (e.g. `CLIENTTAGDENY=*`).
   isupport?: string[];
+  // Speak draft/metadata-2 the way ergo does: live changes as 761/766 to
+  // subscribed clients sharing a channel, a SUB answered with a 770 and a
+  // `774 * *ALL` asking for a SYNC, lists and syncs as `metadata` batches.
+  metadata?: boolean;
 }
 
 export interface FakeClient {
@@ -94,9 +98,13 @@ export interface FakeClient {
   saslMech: string | null;
   // The account this client authenticated as, once SASL has succeeded.
   account: string | null;
+  // Metadata keys this client subscribed to (METADATA * SUB).
+  metadataSubs: Set<string>;
   // Every line this client sent, in order.
   sent: string[];
 }
+
+const METADATA_KEY_RE = /^[a-z0-9_./-]+$/;
 
 export const DEFAULT_CAPS = [
   'server-time',
@@ -140,6 +148,8 @@ export class FakeIrcd extends EventEmitter {
   readonly certfpAccounts = new Map<string, string>();
   // account → password, for SASL PLAIN.
   readonly saslAccounts = new Map<string, string>();
+  // Metadata per target (lowercase nick or channel): key → value.
+  readonly metadata = new Map<string, Map<string, string>>();
   // Test hook: return true to swallow a client command — no reply of any kind —
   // for a test of what the client does when a reply never comes.
   hold: ((cmd: string, params: string[], c: FakeClient) => boolean) | null = null;
@@ -160,6 +170,8 @@ export class FakeIrcd extends EventEmitter {
       // mechanism list off the cap and refuses to try one that isn't there.
       this.caps.push(`sasl=${mechanisms.join(',')}`);
     }
+    if (opts.metadata)
+      this.caps.push('draft/metadata-2=max-subs=10,max-keys=10,max-value-bytes=512');
     this.serverName = opts.serverName ?? 'fake.test';
     this.network = opts.network ?? 'FakeNet';
   }
@@ -328,6 +340,7 @@ export class FakeIrcd extends EventEmitter {
       registered: false,
       signon: 0,
       caps: new Set(),
+      metadataSubs: new Set(),
       capNegotiating: false,
       channels: new Set(),
       certfp: peerCertFingerprint(socket),
@@ -567,6 +580,8 @@ export class FakeIrcd extends EventEmitter {
           : this.num(c, '305', 'You are no longer marked as being away');
       case 'MONITOR':
         return;
+      case 'METADATA':
+        return this.onMetadata(c, p);
       case 'KICK': {
         const chan = p[0] ?? '';
         const victim = this.client(p[1] ?? '');
@@ -792,7 +807,177 @@ export class FakeIrcd extends EventEmitter {
     const seen = new Set<FakeClient>([c]);
     for (const ch of c.channels) for (const m of this.members(ch)) seen.add(m);
     for (const m of seen) this.tagged(m, line);
+    const meta = this.metadata.get(c.nick!.toLowerCase());
+    if (meta) {
+      this.metadata.delete(c.nick!.toLowerCase());
+      this.metadata.set(newNick.toLowerCase(), meta);
+    }
     c.nick = newNick;
+  }
+
+  // --- draft/metadata-2 ----------------------------------------------------
+
+  // Set (or, with null, unset) a key on a nick or channel from the server
+  // side — what another client's SET or services would do — and tell every
+  // subscribed client in the audience.
+  setMetadata(target: string, key: string, value: string | null): void {
+    const store = this.metadata.get(target.toLowerCase()) ?? new Map<string, string>();
+    if (value === null) store.delete(key);
+    else store.set(key, value);
+    this.metadata.set(target.toLowerCase(), store);
+    for (const m of this.metadataAudience(target)) this.notifyMetadata(m, target, key, value);
+  }
+
+  // A raw server line to one client, for the mid-session lines a test wants
+  // to see handled (a CAP NEW, a FAIL).
+  inject(nick: string, line: string): void {
+    const c = this.client(nick);
+    if (c) this.raw(c, line);
+  }
+
+  // Who hears a change on `target`: a channel's members, or every client that
+  // shares a channel with the nick (and the nick itself).
+  private metadataAudience(target: string): FakeClient[] {
+    if (isChannelTarget(target)) return this.members(target);
+    const subject = this.client(target);
+    if (!subject) return [];
+    const out = new Set<FakeClient>([subject]);
+    for (const ch of subject.channels) for (const m of this.members(ch)) out.add(m);
+    return [...out];
+  }
+
+  private notifyMetadata(c: FakeClient, target: string, key: string, value: string | null): void {
+    if (!c.caps.has('draft/metadata-2') || !c.metadataSubs.has(key)) return;
+    if (value === null) this.raw(c, `:${this.serverName} 766 * ${target} ${key} :Key deleted`);
+    else this.raw(c, `:${this.serverName} 761 * ${target} ${key} * :${value}`);
+  }
+
+  // A `metadata` batch of 761s for `targets` (channel + members for a channel,
+  // one nick, or everything the client can see for `*ALL`).
+  private metadataBatch(c: FakeClient, label: string, targets: string[]): void {
+    const ref = `mb${++this.msgidCounter}`;
+    this.raw(c, `:${this.serverName} BATCH +${ref} metadata ${label}`);
+    for (const target of targets) {
+      const store = this.metadata.get(target.toLowerCase());
+      if (!store) continue;
+      for (const [key, value] of store) {
+        if (!c.metadataSubs.has(key)) continue;
+        this.raw(c, `@batch=${ref} :${this.serverName} 761 ${c.nick} ${target} ${key} * :${value}`);
+      }
+    }
+    this.raw(c, `:${this.serverName} BATCH -${ref}`);
+  }
+
+  private onMetadata(c: FakeClient, p: string[]): void {
+    if (!c.caps.has('draft/metadata-2')) return this.num(c, '421', 'METADATA', 'Unknown command');
+    const rawTarget = p[0] ?? '';
+    const sub = (p[1] ?? '').toUpperCase();
+    const target = rawTarget === '*' ? c.nick! : rawTarget;
+    const fail = (code: string, ...rest: string[]) =>
+      this.raw(c, `:${this.serverName} FAIL METADATA ${code} ${rest.join(' ')}`);
+    switch (sub) {
+      case 'SUB': {
+        const keys = p.slice(2);
+        let added = 0;
+        for (const key of keys) {
+          if (!METADATA_KEY_RE.test(key)) return fail('INVALID_KEY', key, ':Invalid key name');
+          if (!c.metadataSubs.has(key)) added++;
+          c.metadataSubs.add(key);
+        }
+        if (keys.length) this.num(c, '770', ...keys);
+        // ergo: the current values come by a SYNC the client asks for — and
+        // only when the SUB added a key. A repeated SUB draws nothing more.
+        if (added > 0) this.raw(c, `:${this.serverName} 774 * *ALL 0 :Try again later`);
+        return;
+      }
+      case 'UNSUB': {
+        const keys = p.slice(2);
+        for (const key of keys) c.metadataSubs.delete(key);
+        if (keys.length) this.num(c, '771', ...keys);
+        return;
+      }
+      case 'SUBS': {
+        const ref = `mb${++this.msgidCounter}`;
+        this.raw(c, `:${this.serverName} BATCH +${ref} metadata-subs`);
+        const subs = [...c.metadataSubs];
+        if (subs.length)
+          this.raw(c, `@batch=${ref} :${this.serverName} 772 ${c.nick} ${subs.join(' ')}`);
+        this.raw(c, `:${this.serverName} BATCH -${ref}`);
+        return;
+      }
+      case 'SET': {
+        const key = p[2] ?? '';
+        if (!METADATA_KEY_RE.test(key)) return fail('INVALID_KEY', key, ':Invalid key name');
+        if (!isChannelTarget(target) && target.toLowerCase() !== c.nick!.toLowerCase()) {
+          return fail('KEY_NO_PERMISSION', target, key, ':You do not have permission');
+        }
+        const value = p.length >= 4 ? (p[3] ?? '') : null;
+        // The setter's own reply, then the audience (which excludes the setter).
+        if (value === null)
+          this.raw(c, `:${this.serverName} 766 ${c.nick} ${target} ${key} :Key deleted`);
+        else this.raw(c, `:${this.serverName} 761 ${c.nick} ${target} ${key} * :${value}`);
+        const store = this.metadata.get(target.toLowerCase()) ?? new Map<string, string>();
+        if (value === null) store.delete(key);
+        else store.set(key, value);
+        this.metadata.set(target.toLowerCase(), store);
+        for (const m of this.metadataAudience(target)) {
+          if (m !== c) this.notifyMetadata(m, target, key, value);
+        }
+        return;
+      }
+      case 'GET': {
+        const ref = `mb${++this.msgidCounter}`;
+        this.raw(c, `:${this.serverName} BATCH +${ref} metadata ${target}`);
+        const store = this.metadata.get(target.toLowerCase());
+        for (const key of p.slice(2)) {
+          const value = store?.get(key);
+          if (value === undefined) {
+            this.raw(
+              c,
+              `@batch=${ref} :${this.serverName} 766 ${c.nick} ${target} ${key} :key not set`,
+            );
+          } else {
+            this.raw(
+              c,
+              `@batch=${ref} :${this.serverName} 761 ${c.nick} ${target} ${key} * :${value}`,
+            );
+          }
+        }
+        this.raw(c, `:${this.serverName} BATCH -${ref}`);
+        return;
+      }
+      case 'LIST': {
+        const ref = `mb${++this.msgidCounter}`;
+        this.raw(c, `:${this.serverName} BATCH +${ref} metadata ${target}`);
+        for (const [key, value] of this.metadata.get(target.toLowerCase()) ?? []) {
+          this.raw(
+            c,
+            `@batch=${ref} :${this.serverName} 761 ${c.nick} ${target} ${key} * :${value}`,
+          );
+        }
+        this.raw(c, `:${this.serverName} BATCH -${ref}`);
+        return;
+      }
+      case 'SYNC': {
+        if (rawTarget === '*ALL') {
+          const targets = new Set<string>([c.nick!]);
+          for (const ch of c.channels) {
+            targets.add(ch);
+            for (const m of this.members(ch)) targets.add(m.nick!);
+          }
+          return this.metadataBatch(c, '*ALL', [...targets]);
+        }
+        if (isChannelTarget(target)) {
+          return this.metadataBatch(c, target, [
+            target,
+            ...this.members(target).map((m) => m.nick!),
+          ]);
+        }
+        return this.metadataBatch(c, target, [target]);
+      }
+      default:
+        return fail('SUBCOMMAND_INVALID', sub, ':Invalid subcommand');
+    }
   }
 
   private partAll(c: FakeClient, lower: string): void {
