@@ -469,6 +469,19 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'not apply.',
   },
   {
+    key: 'look.message.avatars',
+    label: 'Show avatars (compact layout)',
+    category: 'appearance',
+    group: 'messages',
+    type: 'bool',
+    default: false,
+    description:
+      'In the compact layout, draw an avatar beside each author: the image they set through ' +
+      'IRCv3 metadata where the network carries it, otherwise a square in their nick color ' +
+      'with a tile from the active avatar set. The standard three-column layout has no room ' +
+      'for one, so this does nothing there.',
+  },
+  {
     key: 'look.message.collapse_authors',
     label: 'Collapse repeated authors',
     category: 'appearance',
@@ -1865,6 +1878,22 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'light mode, look.theme.dark when it is in dark mode. The preference is ' +
       'read per device, so a phone in light mode and a desktop in dark mode ' +
       'each get their assigned theme from the same synced settings.',
+  },
+  // ─── Avatar sets (#607) ─────────────────────────────────────────────────
+  // Pointer to the tile set behind generated avatars, like the theme pointers:
+  // `avatars` is absent from CATEGORIES so the registry pane never renders it;
+  // the Appearance pane's avatar section does. 'default' is the bundled set;
+  // anything else is the id of one the user uploaded.
+  {
+    key: 'look.avatars.set',
+    label: 'Avatar set',
+    category: 'avatars',
+    group: 'sets',
+    type: 'string',
+    default: 'default',
+    description:
+      'Which tile set generated avatars draw from: "default" for the bundled set, or the id ' +
+      'of a set you uploaded.',
   },
   {
     key: 'look.theme.active',

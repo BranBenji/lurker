@@ -7,7 +7,7 @@
   <div
     ref="scroller"
     class="message-list"
-    :class="{ compact: compactMode }"
+    :class="{ compact: compactMode, avatars: showAvatars }"
     @scroll="onScroll"
     @wheel="onWheel"
   >
@@ -105,6 +105,16 @@
         @click="onMessageRowClick($event, row.m)"
       >
         <template v-if="compactMode && row.m?.type === 'message'">
+          <!-- The author's avatar (#607), in the gutter every row reserves
+               while avatars are on; only the run's first row draws one. -->
+          <NickAvatar
+            v-if="showAvatars && !row.continuationAuthor"
+            class="avatar"
+            :nick="row.m?.nick ?? ''"
+            :network-id="buffer?.networkId ?? null"
+            interactive
+            @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
+          />
           <!-- Compact-mode message rows: nick and a right-aligned timestamp
              on a head line above the body. The head is omitted entirely on
              author continuations so a run of same-author messages reads as
@@ -410,6 +420,7 @@ import { smartHidesMode } from '../../../shared/modes.js';
 import { describeMode } from '../../../shared/modeNarration.js';
 import type { ModeChange } from '../../../shared/modes.js';
 import NickRef from './NickRef.vue';
+import NickAvatar from './NickAvatar.vue';
 import LinkedText from './LinkedText.vue';
 import RenderSegments from './RenderSegments.vue';
 import MessageBody from './MessageBody.vue';
@@ -1107,6 +1118,12 @@ const compactMode = computed(() => {
 // It ignores timestamp collapsing: a message's time lives on its head, so
 // every head shows one and continuation rows show none.
 const effectiveCollapseAuthors = computed(() => compactMode.value || collapseAuthorsEnabled.value);
+// Avatars (#607) live in the compact layout only: the standard grid has no
+// column for them. The setting is read here so the gutter class and the tile
+// agree.
+const showAvatars = computed(
+  () => compactMode.value && settings.effective('look.message.avatars') === true,
+);
 const effectiveCollapseTimestamps = computed(
   () => !compactMode.value && collapseTimestampsEnabled.value,
 );
@@ -2953,6 +2970,28 @@ watch(
    3-column standard layout — drop it in compact mode. */
 .message-list.compact .line > .body::before {
   display: none;
+}
+/* Avatars (#607): a gutter on the left of EVERY compact row — continuation
+   rows and event rows too, so bodies stay on one edge — with the tile drawn
+   at the top of a run's first row. Absolute so the row's grid is untouched.
+   The size is in em (one font size everywhere), smaller on a phone where
+   compact is the default and width is scarce. */
+.message-list.compact.avatars {
+  --avatar-size: 2.25em;
+}
+.message-list.compact.avatars .line {
+  position: relative;
+  padding-left: calc(var(--avatar-size) + var(--space-4));
+}
+.message-list.compact.avatars .line > .avatar {
+  position: absolute;
+  left: 0;
+  top: var(--space-1);
+}
+@media (max-width: 768px) {
+  .message-list.compact.avatars {
+    --avatar-size: 1.75em;
+  }
 }
 
 .notice {
