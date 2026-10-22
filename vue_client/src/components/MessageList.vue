@@ -2618,7 +2618,10 @@ watch(
      prepend watcher in <script setup> handles position preservation
      manually with a known-stable anchor (the OLD first message). */
   overflow-anchor: none;
-  padding: var(--space-2) var(--space-6);
+  /* The side margin is each ROW's padding, not the list's, so a row's hover
+     and highlight backgrounds paint edge to edge (a subgrid row's padding is
+     taken up by the shared first and last tracks, so columns stay aligned). */
+  padding: var(--space-2) 0;
   display: grid;
   /* Nick column has a 16ch floor (matching the most common modern NICKLEN)
      so the layout is consistent across buffers regardless of who's talking,
@@ -2637,6 +2640,7 @@ watch(
   grid-template-columns: subgrid;
   align-items: baseline;
   position: relative;
+  padding-inline: var(--space-6);
 }
 /* Alt-row striping is a standard-mode helper for telling adjacent same-type
    rows apart in a dense column. In compact mode, message groups already
@@ -2894,7 +2898,10 @@ watch(
 @media (max-width: 768px) {
   .message-list:not(.compact) {
     grid-template-columns: minmax(0, max-content) minmax(0, 1fr);
-    padding: var(--space-2) var(--space-4);
+  }
+  .message-list:not(.compact) .line,
+  .message-list:not(.compact) > .notice {
+    padding-inline: var(--space-4);
   }
   .message-list:not(.compact) .time {
     display: none;
@@ -2916,7 +2923,6 @@ watch(
 .message-list.compact {
   /* Single content column — the 3-col subgrid alignment goes away. */
   grid-template-columns: minmax(0, 1fr);
-  padding: var(--space-2) var(--space-4);
 }
 .message-list.compact .line {
   /* Per-row grid: head spans every column above the body row; body row
@@ -2934,7 +2940,7 @@ watch(
   align-items: baseline;
   column-gap: 0.75ch;
   row-gap: 0;
-  padding: var(--space-1) 0;
+  padding: var(--space-1) var(--space-4);
   /* Group separator: every non-continuation line marks the start of a new
      visual cluster (message head, action, notice, system event,
      consolidation summary). Transparent (not padding) so adjacent hover
@@ -2948,9 +2954,11 @@ watch(
   margin-top: 0;
 }
 /* Client-side dividers (unread/away/back/date) also mark a cluster boundary,
-   so give them the same top gap as .line in compact mode. */
-.message-list.compact .notice {
+   so give them the same top gap as .line in compact mode, and the same side
+   padding. */
+.message-list.compact > .notice {
   margin-top: var(--space-5);
+  padding-inline: var(--space-4);
 }
 .message-list.compact .line > .head {
   grid-area: head;
@@ -3006,7 +3014,7 @@ watch(
    compact is the default and width is scarce. A hairline down the gutter's
    right edge makes it read as a panel beside the text, continuous through
    the row gaps: painted on the scroller, repeating down the scrolled content
-   (background-attachment: local), at the list's own left padding plus the
+   (background-attachment: local), at the row's own left padding plus the
    tile and a gap. */
 .message-list.compact.avatars {
   --avatar-size: 2.9em;
@@ -3021,14 +3029,14 @@ watch(
 }
 .message-list.compact.avatars .line {
   position: relative;
-  padding-left: calc(var(--avatar-gutter) + var(--space-5));
+  padding-left: calc(var(--space-4) + var(--avatar-gutter) + var(--space-5));
 }
 /* A touch below the row's own top padding: the head line's text sits a
    little way into its line box, and a tile flush with the padding reads as
    floating above the nick. In em, so it follows the font. */
 .message-list.compact.avatars .line > .avatar {
   position: absolute;
-  left: 0;
+  left: var(--space-4);
   top: calc(var(--space-1) + 0.2em);
 }
 /* With the body flush under the nick, weight is what tells the head line
@@ -3058,6 +3066,10 @@ watch(
   font-style: italic;
   padding: var(--space-3) 0;
   margin: 0;
+}
+/* The same side padding the rows carry, after every divider's own shorthand. */
+.message-list > .notice {
+  padding-inline: var(--space-6);
 }
 
 /* Boundary between read and unread messages. Pinned to the lastReadId
