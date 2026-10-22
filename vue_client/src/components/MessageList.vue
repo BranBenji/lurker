@@ -2998,10 +2998,13 @@ watch(
   position: relative;
   padding-left: calc(var(--avatar-gutter) + var(--space-5));
 }
+/* A touch below the row's own top padding: the head line's text sits a
+   little way into its line box, and a tile flush with the padding reads as
+   floating above the nick. In em, so it follows the font. */
 .message-list.compact.avatars .line > .avatar {
   position: absolute;
   left: 0;
-  top: var(--space-1);
+  top: calc(var(--space-1) + 0.2em);
 }
 /* A message row has no line-level prefix, so its body sits in the second
    track behind an empty first one — and the grid's column gap between them
