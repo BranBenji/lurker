@@ -2987,7 +2987,9 @@ watch(
    tile and a gap. */
 .message-list.compact.avatars {
   --avatar-size: 2.9em;
-  --avatar-gutter: calc(var(--avatar-size) + var(--space-3));
+  /* The same space on the tile's right as the list's own padding gives it on
+     the left, so the tile sits centred in its panel. */
+  --avatar-gutter: calc(var(--avatar-size) + var(--space-4));
   background-image: linear-gradient(var(--border), var(--border));
   background-size: 1px 100%;
   background-repeat: repeat-y;
