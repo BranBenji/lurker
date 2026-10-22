@@ -11731,13 +11731,15 @@ export function outgoingNickIntents(line: string): Array<{ nick: string; channel
 
 // The user-mode change in an outgoing `MODE <nick> <modes>` line (#1181), past
 // an IRCv3 tag block a bouncer client may have put in front of it, or null for
-// anything else: a channel MODE, a query (`MODE nick`), or a mode string with
-// parameters. Only an oper's snomask (`+s +cF`) takes one, and replaying `+s`
-// without it would set a different snomask than they asked for.
+// anything else: a channel MODE or a query (`MODE nick`). A line with a
+// parameter is an oper's snomask (`-i+s +cF`), the one user mode that takes
+// one; `s` is left out of it, since `+s` replayed without its mask would set a
+// different one, and the rest of the line still counts.
 export function parseUserModeRequest(line: string): { target: string; modes: string } | null {
-  const parsed = /^\s*(?:@\S+\s+)?MODE\s+(\S+)\s+:?([+-]\S*)\s*$/i.exec(line);
+  const parsed = /^\s*(?:@\S+\s+)?MODE\s+(\S+)\s+:?([+-]\S*)(\s+\S.*)?$/i.exec(line);
   if (!parsed || isChannelTarget(parsed[1])) return null;
-  return { target: parsed[1], modes: parsed[2] };
+  const modes = parsed[3] ? parsed[2].replace(/s/g, '') : parsed[2];
+  return { target: parsed[1], modes };
 }
 
 // What a stored user_modes value must look like to be sent: `+g`, `+gR-i`.

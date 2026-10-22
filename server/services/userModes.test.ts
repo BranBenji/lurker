@@ -96,11 +96,15 @@ describe('parseUserModeRequest', () => {
     });
   });
 
-  it('ignores channel modes, queries and modes with parameters', () => {
+  it('leaves the snomask out of a line with a parameter, and keeps the rest', () => {
+    expect(parseUserModeRequest('MODE nick -i+s +cF')).toEqual({ target: 'nick', modes: '-i+' });
+    expect(parseUserModeRequest('MODE nick +s')).toEqual({ target: 'nick', modes: '+s' });
+  });
+
+  it('ignores channel modes and queries', () => {
     expect(parseUserModeRequest('MODE #chan +m')).toBeNull();
     expect(parseUserModeRequest('MODE &chan +m')).toBeNull();
     expect(parseUserModeRequest('MODE nick')).toBeNull();
-    expect(parseUserModeRequest('MODE nick +s +cF')).toBeNull();
     expect(parseUserModeRequest('MODE nick g')).toBeNull();
     expect(parseUserModeRequest('PRIVMSG nick +g')).toBeNull();
   });
@@ -164,6 +168,12 @@ describe('user modes across reconnects (#1181)', () => {
     confirm('-i');
     expect(stored()).toBe('-i');
     conn.raw('MODE nick +i');
+    expect(stored()).toBeNull();
+  });
+
+  it('takes an undo inside an oper’s snomask line', () => {
+    const { conn, stored } = makeConn({ userModes: '+i' });
+    conn.raw('MODE nick -i+s +cF');
     expect(stored()).toBeNull();
   });
 
