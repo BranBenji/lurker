@@ -912,6 +912,11 @@ export class IrcConnection {
   private userMetadata: Map<string, MetadataRecord>;
   // Pending `METADATA <target> SYNC`s a 774 asked for, by target.
   private metadataSyncTimers: Map<string, ReturnType<typeof setTimeout>>;
+  // Keys bouncer clients subscribed to beyond Lurker's own (addMetadataKeys).
+  // The network gives the socket one subscription list, so the union goes up;
+  // the bouncer relays each key to the clients that asked for it. Kept for the
+  // connection's life: a re-registration SUBs them again with ours.
+  private metadataExtraKeys: Set<string>;
   // One presence watch list keyed by lowercased nick. Each entry records WHY
   // we're watching it. The MONITOR watch and the shared peer_presence_state row
   // are reference-counted against those reasons — added when the first reason
@@ -1389,6 +1394,7 @@ export class IrcConnection {
     this.client.requestCap(METADATA_CAP);
     this.userMetadata = new Map();
     this.metadataSyncTimers = new Map();
+    this.metadataExtraKeys = new Set();
     this.state = 'disconnected';
     this.channels = new Map();
     this.joinedFoldedCache = null;
@@ -4552,9 +4558,36 @@ export class IrcConnection {
   private subscribeMetadata(): void {
     const limits = this.metadataLimits();
     if (!limits) return;
-    const keys = metadataSubKeysFor(limits);
+    const keys = this.metadataKeysToSub(limits, [...this.metadataExtraKeys]);
     if (keys.length === 0) return;
     this.replies.send('lurker', `METADATA * SUB ${keys.join(' ')}`);
+  }
+
+  // Ours first, then the bouncer clients', within max-subs.
+  private metadataKeysToSub(limits: MetadataLimits, extra: string[]): string[] {
+    const own = metadataSubKeysFor(limits);
+    const room = limits.maxSubs === null ? Infinity : Math.max(0, limits.maxSubs) - own.length;
+    const more = extra.filter((key) => !own.includes(key)).slice(0, Math.max(0, room));
+    return [...own, ...more];
+  }
+
+  // A bouncer client's SUB: keys beyond Lurker's own go up on this socket too,
+  // now if it's registered with the cap, and again with ours on every
+  // registration. Keys Lurker doesn't show pass through its state untouched
+  // (vetMetadataValue keeps the record to the keys it shows).
+  addMetadataKeys(keys: string[]): void {
+    const fresh = keys.filter((key) => !this.metadataExtraKeys.has(key));
+    for (const key of fresh) this.metadataExtraKeys.add(key);
+    const limits = this.metadataLimits();
+    if (fresh.length === 0 || !limits || !this.sawRegistered) return;
+    const own = new Set(metadataSubKeysFor(limits));
+    const toSend = fresh.filter((key) => !own.has(key));
+    if (toSend.length > 0) this.replies.send('lurker', `METADATA * SUB ${toSend.join(' ')}`);
+  }
+
+  /** A nick's metadata as the network set it (origin URLs and all), for the bouncer's replay. */
+  userMetadataRecord(nick: string): MetadataRecord | null {
+    return this.userMetadata.get(nick.toLowerCase()) ?? null;
   }
 
   // A metadata line from the server, whoever asked for it (see the raw handler).

@@ -114,6 +114,7 @@ import {
   withoutUpstreamFilehost,
 } from './bouncerClientFilter.js';
 import type { MonitorHolder } from './monitorList.js';
+import { METADATA_CAP, isValidMetadataKey } from './ircMetadata.js';
 import { isServicesNick } from '../utils/servicesNick.js';
 import type { ReplyClient } from './replyRouter.js';
 
@@ -176,6 +177,11 @@ const PASSTHROUGH_CAPS = [
   'multi-prefix',
   'userhost-in-names',
   ...EXTENDED_MONITOR_CAPS,
+  // draft/metadata-2 (#607): SUB/UNSUB/SUBS answered here from a per-client
+  // list merged onto the network's one subscription (handleMetadata), the
+  // rest relayed; the network's 761/766 lines go to the clients that asked
+  // for that key (wantsMetadataLine).
+  METADATA_CAP,
 ];
 
 const CAP_BOUNCER_NETWORKS = 'soju.im/bouncer-networks';
@@ -193,10 +199,23 @@ const MAX_CHATHISTORY = 1000;
 // CAP 302 (bare `sasl` otherwise, since pre-302 CAP LS carries no cap values).
 const SASL_MECHANISMS = ['PLAIN'];
 
-/** Build the CAP LS token list, attaching cap values when the client sent 302. */
-function capLsList(caps: Iterable<string>, version: number): string {
+/**
+ * Build the CAP LS token list, attaching cap values when the client sent 302:
+ * ours for sasl, the network's for a pass-through cap that carries one
+ * (draft/metadata-2's limits), through `networkValue`.
+ */
+function capLsList(
+  caps: Iterable<string>,
+  version: number,
+  networkValue: (cap: string) => string | undefined = () => undefined,
+): string {
   return [...caps]
-    .map((c) => (c === 'sasl' && version >= 302 ? `sasl=${SASL_MECHANISMS.join(',')}` : c))
+    .map((c) => {
+      if (version < 302) return c;
+      if (c === 'sasl') return `sasl=${SASL_MECHANISMS.join(',')}`;
+      const value = networkValue(c);
+      return value ? `${c}=${value}` : c;
+    })
     .join(' ');
 }
 
@@ -891,6 +910,10 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   // mismatch cases) can't suppress an identical message sent much later.
   private pendingEcho: Array<{ key: string; at: number; since: number }> = [];
   private onRawUpstream: ((event: { from_server: boolean; line: string }) => void) | null = null;
+  // draft/metadata-2 (#607): the keys this client subscribed to. Merged onto
+  // the network's one list through IrcConnection.addMetadataKeys.
+  private readonly metadataSubs = new Set<string>();
+  private metadataBatchSeq = 0;
   private onUpstreamCaps: (() => void) | null = null;
   private regTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1083,7 +1106,11 @@ class BouncerSession implements MonitorHolder, ReplyClient {
           if (!this.registered) for (const cap of PASSTHROUGH_CAPS) this.availableCaps.add(cap);
           this.caps.add('cap-notify');
         }
-        this.write(`:${SERVER_NAME} CAP ${nick} LS :${capLsList(this.availableCaps, capVersion)}`);
+        this.write(
+          `:${SERVER_NAME} CAP ${nick} LS :${capLsList(this.availableCaps, capVersion, (cap) =>
+            this.networkCapValue(cap),
+          )}`,
+        );
         break;
       }
       case 'LIST':
@@ -1594,6 +1621,10 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         for (const line of monitorReplies) this.write(line, relayedAt);
         return;
       }
+      // A metadata line nobody here asked for goes to the clients that
+      // subscribed to its key and can see its target; a reply to this
+      // client's own query (owner === this) comes through whole.
+      if (owner !== this && !this.wantsMetadataLine(event.line)) return;
       const out = filterRelayLine(event.line);
       if (!out) return;
       // `out`, not event.line: irc-framework's raw line keeps its CRLF, which
@@ -2122,6 +2153,125 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       }
       this.sendNames(ch.name);
     }
+    // The metadata the spec has a server send after a JOIN (#607), for the keys
+    // this client subscribed to before it attached (a re-attach keeps them).
+    this.replayMetadata();
+  }
+
+  // --- draft/metadata-2 (#607) ---------------------------------------------
+
+  // The value the network advertised for a pass-through cap, for CAP LS 302.
+  private networkCapValue(cap: string): string | undefined {
+    if (cap !== METADATA_CAP) return undefined;
+    const available = this.conn?.client?.network?.cap?.available as Map<string, string> | undefined;
+    const value = available?.get(cap);
+    return value || undefined;
+  }
+
+  // soju has no downstream METADATA; this is the MONITOR shape applied to it.
+  // SUB/UNSUB/SUBS answer from this client's own list, with the union of every
+  // client's keys and Lurker's on the network's one subscription; everything
+  // else relays, its reply routed back to this client (replyRouter.ts).
+  private handleMetadata(conn: IrcConnection, msg: ParsedClientLine): void {
+    const nick = this.currentNick() || this.clientNick || '*';
+    if (!this.caps.has(METADATA_CAP) || !conn.metadataLimits()) {
+      this.numeric('421', 'METADATA :Unknown command');
+      return;
+    }
+    const sub = (msg.params[1] || '').toUpperCase();
+    if (!msg.params[0] || !sub) {
+      this.numeric('461', 'METADATA :Not enough parameters');
+      return;
+    }
+    switch (sub) {
+      case 'SUB': {
+        const keys = msg.params.slice(2).map((k) => k.toLowerCase());
+        for (const key of keys) {
+          if (!isValidMetadataKey(key)) {
+            this.write(`:${SERVER_NAME} FAIL METADATA KEY_INVALID ${key} :Invalid key name`);
+            return;
+          }
+        }
+        const fresh = keys.filter((key) => !this.metadataSubs.has(key));
+        for (const key of keys) this.metadataSubs.add(key);
+        conn.addMetadataKeys(keys);
+        if (keys.length > 0) this.write(`:${SERVER_NAME} 770 ${nick} ${keys.join(' ')}`);
+        // The current values for what it just asked for, as the spec has a
+        // server send on a SUB.
+        if (fresh.length > 0) this.replayMetadata(new Set(fresh));
+        return;
+      }
+      case 'UNSUB': {
+        const keys = msg.params.slice(2).map((k) => k.toLowerCase());
+        for (const key of keys) this.metadataSubs.delete(key);
+        if (keys.length > 0) this.write(`:${SERVER_NAME} 771 ${nick} ${keys.join(' ')}`);
+        return;
+      }
+      case 'SUBS': {
+        const ref = `lm${++this.metadataBatchSeq}`;
+        this.write(`:${SERVER_NAME} BATCH +${ref} metadata-subs`);
+        if (this.metadataSubs.size > 0) {
+          this.write(
+            `@batch=${ref} :${SERVER_NAME} 772 ${nick} ${[...this.metadataSubs].join(' ')}`,
+          );
+        }
+        this.write(`:${SERVER_NAME} BATCH -${ref}`);
+        return;
+      }
+      default:
+        this.relayRaw(conn, msg);
+        return;
+    }
+  }
+
+  // Whether an unasked metadata line is this client's: a key it subscribed to,
+  // on a channel (every client is in all of the connection's channels), on
+  // itself, or on a nick it shares a channel with or watches. Lurker's own
+  // acknowledgements (770–774) are nobody's. Any other line: yes.
+  private wantsMetadataLine(line: string): boolean {
+    const msg = parseClientLine(line);
+    if (!msg) return true;
+    const { command, params } = msg;
+    if (command === '770' || command === '771' || command === '772' || command === '774') {
+      return false;
+    }
+    let target: string | undefined;
+    let key: string | undefined;
+    if (command === 'METADATA') [target, key] = params;
+    else if (command === '761' || command === '766' || command === '760') [, target, key] = params;
+    else return true;
+    if (!target || !key || !this.metadataSubs.has(key.toLowerCase())) return false;
+    if (isChannelTarget(target)) return true;
+    const self = this.currentNick();
+    if (self && target.toLowerCase() === self.toLowerCase()) return true;
+    if (this.monitored.has(target.toLowerCase())) return true;
+    return this.sharedChannels(target).length > 0;
+  }
+
+  // What the connection knows, as 761s, for this client's keys (or `only`
+  // those): every channel's own record, every member's, and ours.
+  private replayMetadata(only?: Set<string>): void {
+    const conn = this.conn;
+    if (!conn || !this.caps.has(METADATA_CAP) || this.metadataSubs.size === 0) return;
+    const nick = this.currentNick() || '*';
+    const wanted = (key: string) => this.metadataSubs.has(key) && (!only || only.has(key));
+    const say = (target: string, record: Record<string, string> | null | undefined) => {
+      for (const [key, value] of Object.entries(record ?? {})) {
+        if (wanted(key)) this.write(`:${SERVER_NAME} 761 ${nick} ${target} ${key} * :${value}`);
+      }
+    };
+    const seen = new Set<string>();
+    const sayNick = (n: string) => {
+      const lower = n.toLowerCase();
+      if (seen.has(lower)) return;
+      seen.add(lower);
+      say(n, conn.userMetadataRecord(n));
+    };
+    sayNick(nick);
+    for (const ch of conn.channels.values()) {
+      say(ch.name, ch.metadata);
+      for (const member of ch.members.values()) sayNick(member.nick);
+    }
   }
 
   // A channel's 353 lines and 366, in their fullest form like the rest of the
@@ -2538,6 +2688,9 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       }
       case 'MONITOR':
         this.handleMonitor(conn, msg);
+        return;
+      case 'METADATA':
+        this.handleMetadata(conn, msg);
         return;
       case 'TAGMSG':
         this.handleClientTagmsg(conn, msg);
