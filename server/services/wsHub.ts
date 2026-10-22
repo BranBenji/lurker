@@ -3514,6 +3514,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           if (unpinBufferCaseInsensitive(userId, networkId, target)) {
             fanOut(userId, pinsChangedFrame(userId, networkId));
           }
+          // Friends get through caller ID (#1181).
+          ircManager.getConnection(userId, networkId)?.acceptFriendIfOnline(target);
         }
         break;
       }

@@ -105,6 +105,16 @@ describe('UserProfileModal — no such user', () => {
     useWhoisStore().applyResult(NET, { nick: 'fartboy', error: 'not_found' });
     expect(open('fartboy').find('button[title="Send DM"]').exists()).toBe(false);
   });
+
+  it('opens the DM on the server, so an empty one can be pinned (#1182)', async () => {
+    const { socketSend } = await import('../composables/useSocket.js');
+    vi.mocked(socketSend).mockClear();
+    useWhoisStore().applyResult(NET, { nick: 'someone', ident: 'u', hostname: 'h.test' });
+    await open('someone').find('button[title="Send DM"]').trigger('click');
+    expect(socketSend).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'open-buffer', networkId: NET, target: 'someone' }),
+    );
+  });
 });
 
 // #1032: the channel list peels the network's rank symbols, not a fixed set.
