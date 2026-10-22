@@ -54,7 +54,10 @@ function makeConn(opts: Parameters<typeof makeNetwork>[0] = {}) {
   conn.state = 'connected';
   const lines = () => vi.mocked(conn.client.raw).mock.calls.map(([line]) => String(line));
   const stored = () => getNetwork(network.id, userId)!.user_modes;
-  return { conn, network, lines, stored };
+  const read = (line: string) => conn.client.connection.addReadBuffer(line);
+  // The server's answer to a user-mode change it made.
+  const confirm = (modes: string) => read(`:nick!n@example.test MODE nick :${modes}`);
+  return { conn, network, lines, stored, read, confirm };
 }
 
 // connect() is never called, so the library's own 'registered' listener has
@@ -65,14 +68,19 @@ function emitRegistered(conn: IrcConnection, nick = 'nick'): void {
 }
 
 describe('mergeUserModes', () => {
-  it('keeps the last request for each letter, adds before removes', () => {
+  it('keeps each letter’s sign, adds before removes', () => {
     expect(mergeUserModes(null, '+g')).toBe('+g');
     expect(mergeUserModes('+g', '-i')).toBe('+g-i');
-    expect(mergeUserModes('+g-i', '+i-g')).toBe('+i-g');
     expect(mergeUserModes('+g', '+R-w+x')).toBe('+gRx-w');
+    expect(mergeUserModes('+g', '+g')).toBe('+g');
   });
 
-  it('is null when nothing was asked for', () => {
+  it('lets a letter’s opposite undo it', () => {
+    expect(mergeUserModes('+g-i', '+i-g')).toBeNull();
+    expect(mergeUserModes('+gR', '-g')).toBe('+R');
+  });
+
+  it('is null when nothing is kept', () => {
     expect(mergeUserModes(null, '+')).toBeNull();
     expect(mergeUserModes(null, '-')).toBeNull();
   });
@@ -82,6 +90,10 @@ describe('parseUserModeRequest', () => {
   it('reads a user-mode change', () => {
     expect(parseUserModeRequest('MODE nick +g')).toEqual({ target: 'nick', modes: '+g' });
     expect(parseUserModeRequest('mode nick :-i')).toEqual({ target: 'nick', modes: '-i' });
+    expect(parseUserModeRequest('@label=abc MODE nick +g')).toEqual({
+      target: 'nick',
+      modes: '+g',
+    });
   });
 
   it('ignores channel modes, queries and modes with parameters', () => {
@@ -95,21 +107,79 @@ describe('parseUserModeRequest', () => {
 });
 
 describe('user modes across reconnects (#1181)', () => {
-  it('remembers the modes the user sets on themselves', () => {
-    const { conn, stored } = makeConn();
+  it('keeps a mode the user set once the server confirms it', () => {
+    const { conn, stored, confirm } = makeConn();
     conn.raw('MODE nick +g');
+    expect(stored()).toBeNull();
+    confirm('+g');
     expect(stored()).toBe('+g');
     conn.raw('MODE NICK -i');
+    confirm('-i');
     expect(stored()).toBe('+g-i');
+  });
+
+  it('keeps only the letters the server took', () => {
+    const { conn, stored, read, confirm } = makeConn();
+    conn.raw('MODE nick +gQ');
+    read(':irc.example.test 501 nick :Unknown MODE flag');
+    confirm('+g');
+    expect(stored()).toBe('+g');
+  });
+
+  it('keeps nothing the server refused, or set on its own', () => {
+    const { conn, stored, read, confirm } = makeConn();
+    conn.raw('MODE nick +Q');
+    read(':irc.example.test 501 nick :Unknown MODE flag');
+    confirm('+Ziw');
+    conn.raw('MODE nick +x');
+    confirm('-x');
+    expect(stored()).toBeNull();
+  });
+
+  it('keeps nothing the server confirms long after the request', () => {
+    vi.useFakeTimers();
+    try {
+      const { conn, stored, confirm } = makeConn();
+      conn.raw('MODE nick +g');
+      vi.advanceTimersByTime(60_000);
+      confirm('+g');
+      expect(stored()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('forgets a kept mode the moment the user undoes it, confirmed or not', () => {
+    const { conn, stored, read } = makeConn({ userModes: '+gR' });
     conn.raw('MODE nick -g');
-    expect(stored()).toBe('-gi');
+    expect(stored()).toBe('+R');
+    // A network that no longer has the letter refuses the undo; it's gone anyway.
+    read(':irc.example.test 501 nick :Unknown MODE flag');
+    expect(stored()).toBe('+R');
+  });
+
+  it('keeps a removal from the network’s default, and drops it on the way back', () => {
+    const { conn, stored, confirm } = makeConn();
+    conn.raw('MODE nick -i');
+    confirm('-i');
+    expect(stored()).toBe('-i');
+    conn.raw('MODE nick +i');
+    expect(stored()).toBeNull();
+  });
+
+  it('keeps a bouncer client’s tagged MODE', () => {
+    const { conn, stored, confirm } = makeConn();
+    conn.raw('@label=abc MODE nick +g');
+    confirm('+g');
+    expect(stored()).toBe('+g');
   });
 
   it('ignores a MODE on anyone or anything else', () => {
-    const { conn, stored } = makeConn();
+    const { conn, stored, confirm } = makeConn();
     conn.raw('MODE alice +g');
     conn.raw('MODE #chan +m');
     conn.raw('MODE nick');
+    confirm('+g');
     expect(stored()).toBeNull();
   });
 
@@ -124,6 +194,12 @@ describe('user modes across reconnects (#1181)', () => {
     expect(sent.indexOf('MODE nick +g-i')).toBeLessThan(
       sent.indexOf('PRIVMSG NickServ :IDENTIFY pw'),
     );
+  });
+
+  it('never sends a stored value that isn’t a plain mode string', () => {
+    const { conn, lines } = makeConn({ userModes: '+g #chan' });
+    emitRegistered(conn);
+    expect(lines().filter((l) => l.startsWith('MODE '))).toEqual([]);
   });
 
   it('asks under the nick it registered with', () => {
@@ -148,6 +224,7 @@ describe('user modes across reconnects (#1181)', () => {
   it('survives a restart: a new connection reads them from the network', () => {
     const first = makeConn();
     first.conn.raw('MODE nick +g');
+    first.confirm('+g');
     const conn = new IrcConnection({
       network: getNetwork(first.network.id, userId)!,
       onEvent: () => {},

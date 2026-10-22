@@ -1112,6 +1112,9 @@ export class IrcConnection {
   acceptListFull = false;
   // Friends we've sent `ACCEPT -nick` for, until InspIRCd says it took.
   acceptRevoking = new Set<string>();
+  // User-mode letters we asked for and the server hasn't confirmed yet
+  // (#1181), with the sign and when the request went.
+  pendingUserModes = new Map<string, { sign: '+' | '-'; at: number }>();
   // When the server line being handled arrived. An event without server-time
   // takes it as its time, and so does the bouncer's copy of the line, so the
   // stored row and the relayed line agree: a MARKREAD from an attached client
@@ -2279,7 +2282,7 @@ export class IrcConnection {
       // satisfied, and a WAIT-delayed JOIN would join what we are in). The
       // user modes go first, so a connect command can still override them.
       if (!this.restoring) {
-        this.replayUserModes(registeredNick);
+        this.replayUserModes();
         this.runConnectCommands();
       }
     });
@@ -3673,6 +3676,7 @@ export class IrcConnection {
       // Self user-mode change (e.g. server sets +i on connect, /OPER yields +o, etc.)
       if (target && this.isSelfNick(target)) {
         let changed = false;
+        let confirmed = '';
         for (const m of eventModes) {
           if (!m || !m.mode) continue;
           const sign = m.mode[0];
@@ -3683,8 +3687,10 @@ export class IrcConnection {
           } else if (sign === '-' && this.userModes.delete(letter)) {
             changed = true;
           }
+          if (this.takePendingUserMode(sign, letter)) confirmed += sign + letter;
         }
         if (changed) this.publishUserModes();
+        if (confirmed) this.storeUserModes(mergeUserModes(this.network.user_modes, confirmed));
         // Solanum-style servers (Libera) send self-modes as a MODE command
         // after MOTD instead of RPL_UMODEIS (221). The raw-numeric forwarder
         // catches 221; this surfaces the MODE path so the user mode lands in
@@ -5985,7 +5991,7 @@ export class IrcConnection {
         // post-registration steps: the connect commands run now, and the
         // manager's rejoin (onceRestored, at `live`) covers the autojoin list.
         if (this.restoreUnattended) {
-          this.replayUserModes(this.currentNick);
+          this.replayUserModes();
           this.runConnectCommands();
         }
         break;
@@ -10525,31 +10531,62 @@ export class IrcConnection {
   // A `MODE <own nick> <modes>` going out is remembered for the network, so the
   // next registration asks for the same modes (#1181). irssi does the same with
   // its wanted_usermode: what we ASKED for, never what the server set on its own
-  // (+Z, +r), which it sets again anyway. Read at write, like the nick intents,
-  // so "own nick" is the nick the line actually goes out under. A web client's
-  // /mode and a bouncer client's MODE both pass here.
+  // (+Z, +r), which it sets again anyway. Unlike irssi, a letter is kept only
+  // once the server's MODE confirms it, so a typo or a letter this ircd doesn't
+  // have (a 501) isn't replayed on every connect. Undoing a kept letter forgets
+  // it at once: that needs no server's word, and it's how a letter the network
+  // no longer has gets cleared. Read at write, like the nick intents, so "own
+  // nick" is the nick the line actually goes out under. A web client's /mode and
+  // a bouncer client's MODE both pass here.
   noteUserModeRequest(line: string): void {
     const req = parseUserModeRequest(line);
     if (!req || !this.currentNick) return;
     const id = this.network.id;
     if (foldTargetFor(id, req.target) !== foldTargetFor(id, this.currentNick)) return;
-    const merged = mergeUserModes(this.network.user_modes, req.modes);
-    if (merged === this.network.user_modes) return;
-    this.network.user_modes = merged;
+    const stored = new Map(
+      userModeEntries(this.network.user_modes ?? '').map(([sign, letter]) => [letter, sign]),
+    );
+    let undone = '';
+    for (const [sign, letter] of userModeEntries(req.modes)) {
+      const kept = stored.get(letter);
+      if (kept && kept !== sign) undone += sign + letter;
+      else if (!kept) this.pendingUserModes.set(letter, { sign, at: Date.now() });
+    }
+    if (undone) this.storeUserModes(mergeUserModes(this.network.user_modes, undone));
+  }
+
+  // Whether the server's `<sign><letter>` answers a request of ours still in
+  // the window, consuming it.
+  private takePendingUserMode(sign: string, letter: string): boolean {
+    const pending = this.pendingUserModes.get(letter);
+    if (!pending) return false;
+    this.pendingUserModes.delete(letter);
+    return pending.sign === sign && Date.now() - pending.at <= SEND_REJECTION_ATTRIBUTION_MS;
+  }
+
+  private storeUserModes(modes: string | null): void {
+    if (modes === this.network.user_modes) return;
+    this.network.user_modes = modes;
     try {
-      setNetworkUserModes(id, this.network.user_id, merged);
+      setNetworkUserModes(this.network.id, this.network.user_id, modes);
     } catch (e) {
       console.warn('[umode] failed to store user modes:', (e as Error)?.message || e);
     }
   }
 
   // Ask a fresh registration for the user modes the user set before (#1181).
-  // Our own line: a server that refuses a letter (501) says so in the server
-  // buffer, and the MODE it answers with lands there as "Your user mode".
-  replayUserModes(nick: string | null): void {
+  // In the high lane, ahead of the connect commands queued after it, so one of
+  // those can still override a mode; built when it goes, so a nick regain that
+  // went first doesn't leave it naming a nick we no longer have (a 502). Not
+  // through raw(): what it asks for is already kept. A stored value that isn't
+  // a plain mode string (an archive import writes the column verbatim) is never
+  // sent.
+  replayUserModes(): void {
     const modes = this.network.user_modes;
-    if (!modes || !nick) return;
-    this.raw(`MODE ${nick} ${modes}`, 'lurker');
+    if (!modes || !USER_MODE_STRING.test(modes)) return;
+    this.sendPacer.write(() => (this.currentNick ? `MODE ${this.currentNick} ${modes}` : null), {
+      priority: 'high',
+    });
   }
 
   // The user's last raw command naming `nick`, CONSUMED: one command produces
@@ -11692,35 +11729,43 @@ export function outgoingNickIntents(line: string): Array<{ nick: string; channel
   return out;
 }
 
-// The user-mode change in an outgoing `MODE <nick> <modes>` line (#1181), or
-// null for anything else: a channel MODE, a query (`MODE nick`), or a mode
-// string with parameters. Only an oper's snomask (`+s +cF`) takes one, and
-// replaying `+s` without it would set a different snomask than they asked for.
+// The user-mode change in an outgoing `MODE <nick> <modes>` line (#1181), past
+// an IRCv3 tag block a bouncer client may have put in front of it, or null for
+// anything else: a channel MODE, a query (`MODE nick`), or a mode string with
+// parameters. Only an oper's snomask (`+s +cF`) takes one, and replaying `+s`
+// without it would set a different snomask than they asked for.
 export function parseUserModeRequest(line: string): { target: string; modes: string } | null {
-  const parts = line.trim().split(/ +/);
-  if ((parts[0] || '').toUpperCase() !== 'MODE' || parts.length !== 3) return null;
-  const target = parts[1];
-  const modes = parts[2].replace(/^:/, '');
-  if (!target || isChannelTarget(target) || !/^[+-]/.test(modes)) return null;
-  return { target, modes };
+  const parsed = /^\s*(?:@\S+\s+)?MODE\s+(\S+)\s+:?([+-]\S*)\s*$/i.exec(line);
+  if (!parsed || isChannelTarget(parsed[1])) return null;
+  return { target: parsed[1], modes: parsed[2] };
 }
 
-// Fold a user-mode change into the modes asked for before, as `+gR-i`, or null
-// when nothing is left. The last request for a letter wins, so `-g` after `+g`
-// becomes `-g` (a no-op for the server) and `-i` sticks on a network whose
-// default is +i.
+// What a stored user_modes value must look like to be sent: `+g`, `+gR-i`.
+const USER_MODE_STRING = /^(?:[+-][A-Za-z]+)+$/;
+
+// Each `[sign, letter]` in a mode string, in order.
+function userModeEntries(modes: string): Array<['+' | '-', string]> {
+  const out: Array<['+' | '-', string]> = [];
+  let sign: '+' | '-' = '+';
+  for (const ch of modes) {
+    if (ch === '+' || ch === '-') sign = ch;
+    else if (/[A-Za-z]/.test(ch)) out.push([sign, ch]);
+  }
+  return out;
+}
+
+// Fold a user-mode change into the kept modes, as `+gR-i`, or null when none
+// are left. A letter's opposite undoes it, so `-g` after `+g` leaves nothing,
+// and `-i` with nothing kept is kept, for a network whose default is +i.
 export function mergeUserModes(stored: string | null, change: string): string | null {
-  const wanted = new Map<string, '+' | '-'>();
-  for (const modes of [stored ?? '', change]) {
-    let sign: '+' | '-' = '+';
-    for (const ch of modes) {
-      if (ch === '+' || ch === '-') sign = ch;
-      else if (/[A-Za-z]/.test(ch)) wanted.set(ch, sign);
-    }
+  const kept = new Map(userModeEntries(stored ?? '').map(([sign, letter]) => [letter, sign]));
+  for (const [sign, letter] of userModeEntries(change)) {
+    if (kept.has(letter) && kept.get(letter) !== sign) kept.delete(letter);
+    else kept.set(letter, sign);
   }
   let add = '';
   let remove = '';
-  for (const [letter, sign] of wanted) {
+  for (const [letter, sign] of kept) {
     if (sign === '+') add += letter;
     else remove += letter;
   }
