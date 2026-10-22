@@ -1110,6 +1110,8 @@ export class IrcConnection {
   acceptedFriends = new Set<string>();
   acceptJudged = new Set<string>();
   acceptListFull = false;
+  // Friends we've sent `ACCEPT -nick` for, until InspIRCd says it took.
+  acceptRevoking = new Set<string>();
   // When the server line being handled arrived. An event without server-time
   // takes it as its time, and so does the bouncer's copy of the line, so the
   // stored row and the relayed line agree: a MARKREAD from an attached client
@@ -1949,12 +1951,10 @@ export class IrcConnection {
       }
       // A friend we accepted ourselves who was on the list already: a re-attached
       // socket keeps its list. They're let through, which is all we wanted.
-      if (
-        rawCommand === '457' &&
-        callerId &&
-        this.acceptedFriends.has(foldTargetFor(this.network.id, String(msg?.params?.[1] ?? '')))
-      ) {
-        return;
+      // Not ours, then, so removing the friend mustn't take it back.
+      if (rawCommand === '457' && callerId) {
+        const key = foldTargetFor(this.network.id, String(msg?.params?.[1] ?? ''));
+        if (this.acceptedFriends.delete(key)) return;
       }
       if (rawCommand === '456' && callerId) this.acceptListFull = true;
       if (rawCommand === '282' && callerId) {
@@ -2576,9 +2576,7 @@ export class IrcConnection {
       // signal, and toasts are already rate-limited.
       this.markAllPeersOffline();
       // The server's caller-ID accept list went with the socket (#1181).
-      this.acceptedFriends.clear();
-      this.acceptJudged.clear();
-      this.acceptListFull = false;
+      this.resetAcceptState();
       // Release this socket's identd mapping (a reconnect re-registers via the
       // 'raw socket connected' handler above and gets a fresh handle).
       unregisterIdent(this.identdId);
@@ -2908,6 +2906,8 @@ export class IrcConnection {
       }
       const isServer = !eventNick;
       const isNotice = eventType === 'notice';
+      // Bookkeeping for Lurker's own caller-ID ACCEPTs (#1181), not news.
+      if (isServer && isNotice && this.isOwnAcceptNotice(eventMessage ?? '')) return;
 
       let target: string;
       if (isServer) target = `:server:${this.network.id}`;
@@ -5895,6 +5895,9 @@ export class IrcConnection {
     switch (phase) {
       case 'dialing':
         this.resetRestoreState();
+        // A new socket's accept list starts empty, and 'socket close' never
+        // saw the old one go.
+        this.resetAcceptState();
         // A new socket: what waited was meant for the one that died.
         this.sendPacer.drop();
         // A new socket. Anything we still think we are in belonged to one that
@@ -10603,6 +10606,22 @@ export class IrcConnection {
     }
   }
 
+  private resetAcceptState(): void {
+    this.acceptedFriends.clear();
+    this.acceptJudged.clear();
+    this.acceptRevoking.clear();
+    this.acceptListFull = false;
+  }
+
+  // InspIRCd's NOTICE that an ACCEPT Lurker sent took. Solanum and hybrid say
+  // nothing on success; a reply to the user's own /accept still shows.
+  private isOwnAcceptNotice(text: string): boolean {
+    const m = /^(\S+) is (now|no longer) on your accept list$/.exec(text);
+    if (!m) return false;
+    const key = foldTargetFor(this.network.id, m[1]);
+    return m[2] === 'now' ? this.acceptedFriends.has(key) : this.acceptRevoking.delete(key);
+  }
+
   private canAutoAccept(): boolean {
     return (
       this.state === 'connected' &&
@@ -10638,8 +10657,10 @@ export class IrcConnection {
   // A friend removed: take back the ACCEPT we sent for them, and only that
   // one. Someone the user accepted by hand stays accepted.
   unacceptFriend(nick: string): void {
-    if (!this.acceptedFriends.delete(foldTargetFor(this.network.id, nick))) return;
+    const key = foldTargetFor(this.network.id, nick);
+    if (!this.acceptedFriends.delete(key)) return;
     if (this.state !== 'connected') return;
+    this.acceptRevoking.add(key);
     try {
       this.client.raw(`ACCEPT -${nick}`);
     } catch (_) {

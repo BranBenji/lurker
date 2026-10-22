@@ -445,6 +445,36 @@ describe('friends get through caller ID (#1181)', () => {
     expect(publish).not.toHaveBeenCalled();
   });
 
+  it('leaves a friend the user had already accepted alone when they’re removed', () => {
+    const { conn, read } = makeFriendConn();
+    read(':irc.example.test 730 nick :bob!b@example.test');
+    read(':irc.example.test 457 nick bob :is already on your accept list');
+    conn.unacceptFriend('bob');
+    expect(accepts(conn)).toEqual(['ACCEPT bob']);
+  });
+
+  it('keeps InspIRCd’s notices about its own ACCEPTs out of the server buffer', () => {
+    const { conn, publish, read } = makeFriendConn();
+    read(':irc.example.test 730 nick :bob!b@example.test');
+    read(':irc.example.test NOTICE nick :bob is now on your accept list');
+    conn.unacceptFriend('bob');
+    read(':irc.example.test NOTICE nick :bob is no longer on your accept list');
+    expect(publish).not.toHaveBeenCalled();
+    // The user's own /accept carol is answered as before.
+    read(':irc.example.test NOTICE nick :carol is now on your accept list');
+    read(':irc.example.test NOTICE nick :bob is no longer on your accept list');
+    expect(publish).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts over when the engine dials a new socket', () => {
+    const { conn, read } = makeFriendConn();
+    read(':irc.example.test 730 nick :bob!b@example.test');
+    (conn as unknown as { onEnginePhase(p: string, i: object): void }).onEnginePhase('dialing', {});
+    conn.state = 'connected';
+    read(':bob!b@example.test PRIVMSG nick :hi');
+    expect(accepts(conn)).toEqual(['ACCEPT bob', 'ACCEPT bob']);
+  });
+
   it('takes back only the ACCEPTs it sent when a friend is removed', () => {
     const { conn, read } = makeFriendConn();
     read(':irc.example.test 730 nick :bob!b@example.test');

@@ -1379,6 +1379,15 @@ describe('openDm (#1182)', () => {
     expect(store.claimPendingOpen(1, 'bob')).toBe(true);
   });
 
+  it('lets a later navigation win over the reply', () => {
+    vi.mocked(socketSend).mockReturnValue(true);
+    const store = useBuffersStore();
+    store.ensure(1, '#chan');
+    store.openDm(1, 'bob');
+    store.activate(1, '#chan');
+    expect(store.claimPendingOpen(1, 'bob')).toBe(false);
+  });
+
   it('just focuses a DM the server already has', () => {
     vi.mocked(socketSend).mockReturnValue(true);
     const store = useBuffersStore();

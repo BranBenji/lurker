@@ -1589,6 +1589,12 @@ export const useBuffersStore = defineStore('buffers', {
       // (networkId null) and the usual `${networkId}::${target}` otherwise.
       const newKey = bufferKey(networkId, canonTarget);
       const prevKey = networks.activeKey;
+      // A newer navigation wins over an open still waiting for its reply
+      // (/query bob, then a click elsewhere), which would pull focus back.
+      if (prevKey !== newKey) {
+        for (const id of pendingOpens.values()) clearTimeout(id);
+        pendingOpens.clear();
+      }
       if (prevKey && prevKey !== newKey) {
         const prev = this.buffers[prevKey];
         if (prev) {
