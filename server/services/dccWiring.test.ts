@@ -99,6 +99,7 @@ function makeConn(networkFields: Record<string, unknown> = {}): IrcConnection {
       connect_commands: null,
       position: 0,
       casemapping: null,
+      user_modes: null,
       created_at: new Date().toISOString(),
       ...networkFields,
     },

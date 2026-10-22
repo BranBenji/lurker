@@ -14,6 +14,8 @@ import { describe, it, expect, vi, beforeAll } from 'vitest';
 import { IrcConnection, dmRefusalReason, parseCallerIdNotice } from './ircConnection.js';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
+import { ensureExists } from '../db/buffers.js';
+import { favoriteBuffer } from '../db/favoriteBuffers.js';
 import ignoreRulesService from './ignoreRulesService.js';
 import { stubCtcpRequest } from '../test-utils/ctcpStub.js';
 
@@ -319,5 +321,191 @@ describe('the accept list (/accept with no argument)', () => {
       expect.objectContaining({ type: 'motd', text: 'End of G-line List' }),
     );
     expect(publish).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'notice' }));
+  });
+});
+
+describe('friends get through caller ID (#1181)', () => {
+  // A connected socket on a network with caller ID, where bob is a friend (a
+  // favorited DM) and carol is only an open DM.
+  function makeFriendConn({ callerId = true } = {}) {
+    const made = makeConn();
+    const { conn, network, read } = made;
+    if (callerId) read(':irc.example.test 005 nick CALLERID=g :are supported by this server');
+    conn.state = 'connected';
+    for (const nick of ['bob', 'carol']) {
+      ensureExists(userId, network.id, nick);
+      conn.trackDmPeer(nick);
+    }
+    favoriteBuffer(userId, network.id, 'bob');
+    made.publish.mockClear();
+    return made;
+  }
+  const accepts = (conn: IrcConnection) =>
+    vi
+      .mocked(conn.client.raw)
+      .mock.calls.map(([line]) => line)
+      .filter((line) => String(line).startsWith('ACCEPT'));
+
+  it('accepts a friend once when they’re seen online', () => {
+    const { conn, read } = makeFriendConn();
+    read(':irc.example.test 730 nick :bob!b@example.test,carol!c@example.test');
+    read(':bob!b@example.test PRIVMSG nick :hi');
+    expect(accepts(conn)).toEqual(['ACCEPT bob']);
+  });
+
+  it('accepts them again after they’ve been offline, when the server forgot them', () => {
+    const { conn, read } = makeFriendConn();
+    read(':irc.example.test 730 nick :bob!b@example.test');
+    read(':irc.example.test 731 nick :bob');
+    read(':irc.example.test 730 nick :bob!b@example.test');
+    expect(accepts(conn)).toEqual(['ACCEPT bob', 'ACCEPT bob']);
+  });
+
+  it('starts over on a new socket, which has an empty list with room in it', () => {
+    const { conn, read } = makeFriendConn();
+    read(':irc.example.test 730 nick :bob!b@example.test');
+    read(':irc.example.test 456 nick :Accept list is full');
+    conn.client.emit('socket close');
+    conn.state = 'connected';
+    read(':irc.example.test 730 nick :bob!b@example.test');
+    expect(accepts(conn)).toEqual(['ACCEPT bob', 'ACCEPT bob']);
+  });
+
+  it('accepts nobody where the network has no caller ID', () => {
+    const { conn, read } = makeFriendConn({ callerId: false });
+    read(':irc.example.test 730 nick :bob!b@example.test');
+    expect(accepts(conn)).toEqual([]);
+  });
+
+  it('accepts nobody while not connected', () => {
+    const { conn, read } = makeFriendConn();
+    conn.state = 'disconnected';
+    read(':irc.example.test 730 nick :bob!b@example.test');
+    expect(accepts(conn)).toEqual([]);
+  });
+
+  it('says nothing when a friend was on the list already, and passes other 457s through', () => {
+    const { conn, publish, read } = makeFriendConn();
+    read(':irc.example.test 730 nick :bob!b@example.test');
+    read(':irc.example.test 457 nick bob :is already on your accept list');
+    expect(publish).not.toHaveBeenCalled();
+    read(':irc.example.test 457 nick carol :is already on your accept list');
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining('carol') }),
+    );
+    expect(accepts(conn)).toEqual(['ACCEPT bob']);
+  });
+
+  it('stops accepting once the server says the list is full', () => {
+    const { conn, network, read } = makeFriendConn();
+    ensureExists(userId, network.id, 'dave');
+    conn.trackDmPeer('dave');
+    favoriteBuffer(userId, network.id, 'dave');
+    read(':irc.example.test 456 nick :Accept list is full');
+    read(':irc.example.test 730 nick :bob!b@example.test,dave!d@example.test');
+    expect(accepts(conn)).toEqual([]);
+  });
+
+  it('takes being seen away as being seen online', () => {
+    const { conn, read } = makeFriendConn();
+    read(':bob!b@example.test AWAY :lunch');
+    expect(accepts(conn)).toEqual(['ACCEPT bob']);
+  });
+
+  it('accepts a friend again under their new nick', () => {
+    const { conn, read } = makeFriendConn();
+    read(':irc.example.test 730 nick :bob!b@example.test');
+    read(':bob!b@example.test NICK bobby');
+    expect(accepts(conn)).toEqual(['ACCEPT bob', 'ACCEPT bobby']);
+  });
+
+  it('weighs a peer once per sighting, not on every line from them', () => {
+    const { conn, network, read } = makeFriendConn();
+    read(':irc.example.test 730 nick :carol!c@example.test');
+    // Made a friend behind the connection's back: only acceptFriendIfOnline,
+    // which favorite-buffer calls, or a fresh sighting picks that up.
+    favoriteBuffer(userId, network.id, 'carol');
+    read(':carol!c@example.test PRIVMSG nick :hi');
+    expect(accepts(conn)).toEqual([]);
+    read(':irc.example.test 731 nick :carol');
+    read(':irc.example.test 730 nick :carol!c@example.test');
+    expect(accepts(conn)).toEqual(['ACCEPT carol']);
+  });
+
+  it('matches the server’s spelling of a nick by the network’s case rules', () => {
+    const { conn, network, publish, read } = makeFriendConn();
+    read(':irc.example.test 005 nick CASEMAPPING=rfc1459 :are supported by this server');
+    publish.mockClear();
+    ensureExists(userId, network.id, 'foo[m]');
+    conn.trackDmPeer('foo[m]');
+    favoriteBuffer(userId, network.id, 'foo[m]');
+    read(':irc.example.test 730 nick :foo[m]!f@example.test');
+    read(':irc.example.test 457 nick FOO[M] :is already on your accept list');
+    expect(accepts(conn)).toEqual(['ACCEPT foo[m]']);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it('leaves a friend the user had already accepted alone when they’re removed', () => {
+    const { conn, read } = makeFriendConn();
+    read(':irc.example.test 730 nick :bob!b@example.test');
+    read(':irc.example.test 457 nick bob :is already on your accept list');
+    conn.unacceptFriend('bob');
+    expect(accepts(conn)).toEqual(['ACCEPT bob']);
+  });
+
+  it('keeps InspIRCd’s notices about its own ACCEPTs out of the server buffer', () => {
+    const { conn, publish, read } = makeFriendConn();
+    read(':irc.example.test 730 nick :bob!b@example.test');
+    read(':irc.example.test NOTICE nick :bob is now on your accept list');
+    conn.unacceptFriend('bob');
+    read(':irc.example.test NOTICE nick :bob is no longer on your accept list');
+    expect(publish).not.toHaveBeenCalled();
+    // The user's own /accept carol is answered as before.
+    read(':irc.example.test NOTICE nick :carol is now on your accept list');
+    read(':irc.example.test NOTICE nick :bob is no longer on your accept list');
+    expect(publish).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts over when the engine dials a new socket', () => {
+    const { conn, read } = makeFriendConn();
+    read(':irc.example.test 730 nick :bob!b@example.test');
+    (conn as unknown as { onEnginePhase(p: string, i: object): void }).onEnginePhase('dialing', {});
+    conn.state = 'connected';
+    read(':bob!b@example.test PRIVMSG nick :hi');
+    expect(accepts(conn)).toEqual(['ACCEPT bob', 'ACCEPT bob']);
+  });
+
+  it('takes back only the ACCEPTs it sent when a friend is removed', () => {
+    const { conn, read } = makeFriendConn();
+    read(':irc.example.test 730 nick :bob!b@example.test');
+    conn.unacceptFriend('bob');
+    conn.unacceptFriend('carol');
+    expect(accepts(conn)).toEqual(['ACCEPT bob', 'ACCEPT -bob']);
+  });
+
+  it('accepts a friend added after coming back from away', () => {
+    const { conn, network, read } = makeFriendConn();
+    read(':irc.example.test 730 nick :carol!c@example.test');
+    read(':carol!c@example.test AWAY :lunch');
+    read(':carol!c@example.test AWAY');
+    favoriteBuffer(userId, network.id, 'carol');
+    conn.acceptFriendIfOnline('carol');
+    expect(accepts(conn)).toEqual(['ACCEPT carol']);
+  });
+
+  it('accepts a friend added while they’re online, and not one who’s offline', () => {
+    const { conn, network, read } = makeFriendConn();
+    read(':irc.example.test 730 nick :carol!c@example.test');
+    expect(accepts(conn)).toEqual([]);
+    favoriteBuffer(userId, network.id, 'carol');
+    conn.acceptFriendIfOnline('carol');
+    expect(accepts(conn)).toEqual(['ACCEPT carol']);
+
+    ensureExists(userId, network.id, 'erin');
+    conn.trackDmPeer('erin');
+    read(':irc.example.test 731 nick :erin');
+    favoriteBuffer(userId, network.id, 'erin');
+    conn.acceptFriendIfOnline('erin');
+    expect(accepts(conn)).toEqual(['ACCEPT carol']);
   });
 });

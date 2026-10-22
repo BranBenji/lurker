@@ -4113,8 +4113,10 @@ function handleCommand(line: string, networkId: number | null, target: string): 
           })
         )
           return false;
+        buffers.activate(networkId, who);
+      } else {
+        buffers.openDm(networkId, who);
       }
-      buffers.activate(networkId, who);
       return true;
     }
     case 'ns':

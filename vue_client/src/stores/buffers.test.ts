@@ -1362,3 +1362,62 @@ describe('speakers across a rename', () => {
     expect(sp['u0']).toBeTruthy();
   });
 });
+
+describe('openDm (#1182)', () => {
+  const opens = () =>
+    vi
+      .mocked(socketSend)
+      .mock.calls.map((c) => c[0] as Record<string, unknown>)
+      .filter((p) => p.type === 'open-buffer');
+
+  it('asks the server for a DM it doesn’t have, and lets the reply focus it', () => {
+    vi.mocked(socketSend).mockReturnValue(true);
+    const store = useBuffersStore();
+    store.openDm(1, 'bob');
+    expect(opens()).toEqual([expect.objectContaining({ networkId: 1, target: 'bob' })]);
+    expect(h.activeKey).toBeNull();
+    expect(store.claimPendingOpen(1, 'bob')).toBe(true);
+  });
+
+  it('lets a later navigation win over the reply', () => {
+    vi.mocked(socketSend).mockReturnValue(true);
+    const store = useBuffersStore();
+    store.ensure(1, '#chan');
+    store.openDm(1, 'bob');
+    store.activate(1, '#chan');
+    expect(store.claimPendingOpen(1, 'bob')).toBe(false);
+  });
+
+  it('just focuses a DM the server already has', () => {
+    vi.mocked(socketSend).mockReturnValue(true);
+    const store = useBuffersStore();
+    store.ensure(1, 'bob');
+    store.byKey('1::bob')!.id = 42;
+    store.openDm(1, 'Bob');
+    expect(opens()).toEqual([]);
+    expect(h.activeKey).toBe('1::bob');
+  });
+
+  it('opens it locally while offline', () => {
+    vi.mocked(socketSend).mockReturnValue(false);
+    const store = useBuffersStore();
+    store.openDm(1, 'bob');
+    expect(h.activeKey).toBe('1::bob');
+  });
+
+  it('never sends open-buffer for a channel, which would JOIN it', () => {
+    vi.mocked(socketSend).mockReturnValue(true);
+    const store = useBuffersStore();
+    store.openDm(1, '&local');
+    expect(opens()).toEqual([]);
+    expect(h.activeKey).toBe('1::&local');
+  });
+
+  it('never sends open-buffer for a DCC chat, which the server has no row for', () => {
+    vi.mocked(socketSend).mockReturnValue(true);
+    const store = useBuffersStore();
+    store.openDm(1, '=bob');
+    expect(opens()).toEqual([]);
+    expect(h.activeKey).toBe('1::=bob');
+  });
+});

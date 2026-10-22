@@ -32,7 +32,7 @@ import {
   foldTargetFor,
   kindForTarget,
 } from '../db/buffers.js';
-import { unfavoriteBuffer } from '../db/favoriteBuffers.js';
+import { unfavoriteBuffer, isFavoriteDmPeer } from '../db/favoriteBuffers.js';
 import { resolveBufferIdByNetwork } from '../db/bufferResolve.js';
 import { addReaction, findReactionParent, removeReaction } from '../db/reactions.js';
 import { isValidReactionValue } from '../../shared/reactions.js';
@@ -61,7 +61,7 @@ import { findUserById } from '../db/users.js';
 import { isNodeMode } from '../utils/edition.js';
 import { deriveIdent } from '../../shared/ident.js';
 import { validateClientCertPair, isClientCertProblem } from '../utils/clientCert.js';
-import { networkProxy } from '../db/networks.js';
+import { networkProxy, setNetworkUserModes } from '../db/networks.js';
 import { isProxyProblem } from '../../shared/proxy.js';
 import type { ProxyConfig } from '../../shared/proxy.js';
 import { mayUseProxy } from './networkPolicy.js';
@@ -1099,6 +1099,22 @@ export class IrcConnection {
   // RPL_ACCEPTLIST (281), said once at RPL_ENDOFACCEPT (282). Cleared on
   // socket close, so a 281 with no end can't carry into the next connection.
   acceptListNicks: string[] = [];
+  // Friends we have sent ACCEPT for on this socket (#1181), folded. The server
+  // drops a nick from the accept list when they quit or change nick, and the
+  // whole list with our socket, so a friend leaves this set when seen going
+  // offline and it empties on socket close (not on an engine link drop, which
+  // keeps the socket). acceptJudged holds every nick, friend or not, already
+  // weighed since they were last seen coming online, so a busy peer's every
+  // line doesn't cost a favorites lookup. acceptListFull stops the sending for
+  // the rest of the connection once the server says there's no room.
+  acceptedFriends = new Set<string>();
+  acceptJudged = new Set<string>();
+  acceptListFull = false;
+  // Friends we've sent `ACCEPT -nick` for, until InspIRCd says it took.
+  acceptRevoking = new Set<string>();
+  // User-mode letters we asked for and the server hasn't confirmed yet
+  // (#1181), with the sign and when the request went.
+  pendingUserModes = new Map<string, { sign: '+' | '-'; at: number }>();
   // When the server line being handled arrived. An event without server-time
   // takes it as its time, and so does the bouncer's copy of the line, so the
   // stored row and the relayed line agree: a MARKREAD from an attached client
@@ -1936,6 +1952,14 @@ export class IrcConnection {
         }
         return;
       }
+      // A friend we accepted ourselves who was on the list already: a re-attached
+      // socket keeps its list. They're let through, which is all we wanted.
+      // Not ours, then, so removing the friend mustn't take it back.
+      if (rawCommand === '457' && callerId) {
+        const key = foldTargetFor(this.network.id, String(msg?.params?.[1] ?? ''));
+        if (this.acceptedFriends.delete(key)) return;
+      }
+      if (rawCommand === '456' && callerId) this.acceptListFull = true;
       if (rawCommand === '282' && callerId) {
         const nicks = this.acceptListNicks;
         this.acceptListNicks = [];
@@ -2255,8 +2279,12 @@ export class IrcConnection {
       // command (e.g. waiting for NickServ identify to take effect before
       // joining +r channels). Re-runs on every reconnect by design.
       // Not on a re-attach: the socket already ran them (NickServ is already
-      // satisfied, and a WAIT-delayed JOIN would join what we are in).
-      if (!this.restoring) this.runConnectCommands();
+      // satisfied, and a WAIT-delayed JOIN would join what we are in). The
+      // user modes go first, so a connect command can still override them.
+      if (!this.restoring) {
+        this.replayUserModes();
+        this.runConnectCommands();
+      }
     });
     c.on('close', () => {
       // Final safety net (clean disconnect/dispose may not always emit
@@ -2554,6 +2582,8 @@ export class IrcConnection {
       // — a reconnect re-firing "came online" for peers still around is the honest
       // signal, and toasts are already rate-limited.
       this.markAllPeersOffline();
+      // The server's caller-ID accept list went with the socket (#1181).
+      this.resetAcceptState();
       // Release this socket's identd mapping (a reconnect re-registers via the
       // 'raw socket connected' handler above and gets a fresh handle).
       unregisterIdent(this.identdId);
@@ -2883,6 +2913,8 @@ export class IrcConnection {
       }
       const isServer = !eventNick;
       const isNotice = eventType === 'notice';
+      // Bookkeeping for Lurker's own caller-ID ACCEPTs (#1181), not news.
+      if (isServer && isNotice && this.isOwnAcceptNotice(eventMessage ?? '')) return;
 
       let target: string;
       if (isServer) target = `:server:${this.network.id}`;
@@ -3576,6 +3608,9 @@ export class IrcConnection {
         this.markPeerEvent(eventNewNick, 'online');
         this.rekeyCtcpOutstanding(eventNick, eventNewNick);
         this.renameDmForNickChange(eventNick, eventNewNick, userhost, event.time);
+        // The server took them off the accept list with the old nick, and the
+        // 'online' above came before the rename made the new one a friend.
+        this.acceptFriend(eventNewNick);
       }
     });
 
@@ -3641,6 +3676,7 @@ export class IrcConnection {
       // Self user-mode change (e.g. server sets +i on connect, /OPER yields +o, etc.)
       if (target && this.isSelfNick(target)) {
         let changed = false;
+        let confirmed = '';
         for (const m of eventModes) {
           if (!m || !m.mode) continue;
           const sign = m.mode[0];
@@ -3651,8 +3687,10 @@ export class IrcConnection {
           } else if (sign === '-' && this.userModes.delete(letter)) {
             changed = true;
           }
+          if (this.takePendingUserMode(sign, letter)) confirmed += sign + letter;
         }
         if (changed) this.publishUserModes();
+        if (confirmed) this.storeUserModes(mergeUserModes(this.network.user_modes, confirmed));
         // Solanum-style servers (Libera) send self-modes as a MODE command
         // after MOTD instead of RPL_UMODEIS (221). The raw-numeric forwarder
         // catches 221; this surfaces the MODE path so the user mode lands in
@@ -4477,6 +4515,11 @@ export class IrcConnection {
     if (!canonical) {
       return;
     }
+    // Every sighting, not just transitions: the stored state can say online
+    // from before a restart, when this socket has accepted nobody yet. Away
+    // and back are sightings too (a WHO row or away-notify can come first).
+    if (state === 'offline') this.forgetAccepted(canonical);
+    else this.noteSeenOnline(canonical);
     const prev = getPeerPresence(this.network.id, canonical);
     const prevState = prev?.state || null;
     let allowed = false;
@@ -5862,6 +5905,9 @@ export class IrcConnection {
     switch (phase) {
       case 'dialing':
         this.resetRestoreState();
+        // A new socket's accept list starts empty, and 'socket close' never
+        // saw the old one go.
+        this.resetAcceptState();
         // A new socket: what waited was meant for the one that died.
         this.sendPacer.drop();
         // A new socket. Anything we still think we are in belonged to one that
@@ -5944,7 +5990,10 @@ export class IrcConnection {
         // A socket the engine registered on its own never had its
         // post-registration steps: the connect commands run now, and the
         // manager's rejoin (onceRestored, at `live`) covers the autojoin list.
-        if (this.restoreUnattended) this.runConnectCommands();
+        if (this.restoreUnattended) {
+          this.replayUserModes();
+          this.runConnectCommands();
+        }
         break;
       }
       case 'gap': {
@@ -10476,6 +10525,68 @@ export class IrcConnection {
     for (const intent of outgoingNickIntents(line)) {
       this.noteNickIntent(intent.nick, intent.channel);
     }
+    this.noteUserModeRequest(line);
+  }
+
+  // A `MODE <own nick> <modes>` going out is remembered for the network, so the
+  // next registration asks for the same modes (#1181). irssi does the same with
+  // its wanted_usermode: what we ASKED for, never what the server set on its own
+  // (+Z, +r), which it sets again anyway. Unlike irssi, a letter is kept only
+  // once the server's MODE confirms it, so a typo or a letter this ircd doesn't
+  // have (a 501) isn't replayed on every connect. Undoing a kept letter forgets
+  // it at once: that needs no server's word, and it's how a letter the network
+  // no longer has gets cleared. Read at write, like the nick intents, so "own
+  // nick" is the nick the line actually goes out under. A web client's /mode and
+  // a bouncer client's MODE both pass here.
+  noteUserModeRequest(line: string): void {
+    const req = parseUserModeRequest(line);
+    if (!req || !this.currentNick) return;
+    const id = this.network.id;
+    if (foldTargetFor(id, req.target) !== foldTargetFor(id, this.currentNick)) return;
+    const stored = new Map(
+      userModeEntries(this.network.user_modes ?? '').map(([sign, letter]) => [letter, sign]),
+    );
+    let undone = '';
+    for (const [sign, letter] of userModeEntries(req.modes)) {
+      const kept = stored.get(letter);
+      if (kept && kept !== sign) undone += sign + letter;
+      else if (!kept) this.pendingUserModes.set(letter, { sign, at: Date.now() });
+    }
+    if (undone) this.storeUserModes(mergeUserModes(this.network.user_modes, undone));
+  }
+
+  // Whether the server's `<sign><letter>` answers a request of ours still in
+  // the window, consuming it.
+  private takePendingUserMode(sign: string, letter: string): boolean {
+    const pending = this.pendingUserModes.get(letter);
+    if (!pending) return false;
+    this.pendingUserModes.delete(letter);
+    return pending.sign === sign && Date.now() - pending.at <= SEND_REJECTION_ATTRIBUTION_MS;
+  }
+
+  private storeUserModes(modes: string | null): void {
+    if (modes === this.network.user_modes) return;
+    this.network.user_modes = modes;
+    try {
+      setNetworkUserModes(this.network.id, this.network.user_id, modes);
+    } catch (e) {
+      console.warn('[umode] failed to store user modes:', (e as Error)?.message || e);
+    }
+  }
+
+  // Ask a fresh registration for the user modes the user set before (#1181).
+  // In the high lane, ahead of the connect commands queued after it, so one of
+  // those can still override a mode; built when it goes, so a nick regain that
+  // went first doesn't leave it naming a nick we no longer have (a 502). Not
+  // through raw(): what it asks for is already kept. A stored value that isn't
+  // a plain mode string (an archive import writes the column verbatim) is never
+  // sent.
+  replayUserModes(): void {
+    const modes = this.network.user_modes;
+    if (!modes || !USER_MODE_STRING.test(modes)) return;
+    this.sendPacer.write(() => (this.currentNick ? `MODE ${this.currentNick} ${modes}` : null), {
+      priority: 'high',
+    });
   }
 
   // The user's last raw command naming `nick`, CONSUMED: one command produces
@@ -10550,6 +10661,86 @@ export class IrcConnection {
     this.logNet(
       `${nick}${userhost ? ` (${userhost})` : ''} tried to message you; caller ID blocked it.`,
     );
+  }
+
+  // Friends get through caller ID (#1181): a favorited DM's peer goes on the
+  // accept list when they're seen online on this socket. Not a list replayed
+  // at connect, because ACCEPT only takes a nick that's online (solanum
+  // answers 401 otherwise), and the server forgets them when they quit or
+  // change nick, so presence is what knows when to send it.
+  acceptFriend(nick: string): void {
+    if (!this.canAutoAccept()) return;
+    const key = foldTargetFor(this.network.id, nick);
+    if (this.acceptedFriends.has(key)) return;
+    if (!isFavoriteDmPeer(this.network.user_id, this.network.id, nick)) return;
+    this.acceptedFriends.add(key);
+    try {
+      this.client.raw(`ACCEPT ${nick}`);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  private resetAcceptState(): void {
+    this.acceptedFriends.clear();
+    this.acceptJudged.clear();
+    this.acceptRevoking.clear();
+    this.acceptListFull = false;
+  }
+
+  // InspIRCd's NOTICE that an ACCEPT Lurker sent took. Solanum and hybrid say
+  // nothing on success; a reply to the user's own /accept still shows.
+  private isOwnAcceptNotice(text: string): boolean {
+    const m = /^(\S+) is (now|no longer) on your accept list$/.exec(text);
+    if (!m) return false;
+    const key = foldTargetFor(this.network.id, m[1]);
+    return m[2] === 'now' ? this.acceptedFriends.has(key) : this.acceptRevoking.delete(key);
+  }
+
+  private canAutoAccept(): boolean {
+    return (
+      this.state === 'connected' &&
+      !this.acceptListFull &&
+      !!this.client.network?.supports('CALLERID')
+    );
+  }
+
+  // A tracked peer seen online: weigh them once until they're next seen
+  // going offline.
+  private noteSeenOnline(nick: string): void {
+    if (!this.canAutoAccept()) return;
+    const key = foldTargetFor(this.network.id, nick);
+    if (this.acceptJudged.has(key)) return;
+    this.acceptJudged.add(key);
+    this.acceptFriend(nick);
+  }
+
+  // The server forgets an accepted nick when they quit or change nick.
+  private forgetAccepted(nick: string): void {
+    const key = foldTargetFor(this.network.id, nick);
+    this.acceptedFriends.delete(key);
+    this.acceptJudged.delete(key);
+  }
+
+  // A friend just added: let them through now if they're online, rather than
+  // the next time they're seen coming online.
+  acceptFriendIfOnline(nick: string): void {
+    const state = getPeerPresence(this.network.id, nick)?.state;
+    if (state && state !== 'offline') this.acceptFriend(nick);
+  }
+
+  // A friend removed: take back the ACCEPT we sent for them, and only that
+  // one. Someone the user accepted by hand stays accepted.
+  unacceptFriend(nick: string): void {
+    const key = foldTargetFor(this.network.id, nick);
+    if (!this.acceptedFriends.delete(key)) return;
+    if (this.state !== 'connected') return;
+    this.acceptRevoking.add(key);
+    try {
+      this.client.raw(`ACCEPT -${nick}`);
+    } catch (_) {
+      /* ignore */
+    }
   }
 
   // Forget per-connection send state: the speak-permission marks and the send-
@@ -11536,6 +11727,52 @@ export function outgoingNickIntents(line: string): Array<{ nick: string; channel
     for (const nick of (parts[1] || '').split(',')) add(nick, null);
   }
   return out;
+}
+
+// The user-mode change in an outgoing `MODE <nick> <modes>` line (#1181), past
+// an IRCv3 tag block a bouncer client may have put in front of it, or null for
+// anything else: a channel MODE or a query (`MODE nick`). A line with a
+// parameter is an oper's snomask (`-i+s +cF`), the one user mode that takes
+// one; `s` is left out of it, since `+s` replayed without its mask would set a
+// different one, and the rest of the line still counts.
+export function parseUserModeRequest(line: string): { target: string; modes: string } | null {
+  const parsed = /^\s*(?:@\S+\s+)?MODE\s+(\S+)\s+:?([+-]\S*)(\s+\S.*)?$/i.exec(line);
+  if (!parsed || isChannelTarget(parsed[1])) return null;
+  const modes = parsed[3] ? parsed[2].replace(/s/g, '') : parsed[2];
+  return { target: parsed[1], modes };
+}
+
+// What a stored user_modes value must look like to be sent: `+g`, `+gR-i`.
+const USER_MODE_STRING = /^(?:[+-][A-Za-z]+)+$/;
+
+// Each `[sign, letter]` in a mode string, in order.
+function userModeEntries(modes: string): Array<['+' | '-', string]> {
+  const out: Array<['+' | '-', string]> = [];
+  let sign: '+' | '-' = '+';
+  for (const ch of modes) {
+    if (ch === '+' || ch === '-') sign = ch;
+    else if (/[A-Za-z]/.test(ch)) out.push([sign, ch]);
+  }
+  return out;
+}
+
+// Fold a user-mode change into the kept modes, as `+gR-i`, or null when none
+// are left. A letter's opposite undoes it, so `-g` after `+g` leaves nothing,
+// and `-i` with nothing kept is kept, for a network whose default is +i.
+export function mergeUserModes(stored: string | null, change: string): string | null {
+  const kept = new Map(userModeEntries(stored ?? '').map(([sign, letter]) => [letter, sign]));
+  for (const [sign, letter] of userModeEntries(change)) {
+    if (kept.has(letter) && kept.get(letter) !== sign) kept.delete(letter);
+    else kept.set(letter, sign);
+  }
+  let add = '';
+  let remove = '';
+  for (const [letter, sign] of kept) {
+    if (sign === '+') add += letter;
+    else remove += letter;
+  }
+  const merged = (add ? `+${add}` : '') + (remove ? `-${remove}` : '');
+  return merged || null;
 }
 
 // True for numerics commandResultError owns, keyed by the tag irc-framework

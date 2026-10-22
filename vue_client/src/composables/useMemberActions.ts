@@ -154,7 +154,7 @@ export function useMemberActions(): MemberActionsAPI {
       items.push({
         label: 'Send DM',
         icon: MailIcon,
-        onClick: () => buffers.activate(ctx.networkId, nick),
+        onClick: () => buffers.openDm(ctx.networkId, nick),
       });
     }
     items.push({

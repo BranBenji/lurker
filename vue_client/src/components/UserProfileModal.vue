@@ -399,7 +399,7 @@ function onClose() {
 
 function onSendDm() {
   if (isSelf.value) return;
-  buffers.activate(props.networkId, props.nick);
+  buffers.openDm(props.networkId, props.nick);
   whoisStore.closeViewer();
 }
 

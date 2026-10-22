@@ -1303,6 +1303,14 @@ export function pinsChangedFrame(userId: number, networkId: number): WsPayload {
   };
 }
 
+// Unfavorite and tell the user's devices. A friend leaving Friends also comes
+// off the caller-ID accept list, if Lurker put them there (#1181).
+function dropFavorite(userId: number, networkId: number, target: string): void {
+  if (!unfavoriteBuffer(userId, networkId, target)) return;
+  fanOut(userId, favoritesChangedFrame(userId));
+  ircManager.getConnection(userId, networkId)?.unacceptFriend(target);
+}
+
 // The user's full favorites list in global order — one frame shape for the
 // connect-burst seed and every later correction (clients replace wholesale,
 // so a handler written for either covers both). Entry objects rather than
@@ -1711,9 +1719,7 @@ export function closeBuffer(
   // Same reasoning for favorites: the sections render favorites ∩ open
   // buffers, so a favorite on a closed buffer is an invisible orphan.
   // Close implies unfavorite.
-  if (unfavoriteBuffer(userId, networkId, target)) {
-    fanOut(userId, favoritesChangedFrame(userId));
-  }
+  dropFavorite(userId, networkId, target);
   if (isChannelTarget(target)) {
     const conn = ircManager.getConnection(userId, networkId);
     // mayBeJoined, not isChannelJoined: a close owes a PART for a channel we
@@ -3478,9 +3484,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         // Pin implies unfavorite — the mirror of favorite⇒unpin (one placement
         // per buffer). Without it, pinning a favorited buffer would recreate
         // the invisible-pin state the favorite side just closed off.
-        if (unfavoriteBuffer(userId, networkId, target)) {
-          fanOut(userId, favoritesChangedFrame(userId));
-        }
+        dropFavorite(userId, networkId, target);
         break;
       }
       case 'unpin-buffer': {
@@ -3514,6 +3518,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           if (unpinBufferCaseInsensitive(userId, networkId, target)) {
             fanOut(userId, pinsChangedFrame(userId, networkId));
           }
+          // Friends get through caller ID (#1181).
+          ircManager.getConnection(userId, networkId)?.acceptFriendIfOnline(target);
         }
         break;
       }
@@ -3523,9 +3529,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         const networkId = addr ? Number(addr.networkId) : Number(msg.networkId);
         const target = addr ? addr.target : typeof msg.target === 'string' ? msg.target : '';
         if (!networkId || !target) break;
-        if (unfavoriteBuffer(userId, networkId, target)) {
-          fanOut(userId, favoritesChangedFrame(userId));
-        }
+        dropFavorite(userId, networkId, target);
         break;
       }
       case 'reorder-favorites': {

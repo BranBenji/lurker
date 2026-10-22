@@ -64,6 +64,7 @@ function makeConn(): IrcConnection {
       connect_commands: null,
       position: 0,
       casemapping: null,
+      user_modes: null,
       created_at: new Date().toISOString(),
     },
     onEvent: () => {},
@@ -308,6 +309,22 @@ describe('every timer starts at send', () => {
     expect(lines).not.toContain('JOIN #a');
     vi.advanceTimersByTime(1);
     expect(lines.at(-1)).toBe('JOIN #a');
+    conn.dispose();
+  });
+
+  it('the kept user modes go ahead of the connect commands, under the nick of the moment', () => {
+    // #1181: a connect command can still override a kept mode, and a NICK
+    // that went first (a regain) doesn't leave the MODE naming the old nick.
+    const { conn, lines, registered } = backlog();
+    registered(false);
+    conn.network.user_modes = '+g';
+    conn.network.connect_commands = 'MODE alice -g';
+    (conn.client as unknown as { options: unknown }).options = { ping_interval: 0 };
+    conn.client.connection.addReadBuffer(':irc.example.test 001 alice :Welcome');
+    conn.currentNick = 'alice2';
+    vi.advanceTimersByTime(20_000);
+    const modes = lines.filter((l) => l.startsWith('MODE '));
+    expect(modes).toEqual(['MODE alice2 +g', 'MODE alice -g']);
     conn.dispose();
   });
 

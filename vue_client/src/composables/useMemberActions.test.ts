@@ -127,3 +127,20 @@ describe('useMemberActions DCC entries', () => {
     expect(dccLabels(true)).toEqual([]);
   });
 });
+
+// #1182: Send DM opens the DM on the server, so an empty one can be pinned or
+// made a friend.
+describe('useMemberActions Send DM', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+
+  it('asks the server to open the DM', async () => {
+    const { socketSend } = await import('./useSocket.js');
+    vi.mocked(socketSend).mockClear();
+    useMemberActions()
+      .buildItems('alice', { networkId: 1, isSelf: () => false, onIgnore: () => {}, channel: '#c' })
+      .find((i) => i.label === 'Send DM')!.onClick!();
+    expect(socketSend).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'open-buffer', networkId: 1, target: 'alice' }),
+    );
+  });
+});

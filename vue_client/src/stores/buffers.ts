@@ -1068,6 +1068,23 @@ export const useBuffersStore = defineStore('buffers', {
       }
       return sent;
     },
+    // Open a DM the user asked for by name: /query, Send DM. One the server
+    // doesn't have yet goes through openBuffer, so even an empty DM is a real
+    // row that Pin and Add to Friends can act on (#1182), and the reply
+    // focuses it. One it has just gets focus, and so does any DM while we're
+    // offline, as before. `/query #chan` isn't a DM (open-buffer would JOIN
+    // it), and nor is `=bob`, a DCC chat that only exists while it's open.
+    openDm(networkId: number | string, nick: string): void {
+      if (
+        !isChannelTarget(nick) &&
+        !isDccChatTarget(nick) &&
+        idFor(networkId, nick) === undefined &&
+        this.openBuffer(networkId, nick)
+      ) {
+        return;
+      }
+      this.activate(networkId, nick);
+    },
     // Did THIS tab ask for `target` to be opened? Consumes the record, so the
     // reply focuses exactly once.
     claimPendingOpen(networkId: number | string, target: string): boolean {
@@ -1572,6 +1589,12 @@ export const useBuffersStore = defineStore('buffers', {
       // (networkId null) and the usual `${networkId}::${target}` otherwise.
       const newKey = bufferKey(networkId, canonTarget);
       const prevKey = networks.activeKey;
+      // A newer navigation wins over an open still waiting for its reply
+      // (/query bob, then a click elsewhere), which would pull focus back.
+      if (prevKey !== newKey) {
+        for (const id of pendingOpens.values()) clearTimeout(id);
+        pendingOpens.clear();
+      }
       if (prevKey && prevKey !== newKey) {
         const prev = this.buffers[prevKey];
         if (prev) {
