@@ -177,6 +177,8 @@ import {
   parseDisplayNameCommand,
   parseMetadataCommand,
 } from '../lib/commands/metadata.js';
+import { parseAvatarsCommand } from '../lib/commands/avatars.js';
+import { useAvatarSetsStore } from '../stores/avatarSets.js';
 import { parseThemeCommand } from '../lib/commands/theme.js';
 import { parseSheepCommand, SHEEP_USAGE_LINES } from '../lib/commands/sheep.js';
 import { useSheepStore } from '../stores/sheep.js';
@@ -2714,6 +2716,7 @@ const COMMANDS_LINES = [
   '  /displayname <name>|off — the name shown for you on networks with IRCv3 metadata',
   '  /avatar <url>|off      — your avatar image (an https URL) on networks with IRCv3 metadata',
   '  /metadata set|del|list|clear — any IRCv3 metadata key: set <key> <value> · del <key> · list [nick|#chan]',
+  '  /avatars [list|use <set>|delete <set>] — the tile set behind generated avatars (Settings › Appearance)',
   '  /ping [nick]           — CTCP ping a user for round-trip latency',
   '  /kick <nick> [reason]  — kick from current channel',
   '  /kickban <nick> [msg]  — kick and ban in one step',
@@ -3417,6 +3420,53 @@ function runSheep(argLine: string, networkId: number | null, target: string): vo
 // User-wide like /set, so it runs from anywhere including the system buffer.
 // REST-backed + async → fire-and-forget from handleCommand, reports when
 // settled.
+// /avatars (#607): list the tile sets, point at one, or delete an upload.
+// Names match case-insensitively; 'default' is the bundled set.
+async function runAvatars(
+  argLine: string,
+  networkId: number | null,
+  target: string,
+): Promise<void> {
+  const cmd = parseAvatarsCommand(argLine);
+  const reply = (msg: string) => localInfo(networkId, target, msg);
+  if (cmd.kind === 'error') return reply(`/avatars: ${cmd.message}`);
+  const avatarSets = useAvatarSetsStore();
+  const findByName = (name: string) =>
+    avatarSets.all.find(
+      (s) => s.name.toLowerCase() === name.toLowerCase() || s.id === name.toLowerCase(),
+    ) || null;
+  if (cmd.kind === 'list') {
+    reply(`avatar sets (${avatarSets.all.length}):`);
+    for (const s of avatarSets.all) {
+      const active = s.id === avatarSets.activeSetId;
+      const marks = [s.builtin ? 'built-in' : '', active ? 'active' : '']
+        .filter(Boolean)
+        .join(', ');
+      reply(`  ${active ? '*' : ' '} ${s.name} — ${s.count} tiles${marks ? `  (${marks})` : ''}`);
+    }
+    const on = settings.effective('look.message.avatars') === true;
+    reply(
+      on
+        ? '  avatars are on in the compact layout (look.message.avatars)'
+        : '  avatars are off — turn on look.message.avatars to show them in the compact layout',
+    );
+    return;
+  }
+  try {
+    const s = findByName(cmd.name);
+    if (!s) return reply(`/avatars: no set named "${cmd.name}" — /avatars lists them`);
+    if (cmd.kind === 'use') {
+      await avatarSets.use(s.id);
+      return reply(`generated avatars now use ${s.name}.`);
+    }
+    if (s.builtin) return reply('/avatars: the built-in set cannot be deleted');
+    await avatarSets.remove(Number(s.id));
+    return reply(`deleted avatar set ${s.name}.`);
+  } catch (e: any) {
+    reply(`/avatars: ${e?.message || 'failed'}`);
+  }
+}
+
 async function runTheme(argLine: string, networkId: number | null, target: string): Promise<void> {
   const cmd = parseThemeCommand(argLine);
   const reply = (msg: string) => localInfo(networkId, target, msg);
@@ -4014,6 +4064,10 @@ function handleCommand(line: string, networkId: number | null, target: string): 
     case 'theme':
       // Theme presets. App-scoped like /set; async like /dcc.
       void runTheme(argLine, networkId, target);
+      return true;
+    case 'avatars':
+      // Avatar tile sets (#607). App-scoped and async like /theme.
+      void runAvatars(argLine, networkId, target);
       return true;
     case 'sheep':
       // Undocumented. App-scoped; runs from anywhere, including the system buffer.

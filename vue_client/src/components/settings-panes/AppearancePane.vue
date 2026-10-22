@@ -14,6 +14,7 @@
   <section id="appearance" class="settings-pane">
     <h2>Appearance</h2>
     <ThemesSection />
+    <AvatarsSection />
     <RegistryPane category-id="appearance" embedded />
   </section>
 </template>
@@ -21,6 +22,7 @@
 <script setup lang="ts">
 import RegistryPane from './RegistryPane.vue';
 import ThemesSection from './ThemesSection.vue';
+import AvatarsSection from './AvatarsSection.vue';
 </script>
 
 <style src="./panes.css"></style>

@@ -9,6 +9,7 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useAuthStore } from '../stores/auth.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useThemesStore } from '../stores/themes.js';
+import { useAvatarSetsStore } from '../stores/avatarSets.js';
 import { THEME_POINTER_KEYS } from '../../../shared/themePresets.js';
 import { WS_CLOSE_SESSION_REVOKED } from '../../../shared/wsCloseCodes.js';
 import { primePreviews } from './useLinkPreview.js';
@@ -813,6 +814,12 @@ function applySnapshot(snapshot: any[], globalIgnores: any[] = []): void {
     .catch(() => {
       /* ignore — the bootstrap list (or the last successful fetch) keeps rendering */
     });
+  // Uploaded avatar sets (#607): same reasoning.
+  useAvatarSetsStore()
+    .fetchAll()
+    .catch(() => {
+      /* ignore — the last successful fetch keeps rendering */
+    });
   for (const net of snapshot) {
     for (const ch of net.channels) {
       // Snapshot members are already { nick, modes } objects from the server.
@@ -1004,6 +1011,15 @@ function handleMessage(raw: string): void {
     if (THEME_POINTER_KEYS.some((k) => k in changed && !themes.byId(String(changed[k])))) {
       themes.fetchAll().catch(() => {});
     }
+    return;
+  }
+  if (payload.kind === 'avatar-sets-changed') {
+    // Uploaded avatar sets changed somewhere (#607): refetch, the themes contract.
+    useAvatarSetsStore()
+      .fetchAll()
+      .catch(() => {
+        /* ignore — the last successful fetch keeps rendering */
+      });
     return;
   }
   if (payload.kind === 'themes-changed') {
