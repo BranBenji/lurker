@@ -3008,6 +3008,11 @@ watch(
   left: 0;
   top: calc(var(--space-1) + 0.2em);
 }
+/* With the body flush under the nick, weight is what tells the head line
+   from the text — the same job the standard grid's column gap does. */
+.message-list.compact.avatars .line > .head .prefix {
+  font-weight: 600;
+}
 /* A message row has no line-level prefix, so its body sits in the second
    track behind an empty first one — and the grid's column gap between them
    indents it by a character. Beside the gutter's hairline that reads as a
