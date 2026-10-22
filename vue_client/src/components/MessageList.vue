@@ -3003,6 +3003,15 @@ watch(
   left: 0;
   top: var(--space-1);
 }
+/* A message row has no line-level prefix, so its body sits in the second
+   track behind an empty first one — and the grid's column gap between them
+   indents it by a character. Beside the gutter's hairline that reads as a
+   stray margin: let the body span both tracks so it starts at the edge.
+   Event rows keep their prefix and its gap. */
+.message-list.compact.avatars .line > .head ~ .body,
+.message-list.compact.avatars .line.cont-author > .body {
+  grid-column: 1 / 3;
+}
 @media (max-width: 768px) {
   .message-list.compact.avatars {
     --avatar-size: 1.75em;
