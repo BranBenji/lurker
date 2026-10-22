@@ -94,6 +94,10 @@
             ><template v-else-if="g.kind === 'joinedAndLeft'"> joined briefly</template
             ><template v-else-if="g.kind === 'rehosted'"> changed host</template
             ><template v-else-if="g.letter">{{ modePhrase(g) }}</template></template
+          ><!-- Compact: the time follows the text, as on every compact row. --><span
+            v-if="compactMode && !row.continuationTime"
+            class="time trailing"
+            >{{ time(row.time) }}</span
           >
         </span>
       </div>
@@ -335,6 +339,13 @@
             <template v-else-if="row.m?.type === 'error'"
               ><LinkedText :text="row.m.text ?? ''"
             /></template>
+            <!-- Compact: every row keeps its time by its text, where the head keeps it by
+                 the nick — nothing sits at the right edge. After the chain's last branch
+                 (see the note below), so it starts a chain of its own. --><span
+              v-if="compactMode && !row.continuationTime"
+              class="time trailing"
+              >{{ time(row.m?.time) }}</span
+            >
             <!-- ⚠ Attachments used to be mounted HERE, outside the chain, and the reason is
                  worth keeping: a `v-if` sitting between RenderSegments and the first
                  `v-else-if` re-parents the ENTIRE event chain (join/part/quit/kick/…) onto
@@ -2949,11 +2960,10 @@ watch(
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* The head's time takes the far right edge, lining up with the times on
-   event rows. */
+/* The head's time sits right after the nick, as Slack and Discord place
+   it; nothing in the compact layout sits at the right edge. */
 .message-list.compact .line > .head .time {
   flex-shrink: 0;
-  margin-left: auto;
   padding-right: 0;
 }
 .message-list.compact .line > .prefix {
@@ -2966,10 +2976,14 @@ watch(
   padding-left: 0;
 }
 .message-list.compact .line > .time {
-  grid-area: time;
+  /* The right-edge time track goes unused: an event row's time follows its
+     text instead (.time.trailing), and a head's follows the nick. */
+  display: none;
+}
+.message-list.compact .time.trailing {
   color: var(--fg-muted);
-  padding-right: 0;
   padding-left: 0.75ch;
+  white-space: nowrap;
 }
 /* The vertical separator between nick and body columns belongs to the
    3-column standard layout — drop it in compact mode. */
