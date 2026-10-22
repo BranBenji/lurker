@@ -330,6 +330,29 @@ describe('who a reply is for', () => {
       'ACCEPT *',
       [':irc.test 281 me alice bob', ':irc.test 282 me :End of /ACCEPT list.'],
     ],
+    // draft/metadata-2 (#607): a SET's reply is one bare 761 naming the
+    // target (`*` means us); a LIST is a `metadata` batch; a SUB ends on its 770.
+    [
+      'METADATA SET',
+      'METADATA * SET avatar :https://x/a.png',
+      [':irc.test 761 me me avatar * :https://x/a.png'],
+    ],
+    [
+      'METADATA LIST',
+      'METADATA bob LIST',
+      [
+        ':irc.test BATCH +m1 metadata bob',
+        '@batch=m1 :irc.test 761 me bob display-name * :Bob',
+        '@batch=m1 :irc.test 766 me bob avatar :key not set',
+        ':irc.test BATCH -m1',
+      ],
+    ],
+    [
+      'METADATA SUB',
+      'METADATA * SUB avatar display-name',
+      [':irc.test 770 me avatar display-name'],
+    ],
+    ['METADATA SYNC postponed', 'METADATA #c SYNC', [':irc.test 774 me #c 5']],
   ];
 
   it.each(cases)(

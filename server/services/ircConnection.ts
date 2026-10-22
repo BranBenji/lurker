@@ -17,6 +17,21 @@ import {
 import { renameBuffer as renameDmBuffer } from '../db/renameBuffer.js';
 import { refoldNetworkBuffers } from '../db/refoldBuffers.js';
 import { normalizeCasemapping } from '../db/casemapping.js';
+import {
+  METADATA_CAP,
+  METADATA_NUMERICS,
+  channelMetadataView,
+  isChannelMetadataTarget,
+  metadataSubKeysFor,
+  parseMetadataLimits,
+  parseMetadataLine,
+  userMetadataView,
+  vetMetadataValue,
+  type MetadataChange,
+  type MetadataLimits,
+  type MetadataRecord,
+} from './ircMetadata.js';
+import { avatarClientUrl } from './avatarProxy.js';
 import type { Network } from '../db/networks.js';
 import {
   isClosed as isBufferClosed,
@@ -444,6 +459,10 @@ const NON_PERSISTED_TYPES = new Set([
   // Incremental nicklist patch (host/account). Like 'names' it describes
   // current membership state, not history — a replayed one would be wrong.
   'member-update',
+  // IRCv3 metadata (#607): a nick's or a channel's current record, whole.
+  // State, like member-update; the snapshot carries it for a fresh client.
+  'user-metadata',
+  'channel-metadata',
 ]);
 
 // Diagnostic: a single synchronous IRC-event handler (NAMES/WHO member-list
@@ -567,6 +586,8 @@ interface ChannelState {
   // channel-modes) never carries it (#727). The MODE row that set it does
   // show it, as every IRC client does to everyone in the channel.
   modeParams: Map<string, string>;
+  // IRCv3 metadata set on the channel itself (#607): display-name, avatar.
+  metadata: MetadataRecord;
   // Channel creation time (ISO), from 329.
   createdAt: string | null;
 }
@@ -883,6 +904,14 @@ export class IrcConnection {
   // cleared per socket — a fresh dial negotiates from CAP LS anyway, and that
   // path never reads this. (#888)
   private capsRefused: Set<string>;
+  // IRCv3 metadata (#607): every nick's record, keyed by lowercase nick like
+  // the member maps and peerPresence, so the client joins them by one key.
+  // Network-wide, not per channel: a monitored DM peer has metadata and no
+  // channel. Grown by every line that names a nick; shrunk when a nick we no
+  // longer share a channel with and don't watch leaves (forgetUserMetadata).
+  private userMetadata: Map<string, MetadataRecord>;
+  // Pending `METADATA <target> SYNC`s a 774 asked for, by target.
+  private metadataSyncTimers: Map<string, ReturnType<typeof setTimeout>>;
   // One presence watch list keyed by lowercased nick. Each entry records WHY
   // we're watching it. The MONITOR watch and the shared peer_presence_state row
   // are reference-counted against those reasons — added when the first reason
@@ -1355,6 +1384,11 @@ export class IrcConnection {
     // and batch, so all three are requested. (#381)
     this.client.requestCap('batch');
     this.client.requestCap('draft/multiline');
+    // draft/metadata-2 (IRCv3, #607): display names and avatars. Subscribed
+    // to on registration (subscribeMetadata); the lines land in userMetadata.
+    this.client.requestCap(METADATA_CAP);
+    this.userMetadata = new Map();
+    this.metadataSyncTimers = new Map();
     this.state = 'disconnected';
     this.channels = new Map();
     this.joinedFoldedCache = null;
@@ -1851,6 +1885,15 @@ export class IrcConnection {
           }
         }
       }
+      // IRCv3 metadata (#607). Read here rather than in a parsed handler: a
+      // batched line reaches its handler only when the batch ends, after the
+      // microtask has cleared who asked for it, and these are mostly batched.
+      // State is applied whoever asked; only the echo reads replyOwner.
+      if (rawCommand === 'METADATA' || METADATA_NUMERICS.has(rawCommand)) {
+        this.onMetadataLine(rawCommand, msg?.params ?? []);
+      } else if (rawCommand === 'FAIL' && (msg?.params?.[0] ?? '').toUpperCase() === 'METADATA') {
+        this.onMetadataFail(msg?.params ?? []);
+      }
       // Capture the registration burst for bouncer attach-time replay. 001
       // starts a fresh burst (each (re)registration replaces the last), and
       // the follow-on 002–005 lines are only appended once a burst has begun
@@ -2113,7 +2156,13 @@ export class IrcConnection {
     // Reacting needs message-tags and echo-message, and cap-notify can grant or
     // withdraw either mid-session (irc-framework has already updated its
     // enabled set when these fire). A no-op until the burst has ended.
-    on('cap ack', () => this.publishReactSupportIfChanged());
+    on('cap ack', (event: Record<string, unknown>) => {
+      this.publishReactSupportIfChanged();
+      // The cap landing mid-session: a held socket a newer app REQd it on
+      // (#888), or a CAP NEW. Registration already passed, so SUB now.
+      const caps = (event?.capabilities as Record<string, unknown> | undefined) || {};
+      if (METADATA_CAP in caps && this.sawRegistered) this.subscribeMetadata();
+    });
     on('cap del', () => this.publishReactSupportIfChanged());
 
     on('sasl failed', (event: Record<string, unknown>) => {
@@ -2220,6 +2269,9 @@ export class IrcConnection {
       // engine hook already logged "Re-attached … as <live nick>", so this
       // transition goes to clients only.
       this.setState('connected', { nick: registeredNick }, { log: !this.restoring });
+      // IRCv3 metadata (#607): say which keys we want. On a restore too — a
+      // repeated SUB is the sync (see subscribeMetadata).
+      this.subscribeMetadata();
       // Defer the MONITOR + handshake until ISUPPORT tells us the server
       // supports it (same pattern the nick-regain watch uses). 005 always
       // follows 001, so the 'server options' handler trips shortly after.
@@ -2297,6 +2349,11 @@ export class IrcConnection {
       this.replies.reset();
       this.multilineBatches.clear();
       this.multilineBatchTags.clear();
+      // Metadata is the socket's: the next registration subscribes again and
+      // the server replays it (#607).
+      this.userMetadata.clear();
+      for (const timer of this.metadataSyncTimers.values()) clearTimeout(timer);
+      this.metadataSyncTimers.clear();
       this.acceptListNicks = [];
       this.batchedCtcpAnswerers.clear();
       // Echo-correlation state is per-socket: no echo can arrive for a line
@@ -3338,6 +3395,7 @@ export class IrcConnection {
       const channel = canonicalChannelTarget(eventChannel, this.channels) ?? eventChannel;
       const ch = this.channels.get(eventChannel.toLowerCase());
       if (ch) ch.members.delete(eventNick.toLowerCase());
+      this.forgetUserMetadata(eventNick);
       this.publish({
         type: 'part',
         target: channel,
@@ -3351,6 +3409,7 @@ export class IrcConnection {
       // PART prefix with different casing must not skip the correction.
       if (this.isSelfNick(eventNick)) {
         this.deleteChannel(eventChannel.toLowerCase());
+        this.sweepUserMetadata();
         // The echo lowers autojoin, not just ircManager.partChannel. That path
         // is the app's own /part and buffer-close, so a PART Lurker did not
         // originate — a raw /quote PART, another client on the bouncer, a
@@ -3385,6 +3444,7 @@ export class IrcConnection {
       const channel = canonicalChannelTarget(eventChannel, this.channels) ?? eventChannel;
       const ch = this.channels.get(eventChannel.toLowerCase());
       if (ch) ch.members.delete(eventKicked.toLowerCase());
+      this.forgetUserMetadata(eventKicked);
       // Were WE the one kicked? Decided here because this is the only place
       // that knows both the kicked nick and our current one — decorateMessage
       // sees neither, and a nick comparison made later would answer for the
@@ -3417,6 +3477,7 @@ export class IrcConnection {
       // channel that just kicked you reads as ban evasion to ops.
       if (selfKicked) {
         this.deleteChannel(eventChannel.toLowerCase());
+        this.sweepUserMetadata();
         try {
           setBufferAutojoin(this.network.user_id, this.network.id, channel, false);
         } catch (_) {
@@ -3498,6 +3559,7 @@ export class IrcConnection {
       // QUIT means they've left the network entirely, not just a channel —
       // any DM with this nick is now into-the-void territory.
       this.markPeerEvent(eventNick, 'offline');
+      this.forgetUserMetadata(eventNick);
     });
 
     on('nick', (event: Record<string, unknown>) => {
@@ -3599,6 +3661,15 @@ export class IrcConnection {
             time: event.time,
           });
         }
+      }
+      // Metadata rides the nick (#607): a rename changes none of it, and the
+      // server sends nothing to say so. The client re-keys on the pair.
+      const metaRecord = this.userMetadata.get(oldLower);
+      if (metaRecord && oldLower !== newLower) {
+        this.userMetadata.delete(oldLower);
+        this.userMetadata.set(newLower, metaRecord);
+        this.publishUserMetadata(eventNick, null);
+        this.publishUserMetadata(eventNewNick, metaRecord);
       }
       // From a DM-buffer perspective: the old name is no longer reachable
       // (sending to it would 401), and the new name is reachable (if we have
@@ -4463,6 +4534,144 @@ export class IrcConnection {
     return `:server:${this.network.id}`;
   }
 
+  // ── IRCv3 metadata (draft/metadata-2, #607) ──────────────────────────────
+  // What the cap advertised, or null when the network doesn't have it on.
+  metadataLimits(): MetadataLimits | null {
+    const cap = this.client.network?.cap as
+      | { enabled?: string[]; available?: Map<string, string> }
+      | undefined;
+    if (!(cap?.enabled ?? []).includes(METADATA_CAP)) return null;
+    return parseMetadataLimits(cap?.available?.get(METADATA_CAP));
+  }
+
+  // SUB the keys we show. On registration, on every restore's replayed 001,
+  // and when the cap lands later on a held socket (#888). Repeating it is the
+  // sync: the spec has the server send current values on a SUB, and ergo
+  // answers with a 774 asking for a SYNC of everything, which the 774 handler
+  // sends. Lurker's own query: its replies are nobody else's (replyRouter).
+  private subscribeMetadata(): void {
+    const limits = this.metadataLimits();
+    if (!limits) return;
+    const keys = metadataSubKeysFor(limits);
+    if (keys.length === 0) return;
+    this.replies.send('lurker', `METADATA * SUB ${keys.join(' ')}`);
+  }
+
+  // A metadata line from the server, whoever asked for it (see the raw handler).
+  private onMetadataLine(command: string, params: string[]): void {
+    if (command === '774') {
+      // RPL_METADATASYNCLATER <asker> <target> [<retry-after>]: the server
+      // couldn't send the values now. ergo's target is `*ALL` after a SUB.
+      const target = params[1];
+      const retry = Number(params[2]);
+      if (target) this.scheduleMetadataSync(target, Number.isFinite(retry) ? retry : 0);
+      return;
+    }
+    const change = parseMetadataLine(command, params);
+    if (!change) return;
+    this.applyMetadata(change);
+    // The user's own GET/LIST/SET/DEL, echoed where a /command's reply goes.
+    // Everything else — a SUB's sync, a peer's change — lands in state only.
+    if (this.replyOwner === 'user' && (command === '761' || command === '766')) {
+      const target = change.target === '*' ? this.currentNick || '*' : change.target;
+      this.publish({
+        type: 'notice',
+        target: this.serverTarget(),
+        nick: 'lurker',
+        notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
+        text:
+          change.value === null
+            ? `${target} ${change.key}: not set`
+            : `${target} ${change.key}: ${change.value}`,
+      });
+    }
+  }
+
+  // FAIL METADATA <CODE> [<target> [<key>]] :<text>. Only the user's own
+  // command is told: Lurker's SUB failing is nothing the user can act on, and
+  // a server with metadata off doesn't advertise the cap in the first place.
+  private onMetadataFail(params: string[]): void {
+    if (!this.replyForUser()) return;
+    const code = params[1] ?? '';
+    const text = params[params.length - 1] ?? '';
+    this.publish({
+      type: 'error',
+      target: this.serverTarget(),
+      text: code ? `Metadata: ${text} (${code})` : `Metadata: ${text}`,
+      raw: { command: 'FAIL', params },
+    });
+  }
+
+  private scheduleMetadataSync(target: string, retryAfterSec: number): void {
+    if (this.metadataSyncTimers.has(target)) return;
+    const delay = Math.min(Math.max(0, retryAfterSec), 300) * 1000;
+    const timer = setTimeout(() => {
+      this.metadataSyncTimers.delete(target);
+      if (this.disposed || this.state !== 'connected' || !this.metadataLimits()) return;
+      this.replies.send('lurker', `METADATA ${target} SYNC`);
+    }, delay);
+    timer.unref?.();
+    this.metadataSyncTimers.set(target, timer);
+  }
+
+  // One change into state, and out to clients as the whole record. A value
+  // that fails vetting (ircMetadata.ts) is an unset; so is a key we don't
+  // subscribe to, which keeps the record to the keys we show.
+  private applyMetadata(change: MetadataChange): void {
+    const value = vetMetadataValue(change.key, change.value);
+    if (isChannelMetadataTarget(change.target)) {
+      const ch = this.channelState(change.target);
+      if (!ch) return;
+      if (!ch.metadata) ch.metadata = {};
+      if ((ch.metadata[change.key] ?? null) === value) return;
+      if (value === null) delete ch.metadata[change.key];
+      else ch.metadata[change.key] = value;
+      this.publishEphemeral({
+        type: 'channel-metadata',
+        target: ch.name,
+        values: channelMetadataView(ch.metadata, avatarClientUrl),
+      });
+      return;
+    }
+    const nick = change.target === '*' ? this.currentNick : change.target;
+    if (!nick) return;
+    const lower = nick.toLowerCase();
+    const record = this.userMetadata.get(lower) ?? {};
+    if ((record[change.key] ?? null) === value) return;
+    if (value === null) delete record[change.key];
+    else record[change.key] = value;
+    if (Object.keys(record).length === 0) this.userMetadata.delete(lower);
+    else this.userMetadata.set(lower, record);
+    this.publishUserMetadata(nick, record);
+  }
+
+  // Aimed at the server pseudo-buffer like peer-presence, so a closed DM's
+  // guard doesn't drop it; `nick` is the client's key. `values: null` forgets.
+  private publishUserMetadata(nick: string, record: MetadataRecord | null): void {
+    this.publishEphemeral({
+      type: 'user-metadata',
+      target: this.serverTarget(),
+      nick,
+      values: record ? userMetadataView(record, avatarClientUrl) : null,
+    });
+  }
+
+  // A nick we share no channel with and don't watch gets no more updates;
+  // its record would only go stale. Ourselves and tracked DM peers stay.
+  private forgetUserMetadata(nick: string): void {
+    const lower = nick.toLowerCase();
+    if (!this.userMetadata.has(lower)) return;
+    if (this.isSelfNick(nick) || this.trackedPeers.has(lower)) return;
+    for (const ch of this.channels.values()) if (ch.members.has(lower)) return;
+    this.userMetadata.delete(lower);
+    this.publishUserMetadata(nick, null);
+  }
+
+  // After we leave a channel: everyone we only knew from there.
+  private sweepUserMetadata(): void {
+    for (const lower of [...this.userMetadata.keys()]) this.forgetUserMetadata(lower);
+  }
+
   // Bail-out for transition writes: gate by tracked-peer set and self-nick.
   // Returns the eligible canonical nick (preserving the case as sent),
   // or null when the caller should no-op.
@@ -5316,6 +5525,7 @@ export class IrcConnection {
         members: new Map(),
         modes: new Set(),
         modeParams: new Map(),
+        metadata: {},
         createdAt: null,
       };
       this.setChannel(key, ch);
@@ -11285,9 +11495,21 @@ export class IrcConnection {
         modeParams: Object.fromEntries(ch.modeParams ?? []),
         createdAt: ch.createdAt ?? null,
         members: Array.from(ch.members.values()).map(memberSnapshot),
+        // IRCv3 metadata on the channel itself (#607).
+        metadata: channelMetadataView(ch.metadata ?? {}, avatarClientUrl),
         // See membersPending (#863).
         ...(this.membersPending(ch.name) ? { membersPending: true } : {}),
       })),
+      // IRCv3 metadata (#607): every nick's record, keyed by lowercase nick
+      // like peerPresence. Kept current by `user-metadata` frames. The limits
+      // say whether the network speaks it at all (null = no).
+      userMetadata: Object.fromEntries(
+        [...this.userMetadata].map(([lower, record]) => [
+          lower,
+          userMetadataView(record, avatarClientUrl),
+        ]),
+      ),
+      metadataLimits: this.metadataLimits(),
       // Object keyed by lowercase nick → { nick, state, stateAt }. Lands
       // directly on states[networkId].peerPresence on snapshot apply, same
       // shape used by the live peer-presence event handler in the networks
@@ -11432,6 +11654,9 @@ const SERVER_BUFFER_DENIED_NUMERICS = new Set<string>([
   // RPL_UMODEGMSG — someone our caller ID turned away (#206). Said by the
   // 'unknown command' handler as a toast and a system-buffer line.
   '718',
+  // IRCv3 metadata, 760–775 (#607): what Lurker reads lands in state, and the
+  // rest acknowledges a SUB. A user's own GET/LIST is echoed by onMetadataLine.
+  ...METADATA_NUMERICS,
 ]);
 
 // True for numerics another handler already surfaces (or that would flood), so

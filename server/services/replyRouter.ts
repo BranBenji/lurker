@@ -210,7 +210,12 @@ type Form =
   | 'ison'
   | 'userhost'
   | 'away'
-  | 'accept';
+  | 'accept'
+  // METADATA (draft/metadata-2): SUB/UNSUB answer with a 770/771, SUBS with a
+  // `metadata-subs` batch, and GET/LIST/SYNC/CLEAR/SET with a `metadata` batch
+  // (a SET's single 761 comes bare on ergo). The batch's own BATCH lines carry
+  // the query; a 774 ends a SYNC the server postpones.
+  | 'metadata';
 
 // The kinds whose replies name nothing to match them by. One of these waits for
 // the last of its kind to be answered. A 221 names nothing either: without its
@@ -241,6 +246,9 @@ interface Spec {
   anyChannel: boolean;
   // What a client is sent if the query ends without its end numeric.
   abort: { numeric: string; params: string[] } | null;
+  // The reference of the batch a metadata query's replies arrive in, once its
+  // BATCH + line has come; the matching BATCH - ends the query.
+  batchRef: string;
 }
 
 interface Query extends Spec {
@@ -276,6 +284,7 @@ function spec(form: Form, command: string, fields: Partial<Spec> = {}): Spec {
     letter: '',
     anyChannel: false,
     abort: null,
+    batchRef: '',
     ...fields,
   };
 }
@@ -644,6 +653,26 @@ export class ReplyRouter {
       case 'accept':
         if (command === '281') return 'body';
         return command === '282' ? 'end' : null;
+      case 'metadata': {
+        if (command === 'BATCH') {
+          const ref = params[0] ?? '';
+          const type = params[1] ?? '';
+          if (ref.startsWith('+') && (type === 'metadata' || type === 'metadata-subs')) {
+            if (query.batchRef) return null;
+            query.batchRef = ref.slice(1);
+            return 'body';
+          }
+          return ref.startsWith('-') && query.batchRef === ref.slice(1) ? 'end' : null;
+        }
+        if (command === '761' || command === '766' || command === '772') {
+          // Inside the query's batch they're its. A bare one naming the
+          // target is a SET's whole reply, and ends it.
+          if (query.batchRef) return 'body';
+          return names(1) ? 'end' : null;
+        }
+        if (command === '770' || command === '771' || command === '774') return 'end';
+        return null;
+      }
     }
   }
 
@@ -809,6 +838,16 @@ export class ReplyRouter {
         return params[0] === '*'
           ? spec('accept', command, { abort: { numeric: '282', params: [] } })
           : null;
+      case 'METADATA': {
+        // METADATA <target> <sub> …: every subcommand answers something, so
+        // each is a query. A SET's reply is a bare 761 naming the target
+        // (`*` for ourselves, which the server answers with our nick).
+        const target = params[0] ?? '';
+        const sub = (params[1] ?? '').toUpperCase();
+        if (!target || !sub) return null;
+        const own = target === '*' ? [this.opts.ownNick()] : [];
+        return spec('metadata', command, { targets: fold([target, ...own]) });
+      }
       default:
         return null;
     }
