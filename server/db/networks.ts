@@ -76,6 +76,11 @@ export interface Network {
    *  (buffers.networkCasemapping normalizes, unknown → null = legacy fold)
    *  and at the sole writer (refoldNetworkBuffers takes Casemapping). */
   casemapping: string | null;
+  /** The user modes the user asked for with `MODE <own nick> …` (#1181), as
+   *  `+gR-i`, replayed after every registration; null when they never set one.
+   *  Written by setNetworkUserModes only, not part of NetworkFields: it is what
+   *  the user typed at the server, not a form field. */
+  user_modes: string | null;
   created_at: string;
 }
 
@@ -269,6 +274,15 @@ export function setNetworkClientCert(
     'UPDATE networks SET client_cert = ?, client_key = ? WHERE id = ? AND user_id = ?',
   ).run(encryptSecret(pair ? pair.cert : null), encryptSecret(pair ? pair.key : null), id, userId);
   return getNetwork(id, userId);
+}
+
+/** Store the user modes replayed after registration (#1181), or clear them. */
+export function setNetworkUserModes(id: number, userId: number, modes: string | null): void {
+  db.prepare('UPDATE networks SET user_modes = ? WHERE id = ? AND user_id = ?').run(
+    modes,
+    id,
+    userId,
+  );
 }
 
 export function deleteNetwork(id: number, userId: number): void {

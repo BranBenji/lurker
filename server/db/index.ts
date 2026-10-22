@@ -1345,6 +1345,10 @@ ensureColumn('networks', 'position', 'INTEGER NOT NULL DEFAULT 0');
 // legacy Unicode-lowercase rule until then (db/casemapping.ts). A change is
 // what triggers the per-network re-fold (db/refoldBuffers.ts).
 ensureColumn('networks', 'casemapping', 'TEXT');
+// The user modes the user set on themselves (`/mode <own nick> +g`), as `+g-i`,
+// replayed after every registration (#1181) the way irssi replays its
+// wanted_usermode. NULL until the user sets one.
+ensureColumn('networks', 'user_modes', 'TEXT');
 ensureColumn('users', 'password_hash', 'TEXT');
 ensureColumn('users', 'last_seen_at', 'TEXT');
 // Account access state, orthogonal to role. A paused account keeps all its data

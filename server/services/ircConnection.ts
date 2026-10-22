@@ -61,7 +61,7 @@ import { findUserById } from '../db/users.js';
 import { isNodeMode } from '../utils/edition.js';
 import { deriveIdent } from '../../shared/ident.js';
 import { validateClientCertPair, isClientCertProblem } from '../utils/clientCert.js';
-import { networkProxy } from '../db/networks.js';
+import { networkProxy, setNetworkUserModes } from '../db/networks.js';
 import { isProxyProblem } from '../../shared/proxy.js';
 import type { ProxyConfig } from '../../shared/proxy.js';
 import { mayUseProxy } from './networkPolicy.js';
@@ -2276,8 +2276,12 @@ export class IrcConnection {
       // command (e.g. waiting for NickServ identify to take effect before
       // joining +r channels). Re-runs on every reconnect by design.
       // Not on a re-attach: the socket already ran them (NickServ is already
-      // satisfied, and a WAIT-delayed JOIN would join what we are in).
-      if (!this.restoring) this.runConnectCommands();
+      // satisfied, and a WAIT-delayed JOIN would join what we are in). The
+      // user modes go first, so a connect command can still override them.
+      if (!this.restoring) {
+        this.replayUserModes(registeredNick);
+        this.runConnectCommands();
+      }
     });
     c.on('close', () => {
       // Final safety net (clean disconnect/dispose may not always emit
@@ -5980,7 +5984,10 @@ export class IrcConnection {
         // A socket the engine registered on its own never had its
         // post-registration steps: the connect commands run now, and the
         // manager's rejoin (onceRestored, at `live`) covers the autojoin list.
-        if (this.restoreUnattended) this.runConnectCommands();
+        if (this.restoreUnattended) {
+          this.replayUserModes(this.currentNick);
+          this.runConnectCommands();
+        }
         break;
       }
       case 'gap': {
@@ -10512,6 +10519,37 @@ export class IrcConnection {
     for (const intent of outgoingNickIntents(line)) {
       this.noteNickIntent(intent.nick, intent.channel);
     }
+    this.noteUserModeRequest(line);
+  }
+
+  // A `MODE <own nick> <modes>` going out is remembered for the network, so the
+  // next registration asks for the same modes (#1181). irssi does the same with
+  // its wanted_usermode: what we ASKED for, never what the server set on its own
+  // (+Z, +r), which it sets again anyway. Read at write, like the nick intents,
+  // so "own nick" is the nick the line actually goes out under. A web client's
+  // /mode and a bouncer client's MODE both pass here.
+  noteUserModeRequest(line: string): void {
+    const req = parseUserModeRequest(line);
+    if (!req || !this.currentNick) return;
+    const id = this.network.id;
+    if (foldTargetFor(id, req.target) !== foldTargetFor(id, this.currentNick)) return;
+    const merged = mergeUserModes(this.network.user_modes, req.modes);
+    if (merged === this.network.user_modes) return;
+    this.network.user_modes = merged;
+    try {
+      setNetworkUserModes(id, this.network.user_id, merged);
+    } catch (e) {
+      console.warn('[umode] failed to store user modes:', (e as Error)?.message || e);
+    }
+  }
+
+  // Ask a fresh registration for the user modes the user set before (#1181).
+  // Our own line: a server that refuses a letter (501) says so in the server
+  // buffer, and the MODE it answers with lands there as "Your user mode".
+  replayUserModes(nick: string | null): void {
+    const modes = this.network.user_modes;
+    if (!modes || !nick) return;
+    this.raw(`MODE ${nick} ${modes}`, 'lurker');
   }
 
   // The user's last raw command naming `nick`, CONSUMED: one command produces
@@ -11652,6 +11690,42 @@ export function outgoingNickIntents(line: string): Array<{ nick: string; channel
     for (const nick of (parts[1] || '').split(',')) add(nick, null);
   }
   return out;
+}
+
+// The user-mode change in an outgoing `MODE <nick> <modes>` line (#1181), or
+// null for anything else: a channel MODE, a query (`MODE nick`), or a mode
+// string with parameters. Only an oper's snomask (`+s +cF`) takes one, and
+// replaying `+s` without it would set a different snomask than they asked for.
+export function parseUserModeRequest(line: string): { target: string; modes: string } | null {
+  const parts = line.trim().split(/ +/);
+  if ((parts[0] || '').toUpperCase() !== 'MODE' || parts.length !== 3) return null;
+  const target = parts[1];
+  const modes = parts[2].replace(/^:/, '');
+  if (!target || isChannelTarget(target) || !/^[+-]/.test(modes)) return null;
+  return { target, modes };
+}
+
+// Fold a user-mode change into the modes asked for before, as `+gR-i`, or null
+// when nothing is left. The last request for a letter wins, so `-g` after `+g`
+// becomes `-g` (a no-op for the server) and `-i` sticks on a network whose
+// default is +i.
+export function mergeUserModes(stored: string | null, change: string): string | null {
+  const wanted = new Map<string, '+' | '-'>();
+  for (const modes of [stored ?? '', change]) {
+    let sign: '+' | '-' = '+';
+    for (const ch of modes) {
+      if (ch === '+' || ch === '-') sign = ch;
+      else if (/[A-Za-z]/.test(ch)) wanted.set(ch, sign);
+    }
+  }
+  let add = '';
+  let remove = '';
+  for (const [letter, sign] of wanted) {
+    if (sign === '+') add += letter;
+    else remove += letter;
+  }
+  const merged = (add ? `+${add}` : '') + (remove ? `-${remove}` : '');
+  return merged || null;
 }
 
 // True for numerics commandResultError owns, keyed by the tag irc-framework

@@ -171,6 +171,9 @@ export const EXPORT_TABLES = Object.freeze({
       // registry folds don't churn (and case-twins don't merge) on the first
       // reconnect after a restore.
       'casemapping',
+      // The user modes replayed after registration (#1181): something the user
+      // set, so a restored network keeps its +g.
+      'user_modes',
     ],
   },
 
