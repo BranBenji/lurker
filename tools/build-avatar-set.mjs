@@ -7,9 +7,14 @@
 // and the apps read — `000.<ext>` … `NNN.<ext>` in file-name order, plus a
 // manifest.json with the count.
 //
-//   node tools/build-avatar-set.mjs <input-dir> <out-dir>
+//   node tools/build-avatar-set.mjs <input-dir> <out-dir> [--key <hex>] [--fuzz <deg>]
 //     Every image in <input-dir> (png, webp, jpg, gif, avif), sorted by name,
 //     resized to 256×256 (cover) and written as WebP with alpha kept.
+//     --key knocks one colour out to transparency by HUE, so every shade of
+//     it goes (a generated red is never one value): a pixel within --fuzz
+//     degrees of the key's hue (default 18) with enough saturation is cleared,
+//     with a soft edge over the last third of that window. The nick colour
+//     shows through where it was.
 //
 //   node tools/build-avatar-set.mjs --placeholder <out-dir> [count]
 //     A stand-in set of geometric compositions, until the real art lands.
@@ -36,13 +41,62 @@ function usage() {
   process.exit(2);
 }
 
-async function writeTile(outDir, index, input) {
+async function writeTile(outDir, index, input, key = null) {
   const file = path.join(outDir, `${String(index).padStart(3, '0')}.${EXT}`);
-  await sharp(input)
+  const source = key ? await keyOut(input, key) : sharp(input);
+  await source
     .resize(SIZE, SIZE, { fit: 'cover' })
     .webp({ quality: 82, alphaQuality: 90 })
     .toFile(file);
   return file;
+}
+
+// `#rrggbb` → its hue in degrees, or null for a grey (no hue to key on).
+function hueOf(hex) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  const [h] = rgbToHsv((n >> 16) & 255, (n >> 8) & 255, n & 255);
+  return h;
+}
+
+function rgbToHsv(r, g, b) {
+  r /= 255;
+  g /= 255;
+  b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const d = max - min;
+  let h = 0;
+  if (d > 0) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+    if (h < 0) h += 360;
+  }
+  return [h, max === 0 ? 0 : d / max, max];
+}
+
+// The image with every pixel near the key's hue made transparent. Done at the
+// source size, before the resize, so the edge is judged on real pixels.
+async function keyOut(input, { hue, fuzz }) {
+  const { data, info } = await sharp(input)
+    .ensureAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const soft = fuzz / 3;
+  for (let p = 0; p < data.length; p += 4) {
+    const [h, s, v] = rgbToHsv(data[p], data[p + 1], data[p + 2]);
+    // Greys and near-blacks have no hue worth keying.
+    if (s < 0.35 || v < 0.12) continue;
+    const dist = Math.min(Math.abs(h - hue), 360 - Math.abs(h - hue));
+    if (dist > fuzz) continue;
+    // Fully clear inside the window, fading out over its last third.
+    const keep = dist > fuzz - soft ? (dist - (fuzz - soft)) / soft : 0;
+    data[p + 3] = Math.round(data[p + 3] * keep);
+  }
+  return sharp(data, { raw: { width: info.width, height: info.height, channels: 4 } });
 }
 
 function writeManifest(outDir, count) {
@@ -52,7 +106,7 @@ function writeManifest(outDir, count) {
   );
 }
 
-async function fromFolder(inputDir, outDir) {
+async function fromFolder(inputDir, outDir, key) {
   const names = fs
     .readdirSync(inputDir)
     .filter((n) => IMAGE_RE.test(n))
@@ -64,7 +118,7 @@ async function fromFolder(inputDir, outDir) {
   fs.mkdirSync(outDir, { recursive: true });
   let i = 0;
   for (const name of names) {
-    await writeTile(outDir, i, path.join(inputDir, name));
+    await writeTile(outDir, i, path.join(inputDir, name), key);
     i++;
   }
   writeManifest(outDir, i);
@@ -128,13 +182,27 @@ async function placeholder(outDir, count) {
 }
 
 const args = process.argv.slice(2);
-if (args[0] === '--placeholder') {
-  if (!args[1]) usage();
-  const count = Number(args[2] ?? 32);
+const positional = [];
+let keyHex = null;
+let fuzz = 18;
+for (let i = 0; i < args.length; i++) {
+  if (args[i] === '--key') keyHex = args[++i];
+  else if (args[i] === '--fuzz') fuzz = Number(args[++i]);
+  else positional.push(args[i]);
+}
+if (positional[0] === '--placeholder') {
+  if (!positional[1]) usage();
+  const count = Number(positional[2] ?? 32);
   if (!Number.isInteger(count) || count < 1 || count > 999) usage();
-  await placeholder(args[1], count);
-} else if (args.length === 2) {
-  await fromFolder(args[0], args[1]);
+  await placeholder(positional[1], count);
+} else if (positional.length === 2) {
+  let key = null;
+  if (keyHex) {
+    const hue = hueOf(keyHex);
+    if (hue === null || !Number.isFinite(fuzz) || fuzz <= 0 || fuzz > 90) usage();
+    key = { hue, fuzz };
+  }
+  await fromFolder(positional[0], positional[1], key);
 } else {
   usage();
 }
