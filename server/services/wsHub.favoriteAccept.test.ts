@@ -54,34 +54,50 @@ afterAll(() => {
   testDb.cleanup();
 });
 
+// Send `frame` once the snapshot is in, with getConnection answering `conn`,
+// and wait for the favorites-changed it causes.
+async function sendAndWait(frame: Record<string, unknown>, conn: Record<string, unknown>) {
+  const { token } = createSession(userId);
+  const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('no favorites-changed')), 3000);
+      let sent = false;
+      ws.on('message', (raw) => {
+        const f = JSON.parse(raw.toString()) as Record<string, unknown>;
+        if (f.kind === 'backlog-complete' && !sent) {
+          sent = true;
+          // After the snapshot, which reads more of the connection than this.
+          vi.spyOn(ircManager, 'getConnection').mockReturnValue(
+            conn as unknown as ReturnType<typeof ircManager.getConnection>,
+          );
+          ws.send(JSON.stringify(frame));
+        }
+        if (sent && f.kind === 'favorites-changed') {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+    });
+  } finally {
+    ws.close();
+    vi.restoreAllMocks();
+  }
+}
+
 describe('favorite-buffer', () => {
   it('asks the connection to accept the new friend if they’re online', async () => {
     const acceptFriendIfOnline = vi.fn<(nick: string) => void>();
-    const { token } = createSession(userId);
-    const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('no favorites-changed')), 3000);
-        let sent = false;
-        ws.on('message', (raw) => {
-          const f = JSON.parse(raw.toString()) as Record<string, unknown>;
-          if (f.kind === 'backlog-complete' && !sent) {
-            sent = true;
-            // After the snapshot, which reads more of the connection than this.
-            vi.spyOn(ircManager, 'getConnection').mockReturnValue({
-              acceptFriendIfOnline,
-            } as unknown as ReturnType<typeof ircManager.getConnection>);
-            ws.send(JSON.stringify({ type: 'favorite-buffer', networkId, target: 'bob' }));
-          }
-          if (sent && f.kind === 'favorites-changed') {
-            clearTimeout(timer);
-            resolve();
-          }
-        });
-      });
-    } finally {
-      ws.close();
-    }
+    await sendAndWait(
+      { type: 'favorite-buffer', networkId, target: 'bob' },
+      { acceptFriendIfOnline },
+    );
     expect(acceptFriendIfOnline).toHaveBeenCalledWith('bob');
+  });
+
+  it('takes the ACCEPT back when the friend is removed', async () => {
+    const unacceptFriend = vi.fn<(nick: string) => void>();
+    await sendAndWait({ type: 'unfavorite-buffer', networkId, target: 'bob' }, { unacceptFriend });
+    expect(unacceptFriend).toHaveBeenCalledWith('bob');
   });
 });

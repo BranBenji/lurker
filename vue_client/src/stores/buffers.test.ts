@@ -1403,4 +1403,12 @@ describe('openDm (#1182)', () => {
     expect(opens()).toEqual([]);
     expect(h.activeKey).toBe('1::&local');
   });
+
+  it('never sends open-buffer for a DCC chat, which the server has no row for', () => {
+    vi.mocked(socketSend).mockReturnValue(true);
+    const store = useBuffersStore();
+    store.openDm(1, '=bob');
+    expect(opens()).toEqual([]);
+    expect(h.activeKey).toBe('1::=bob');
+  });
 });

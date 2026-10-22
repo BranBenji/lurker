@@ -1072,10 +1072,12 @@ export const useBuffersStore = defineStore('buffers', {
     // doesn't have yet goes through openBuffer, so even an empty DM is a real
     // row that Pin and Add to Friends can act on (#1182), and the reply
     // focuses it. One it has just gets focus, and so does any DM while we're
-    // offline, as before. `/query #chan` isn't a DM: open-buffer would JOIN it.
+    // offline, as before. `/query #chan` isn't a DM (open-buffer would JOIN
+    // it), and nor is `=bob`, a DCC chat that only exists while it's open.
     openDm(networkId: number | string, nick: string): void {
       if (
         !isChannelTarget(nick) &&
+        !isDccChatTarget(nick) &&
         idFor(networkId, nick) === undefined &&
         this.openBuffer(networkId, nick)
       ) {

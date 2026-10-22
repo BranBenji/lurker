@@ -1099,13 +1099,16 @@ export class IrcConnection {
   // RPL_ACCEPTLIST (281), said once at RPL_ENDOFACCEPT (282). Cleared on
   // socket close, so a 281 with no end can't carry into the next connection.
   acceptListNicks: string[] = [];
-  // Friends we have sent ACCEPT for on this socket (#1181), lowercased. The
-  // server drops a nick from the accept list when they quit or change nick,
-  // and the whole list with our socket, so a friend leaves this set when seen
-  // going offline and it empties on socket close (not on an engine link drop,
-  // which keeps the socket). acceptListFull stops the sending for the rest of
-  // the connection once the server says there's no room.
+  // Friends we have sent ACCEPT for on this socket (#1181), folded. The server
+  // drops a nick from the accept list when they quit or change nick, and the
+  // whole list with our socket, so a friend leaves this set when seen going
+  // offline and it empties on socket close (not on an engine link drop, which
+  // keeps the socket). acceptJudged holds every nick, friend or not, already
+  // weighed since they were last seen coming online, so a busy peer's every
+  // line doesn't cost a favorites lookup. acceptListFull stops the sending for
+  // the rest of the connection once the server says there's no room.
   acceptedFriends = new Set<string>();
+  acceptJudged = new Set<string>();
   acceptListFull = false;
   // When the server line being handled arrived. An event without server-time
   // takes it as its time, and so does the bouncer's copy of the line, so the
@@ -1949,7 +1952,7 @@ export class IrcConnection {
       if (
         rawCommand === '457' &&
         callerId &&
-        this.acceptedFriends.has(String(msg?.params?.[1] ?? '').toLowerCase())
+        this.acceptedFriends.has(foldTargetFor(this.network.id, String(msg?.params?.[1] ?? '')))
       ) {
         return;
       }
@@ -2574,6 +2577,7 @@ export class IrcConnection {
       this.markAllPeersOffline();
       // The server's caller-ID accept list went with the socket (#1181).
       this.acceptedFriends.clear();
+      this.acceptJudged.clear();
       this.acceptListFull = false;
       // Release this socket's identd mapping (a reconnect re-registers via the
       // 'raw socket connected' handler above and gets a fresh handle).
@@ -3597,6 +3601,9 @@ export class IrcConnection {
         this.markPeerEvent(eventNewNick, 'online');
         this.rekeyCtcpOutstanding(eventNick, eventNewNick);
         this.renameDmForNickChange(eventNick, eventNewNick, userhost, event.time);
+        // The server took them off the accept list with the old nick, and the
+        // 'online' above came before the rename made the new one a friend.
+        this.acceptFriend(eventNewNick);
       }
     });
 
@@ -4499,9 +4506,10 @@ export class IrcConnection {
       return;
     }
     // Every sighting, not just transitions: the stored state can say online
-    // from before a restart, when this socket has accepted nobody yet.
-    if (state === 'online') this.acceptFriend(canonical);
-    else if (state === 'offline') this.acceptedFriends.delete(canonical.toLowerCase());
+    // from before a restart, when this socket has accepted nobody yet. Away
+    // and back are sightings too (a WHO row or away-notify can come first).
+    if (state === 'offline') this.forgetAccepted(canonical);
+    else this.noteSeenOnline(canonical);
     const prev = getPeerPresence(this.network.id, canonical);
     const prevState = prev?.state || null;
     let allowed = false;
@@ -10583,12 +10591,11 @@ export class IrcConnection {
   // answers 401 otherwise), and the server forgets them when they quit or
   // change nick, so presence is what knows when to send it.
   acceptFriend(nick: string): void {
-    if (this.state !== 'connected' || this.acceptListFull) return;
-    if (!this.client.network?.supports('CALLERID')) return;
-    const lower = nick.toLowerCase();
-    if (this.acceptedFriends.has(lower)) return;
+    if (!this.canAutoAccept()) return;
+    const key = foldTargetFor(this.network.id, nick);
+    if (this.acceptedFriends.has(key)) return;
     if (!isFavoriteDmPeer(this.network.user_id, this.network.id, nick)) return;
-    this.acceptedFriends.add(lower);
+    this.acceptedFriends.add(key);
     try {
       this.client.raw(`ACCEPT ${nick}`);
     } catch (_) {
@@ -10596,11 +10603,48 @@ export class IrcConnection {
     }
   }
 
+  private canAutoAccept(): boolean {
+    return (
+      this.state === 'connected' &&
+      !this.acceptListFull &&
+      !!this.client.network?.supports('CALLERID')
+    );
+  }
+
+  // A tracked peer seen online: weigh them once until they're next seen
+  // going offline.
+  private noteSeenOnline(nick: string): void {
+    if (!this.canAutoAccept()) return;
+    const key = foldTargetFor(this.network.id, nick);
+    if (this.acceptJudged.has(key)) return;
+    this.acceptJudged.add(key);
+    this.acceptFriend(nick);
+  }
+
+  // The server forgets an accepted nick when they quit or change nick.
+  private forgetAccepted(nick: string): void {
+    const key = foldTargetFor(this.network.id, nick);
+    this.acceptedFriends.delete(key);
+    this.acceptJudged.delete(key);
+  }
+
   // A friend just added: let them through now if they're online, rather than
   // the next time they're seen coming online.
   acceptFriendIfOnline(nick: string): void {
     const state = getPeerPresence(this.network.id, nick)?.state;
-    if (state === 'online' || state === 'away') this.acceptFriend(nick);
+    if (state && state !== 'offline') this.acceptFriend(nick);
+  }
+
+  // A friend removed: take back the ACCEPT we sent for them, and only that
+  // one. Someone the user accepted by hand stays accepted.
+  unacceptFriend(nick: string): void {
+    if (!this.acceptedFriends.delete(foldTargetFor(this.network.id, nick))) return;
+    if (this.state !== 'connected') return;
+    try {
+      this.client.raw(`ACCEPT -${nick}`);
+    } catch (_) {
+      /* ignore */
+    }
   }
 
   // Forget per-connection send state: the speak-permission marks and the send-
