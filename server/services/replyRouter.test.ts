@@ -840,3 +840,41 @@ describe('the wire is in the order lines went', () => {
     expect(router.noteServerLine(line, msg.command, msg.params, 'irc.example.test')).toBe(client);
   });
 });
+
+// Several METADATA queries share the wire (#607): the user's LIST, Lurker's
+// SUB, a bouncer client's SYNC. Each reply goes to the one it names.
+describe('METADATA queries on the wire together', () => {
+  it('gives a SUB its 770 and leaves the 774 after it unasked', () => {
+    const { router, hear } = setup();
+    const user = new Client();
+    router.send(user, 'METADATA bob LIST');
+    router.send('lurker', 'METADATA * SUB color');
+    expect(hear(':irc.test 770 me :color')).toBe('lurker');
+    // ergo's "sync everything later" answers nobody's query by name.
+    expect(hear(':irc.test 774 * *ALL 0 :Try again later')).toBe('unasked');
+    // The LIST is still waiting, and its batch is its.
+    expect(hear(':irc.test BATCH +m1 metadata bob')).toBe(user);
+    expect(hear('@batch=m1 :irc.test 761 me bob display-name * :Bob')).toBe(user);
+    expect(hear(':irc.test BATCH -m1')).toBe(user);
+  });
+
+  it('gives a *ALL SYNC its batch, not a LIST for someone else', () => {
+    const { router, hear } = setup();
+    const user = new Client();
+    router.send(user, 'METADATA bob LIST');
+    router.send('lurker', 'METADATA *ALL SYNC');
+    expect(hear(':irc.test BATCH +s1 metadata *ALL')).toBe('lurker');
+    expect(hear('@batch=s1 :irc.test 761 * bob display-name * :Bob')).toBe('lurker');
+    expect(hear(':irc.test BATCH -s1')).toBe('lurker');
+    expect(hear(':irc.test BATCH +m2 metadata bob')).toBe(user);
+  });
+
+  it("does not let a peer's bare 761 end a LIST, only a SET's", () => {
+    const { router, hear } = setup();
+    const user = new Client();
+    router.send(user, 'METADATA bob LIST');
+    expect(hear(':irc.test 761 * bob avatar * :https://x/a.png')).toBe('unasked');
+    router.send(user, 'METADATA * SET avatar :https://x/me.png');
+    expect(hear(':irc.test 761 me me avatar * :https://x/me.png')).toBe(user);
+  });
+});

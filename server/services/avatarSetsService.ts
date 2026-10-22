@@ -20,6 +20,7 @@ import { fileTypeFromBuffer } from 'file-type';
 import {
   AVATAR_SET_IMAGE_MAX_BYTES,
   AVATAR_SET_MAX_TILES,
+  AVATAR_SET_UNPACKED_MAX_BYTES,
   AVATAR_SET_MIN_TILES,
   AVATAR_SET_ZIP_MAX_ENTRIES,
   AVATAR_TILE_SIZE,
@@ -83,6 +84,7 @@ function readZipImages(
       const images: ImageEntry[] = [];
       const skipped: SkippedEntry[] = [];
       let seen = 0;
+      let unpacked = 0;
       const fail = (e: Error) => {
         zip.close();
         reject(e);
@@ -106,6 +108,20 @@ function readZipImages(
           zip.readEntry();
           return;
         }
+        // Past the tile limit nothing more is read; the name is still listed
+        // in the skips, so the author knows which ones were left out.
+        if (images.length >= AVATAR_SET_MAX_TILES) {
+          skipped.push({ name, reason: `past the ${AVATAR_SET_MAX_TILES}-tile limit` });
+          zip.readEntry();
+          return;
+        }
+        // The whole zip's decompressed bytes, held at once: a cap the sizes
+        // in the headers can't talk their way past, since the stream below
+        // counts what actually comes out.
+        if (unpacked + entry.uncompressedSize > AVATAR_SET_UNPACKED_MAX_BYTES) {
+          fail(new Error('the images unpack to more than this server will hold at once'));
+          return;
+        }
         zip.openReadStream(entry, (e2, stream) => {
           if (e2 || !stream) {
             fail(e2 ?? new Error('failed to read a zip entry'));
@@ -115,11 +131,17 @@ function readZipImages(
           let size = 0;
           stream.on('data', (chunk: Buffer) => {
             size += chunk.length;
-            // The header lied; stop reading this one.
-            if (size > AVATAR_SET_IMAGE_MAX_BYTES) stream.destroy(new Error('oversize'));
+            unpacked += chunk.length;
+            // The header lied; stop reading this one — or everything, past
+            // the budget for the whole zip.
+            if (unpacked > AVATAR_SET_UNPACKED_MAX_BYTES) {
+              fail(new Error('the images unpack to more than this server will hold at once'));
+              stream.destroy();
+            } else if (size > AVATAR_SET_IMAGE_MAX_BYTES) stream.destroy(new Error('oversize'));
             else chunks.push(chunk);
           });
           stream.on('error', () => {
+            if (unpacked > AVATAR_SET_UNPACKED_MAX_BYTES) return; // failed above
             skipped.push({ name, reason: 'too large' });
             zip.readEntry();
           });
@@ -182,12 +204,8 @@ class AvatarSetsService extends EventEmitter {
     rawName: unknown,
     zipPath: string,
   ): Promise<Result<{ set: AvatarSetSummary; skipped: SkippedEntry[] }>> {
-    if (typeof rawName !== 'string') return { ok: false, error: 'name is required' };
-    const err = nameError(userId, rawName);
-    if (err) return { ok: false, error: err };
-    if (countAvatarSetsForUser(userId) >= MAX_AVATAR_SETS_PER_USER) {
-      return { ok: false, error: `avatar set limit reached (${MAX_AVATAR_SETS_PER_USER})` };
-    }
+    // The name and the cap are checked once, in createFromImages — reading a
+    // zip for a name that then fails is cheap next to normalising its images.
     let read: { images: ImageEntry[]; skipped: SkippedEntry[] };
     try {
       read = await readZipImages(zipPath);
@@ -208,12 +226,8 @@ class AvatarSetsService extends EventEmitter {
     images: ImageEntry[],
     skipped: SkippedEntry[] = [],
   ): Promise<Result<{ set: AvatarSetSummary; skipped: SkippedEntry[] }>> {
-    if (typeof rawName !== 'string') return { ok: false, error: 'name is required' };
-    const err = nameError(userId, rawName);
-    if (err) return { ok: false, error: err };
-    if (countAvatarSetsForUser(userId) >= MAX_AVATAR_SETS_PER_USER) {
-      return { ok: false, error: `avatar set limit reached (${MAX_AVATAR_SETS_PER_USER})` };
-    }
+    const refused = this.refusal(userId, rawName);
+    if (refused) return refused;
     const sorted = [...images].sort((a, b) => a.name.localeCompare(b.name, 'en'));
     const tiles: Buffer[] = [];
     const notes = [...skipped];
@@ -238,9 +252,38 @@ class AvatarSetsService extends EventEmitter {
         error: `a set needs at least ${AVATAR_SET_MIN_TILES} usable images, found ${tiles.length}${why}`,
       };
     }
-    const set = createAvatarSet(userId, normalizeAvatarSetName(rawName), tiles);
+    // The normaliser took a while: another upload may have taken the name or
+    // the last slot meanwhile, and the UNIQUE constraint backstops the race.
+    const late = this.refusal(userId, rawName);
+    if (late) return late;
+    let set: AvatarSetSummary;
+    try {
+      set = createAvatarSet(userId, normalizeAvatarSetName(rawName as string), tiles);
+    } catch (e) {
+      if ((e as { code?: string }).code?.startsWith('SQLITE_CONSTRAINT')) {
+        return {
+          ok: false,
+          error: `a set named "${normalizeAvatarSetName(rawName as string)}" already exists`,
+        };
+      }
+      throw e;
+    }
     this.emit('change', { userId });
     return { ok: true, set, skipped: notes };
+  }
+
+  // Why a set can't be made, or null: the name rules and the per-user cap.
+  private refusal(
+    userId: number,
+    rawName: unknown,
+  ): { ok: false; error: string; status?: number } | null {
+    if (typeof rawName !== 'string') return { ok: false, error: 'name is required' };
+    const err = nameError(userId, rawName);
+    if (err) return { ok: false, error: err };
+    if (countAvatarSetsForUser(userId) >= MAX_AVATAR_SETS_PER_USER) {
+      return { ok: false, error: `avatar set limit reached (${MAX_AVATAR_SETS_PER_USER})` };
+    }
+    return null;
   }
 
   remove(userId: number, id: number): Result {

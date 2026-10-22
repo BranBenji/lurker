@@ -785,6 +785,29 @@ function buildUserhost(event: Record<string, unknown>): string | null {
   return `${event.nick}!${ident}@${host}`;
 }
 
+// Keys bouncer clients may add to the socket's subscription beyond Lurker's own.
+const MAX_EXTRA_METADATA_KEYS = 64;
+// Bytes of keys on one SUB line: room for `METADATA * SUB `, CRLF and one more
+// long key under the 512-byte line limit.
+const MAX_SUB_LINE_KEY_BYTES = 400;
+
+// `METADATA * SUB k1 k2 …`, as many lines as the keys need.
+function subLines(keys: string[]): string[] {
+  const lines: string[] = [];
+  let current = '';
+  for (const key of keys) {
+    const next = current ? `${current} ${key}` : key;
+    if (current && Buffer.byteLength(next) > MAX_SUB_LINE_KEY_BYTES) {
+      lines.push(`METADATA * SUB ${current}`);
+      current = key;
+    } else {
+      current = next;
+    }
+  }
+  if (current) lines.push(`METADATA * SUB ${current}`);
+  return lines;
+}
+
 function memberSnapshot(m: ChannelMember): ChannelMember {
   return {
     nick: m.nick,
@@ -4559,8 +4582,7 @@ export class IrcConnection {
     const limits = this.metadataLimits();
     if (!limits) return;
     const keys = this.metadataKeysToSub(limits, [...this.metadataExtraKeys]);
-    if (keys.length === 0) return;
-    this.replies.send('lurker', `METADATA * SUB ${keys.join(' ')}`);
+    for (const line of subLines(keys)) this.replies.send('lurker', line);
   }
 
   // Ours first, then the bouncer clients', within max-subs.
@@ -4576,13 +4598,22 @@ export class IrcConnection {
   // registration. Keys Lurker doesn't show pass through its state untouched
   // (vetMetadataValue keeps the record to the keys it shows).
   addMetadataKeys(keys: string[]): void {
-    const fresh = keys.filter((key) => !this.metadataExtraKeys.has(key));
-    for (const key of fresh) this.metadataExtraKeys.add(key);
+    const fresh: string[] = [];
+    for (const key of keys) {
+      if (this.metadataExtraKeys.has(key)) continue;
+      // Bounded: a client can ask for anything, and a key no one shows is
+      // kept for the connection's life (the bouncer answers its UNSUB alone).
+      if (this.metadataExtraKeys.size >= MAX_EXTRA_METADATA_KEYS) break;
+      this.metadataExtraKeys.add(key);
+      fresh.push(key);
+    }
     const limits = this.metadataLimits();
     if (fresh.length === 0 || !limits || !this.sawRegistered) return;
+    // Only what max-subs leaves room for beside ours, as the registration SUB.
+    const allowed = new Set(this.metadataKeysToSub(limits, [...this.metadataExtraKeys]));
     const own = new Set(metadataSubKeysFor(limits));
-    const toSend = fresh.filter((key) => !own.has(key));
-    if (toSend.length > 0) this.replies.send('lurker', `METADATA * SUB ${toSend.join(' ')}`);
+    const toSend = fresh.filter((key) => allowed.has(key) && !own.has(key));
+    for (const line of subLines(toSend)) this.replies.send('lurker', line);
   }
 
   /** A nick's metadata as the network set it (origin URLs and all), for the bouncer's replay. */
@@ -4651,7 +4682,7 @@ export class IrcConnection {
   // that fails vetting (ircMetadata.ts) is an unset; so is a key we don't
   // subscribe to, which keeps the record to the keys we show.
   private applyMetadata(change: MetadataChange): void {
-    const value = vetMetadataValue(change.key, change.value);
+    const value = vetMetadataValue(change.key, change.value, this.metadataExtraKeys);
     if (isChannelMetadataTarget(change.target)) {
       const ch = this.channelState(change.target);
       if (!ch) return;

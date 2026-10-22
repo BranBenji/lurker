@@ -232,15 +232,22 @@ describe('bouncer metadata', () => {
     await until(() => me.sent.some((l) => l === 'METADATA * SUB bot'), 5000, 'bot SUB upstream');
     ircd.setMetadata(`kp${seq}`, 'bot', 'yes');
     expect(await client.waitFor((l) => l.includes(' bot '))).toContain(`761 * kp${seq} bot * :yes`);
-    // Lurker's own state never held it.
-    expect(acct.conn.userMetadataRecord(`kp${seq}`)).toEqual({ 'display-name': 'Known Peer' });
+    // Kept beside Lurker's own keys, so a later SUB can be answered from
+    // state; the web client's view never carries it (ircMetadata.test.ts).
+    expect(acct.conn.userMetadataRecord(`kp${seq}`)).toEqual({
+      'display-name': 'Known Peer',
+      bot: 'yes',
+    });
 
     // A second client attaching later: the join burst carries nothing until it
     // subscribes, then its SUB replays.
     const late = await attach(acct, ['draft/metadata-2']);
     await roundTrip(late);
     expect(late.lines.filter((l) => commandOf(l) === '761')).toEqual([]);
-    late.send('METADATA * SUB display-name');
+    late.send('METADATA * SUB display-name bot');
     expect(await late.waitFor((l) => l.includes('Known Peer'))).toContain(`761 ${acct.nick}`);
+    expect(await late.waitFor((l) => l.includes(' bot '))).toContain(
+      `761 ${acct.nick} kp${seq} bot * :yes`,
+    );
   });
 });

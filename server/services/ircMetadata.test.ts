@@ -134,3 +134,18 @@ describe('what a client is sent', () => {
     });
   });
 });
+
+describe('what the record may hold', () => {
+  it('refuses a display name that would print as nothing', () => {
+    expect(vetMetadataValue('display-name', '\x0304')).toBeNull();
+    expect(vetMetadataValue('display-name', '\x02\x0f')).toBeNull();
+    expect(vetMetadataValue('display-name', '​‍')).toBeNull();
+    expect(vetMetadataValue('display-name', '\x02Bob\x02')).toBe('\x02Bob\x02');
+  });
+  it('keeps a key a bouncer client asked for, bounded, and no other', () => {
+    const extra = new Set(['color']);
+    expect(vetMetadataValue('color', '#ff0000', extra)).toBe('#ff0000');
+    expect(vetMetadataValue('color', 'x'.repeat(513), extra)).toBeNull();
+    expect(vetMetadataValue('bot', 'yes', extra)).toBeNull();
+  });
+});

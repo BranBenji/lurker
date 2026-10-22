@@ -249,6 +249,8 @@ interface Spec {
   // The reference of the batch a metadata query's replies arrive in, once its
   // BATCH + line has come; the matching BATCH - ends the query.
   batchRef: string;
+  // A METADATA query's subcommand: what ends it differs by one.
+  sub: string;
 }
 
 interface Query extends Spec {
@@ -285,6 +287,7 @@ function spec(form: Form, command: string, fields: Partial<Spec> = {}): Spec {
     anyChannel: false,
     abort: null,
     batchRef: '',
+    sub: '',
     ...fields,
   };
 }
@@ -654,23 +657,40 @@ export class ReplyRouter {
         if (command === '281') return 'body';
         return command === '282' ? 'end' : null;
       case 'metadata': {
+        // Several METADATA queries can be on the wire at once — the user's
+        // LIST, Lurker's SUB, a bouncer client's SYNC — so every reply is
+        // matched on what it names, by subcommand, as the other forms are.
         if (command === 'BATCH') {
           const ref = params[0] ?? '';
           const type = params[1] ?? '';
-          if (ref.startsWith('+') && (type === 'metadata' || type === 'metadata-subs')) {
+          if (ref.startsWith('+')) {
             if (query.batchRef) return null;
+            const mine =
+              (type === 'metadata-subs' && query.sub === 'SUBS') ||
+              (type === 'metadata' &&
+                (query.sub === 'GET' ||
+                  query.sub === 'LIST' ||
+                  query.sub === 'SYNC' ||
+                  query.sub === 'CLEAR') &&
+                names(2));
+            if (!mine) return null;
             query.batchRef = ref.slice(1);
             return 'body';
           }
           return ref.startsWith('-') && query.batchRef === ref.slice(1) ? 'end' : null;
         }
-        if (command === '761' || command === '766' || command === '772') {
-          // Inside the query's batch they're its. A bare one naming the
-          // target is a SET's whole reply, and ends it.
-          if (query.batchRef) return 'body';
+        if (query.batchRef) {
+          // Inside the query's batch: its, whatever it is.
+          return command === '761' || command === '766' || command === '772' ? 'body' : null;
+        }
+        // A bare 761/766 naming the target is a SET's whole reply.
+        if ((command === '761' || command === '766') && query.sub === 'SET') {
           return names(1) ? 'end' : null;
         }
-        if (command === '770' || command === '771' || command === '774') return 'end';
+        if (command === '770') return query.sub === 'SUB' ? 'end' : null;
+        if (command === '771') return query.sub === 'UNSUB' ? 'end' : null;
+        // RPL_METADATASYNCLATER for a SYNC's target: the sync is postponed.
+        if (command === '774') return query.sub === 'SYNC' && names(1) ? 'end' : null;
         return null;
       }
     }
@@ -845,8 +865,10 @@ export class ReplyRouter {
         const target = params[0] ?? '';
         const sub = (params[1] ?? '').toUpperCase();
         if (!target || !sub) return null;
+        // `*` is us (the server answers with our nick); `*ALL` is ergo's
+        // sync-everything target, answered with a batch labelled the same.
         const own = target === '*' ? [this.opts.ownNick()] : [];
-        return spec('metadata', command, { targets: fold([target, ...own]) });
+        return spec('metadata', command, { targets: fold([target, ...own]), sub });
       }
       default:
         return null;

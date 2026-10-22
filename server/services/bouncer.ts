@@ -184,6 +184,10 @@ const PASSTHROUGH_CAPS = [
   METADATA_CAP,
 ];
 
+// A line that could be metadata: the command, after an optional tag and
+// source prefix.
+const METADATA_LINE_RE = /^(?:@\S+ )?(?::\S+ )?(?:METADATA|76\d|77[0-5]) /;
+
 const CAP_BOUNCER_NETWORKS = 'soju.im/bouncer-networks';
 const CAP_BOUNCER_NETWORKS_NOTIFY = 'soju.im/bouncer-networks-notify';
 const CAP_CHATHISTORY = 'draft/chathistory';
@@ -2229,6 +2233,9 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   // itself, or on a nick it shares a channel with or watches. Lurker's own
   // acknowledgements (770–774) are nobody's. Any other line: yes.
   private wantsMetadataLine(line: string): boolean {
+    // Nearly every line isn't one; a parse per client per line is the hot
+    // path's to keep, so look before parsing.
+    if (!METADATA_LINE_RE.test(line)) return true;
     const msg = parseClientLine(line);
     if (!msg) return true;
     const { command, params } = msg;

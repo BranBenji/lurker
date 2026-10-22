@@ -27,7 +27,8 @@ export function useDisplayNames() {
   ): string | null {
     if (!enabled.value) return null;
     const name = networks.metadataFor(networkId, nick)?.displayName;
-    return name ? name : null;
+    // The server refuses a name that strips to nothing; an older one may not.
+    return name && stripFormatting(name).trim() ? name : null;
   }
 
   // Plain text for surfaces that can't draw formatting.

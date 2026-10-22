@@ -13,6 +13,7 @@
 // 761s. All three shapes reduce to one change here.
 
 import { isChannelTarget } from '../../shared/channels.js';
+import { stripFormatting } from '../../shared/textMatch.js';
 
 export const METADATA_CAP = 'draft/metadata-2';
 
@@ -35,6 +36,12 @@ const MAX_VALUE_CHARS: Record<string, number> = {
 };
 
 const KEY_RE = /^[a-z0-9_./-]+$/;
+
+// A key Lurker doesn't show but a bouncer client asked for: kept so a SUB can
+// be answered from state, bounded like a status.
+const EXTRA_VALUE_CHARS = 512;
+// Zero-width and joiner characters: a name made only of these is no name.
+const INVISIBLE_RE = /[\u200b-\u200d\u2060\ufeff]/g;
 
 export interface MetadataLimits {
   maxSubs: number | null;
@@ -126,17 +133,26 @@ function isHttpUrl(value: string): boolean {
 /**
  * A value fit to keep, or null when the key is better treated as unset: too
  * long, control characters, or a URL key whose value isn't an http(s) URL.
- * Only the keys Lurker subscribes to are kept at all — anything else a server
- * volunteers is ignored, so a server can't grow the record without bound.
+ * Only the keys Lurker subscribes to are kept — plus any `extra` keys a
+ * bouncer client asked for — so a server can't grow the record without bound.
  */
-export function vetMetadataValue(key: string, raw: string | null): string | null {
+export function vetMetadataValue(
+  key: string,
+  raw: string | null,
+  extra?: ReadonlySet<string>,
+): string | null {
   if (raw === null) return null;
-  const max = MAX_VALUE_CHARS[key];
+  const max = MAX_VALUE_CHARS[key] ?? (extra?.has(key) ? EXTRA_VALUE_CHARS : undefined);
   if (max === undefined) return null;
   // Line breaks and NUL can't legally be here; other controls (mIRC formatting)
   // are the display layer's to render or strip.
   const value = raw.replace(/[\r\n\0]/g, '').trim();
   if (!value || value.length > max) return null;
+  // A name that is only formatting codes or invisible characters would print
+  // nothing in place of the nick.
+  if (key === 'display-name' && !stripFormatting(value).replace(INVISIBLE_RE, '').trim()) {
+    return null;
+  }
   if (key === 'avatar' || key === 'homepage') {
     const sized = key === 'avatar' ? sizedAvatarUrl(value) : value;
     if (!isHttpUrl(sized)) return null;

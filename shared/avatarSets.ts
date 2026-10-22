@@ -20,6 +20,9 @@ export const AVATAR_TILE_EXT = 'webp';
 export const AVATAR_SET_ZIP_MAX_BYTES = 24 * 1024 * 1024;
 export const AVATAR_SET_ZIP_MAX_ENTRIES = 512;
 export const AVATAR_SET_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
+// Decompressed bytes held in memory across every image read from one zip: a
+// zip of compressible images could otherwise expand far past its own size.
+export const AVATAR_SET_UNPACKED_MAX_BYTES = 64 * 1024 * 1024;
 
 export const RESERVED_AVATAR_SET_NAMES = ['default'];
 

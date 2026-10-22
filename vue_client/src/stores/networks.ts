@@ -467,13 +467,18 @@ export const useNetworksStore = defineStore('networks', {
     },
     // One nick's whole metadata record (#607), or null to forget it — a rename
     // sends the old nick's null and the new nick's record.
+    // In place, one key: a SYNC on a big channel is one frame per nick, and
+    // copying the map (or replacing the network state) for each would make
+    // every reader of the network state recompute per line.
     applyUserMetadata(networkId: number | string, nick: string, values: UserMetadataEntry | null) {
       if (!networkId || !nick) return;
-      const existing = this.states[networkId] || { networkId: Number(networkId), channels: [] };
-      const userMetadata = { ...existing.userMetadata };
-      if (values) userMetadata[nick.toLowerCase()] = values;
-      else delete userMetadata[nick.toLowerCase()];
-      this.states[networkId] = { ...existing, userMetadata };
+      if (!this.states[networkId]) {
+        this.states[networkId] = { networkId: Number(networkId), channels: [] };
+      }
+      const state = this.states[networkId];
+      if (!state.userMetadata) state.userMetadata = {};
+      if (values) state.userMetadata[nick.toLowerCase()] = values;
+      else delete state.userMetadata[nick.toLowerCase()];
     },
     applyDccChatState(networkId: number | string, nick: string, live: boolean, secure = false) {
       if (!networkId || !nick) return;
