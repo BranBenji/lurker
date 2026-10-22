@@ -39,13 +39,15 @@ function mountCompact(opts: { keepSettings?: boolean } = {}) {
     useSettingsStore().values = {
       'look.message.layout': 'compact',
       'look.message.collapse_timestamps': true,
+      'look.nick.show_mode_prefix': true,
     } as never;
   }
   const networks = useNetworksStore();
   networks.networks = [{ id: 1, name: 'testnet' }] as never;
   networks.states = { 1: { nick: 'me', state: 'connected', peerPresence: {} } } as never;
   const b = useBuffersStore().ensure(1, '#chan', 9);
-  b.members = [];
+  // dave is a local op; the relayed `dave` below is someone else entirely.
+  b.members = [{ nick: 'dave', modes: ['o'], away: false }];
   b.messages = [
     message(1, 'alice', 0),
     message(2, 'alice', 0, 30),
@@ -53,6 +55,8 @@ function mountCompact(opts: { keepSettings?: boolean } = {}) {
     message(4, 'bob', 2, 10),
     { ...message(5, 'carol', 3), type: 'join' },
     { ...message(6, 'dave', 4), relayBot: 'bridge', relaySource: 'github' },
+    // A local dave right after the bridged one, inside the author window.
+    message(7, 'dave', 4, 20),
   ] as never;
   b.joined = true;
   b.hasMoreOlder = false;
@@ -130,6 +134,17 @@ describe('MessageList — compact head timestamp', () => {
     expect(source?.textContent).toBe('github');
     expect(source?.getAttribute('title')).toBe('Relayed via bridge');
     expect(el.querySelector(':scope > .body .relay-via')).toBeNull();
+    // No mode glyph on the visitor, though a local dave holds op.
+    expect(el.querySelector(':scope > .head .mode-glyph')).toBeNull();
+  });
+
+  it('never folds a local nick into a bridged one’s run, or the reverse', () => {
+    mountCompact();
+    // The local dave gets a head of his own, with his glyph and no source.
+    const local = wrapper!.find('[data-msg-id="7"]').element;
+    expect(local.querySelector(':scope > .head')).not.toBeNull();
+    expect(local.querySelector(':scope > .head .relay-source')).toBeNull();
+    expect(local.querySelector(':scope > .head .mode-glyph')?.textContent).toBe('@');
   });
 
   it('ignores timestamp collapsing: a head in the same minute still shows its time', () => {

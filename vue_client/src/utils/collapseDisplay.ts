@@ -30,6 +30,10 @@ export interface MessageRowInner {
   nick?: string;
   time?: string;
   self?: boolean;
+  // A re-attributed relay line (#277): the bot that said it and where the
+  // speaker is from. Part of the author's identity for run collapsing.
+  relayBot?: string | null;
+  relaySource?: string | null;
 }
 
 export interface DisplayRow {
@@ -80,8 +84,12 @@ export function collapseDisplay(rows: DisplayRow[], options: CollapseOptions = {
     if (collapseAuthors && !row.consolidation && row.m?.type === 'message') {
       // Self flag is part of the visual identity (self color vs. nick color),
       // so a self message after a non-self message from the same nick must
-      // not collapse — even though that's a deeply unusual case.
-      const key = `${row.m.self ? '1' : '0'}:${row.m.nick || ''}`;
+      // not collapse — even though that's a deeply unusual case. So is where a
+      // relayed speaker is from: a bridged `alice` is not the local `alice`,
+      // and anyone on a bridged platform can pick an IRC regular's nick —
+      // folding them into one run is misattribution, not polish (the iOS
+      // port's MessageGrouping.sameAuthor folds on the same three).
+      const key = `${row.m.self ? '1' : '0'}:${row.m.nick || ''}:${row.m.relayBot || ''}:${row.m.relaySource || ''}`;
       // The delta must be non-negative: rows carry server-time, which a
       // bouncer replay can stamp OLDER than the preceding row's. A negative
       // delta would trivially pass the window check and collapse a replayed
