@@ -107,7 +107,7 @@ const fileEl = ref<HTMLInputElement | null>(null);
 const lastSkipped = ref<Array<{ name: string; reason: string }>>([]);
 
 onMounted(() => {
-  void avatarSets.ensureDefault();
+  void avatarSets.ensureBuiltins();
   if (!avatarSets.loaded) {
     avatarSets.fetchAll().catch(() => {
       /* the list renders what it has */

@@ -50,7 +50,7 @@ function mountWith(values: Record<string, unknown>) {
     },
   } as never;
   // The bundled set, as if its manifest had loaded.
-  useAvatarSetsStore().defaultManifest = { count: 32, ext: 'webp' };
+  useAvatarSetsStore().builtinManifests = { default: { count: 32, ext: 'webp' } };
   const b = useBuffersStore().ensure(1, '#chan', 9);
   b.members = [];
   b.messages = [message(1, 'alice', 0), message(2, 'alice', 0, 30), message(3, 'bob', 2)] as never;

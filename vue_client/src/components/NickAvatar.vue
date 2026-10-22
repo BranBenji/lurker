@@ -48,7 +48,7 @@ const avatarSets = useAvatarSetsStore();
 const nicks = useNickColors();
 
 onMounted(() => {
-  void avatarSets.ensureDefault();
+  void avatarSets.ensureBuiltins();
 });
 
 const meta = computed(() =>

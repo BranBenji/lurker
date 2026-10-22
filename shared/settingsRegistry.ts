@@ -1892,8 +1892,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'string',
     default: 'default',
     description:
-      'Which tile set generated avatars draw from: "default" for the bundled set, or the id ' +
-      'of a set you uploaded.',
+      'Which tile set generated avatars draw from: "default" for the bundled set, "plain" for ' +
+      'a bust silhouette, or the id of a set you uploaded.',
   },
   {
     key: 'look.theme.active',

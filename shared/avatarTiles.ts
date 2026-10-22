@@ -15,6 +15,22 @@
 
 export const DEFAULT_AVATAR_SET = 'default';
 export const DEFAULT_AVATAR_SET_URL = '/avatars/default';
+
+/** The sets that ship with the client, as static files; each has a manifest.json. */
+export interface BuiltinAvatarSet {
+  id: string;
+  name: string;
+  url: string;
+}
+export const BUILTIN_AVATAR_SETS: readonly BuiltinAvatarSet[] = [
+  { id: DEFAULT_AVATAR_SET, name: 'Default', url: DEFAULT_AVATAR_SET_URL },
+  // One tile, a bust silhouette: the generic avatar every chat app has,
+  // for anyone who finds the art too much.
+  { id: 'plain', name: 'Plain', url: '/avatars/plain' },
+];
+export function isBuiltinAvatarSetId(id: string): boolean {
+  return BUILTIN_AVATAR_SETS.some((set) => set.id === id);
+}
 // The stop characters the nick colour uses by default (look.nick.color_stop_chars).
 export const DEFAULT_STOP_CHARS = '_|';
 

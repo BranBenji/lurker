@@ -24,7 +24,7 @@ export const AVATAR_SET_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
 // zip of compressible images could otherwise expand far past its own size.
 export const AVATAR_SET_UNPACKED_MAX_BYTES = 64 * 1024 * 1024;
 
-export const RESERVED_AVATAR_SET_NAMES = ['default'];
+export const RESERVED_AVATAR_SET_NAMES = ['default', 'plain'];
 
 export interface AvatarSetSummary {
   id: number;

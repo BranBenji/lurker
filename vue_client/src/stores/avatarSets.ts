@@ -15,8 +15,8 @@ import { defineStore } from 'pinia';
 import { api, apiMultipart } from '../api.js';
 import { useSettingsStore } from './settings.js';
 import {
+  BUILTIN_AVATAR_SETS,
   DEFAULT_AVATAR_SET,
-  DEFAULT_AVATAR_SET_URL,
   DEFAULT_STOP_CHARS,
   tileIndex,
   tileUrl,
@@ -38,26 +38,26 @@ export interface AvatarSetEntry {
 
 export const useAvatarSetsStore = defineStore('avatarSets', {
   state: () => ({
-    // The bundled set's manifest, once fetched; null until then (no tile).
-    defaultManifest: null as AvatarSetManifest | null,
-    defaultLoad: null as Promise<void> | null,
+    // Each bundled set's manifest, once fetched; absent until then (no tile).
+    builtinManifests: {} as Record<string, AvatarSetManifest>,
+    builtinLoad: null as Promise<void> | null,
     // The user's uploaded sets, as the server lists them.
     saved: [] as AvatarSetSummary[],
     loaded: false,
   }),
   getters: {
-    /** The bundled set first, then the uploaded ones (server keeps them name-sorted). */
+    /** The bundled sets first, then the uploaded ones (server keeps them name-sorted). */
     all(state): AvatarSetEntry[] {
-      const bundled: AvatarSetEntry = {
-        id: DEFAULT_AVATAR_SET,
-        name: 'Default',
-        count: state.defaultManifest?.count ?? 0,
+      const bundled: AvatarSetEntry[] = BUILTIN_AVATAR_SETS.map((set) => ({
+        id: set.id,
+        name: set.name,
+        count: state.builtinManifests[set.id]?.count ?? 0,
         builtin: true,
-        baseUrl: DEFAULT_AVATAR_SET_URL,
-        ext: state.defaultManifest?.ext ?? AVATAR_TILE_EXT,
-      };
+        baseUrl: set.url,
+        ext: state.builtinManifests[set.id]?.ext ?? AVATAR_TILE_EXT,
+      }));
       return [
-        bundled,
+        ...bundled,
         ...state.saved.map((s) => ({
           id: String(s.id),
           name: s.name,
@@ -96,33 +96,36 @@ export const useAvatarSetsStore = defineStore('avatarSets', {
     },
   },
   actions: {
-    // Fetch the bundled set's manifest once. Safe to call from every tile:
-    // one request, and a failure leaves the squares plain rather than
-    // retrying on every render.
-    ensureDefault(): Promise<void> {
-      if (this.defaultLoad) return this.defaultLoad;
-      // Already known (a test seeds it), or nowhere to fetch from.
-      if (this.defaultManifest || typeof fetch !== 'function') return Promise.resolve();
-      this.defaultLoad = (async () => {
-        try {
-          // Revalidated every time: a rebuilt set changes the count, and a
-          // copy the browser kept would point tiles at files that are gone.
-          const res = await fetch(`${DEFAULT_AVATAR_SET_URL}/manifest.json`, {
-            cache: 'no-cache',
-          });
-          if (!res.ok) return;
-          const body = (await res.json()) as Partial<AvatarSetManifest>;
-          const count = Number(body.count);
-          if (!Number.isInteger(count) || count <= 0) return;
-          this.defaultManifest = {
-            count,
-            ext: typeof body.ext === 'string' ? body.ext : AVATAR_TILE_EXT,
-          };
-        } catch {
-          /* no fetch here (tests), or the set is missing: plain squares */
-        }
+    // Fetch every bundled set's manifest once. Safe to call from every tile:
+    // one request each, and a failure leaves those squares plain rather than
+    // retrying on every render. Revalidated every time: a rebuilt set changes
+    // the count, and a copy the browser kept would point tiles at files that
+    // are gone.
+    ensureBuiltins(): Promise<void> {
+      if (this.builtinLoad) return this.builtinLoad;
+      if (typeof fetch !== 'function') return Promise.resolve();
+      const missing = BUILTIN_AVATAR_SETS.filter((set) => !this.builtinManifests[set.id]);
+      if (missing.length === 0) return Promise.resolve();
+      this.builtinLoad = (async () => {
+        await Promise.all(
+          missing.map(async (set) => {
+            try {
+              const res = await fetch(`${set.url}/manifest.json`, { cache: 'no-cache' });
+              if (!res.ok) return;
+              const body = (await res.json()) as Partial<AvatarSetManifest>;
+              const count = Number(body.count);
+              if (!Number.isInteger(count) || count <= 0) return;
+              this.builtinManifests[set.id] = {
+                count,
+                ext: typeof body.ext === 'string' ? body.ext : AVATAR_TILE_EXT,
+              };
+            } catch {
+              /* no fetch here (tests), or the set is missing: plain squares */
+            }
+          }),
+        );
       })();
-      return this.defaultLoad;
+      return this.builtinLoad;
     },
     hydrate(items: AvatarSetSummary[]) {
       this.saved = items;

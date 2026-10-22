@@ -50,6 +50,7 @@ import {
   AVATAR_SET_MAX_TILES,
   AVATAR_SET_UNPACKED_MAX_BYTES,
 } from '../../shared/avatarSets.js';
+import { isBuiltinAvatarSetId } from '../../shared/avatarTiles.js';
 import { encryptSecret } from '../utils/secretCrypto.js';
 import {
   importRow as importBufferRow,
@@ -390,7 +391,7 @@ function insertTable(
     }
 
     // The avatar-set pointer (#607): same shape as the theme pointers, with
-    // 'default' as the built-in id that travels as-is.
+    // the built-in ids ('default', 'plain') travelling as-is.
     if (
       table === 'user_settings' &&
       typeof row.key === 'string' &&
@@ -403,7 +404,7 @@ function insertTable(
         continue;
       }
       if (typeof oldId !== 'string') continue;
-      if (oldId !== 'default') {
+      if (!isBuiltinAvatarSetId(oldId)) {
         const n = Number(oldId);
         if (!Number.isInteger(n) || String(n) !== oldId) continue;
         const mapped = idMaps.avatar_sets?.get(n);

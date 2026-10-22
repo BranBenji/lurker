@@ -1,6 +1,8 @@
 # Avatar tile sets
 
-`default/` is the bundled set behind generated avatars (#607): one tile per
+`default/` is the bundled set behind generated avatars (#607), and `plain/` is
+the one-tile alternative (a bust silhouette) for anyone who finds the art too
+much. Each is one tile per
 nick, chosen by `shared/avatarTiles.ts` (a salted hash of the nick, the same
 trim the nick colour uses), drawn over the nick's colour. A metadata avatar
 replaces the tile where a network carries one.
