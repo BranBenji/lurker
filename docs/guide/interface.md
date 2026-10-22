@@ -57,6 +57,10 @@ on the server ([self-hosting docs](/SELF_HOSTING#link-previews-inline-media)).
 ## Customizing the look
 
 - The 40+ settings and the retro terminal theme.
+- **Avatars.** In the compact message layout, turn on **Show avatars** and every
+  author gets one: the picture they set on networks that keep profile data, or a
+  square in their nick colour with a tile from the active avatar set. Upload your
+  own set as a zip of square images under Settings › Appearance › Avatars.
 
 ## See also
 

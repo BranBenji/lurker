@@ -685,6 +685,7 @@ describe('pass-through caps follow the bound network', () => {
     'userhost-in-names',
     'extended-monitor',
     'draft/extended-monitor',
+    'draft/metadata-2',
   ];
 
   it('lists them for CAP LS 302 before registration, and not for a plain CAP LS', async () => {

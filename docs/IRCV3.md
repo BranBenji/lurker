@@ -58,6 +58,25 @@ refresh.
   channel you share.
   <br>`server/services/ircConnection.ts:1467`
 
+### People have names and faces, where the network keeps them
+
+On a network that stores profile data (Ergo does), a member's chosen display
+name shows in place of their nick in the message list, the member list and DM
+rows — the nick stays the identity: it's in the hover, the profile, the colour
+and the mention matching — and their avatar shows in the compact layout and
+the profile modal. Set yours with `/displayname` and `/avatar`.
+
+- **`draft/metadata-2`** — Lurker subscribes to `display-name`, `avatar`,
+  `pronouns`, `homepage` and `status`, keeps a record per nick for the life of
+  the connection, and re-syncs on every re-attach. Three line shapes are read
+  as one: the spec's `METADATA`, and the `761`/`766` numerics Ergo sends them
+  as. An avatar URL set by another user is an involuntary fetch, so it's served
+  through the same proxy as a link-preview thumbnail — the client never sees
+  the origin — and only while link previews are configured; otherwise everyone
+  gets a generated tile in their nick colour. `color` is deliberately not read:
+  hex values fight every theme.
+  <br>`server/services/ircMetadata.ts`, `server/services/ircConnection.ts` (`applyMetadata`)
+
 ### Your history is in the right order, on every device
 
 Lurker stores everything and replays it to any browser or client you attach. That
@@ -219,6 +238,7 @@ we advertise only what we actually implement.
 | People's away, account and host changes, when your network sends them                           | `away-notify`, `account-notify`, `chghost`                    |
 | The same for people you `MONITOR` but share no channel with                                     | `extended-monitor`, `draft/extended-monitor`                  |
 | Accounts on JOINs and on each message, when your network sends them                             | `extended-join`, `account-tag`                                |
+| Display names and avatars, when your network keeps them — SUB to the keys you show              | `draft/metadata-2`                                            |
 | Every prefix and full hostmasks in NAMES, when your network sends them                          | `multi-prefix`, `userhost-in-names`                           |
 | Invites other people get to your channels                                                       | `invite-notify`                                               |
 | Told when a capability comes or goes, such as while your network reconnects                     | `cap-notify`                                                  |
@@ -357,6 +377,7 @@ attaching to Lurker.
 | `echo-message`                          |   ✅   |   ✅    |
 | `batch`                                 |   ✅   |   ✅    |
 | `draft/multiline`                       |   ✅   |    —    |
+| `draft/metadata-2`                      |   ✅   |   ✅    |
 | `+typing`                               |   ✅   |    —    |
 | `+draft/react`, `+draft/unreact`        |   ✅   |    —    |
 | `+reply`, `+draft/reply`                |   ✅   |    —    |
@@ -410,7 +431,6 @@ you, not by spec number.
 | `labeled-response`           | Reliable correlation of a command with its reply, which makes command results attributable even when several are in flight.                                                      |
 | `setname`                    | Change your realname without reconnecting. Lurker doesn't request this today.                                                                                                    |
 | `bot-mode`                   | Visually distinguish bots from people in the nicklist and message list.                                                                                                          |
-| `draft/metadata`             | Server-side profile data — avatars being the obvious use.                                                                                                                        |
 | `draft/account-registration` | Register a network account during onboarding, instead of sending someone off to `/msg NickServ`.                                                                                 |
 | `draft/pre-away`             | Set away state before registration finishes, closing the brief window on reconnect where you appear present but aren't.                                                          |
 | `utf8only`                   | Skip encoding guesswork on networks that guarantee UTF-8.                                                                                                                        |
