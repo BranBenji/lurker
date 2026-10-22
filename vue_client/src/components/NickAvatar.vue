@@ -119,15 +119,19 @@ function onError(): void {
 .nick-avatar.interactive {
   cursor: pointer;
 }
-/* The Initial sets: one letter, centred, at the one font size, faded the way
-   the silhouettes are so the colour shows through. */
+/* The Initial sets: one letter, centred, faded the way the silhouettes are
+   so the colour shows through. A deliberate exception to the one-font-size
+   rule, with the icon tokens: the letter is a glyph standing in for an
+   image, so it scales with the tile (half its height), not with the text. */
 .nick-avatar .initial {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 100%;
   height: 100%;
+  font-size: calc(var(--avatar-size, 2.25em) * 0.5);
   font-weight: 600;
+  line-height: 1;
   user-select: none;
 }
 .nick-avatar .initial.light {
