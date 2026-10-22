@@ -3453,8 +3453,8 @@ async function runAvatars(
     const on = settings.effective('look.message.avatars') === true;
     reply(
       on
-        ? '  avatars are on in the compact layout (look.message.avatars)'
-        : '  avatars are off — turn on look.message.avatars to show them in the compact layout',
+        ? '  avatars are on (compact layout)'
+        : '  avatars are off — Settings › Appearance › Avatars, or /set look.message.avatars true',
     );
     return;
   }

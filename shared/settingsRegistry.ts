@@ -469,19 +469,6 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'not apply.',
   },
   {
-    key: 'look.message.avatars',
-    label: 'Show avatars (compact layout)',
-    category: 'appearance',
-    group: 'messages',
-    type: 'bool',
-    default: false,
-    description:
-      'In the compact layout, draw an avatar beside each author: the image they set through ' +
-      'IRCv3 metadata where the network carries it, otherwise a square in their nick color ' +
-      'with a tile from the active avatar set. The standard three-column layout has no room ' +
-      'for one, so this does nothing there.',
-  },
-  {
     key: 'look.message.collapse_authors',
     label: 'Collapse repeated authors',
     category: 'appearance',
@@ -1879,11 +1866,22 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'read per device, so a phone in light mode and a desktop in dark mode ' +
       'each get their assigned theme from the same synced settings.',
   },
-  // ─── Avatar sets (#607) ─────────────────────────────────────────────────
-  // Pointer to the tile set behind generated avatars, like the theme pointers:
-  // `avatars` is absent from CATEGORIES so the registry pane never renders it;
-  // the Appearance pane's avatar section does. The bundled ids are in avatarTiles.ts;
-  // anything else is the id of one the user uploaded.
+  // ─── Avatars (#607) ─────────────────────────────────────────────────────
+  // `avatars` is absent from CATEGORIES so the registry pane never renders
+  // these; the Appearance pane's Avatars section does, beside the sets. The
+  // pointer works like the theme pointers: the bundled ids are in
+  // avatarTiles.ts, anything else is the id of a set the user uploaded.
+  {
+    key: 'look.message.avatars',
+    label: 'Show avatars',
+    category: 'avatars',
+    group: 'sets',
+    type: 'bool',
+    default: false,
+    description:
+      'An avatar beside each author in the compact layout. The standard layout has no room ' +
+      'for one.',
+  },
   {
     key: 'look.avatars.set',
     label: 'Avatar set',
