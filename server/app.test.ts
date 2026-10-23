@@ -5,8 +5,15 @@ import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
+import { Router } from 'express';
 import type { Express } from 'express';
-import { setupTestDb, testRequest, TEST_SESSION_SECRET } from './test-utils/testApp.js';
+import {
+  setupTestDb,
+  testRequest,
+  createTestApp,
+  TEST_SESSION_SECRET,
+} from './test-utils/testApp.js';
 
 // buildApp gates routes on the cached edition, resolved once per module
 // instance. vi.resetModules() between builds hands each call a fresh edition
@@ -233,5 +240,88 @@ describe('request body errors', () => {
     } finally {
       logged.mockRestore();
     }
+  });
+});
+
+describe('compressed request bodies', () => {
+  // Nothing that talks to Lurker compresses what it sends, so a request with a
+  // `Content-Encoding` is refused with a 415 at the app's edge, ahead of every
+  // route, auth check and parser (middleware/requestBody.ts) — never piped
+  // through zlib, which body-parser does by default (CVE-2026-111497 was Node's
+  // Brotli decoder, reachable by an anonymous POST that way).
+  const json = Buffer.from('{"grant_type":"authorization_code"}');
+  const form = Buffer.from('grant_type=authorization_code');
+
+  it('refuses a Brotli JSON body with 415 (the app-wide parser)', async () => {
+    const app = await buildFor('standalone');
+    const res = await testRequest(app)
+      .post('/api/oauth/token')
+      .set('Content-Type', 'application/json')
+      .set('Content-Encoding', 'br')
+      .send(zlib.brotliCompressSync(json));
+    expect(res.status).toBe(415);
+  });
+
+  it('refuses a gzip JSON body with 415', async () => {
+    const app = await buildFor('standalone');
+    const res = await testRequest(app)
+      .post('/api/oauth/token')
+      .set('Content-Type', 'application/json')
+      .set('Content-Encoding', 'gzip')
+      .send(zlib.gzipSync(json));
+    expect(res.status).toBe(415);
+  });
+
+  it('refuses a compressed form body with 415 (the OAuth token parser)', async () => {
+    const app = await buildFor('standalone');
+    const res = await testRequest(app)
+      .post('/api/oauth/token')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .set('Content-Encoding', 'gzip')
+      .send(zlib.gzipSync(form));
+    expect(res.status).toBe(415);
+  });
+
+  it('refuses ahead of auth: an anonymous compressed beacon gets 415, not 401', async () => {
+    // routes/drafts.ts orders requireAuth before its own parser, so this 415 can
+    // only come from the edge.
+    const app = await buildFor('standalone');
+    const res = await testRequest(app)
+      .post('/api/drafts/flush')
+      .set('Content-Type', 'text/plain')
+      .set('Content-Encoding', 'gzip')
+      .send(zlib.gzipSync(Buffer.from('{"drafts":[]}')));
+    expect(res.status).toBe(415);
+  });
+
+  it('still parses an uncompressed body', async () => {
+    // The token route reads grant_type from the parsed body and, with no
+    // client_id, answers 400 invalid_request: proof the JSON reached the handler.
+    const app = await buildFor('standalone');
+    const res = await testRequest(app)
+      .post('/api/oauth/token')
+      .set('Content-Type', 'application/json')
+      .send(json);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_request');
+  });
+
+  it('the test harness mirrors the app', async () => {
+    const router = Router();
+    router.post('/', (_req, res) => {
+      res.json({ ok: true });
+    });
+    const app = createTestApp({ '/api/echo': router });
+    const refused = await testRequest(app)
+      .post('/api/echo')
+      .set('Content-Type', 'application/json')
+      .set('Content-Encoding', 'br')
+      .send(zlib.brotliCompressSync(json));
+    expect(refused.status).toBe(415);
+    const plain = await testRequest(app)
+      .post('/api/echo')
+      .set('Content-Type', 'application/json')
+      .send(json);
+    expect(plain.status).toBe(200);
   });
 });

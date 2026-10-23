@@ -48,22 +48,13 @@ import { requireApiAuth } from './middleware/apiAuth.js';
 import { isNodeMode } from './utils/edition.js';
 import { previewsEnabled } from './utils/previews.js';
 import { allowedBrowserOrigins } from './utils/corsOrigins.js';
-
-// body-parser marks its own failures (malformed JSON or form data, a body over
-// the limit, an unsupported charset) with a `type` such as 'entity.parse.failed'
-// and a 4xx `status`.
-function isBodyParseError(err: unknown): err is { status: number } {
-  if (!err || typeof err !== 'object') return false;
-  const { type, status } = err as { type?: unknown; status?: unknown };
-  return typeof type === 'string' && typeof status === 'number' && status >= 400 && status < 500;
-}
+import { isBodyParseError, refuseCompressedBodies } from './middleware/requestBody.js';
 
 const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
-  // A body that didn't parse is the client's mistake, not a server fault. The
-  // parser attaches the raw body to the error, and that body can be a password or
-  // an OAuth code, so it is answered with its 4xx and never logged. This has to
-  // live here: the JSON parser runs app-wide, ahead of every router, so an error
-  // it raises never reaches a router's own handler.
+  // A body that didn't parse is answered with the parser's 4xx and never logged
+  // (see middleware/requestBody.ts). This has to live here: the JSON parser runs
+  // app-wide, ahead of every router, so an error it raises never reaches a
+  // router's own handler.
   if (isBodyParseError(err)) {
     if (res.headersSent) return next(err);
     res.status(err.status).json({ error: 'invalid_request' });
@@ -101,6 +92,9 @@ export function buildApp(sessionSecret: string, options: BuildAppOptions = {}): 
       `[lurker] CORS_ORIGIN is set ("${process.env.CORS_ORIGIN}") but no valid origin parsed from it — cross-origin requests will be rejected. Each entry needs a scheme, e.g. https://irc.example.com`,
     );
   }
+  // Ahead of everything that reads a body, filehost included: a compressed
+  // request body is refused here, never decompressed (middleware/requestBody.ts).
+  app.use(refuseCompressedBodies);
   // soju.im/FILEHOST, the bouncer's upload URL for IRC clients. Ahead of cors()
   // and the JSON parser: it answers its own preflight with CORS for any origin
   // (it takes no cookies), and its body is the file, which a `.json` upload's
