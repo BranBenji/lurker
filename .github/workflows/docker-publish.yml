@@ -31,7 +31,13 @@ env:
   # the engine's behaviour did not, so self-hosters keep the engine they are running
   # instead of having `docker compose pull` recreate it — and drop their IRC
   # connections — for nothing. Entries are one-shot: drop them once released.
-  ENGINE_TAG_PINNED_RELEASES: ''
+  #
+  # v2.5.1: a Node security rebuild (CVE-2026-111497, the Brotli decoder). The
+  # engine's image changes, its code does not, and the bug cannot reach it: the
+  # engine speaks a line protocol over a raw TCP socket, never HTTP, and
+  # decompresses nothing. Self-hosters keep the engine they run; the next
+  # release that changes the engine carries the new Node with it.
+  ENGINE_TAG_PINNED_RELEASES: 'v2.5.1'
 
 jobs:
   build-and-push:
