@@ -207,6 +207,10 @@
       :nick="whois.viewer.nick"
       :network-id="whois.viewer.networkId"
     />
+    <ProfileEditorModal
+      v-if="profileEditor.networkId.value != null"
+      :network-id="profileEditor.networkId.value"
+    />
     <!-- NickNoteModal comes last so when both are open (edit-note-from-profile)
          it lands on top — AppModal uses a fixed z-index, so DOM order is the
          tiebreaker. -->
@@ -263,6 +267,8 @@ import { useChannelListModal } from '../composables/useChannelListModal.js';
 import { useJoinChannelModal } from '../composables/useJoinChannelModal.js';
 import { useMediaViewer } from '../composables/useMediaViewer.js';
 import { useNetworkEditor } from '../composables/useNetworkEditor.js';
+import { useProfileEditor } from '../composables/useProfileEditor.js';
+import ProfileEditorModal from '../components/ProfileEditorModal.vue';
 import { useNetworkActions } from '../composables/useNetworkActions.js';
 import { useJumpToMessage } from '../composables/useJumpToMessage.js';
 import { useVisualViewport } from '../composables/useVisualViewport.js';
@@ -281,6 +287,7 @@ import {
   SettingsIcon,
   ShareIcon,
   ShieldCogIcon,
+  UserPenIcon,
   UsersIcon,
 } from '@lucide/vue';
 
@@ -334,6 +341,7 @@ const channelListModal = reactive(useChannelListModal());
 const joinChannelModal = reactive(useJoinChannelModal());
 const viewer = reactive(useMediaViewer());
 const networkEditor = reactive(useNetworkEditor());
+const profileEditor = useProfileEditor();
 const networkActions = useNetworkActions();
 
 // `/` → list, `/buffer/<id>` → buffer, `/buffer/<id>/members` → members.
@@ -405,6 +413,11 @@ function openBufferActions() {
         label: 'Edit network',
         icon: SettingsIcon,
         onClick: () => editNetwork(a.network as Network | undefined),
+      },
+      {
+        label: 'Edit profile',
+        icon: UserPenIcon,
+        onClick: () => profileEditor.open(a.networkId),
       },
     );
   } else {

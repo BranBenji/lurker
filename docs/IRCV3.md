@@ -64,7 +64,9 @@ On a network that stores profile data (Ergo does), a member's chosen display
 name shows in place of their nick in the message list, the member list and DM
 rows — the nick stays the identity: it's in the hover, the profile, the colour
 and the mention matching — and their avatar shows in the compact layout and
-the profile modal. Set yours with `/displayname` and `/avatar`.
+the profile modal. Set yours with `/displayname` and `/avatar`, or in the
+network menu's Edit Profile. Lurker remembers yours per network and sets it
+again after every connect, since most servers forget it when you disconnect.
 
 - **`draft/metadata-2`** — Lurker subscribes to `display-name`, `avatar`,
   `pronouns`, `homepage` and `status`, keeps a record per nick for the life of
@@ -75,6 +77,15 @@ the profile modal. Set yours with `/displayname` and `/avatar`.
   the origin — and only while link previews are configured; otherwise everyone
   gets a generated tile in their nick colour. `color` is deliberately not read:
   hex values fight every theme.
+- **Your own metadata** — saved per network as each `SET` goes out (from the
+  web app, a bouncer client, or `/quote`). After a fresh registration Lurker
+  sends `METADATA * LIST` and then `SET`s only what the server lacks: Ergo keeps
+  metadata only for always-on clients, and it rate-limits your own `SET`s
+  whether or not they change anything, so a blind re-send would spend that
+  budget. Nothing is re-sent before registration (`before-connect`): Ergo never
+  lets a pre-registration value replace one it kept. A change made from another
+  session while Lurker is connected is saved too.
+  <br>`server/services/ircConnection.ts` (`reconcileOwnMetadata`), `server/db/networkMetadata.ts`
   <br>`server/services/ircMetadata.ts`, `server/services/ircConnection.ts` (`applyMetadata`)
 
 ### Your history is in the right order, on every device

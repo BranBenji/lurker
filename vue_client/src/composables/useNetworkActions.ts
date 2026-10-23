@@ -1,13 +1,14 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-import { HashIcon, PlugIcon, PlusIcon, SettingsIcon, UnplugIcon } from '@lucide/vue';
+import { HashIcon, PlugIcon, PlusIcon, SettingsIcon, UnplugIcon, UserPenIcon } from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useContextMenu } from './useContextMenu.js';
 import { useChannelListModal } from './useChannelListModal.js';
 import { useJoinChannelModal } from './useJoinChannelModal.js';
 import { useNetworkEditor } from './useNetworkEditor.js';
 import { useNotifyLadder } from './useNotifyLadder.js';
+import { useProfileEditor } from './useProfileEditor.js';
 import { canDisconnect, useNetworksStore, type Network } from '../stores/networks.js';
 
 // Buffer-list action logic for network rows. Analogous to useBufferActions for
@@ -20,6 +21,7 @@ export function useNetworkActions() {
   const joinChannelModal = useJoinChannelModal();
   const networkEditor = useNetworkEditor();
   const notify = useNotifyLadder();
+  const profileEditor = useProfileEditor();
   const networks = useNetworksStore();
 
   // ⚠ Takes the decision rather than re-deriving it. connectionItem labels the item when the
@@ -70,6 +72,12 @@ export function useNetworkActions() {
         label: 'Edit Network',
         icon: SettingsIcon,
         onClick: () => networkEditor.open(net),
+      },
+      // Your own metadata here (#1189): display name, avatar, …
+      {
+        label: 'Edit Profile…',
+        icon: UserPenIcon,
+        onClick: () => profileEditor.open(net.id),
       },
       connectionItem(net.id),
       // Network-wide notification ladder (issue #359): Highlights only (default)

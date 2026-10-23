@@ -12,18 +12,42 @@
 //   /metadata clear                  METADATA * CLEAR
 //   /avatar <url> | off              the avatar key
 //   /displayname <name> | off        the display-name key
+//
+// A change to our own keys says what it writes too (#1189): the server saves
+// it as it goes out, and on a disconnected network the client saves it by
+// REST instead, to be set at the next connect.
 
-const KEY_RE = /^[a-z0-9_./-]+$/;
+import { METADATA_KEY_RE } from '../../../../shared/metadataKeys.js';
+import type { NetworkState } from '../../stores/networks.js';
 
-export type MetadataCommand = { line: string } | { error: string };
+export type OwnMetadataWrite = { key: string; value: string | null } | 'clear';
+
+export type MetadataCommand = { line: string; write?: OwnMetadataWrite } | { error: string };
 
 const USAGE =
   'usage: /metadata set <key> <value> · /metadata del <key> · /metadata list [nick|#chan] · /metadata clear';
 
 function setLine(key: string, value: string | null): MetadataCommand {
-  if (!KEY_RE.test(key)) return { error: `invalid metadata key: ${key} (a-z, 0-9, _ . / -)` };
+  if (!METADATA_KEY_RE.test(key)) {
+    return { error: `invalid metadata key: ${key} (a-z, 0-9, _ . / -)` };
+  }
   const clean = value === null ? null : value.replace(/[\r\n\0]/g, '').trim();
-  return { line: clean ? `METADATA * SET ${key} :${clean}` : `METADATA * SET ${key}` };
+  return {
+    line: clean ? `METADATA * SET ${key} :${clean}` : `METADATA * SET ${key}`,
+    write: { key, value: clean || null },
+  };
+}
+
+/**
+ * Why a connected network can't carry our own metadata, or null when it can
+ * (or isn't connected, where it's saved for later). soju offers the cap with
+ * max-keys=0 and refuses a SET on `*`.
+ */
+export function ownMetadataRefusal(state: NetworkState | undefined): string | null {
+  if (state?.state !== 'connected') return null;
+  if (!state.metadataLimits) return "this network doesn't support IRCv3 metadata";
+  if (state.metadataLimits.maxKeys === 0) return "this network doesn't keep metadata for you";
+  return null;
 }
 
 /** `/metadata <sub> …` → the wire line, or what to tell the user. */
@@ -49,7 +73,7 @@ export function parseMetadataCommand(argLine: string): MetadataCommand {
       return { line: `METADATA ${target} LIST` };
     }
     case 'clear':
-      return { line: 'METADATA * CLEAR' };
+      return { line: 'METADATA * CLEAR', write: 'clear' };
     default:
       return { error: USAGE };
   }

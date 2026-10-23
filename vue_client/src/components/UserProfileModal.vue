@@ -159,6 +159,16 @@
       >
         <MailIcon /> <span class="label">Send DM</span>
       </button>
+      <!-- Yourself: your own metadata on this network (#1189). -->
+      <button
+        v-if="isSelf"
+        type="button"
+        class="btn-secondary"
+        title="Edit your profile"
+        @click="profileEditor.open(networkId)"
+      >
+        <UserPenIcon /> <span class="label">Edit profile</span>
+      </button>
       <span class="spacer"></span>
       <button type="button" class="btn-secondary" title="More actions" @click="openMoreMenu">
         <EllipsisIcon /> <span class="label">More</span>
@@ -208,9 +218,11 @@ import {
   RefreshCwIcon,
   SatelliteDishIcon,
   ShieldHalfIcon,
+  UserPenIcon,
 } from '@lucide/vue';
 import type { LucideIcon } from '@lucide/vue';
 import { dccActionItems } from '../composables/dccActionItems.js';
+import { useProfileEditor } from '../composables/useProfileEditor.js';
 
 const props = defineProps<{
   nick: string;
@@ -222,6 +234,7 @@ const nickNotes = useNickNotesStore();
 const relayBots = useRelayBotsStore();
 const contextMenu = useContextMenu();
 const networks = useNetworksStore();
+const profileEditor = useProfileEditor();
 const buffers = useBuffersStore();
 const ignoreOpen = ref(false);
 
