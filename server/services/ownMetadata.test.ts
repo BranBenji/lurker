@@ -1,0 +1,323 @@
+// Copyright (c) 2026 Brad Root
+// SPDX-License-Identifier: MPL-2.0
+
+// Our own metadata, saved per network and set again after a fresh
+// registration (#1189), against the fake ircd. Its metadata store outlives a
+// connection, so a reconnect sees the server keep our values the way an
+// always-on ergo account does; deleting the nick's store is a server that
+// forgot them, as ergo does for everyone else.
+
+// MUST be first: redirects DATABASE_PATH before anything opens the db.
+import '../test-utils/isolateDb.js';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { createUser } from '../db/users.js';
+import { createNetwork } from '../db/networks.js';
+import type { Network } from '../db/networks.js';
+import { listNetworkMetadata, saveNetworkMetadata } from '../db/networkMetadata.js';
+import { FakeIrcd } from '../test-utils/fakeIrcd.js';
+import type { FakeClient } from '../test-utils/fakeIrcd.js';
+import { until } from '../test-utils/until.js';
+
+type Ev = Record<string, unknown>;
+
+let IrcConnection: typeof import('./ircConnection.js').IrcConnection;
+let ircd: FakeIrcd;
+let userId: number;
+let seq = 0;
+
+beforeAll(async () => {
+  ({ IrcConnection } = await import('./ircConnection.js'));
+  ircd = await FakeIrcd.start({ metadata: true });
+  userId = createUser('own-metadata').id;
+});
+
+afterAll(async () => {
+  await ircd.close();
+});
+
+function makeNetwork(nick: string, port = ircd.port): Network {
+  return createNetwork(userId, {
+    name: `own-metadata-${seq++}`,
+    host: '127.0.0.1',
+    port,
+    tls: false,
+    nick,
+    autoconnect: false,
+  })!;
+}
+
+// A fresh process's connection to the network: nothing held but the saved rows.
+async function connect(network: Network, server = ircd) {
+  const events: Ev[] = [];
+  const conn = new IrcConnection({ network, onEvent: (e) => events.push(e as Ev) });
+  conn.connect();
+  await until(() => conn.state === 'connected', 5000, 'connected');
+  const me = await server.waitForRegistration(network.nick);
+  return { conn, events, me };
+}
+
+async function drop(conn: InstanceType<typeof IrcConnection>, nick: string, server = ircd) {
+  conn.disconnect();
+  await until(() => !server.client(nick), 5000, 'gone');
+}
+
+const metadataSent = (me: FakeClient) =>
+  me.sent.filter((l) => l.startsWith('METADATA') && !l.includes(' SUB ') && !l.includes('SYNC'));
+
+const saved = (network: Network) => Object.fromEntries(listNetworkMetadata(network.id));
+
+describe('saving', () => {
+  it("saves the user's SET and unset as they go out, and CLEAR as saved unsets", async () => {
+    const network = makeNetwork('saver');
+    const { conn } = await connect(network);
+    try {
+      conn.raw('METADATA * SET avatar :https://example.org/me/{size}.png');
+      conn.raw('METADATA * SET display-name :Saver Person');
+      await until(() => ircd.metadata.get('saver')?.size === 2, 5000, 'server has both');
+      expect(saved(network)).toEqual({
+        avatar: 'https://example.org/me/{size}.png',
+        'display-name': 'Saver Person',
+      });
+      conn.raw('METADATA * SET display-name');
+      await until(() => saved(network)['display-name'] === null, 5000, 'unset saved');
+      conn.raw('METADATA * CLEAR');
+      await until(() => saved(network).avatar === null, 5000, 'cleared');
+    } finally {
+      conn.disconnect();
+    }
+  });
+
+  it("saves halloy's form (our nick as the target) and a bouncer client's SET", async () => {
+    const network = makeNetwork('halloyish');
+    const { conn } = await connect(network);
+    try {
+      const client = {};
+      conn.raw('METADATA halloyish SET pronouns :they/them', client as never);
+      await until(() => saved(network).pronouns === 'they/them', 5000, 'saved');
+      // Someone else's target is never ours to save.
+      conn.raw('METADATA otherperson SET pronouns :he/him');
+      conn.raw('METADATA #chan SET display-name :Channel');
+      await until(() => metadataSent(ircd.client('halloyish')!).length >= 3, 5000, 'sent');
+      expect(saved(network)).toEqual({ pronouns: 'they/them' });
+    } finally {
+      conn.disconnect();
+    }
+  });
+
+  it("doesn't save a value Lurker wouldn't show, but still sends it", async () => {
+    const network = makeNetwork('badvalue');
+    const { conn, me } = await connect(network);
+    try {
+      conn.raw('METADATA * SET avatar :javascript:alert(1)');
+      await until(
+        () => me.sent.includes('METADATA * SET avatar :javascript:alert(1)'),
+        5000,
+        'sent',
+      );
+      expect(saved(network)).toEqual({});
+    } finally {
+      conn.disconnect();
+    }
+  });
+
+  it('saves a change another session made, and not the lines that only read', async () => {
+    const network = makeNetwork('mirror');
+    saveNetworkMetadata(userId, network.id, 'status', 'old');
+    ircd.setMetadata('mirror', 'status', 'old');
+    const { conn } = await connect(network);
+    try {
+      await until(() => conn.ownMetadataOnServer()?.status === 'old', 5000, 'listed');
+      // A batched 761 is a read (a burst, a LIST): not saved.
+      ircd.inject('mirror', ':fake.server BATCH +r1 metadata mirror');
+      ircd.inject('mirror', '@batch=r1 :fake.server 761 mirror mirror status * :from a batch');
+      ircd.inject('mirror', ':fake.server BATCH -r1');
+      await until(() => conn.ownMetadataOnServer()?.status === 'from a batch', 5000, 'read');
+      expect(saved(network).status).toBe('old');
+      // A bare one is another session's SET.
+      ircd.inject('mirror', ':fake.server 761 * mirror status * :from my phone');
+      await until(() => saved(network).status === 'from my phone', 5000, 'saved');
+      ircd.inject('mirror', ':fake.server 766 * mirror status :Key deleted');
+      await until(() => saved(network).status === null, 5000, 'unset saved');
+    } finally {
+      conn.disconnect();
+    }
+  });
+
+  it('saves without sending while the socket is down, and says so', async () => {
+    const network = makeNetwork('offline');
+    const { conn, events } = await connect(network);
+    await drop(conn, 'offline');
+    try {
+      conn.raw('METADATA * SET display-name :Later');
+      expect(saved(network)).toEqual({ 'display-name': 'Later' });
+      expect(events.at(-1)).toMatchObject({
+        type: 'notice',
+        text: 'display-name saved; it is set when this network connects.',
+      });
+      expect(events.some((e) => String(e.text).startsWith('not sent'))).toBe(false);
+    } finally {
+      conn.dispose();
+    }
+  });
+});
+
+describe('after a fresh registration', () => {
+  it('sets every saved key a server that forgot them lacks, after a LIST', async () => {
+    const network = makeNetwork('forgot');
+    saveNetworkMetadata(userId, network.id, 'display-name', 'Forgot Me Not');
+    saveNetworkMetadata(userId, network.id, 'avatar', 'https://example.org/f.png');
+    // A saved unset the server doesn't have either: nothing to send for it.
+    saveNetworkMetadata(userId, network.id, 'status', null);
+    const { conn, me } = await connect(network);
+    try {
+      await until(() => ircd.metadata.get('forgot')?.size === 2, 5000, 'set');
+      expect(metadataSent(me)).toEqual([
+        'METADATA * LIST',
+        'METADATA * SET avatar :https://example.org/f.png',
+        'METADATA * SET display-name :Forgot Me Not',
+      ]);
+      await drop(conn, 'forgot');
+      ircd.metadata.delete('forgot');
+      const again = await connect(network);
+      try {
+        await until(() => ircd.metadata.get('forgot')?.size === 2, 5000, 'set again');
+        expect(metadataSent(again.me)).toHaveLength(3);
+      } finally {
+        again.conn.disconnect();
+      }
+    } finally {
+      conn.disconnect();
+    }
+  });
+
+  it('sends nothing to a server that kept them (an always-on account)', async () => {
+    const network = makeNetwork('kept');
+    saveNetworkMetadata(userId, network.id, 'display-name', 'Kept');
+    ircd.setMetadata('kept', 'display-name', 'Kept');
+    const { conn, me } = await connect(network);
+    try {
+      await until(() => conn.ownMetadataOnServer()?.['display-name'] === 'Kept', 5000, 'listed');
+      // Long enough for a SET behind the LIST to have gone.
+      await new Promise((r) => setTimeout(r, 200));
+      expect(metadataSent(me)).toEqual(['METADATA * LIST']);
+    } finally {
+      conn.disconnect();
+    }
+  });
+
+  it('the saved profile wins over what the server kept, and clears a saved unset', async () => {
+    const network = makeNetwork('winner');
+    saveNetworkMetadata(userId, network.id, 'avatar', 'https://example.org/mine.png');
+    saveNetworkMetadata(userId, network.id, 'status', null);
+    ircd.setMetadata('winner', 'avatar', 'https://example.org/changed-elsewhere.png');
+    ircd.setMetadata('winner', 'status', 'stale');
+    ircd.setMetadata('winner', 'pronouns', 'set elsewhere');
+    const { conn, me } = await connect(network);
+    try {
+      await until(() => !ircd.metadata.get('winner')?.has('status'), 5000, 'unset');
+      expect(metadataSent(me)).toEqual([
+        'METADATA * LIST',
+        'METADATA * SET avatar :https://example.org/mine.png',
+        'METADATA * SET status',
+      ]);
+      // A key we never saved is left as the server has it, and the server's
+      // LIST of it isn't saved either.
+      expect(ircd.metadata.get('winner')?.get('pronouns')).toBe('set elsewhere');
+      expect(saved(network)).toEqual({ avatar: 'https://example.org/mine.png', status: null });
+    } finally {
+      conn.disconnect();
+    }
+  });
+
+  it("asks nothing when there's nothing saved", async () => {
+    const network = makeNetwork('nothing');
+    const { conn, me } = await connect(network);
+    try {
+      await until(() => me.sent.some((l) => l.startsWith('METADATA * SUB')), 5000, 'SUB');
+      await new Promise((r) => setTimeout(r, 200));
+      expect(metadataSent(me)).toEqual([]);
+    } finally {
+      conn.disconnect();
+    }
+  });
+
+  it('retries a RATE_LIMITED key once, after the wait the server gave', async () => {
+    const network = makeNetwork('throttled');
+    saveNetworkMetadata(userId, network.id, 'display-name', 'Patient');
+    ircd.metadataSetsToThrottle = 1;
+    ircd.metadataRetryAfter = '1';
+    const { conn, me } = await connect(network);
+    try {
+      await until(
+        () => ircd.metadata.get('throttled')?.get('display-name') === 'Patient',
+        5000,
+        'set on the retry',
+      );
+      expect(metadataSent(me).filter((l) => l.startsWith('METADATA * SET'))).toEqual([
+        'METADATA * SET display-name :Patient',
+        'METADATA * SET display-name :Patient',
+      ]);
+    } finally {
+      ircd.metadataSetsToThrottle = 0;
+      conn.disconnect();
+    }
+  });
+
+  it("doesn't retry a RATE_LIMITED key twice on one socket before one lands", async () => {
+    const network = makeNetwork('stubborn');
+    saveNetworkMetadata(userId, network.id, 'display-name', 'Stubborn');
+    ircd.metadataSetsToThrottle = 5;
+    ircd.metadataRetryAfter = '1';
+    const { conn, me } = await connect(network);
+    try {
+      await until(() => ircd.metadataSetsToThrottle === 3, 5000, 'two refused');
+      await new Promise((r) => setTimeout(r, 1500));
+      expect(ircd.metadataSetsToThrottle).toBe(3);
+      expect(metadataSent(me).filter((l) => l.startsWith('METADATA * SET'))).toHaveLength(2);
+    } finally {
+      ircd.metadataSetsToThrottle = 0;
+      conn.disconnect();
+    }
+  });
+
+  it("skips a network that can't carry our keys (soju's max-keys=0)", async () => {
+    const soju = await FakeIrcd.start({
+      metadata: true,
+      metadataCapValue: 'before-connect,max-keys=0,max-value-bytes=1',
+    });
+    const network = makeNetwork('sojuuser', soju.port);
+    saveNetworkMetadata(userId, network.id, 'display-name', 'Not Here');
+    try {
+      const { conn, me } = await connect(network, soju);
+      try {
+        expect(conn.canSetOwnMetadata()).toBe(false);
+        await new Promise((r) => setTimeout(r, 200));
+        expect(metadataSent(me)).toEqual([]);
+        // And a SET typed there goes out unsaved: the server's FAIL says why.
+        conn.raw('METADATA * SET pronouns :any');
+        expect(saved(network)).toEqual({ 'display-name': 'Not Here' });
+      } finally {
+        conn.disconnect();
+      }
+    } finally {
+      await soju.close();
+    }
+  });
+
+  it('reconciles when the profile is saved while connected', async () => {
+    const network = makeNetwork('editor');
+    const { conn, me } = await connect(network);
+    try {
+      await until(() => me.sent.some((l) => l.startsWith('METADATA * SUB')), 5000, 'SUB');
+      saveNetworkMetadata(userId, network.id, 'homepage', 'https://example.org/');
+      conn.reconcileOwnMetadata();
+      await until(() => ircd.metadata.get('editor')?.has('homepage') ?? false, 5000, 'set');
+      // Again with nothing changed: nothing more goes.
+      conn.reconcileOwnMetadata();
+      await new Promise((r) => setTimeout(r, 200));
+      expect(metadataSent(me)).toEqual(['METADATA * SET homepage :https://example.org/']);
+    } finally {
+      conn.disconnect();
+    }
+  });
+});

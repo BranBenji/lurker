@@ -198,6 +198,23 @@ function migrate() {
     );
     CREATE INDEX IF NOT EXISTS idx_network_away_state_user ON network_away_state(user_id);
 
+    -- Our own IRCv3 metadata on a network (#1189): display-name, avatar, …
+    -- Most servers forget it at disconnect (ergo keeps it only for an
+    -- always-on client), so Lurker keeps it and re-sets what the server lacks
+    -- after each fresh registration. value NULL is a saved unset: the key is
+    -- cleared there too. user_id is the network's owner, for the export.
+    CREATE TABLE IF NOT EXISTS network_metadata (
+      network_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (network_id, key),
+      FOREIGN KEY (network_id) REFERENCES networks(id) ON DELETE CASCADE,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_network_metadata_user ON network_metadata(user_id);
+
     CREATE TABLE IF NOT EXISTS user_settings (
       user_id INTEGER NOT NULL,
       key TEXT NOT NULL,

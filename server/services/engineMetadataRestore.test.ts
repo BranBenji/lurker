@@ -11,6 +11,7 @@ import '../test-utils/isolateDb.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
+import { saveNetworkMetadata } from '../db/networkMetadata.js';
 import type { Network } from '../db/networks.js';
 import { IrcConnection } from './ircConnection.js';
 import ircManager from './ircManager.js';
@@ -63,6 +64,9 @@ describe('engine re-attach', () => {
         5000,
         'first session holds it',
       );
+      // A saved profile (#1189) the server lacks: a fresh registration would
+      // set it, a re-attach must not — the socket kept what it was told.
+      saveNetworkMetadata(userId, network.id, 'display-name', 'Not Re-sent');
       conn.detach();
       await until(() => conn.state === 'disconnected', 5000, 'detached');
 
@@ -86,6 +90,7 @@ describe('engine re-attach', () => {
           'second session holds it',
         );
         expect(since().filter((l) => l.startsWith('774'))).toEqual([]);
+        expect(since().filter((l) => / (LIST|SET)\b/.test(l))).toEqual([]);
       } finally {
         conn2.dispose();
         ircManager.connectionsForUser(userId).delete(network.id);

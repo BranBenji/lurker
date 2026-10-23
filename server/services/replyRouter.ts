@@ -268,6 +268,7 @@ interface Query extends Spec {
   onSent: ((at: number) => void) | undefined;
   onDropped: (() => void) | undefined;
   priority: SendPriority | undefined;
+  onEnd: (() => void) | undefined;
 }
 
 interface Settle {
@@ -333,7 +334,9 @@ export class ReplyRouter {
    * makes the line when it goes out; anything else is written at once.
    * `onSent` runs when the line has gone (#1149): a timer that waits on the
    * reply starts there. Lurker's own queries wait in the queue's `low` lane,
-   * behind what the user says, unless `priority` says otherwise.
+   * behind what the user says, unless `priority` says otherwise. `onEnd` runs
+   * once the query is over — its reply ended, an error ended it, or it timed
+   * out — and never when its socket went first.
    */
   send(
     asker: Asker,
@@ -342,6 +345,7 @@ export class ReplyRouter {
     onSent?: (at: number) => void,
     onDropped?: () => void,
     priority?: SendPriority,
+    onEnd?: () => void,
   ): void {
     const lane = priority ?? (asker === 'lurker' ? 'low' : undefined);
     const found = this.classify(line);
@@ -361,6 +365,7 @@ export class ReplyRouter {
       onSent,
       onDropped,
       priority: lane,
+      onEnd,
     });
   }
 
@@ -547,6 +552,7 @@ export class ReplyRouter {
         }
         this.takeOffWire(query);
         this.abort(query);
+        query.onEnd?.();
         this.releaseWaiting();
       });
     }, delay);
@@ -585,6 +591,7 @@ export class ReplyRouter {
   // claim on the next line, and what waits for it keeps waiting until then.
   private finish(query: Query, wants: string | null): void {
     this.takeOffWire(query);
+    query.onEnd?.();
     if (!wants) {
       this.releaseWaiting();
       return;

@@ -33,6 +33,13 @@ import { parseChannelNames } from '../../shared/channels.js';
 import { fanOutToUser, favoritesChangedFrame } from '../services/wsHub.js';
 import { renumberFavorites } from '../db/favoriteBuffers.js';
 import { dropXdccQueue } from '../db/dccTransfers.js';
+import {
+  clearNetworkMetadata,
+  networkMetadataValues,
+  saveNetworkMetadataMany,
+} from '../db/networkMetadata.js';
+import { ownMetadataToSave, sizedAvatarUrl } from '../services/ircMetadata.js';
+import { avatarClientUrl } from '../services/avatarProxy.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -594,6 +601,72 @@ router.post('/:id/reconnect', (req: Request, res: Response) => {
   }
   ircManager.restartNetwork(req.user!.id, id);
   res.json({ ok: true });
+});
+
+// Our own IRCv3 metadata on the network (#1189): what Lurker saved and re-sets
+// after each connect. `live` is what the server has now (null when the
+// network isn't connected or can't carry it); `avatarPreview` is the saved
+// avatar as other people's clients fetch it, through the media proxy.
+function metadataPayload(userId: number, networkId: number) {
+  const values = networkMetadataValues(networkId);
+  return {
+    values,
+    live: ircManager.getConnection(userId, networkId)?.ownMetadataOnServer() ?? null,
+    avatarPreview: values.avatar ? avatarClientUrl(sizedAvatarUrl(values.avatar)) : null,
+  };
+}
+
+router.get('/:id/metadata', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!getNetwork(id, req.user!.id)) {
+    res.status(404).json({ error: 'network not found' });
+    return;
+  }
+  res.json(metadataPayload(req.user!.id, id));
+});
+
+// `{ values: { key: value | null } }`: the keys named are saved (null or ''
+// unsets one), the rest left as they are, and what the server lacks is set
+// now if the network is connected. The same rules as /metadata set.
+router.put('/:id/metadata', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!getNetwork(id, req.user!.id)) {
+    res.status(404).json({ error: 'network not found' });
+    return;
+  }
+  const raw = req.body?.values;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    res.status(400).json({ error: 'values must be an object' });
+    return;
+  }
+  const values = new Map<string, string | null>();
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (value !== null && typeof value !== 'string') {
+      res.status(400).json({ error: `${key}: value must be a string or null` });
+      return;
+    }
+    const saved = ownMetadataToSave(key, value);
+    if (saved === undefined) {
+      res.status(400).json({ error: `${key}: not a value Lurker can save`, key });
+      return;
+    }
+    values.set(key, saved);
+  }
+  saveNetworkMetadataMany(req.user!.id, id, values);
+  ircManager.getConnection(req.user!.id, id)?.reconcileOwnMetadata();
+  res.json(metadataPayload(req.user!.id, id));
+});
+
+// Every saved key unset, here and — now or at the next connect — on the server.
+router.delete('/:id/metadata', (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (!getNetwork(id, req.user!.id)) {
+    res.status(404).json({ error: 'network not found' });
+    return;
+  }
+  clearNetworkMetadata(id);
+  ircManager.getConnection(req.user!.id, id)?.reconcileOwnMetadata();
+  res.json(metadataPayload(req.user!.id, id));
 });
 
 router.post('/:id/join', (req: Request, res: Response) => {
