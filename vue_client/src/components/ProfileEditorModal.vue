@@ -6,10 +6,10 @@
 <!--
   Your own IRCv3 metadata on one network (#1189): what Lurker saves and sets
   again after every connect. The slash commands (/displayname, /avatar,
-  /metadata) write the same rows; this is the view of them. Save saves every
-  field as shown — one never saved shows what the server has, so saving keeps
-  it — and the server is set to what it lacks now if the network is connected,
-  else at the next connect.
+  /metadata) write the same rows; this is the view of them. Save saves what
+  changed, and what's shown from the server but not saved yet; the server is
+  set to what it lacks now if the network is connected, else at the next
+  connect. Clear unsets every saved key.
 -->
 
 <template>
@@ -103,6 +103,14 @@
       </div>
       <footer class="modal-footer">
         <button type="button" class="btn-secondary" @click="close">Cancel</button>
+        <button
+          type="button"
+          class="btn-secondary danger"
+          :disabled="!!refusal || saving || loading"
+          @click="clearAll"
+        >
+          Clear
+        </button>
         <button type="submit" class="btn-primary" :disabled="!dirty || !!refusal || saving">
           Save
         </button>
@@ -120,7 +128,12 @@ import { useProfileEditor } from '../composables/useProfileEditor.js';
 import { blockImeEnter, imeSafeValue } from '../composables/useImeSafeInput.js';
 import { formattingSegments } from '../utils/nickColor.js';
 import { ownMetadataRefusal } from '../lib/commands/metadata.js';
-import { fetchOwnMetadata, saveOwnMetadata, type OwnMetadata } from '../utils/ownMetadata.js';
+import {
+  clearOwnMetadata,
+  fetchOwnMetadata,
+  saveOwnMetadata,
+  type OwnMetadata,
+} from '../utils/ownMetadata.js';
 import {
   METADATA_EXTRA_VALUE_MAX_CHARS,
   METADATA_SUB_KEYS,
@@ -138,6 +151,8 @@ const editor = useProfileEditor();
 
 const form = reactive<Record<Field, string>>(blank());
 const initial = ref<Record<Field, string>>(blank());
+// Keys with a saved row (a value or an unset); the rest show the server's.
+const savedKeys = ref(new Set<string>());
 const avatarPreview = ref<string | null>(null);
 const loading = ref(true);
 const saving = ref(false);
@@ -183,6 +198,7 @@ function shown(data: OwnMetadata): Record<Field, string> {
 
 function fill(data: OwnMetadata): void {
   const next = shown(data);
+  savedKeys.value = new Set([...Object.keys(data.values), ...data.unset]);
   initial.value = next;
   Object.assign(form, next);
   avatarPreview.value = data.avatarPreview;
@@ -199,12 +215,33 @@ async function copyFrom(id: string): Promise<void> {
 
 async function save(): Promise<void> {
   if (!dirty.value || refusal.value) return;
+  // What changed, and what's shown from the server but not saved yet (kept by
+  // saving). A saved field left alone isn't sent: another client may have
+  // changed it since this opened.
   const values: Record<string, string | null> = {};
-  for (const f of FIELDS) values[f] = form[f].trim() || null;
+  for (const f of FIELDS) {
+    const value = form[f].trim();
+    if (value !== initial.value[f] || (value && !savedKeys.value.has(f))) values[f] = value || null;
+  }
   saving.value = true;
   error.value = '';
   try {
     fill(await saveOwnMetadata(props.networkId, values));
+    close();
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    saving.value = false;
+  }
+}
+
+// Every saved key unset, here and on the server, the ones this form doesn't
+// show (set by /metadata or a bouncer client) included.
+async function clearAll(): Promise<void> {
+  saving.value = true;
+  error.value = '';
+  try {
+    await clearOwnMetadata(props.networkId);
     close();
   } catch (e) {
     error.value = (e as Error).message;

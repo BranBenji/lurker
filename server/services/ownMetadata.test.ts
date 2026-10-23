@@ -347,6 +347,30 @@ describe('after a fresh registration', () => {
     }
   });
 
+  it("never undoes the user's SET still waiting on its answer", async () => {
+    const network = makeNetwork('racer');
+    saveNetworkMetadata(userId, network.id, 'status', 'old');
+    ircd.setMetadata('racer', 'status', 'old');
+    const { conn, me } = await connect(network);
+    try {
+      await until(() => conn.ownMetadataOnServer()?.status === 'old', 5000, 'listed');
+      // The server's record moves on without a change Lurker saves (a read).
+      ircd.inject('racer', ':fake.server BATCH +r2 metadata racer');
+      ircd.inject('racer', '@batch=r2 :fake.server 761 racer racer status * :elsewhere');
+      ircd.inject('racer', ':fake.server BATCH -r2');
+      await until(() => conn.ownMetadataOnServer()?.status === 'elsewhere', 5000, 'read');
+      // The user's SET goes, and a reconcile runs before its answer.
+      conn.raw('METADATA * SET status :typed-new');
+      conn.reconcileOwnMetadata();
+      await until(() => saved(network).status === 'typed-new', 5000, 'answered');
+      await new Promise((r) => setTimeout(r, 200));
+      expect(ircd.metadata.get('racer')?.get('status')).toBe('typed-new');
+      expect(me.sent.filter((l) => l.includes('SET status :old'))).toEqual([]);
+    } finally {
+      conn.disconnect();
+    }
+  });
+
   it('reconciles when the profile is saved while connected', async () => {
     const network = makeNetwork('editor');
     const { conn, me } = await connect(network);

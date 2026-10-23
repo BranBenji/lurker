@@ -45,13 +45,12 @@ export function networkMetadataValues(networkId: number): {
   values: Record<string, string>;
   unset: string[];
 } {
-  const values: Record<string, string> = {};
-  const unset: string[] = [];
-  for (const [key, value] of listNetworkMetadata(networkId)) {
-    if (value === null) unset.push(key);
-    else values[key] = value;
-  }
-  return { values, unset };
+  const rows = [...listNetworkMetadata(networkId)];
+  // fromEntries makes own properties, a key named `__proto__` included.
+  return {
+    values: Object.fromEntries(rows.filter((row): row is [string, string] => row[1] !== null)),
+    unset: rows.filter(([, value]) => value === null).map(([key]) => key),
+  };
 }
 
 /** Save one key: a value, or null to keep it unset. */

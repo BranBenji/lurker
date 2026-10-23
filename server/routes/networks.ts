@@ -611,14 +611,14 @@ router.post('/:id/reconnect', (req: Request, res: Response) => {
 function metadataPayload(userId: number, networkId: number) {
   const { values, unset } = networkMetadataValues(networkId);
   const server = ircManager.getConnection(userId, networkId)?.ownMetadataOnServer() ?? null;
-  let live: Record<string, string> | null = null;
-  if (server) {
-    live = {};
-    for (const [key, value] of Object.entries(server)) {
-      const kept = ownMetadataToSave(key, value);
-      if (kept) live[key] = kept;
-    }
-  }
+  const live = server
+    ? Object.fromEntries(
+        Object.entries(server).flatMap(([key, value]) => {
+          const kept = ownMetadataToSave(key, value);
+          return kept ? [[key, kept]] : [];
+        }),
+      )
+    : null;
   return {
     values,
     unset,
@@ -664,7 +664,8 @@ router.put('/:id/metadata', (req: Request, res: Response) => {
     values.set(key, saved);
   }
   saveNetworkMetadataMany(req.user!.id, id, values);
-  ircManager.getConnection(req.user!.id, id)?.reconcileOwnMetadata();
+  // The user's own act: a FAIL is told, as for /metadata set.
+  ircManager.getConnection(req.user!.id, id)?.reconcileOwnMetadata('user');
   res.json(metadataPayload(req.user!.id, id));
 });
 
@@ -676,7 +677,7 @@ router.delete('/:id/metadata', (req: Request, res: Response) => {
     return;
   }
   clearNetworkMetadata(req.user!.id, id);
-  ircManager.getConnection(req.user!.id, id)?.reconcileOwnMetadata();
+  ircManager.getConnection(req.user!.id, id)?.reconcileOwnMetadata('user');
   res.json(metadataPayload(req.user!.id, id));
 });
 

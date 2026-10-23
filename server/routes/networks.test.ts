@@ -67,7 +67,8 @@ const fakeManager = {
     return this.liveNetworkId === networkId
       ? {
           ownMetadataOnServer: () => ({ 'display-name': 'On The Server' }),
-          reconcileOwnMetadata: () => this.calls.push(['reconcile', userId, networkId]),
+          reconcileOwnMetadata: (asker?: string) =>
+            this.calls.push(['reconcile', userId, networkId, asker]),
         }
       : null;
   },
@@ -1064,7 +1065,8 @@ describe('own metadata (#1189)', () => {
       avatar: 'https://example.org/a/{size}.png',
     });
     expect(put.body.live).toEqual({ 'display-name': 'On The Server' });
-    expect(fakeManager.calls).toContainEqual(['reconcile', alice.id, net.id]);
+    // The user's own act: its FAILs reach the user.
+    expect(fakeManager.calls).toContainEqual(['reconcile', alice.id, net.id, 'user']);
 
     // An empty value unsets one key; the other stays.
     const unset = await aliceAgent
@@ -1098,6 +1100,16 @@ describe('own metadata (#1189)', () => {
     const got = await aliceAgent.get(`/api/networks/${net.id}/metadata`);
     expect(got.body.values).toEqual({});
     expect(got.body.live).toBeNull();
+  });
+
+  it('keeps a key named like an Object property', async () => {
+    const net = (await makeNet(aliceAgent, { name: 'meta-proto' })).body.network;
+    const res = await aliceAgent
+      .put(`/api/networks/${net.id}/metadata`)
+      .set('Content-Type', 'application/json')
+      .send('{"values":{"__proto__":"a value","constructor":"another"}}');
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body.values).toSorted()).toEqual(['__proto__', 'constructor']);
   });
 
   it("is the network owner's only", async () => {

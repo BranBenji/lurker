@@ -187,14 +187,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import AppModal from './AppModal.vue';
 import IgnoreModal from './IgnoreModal.vue';
 import { useWhoisStore } from '../stores/whois.js';
 import { useNickNotesStore } from '../stores/nickNotes.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useContextMenu, type ContextMenuItem } from '../composables/useContextMenu.js';
-import { useNetworksStore } from '../stores/networks.js';
+import { useNetworksStore, type UserMetadataEntry } from '../stores/networks.js';
+import { fetchOwnMetadata } from '../utils/ownMetadata.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { socketSend } from '../composables/useSocket.js';
 import { formatDateTime } from '../utils/timestamp.js';
@@ -243,15 +244,39 @@ const isRelay = computed(() => relayBots.isRelay(props.networkId, props.nick));
 const entry = computed(() => whoisStore.entryFor(props.networkId, props.nick));
 const whois = computed(() => entry.value?.data ?? null);
 
-// IRCv3 metadata (#607), live from the networks store: a WHOIS's 760 lines
-// land there too, so this is current whether or not the reply has come.
-const meta = computed(() => networks.metadataFor(props.networkId, props.nick));
-const displayNameSegments = computed(() => formattingSegments(meta.value?.displayName ?? ''));
-
 const selfNick = computed(() => networks.states[props.networkId]?.nick ?? null);
 const isSelf = computed(
   () => !!selfNick.value && selfNick.value.toLowerCase() === props.nick.toLowerCase(),
 );
+
+// Yourself on a network that doesn't carry metadata (#1189): what Lurker
+// saved for you there, for the server that will carry it later.
+const savedSelf = ref<UserMetadataEntry | null>(null);
+watch(
+  () => isSelf.value && !networks.states[props.networkId]?.metadataLimits,
+  async (want) => {
+    savedSelf.value = null;
+    if (!want) return;
+    try {
+      const data = await fetchOwnMetadata(props.networkId);
+      savedSelf.value = {
+        displayName: data.values['display-name'],
+        avatarUrl: data.avatarPreview,
+        pronouns: data.values.pronouns,
+        homepage: data.values.homepage,
+        status: data.values.status,
+      };
+    } catch {
+      /* the live record, or nothing, stands */
+    }
+  },
+  { immediate: true },
+);
+
+// IRCv3 metadata (#607), live from the networks store: a WHOIS's 760 lines
+// land there too, so this is current whether or not the reply has come.
+const meta = computed(() => networks.metadataFor(props.networkId, props.nick) ?? savedSelf.value);
+const displayNameSegments = computed(() => formattingSegments(meta.value?.displayName ?? ''));
 
 const peer = computed(() => networks.peerFor(props.networkId, props.nick));
 const awayMessage = computed(() => {

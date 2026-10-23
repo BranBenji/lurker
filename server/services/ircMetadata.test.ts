@@ -199,6 +199,9 @@ describe('our own metadata on its way out (#1189)', () => {
     expect(ownMetadataToSave('display-name', '\u0002\u0002')).toBeUndefined();
     expect(ownMetadataToSave('display-name', 'x'.repeat(65))).toBeUndefined();
     expect(ownMetadataToSave('Bad Key', 'x')).toBeUndefined();
+    // Named like an Object property: still bounded like any other key.
+    expect(ownMetadataToSave('constructor', 'x'.repeat(513))).toBeUndefined();
+    expect(ownMetadataToSave('constructor', 'x'.repeat(512))).toBe('x'.repeat(512));
     // A key Lurker doesn't show is kept, bounded like a status.
     expect(ownMetadataToSave('color', '#ff0000')).toBe('#ff0000');
     expect(ownMetadataToSave('status', '')).toBeNull();

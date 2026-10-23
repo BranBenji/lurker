@@ -52,7 +52,7 @@ describe('profile editor', () => {
     calls.length = 0;
   });
 
-  it("fills saved keys, the server's for the rest, and saves every field as shown", async () => {
+  it("fills saved keys, the server's for the rest, and saves what changed or isn't saved", async () => {
     setNetwork({ state: 'connected', metadataLimits: LIMITS });
     reply = {
       values: { 'display-name': 'Saved Name' },
@@ -73,17 +73,21 @@ describe('profile editor', () => {
     expect(calls.at(-1)).toEqual({
       url: `/api/networks/${NET}/metadata`,
       method: 'PUT',
-      // The server's pronouns, shown and kept, are saved now too.
-      body: {
-        values: {
-          'display-name': null,
-          avatar: null,
-          pronouns: 'from halloy',
-          homepage: null,
-          status: 'lunch',
-        },
-      },
+      // The server's pronouns, shown and kept, are saved now too; a saved
+      // field left alone, and an empty one never saved, aren't sent.
+      body: { values: { 'display-name': null, pronouns: 'from halloy', status: 'lunch' } },
     });
+    expect(useProfileEditor().networkId.value).toBeNull();
+  });
+
+  it('Clear unsets every saved key', async () => {
+    setNetwork({ state: 'connected', metadataLimits: LIMITS });
+    reply = { values: { 'display-name': 'X' }, unset: [], live: {}, avatarPreview: null };
+    const wrapper = await open();
+    const clear = wrapper.findAll('button').find((b) => b.text() === 'Clear')!;
+    await clear.trigger('click');
+    await flushPromises();
+    expect(calls.at(-1)).toEqual({ url: `/api/networks/${NET}/metadata`, method: 'DELETE' });
     expect(useProfileEditor().networkId.value).toBeNull();
   });
 

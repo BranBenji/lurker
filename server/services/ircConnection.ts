@@ -965,6 +965,9 @@ export class IrcConnection {
   // Whether the reconcile runs when the pending LIST ends: always after a fresh
   // registration, and after a re-attach once the profile is saved meanwhile.
   private ownMetadataReconcileWanted: boolean;
+  // The user's (or a bouncer client's) own SETs on the wire and not yet
+  // answered, by key: newer than the saved row, so a re-set never undoes one.
+  private ownMetadataPending: Map<string, string | null>;
   // One presence watch list keyed by lowercased nick. Each entry records WHY
   // we're watching it. The MONITOR watch and the shared peer_presence_state row
   // are reference-counted against those reasons — added when the first reason
@@ -1448,6 +1451,7 @@ export class IrcConnection {
     this.ownMetadataRetries = new Map();
     this.ownMetadataEpoch = 0;
     this.ownMetadataReconcileWanted = false;
+    this.ownMetadataPending = new Map();
     this.state = 'disconnected';
     this.channels = new Map();
     this.joinedFoldedCache = null;
@@ -2422,6 +2426,7 @@ export class IrcConnection {
       for (const timer of this.metadataSyncTimers.values()) clearTimeout(timer);
       this.metadataSyncTimers.clear();
       this.ownServerMetadata.clear();
+      this.ownMetadataPending.clear();
       this.ownMetadataSettled = false;
       for (const timer of this.ownMetadataRetries.values()) if (timer) clearTimeout(timer);
       this.ownMetadataRetries.clear();
@@ -4748,7 +4753,10 @@ export class IrcConnection {
     const connected = this.state === 'connected';
     // Connected to a network that can't carry it: its 421 or FAIL says so.
     if (connected && !this.canSetOwnMetadata()) return false;
-    if (connected && write !== 'clear') return false;
+    if (connected && write !== 'clear') {
+      this.ownMetadataPending.set(write.key, write.value);
+      return false;
+    }
     let saved: OwnMetadataWrite = write;
     try {
       if (write === 'clear') {
@@ -4812,7 +4820,7 @@ export class IrcConnection {
    * changes nothing. Before the connect reconcile's LIST is over it waits:
    * that one reads the saved rows when it ends.
    */
-  reconcileOwnMetadata(): void {
+  reconcileOwnMetadata(asker: 'user' | 'lurker' = 'lurker'): void {
     if (!this.ownMetadataSettled) {
       this.ownMetadataReconcileWanted = true;
       return;
@@ -4826,25 +4834,38 @@ export class IrcConnection {
       return;
     }
     for (const [key, value] of saved) {
+      if (this.ownMetadataPending.has(key)) continue;
       if ((this.ownServerMetadata.get(key) ?? null) === value) continue;
-      this.sendOwnMetadata(key, value);
+      this.sendOwnMetadata(key, value, asker);
     }
   }
 
-  private sendOwnMetadata(key: string, value: string | null): void {
-    this.replies.send(
-      'lurker',
-      value === null ? `METADATA * SET ${key}` : `METADATA * SET ${key} :${value}`,
-    );
+  // One re-set. Its value is decided as the line goes, not when it's queued:
+  // the user's SET of the key typed meanwhile (normal lane, so it can pass this
+  // one in the low lane) is newer, and this mustn't undo it. The profile
+  // editor's re-sets are the user's (`asker`), so a FAIL reaches them.
+  private sendOwnMetadata(key: string, value: string | null, asker: 'user' | 'lurker'): void {
+    const lineFor = (v: string | null) =>
+      v === null ? `METADATA * SET ${key}` : `METADATA * SET ${key} :${v}`;
+    const build = () => {
+      if (this.ownMetadataPending.has(key)) return lineFor(this.ownMetadataPending.get(key)!);
+      try {
+        const now = listNetworkMetadata(this.network.id).get(key);
+        return lineFor(now === undefined ? value : now);
+      } catch {
+        return lineFor(value);
+      }
+    };
+    this.replies.send(asker, lineFor(value), build);
   }
 
   // FAIL METADATA RATE_LIMITED <target> <key> <retry-after> on one of Lurker's
   // re-sets: once more after the wait, from the saved row as it is then. ergo's
   // window is fixed, so the second try lands; a key isn't retried again until
-  // one has.
+  // one has. No wait given: past ergo's default window (10 per 2 min).
   private retryOwnMetadata(key: string | undefined, retryAfterSec: number): void {
     if (!key || this.ownMetadataRetries.has(key)) return;
-    const wait = Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? retryAfterSec : 60;
+    const wait = Number.isFinite(retryAfterSec) && retryAfterSec > 0 ? retryAfterSec : 121;
     const timer = setTimeout(
       () => {
         this.ownMetadataRetries.set(key, null);
@@ -4855,10 +4876,12 @@ export class IrcConnection {
         } catch {
           return;
         }
+        if (this.ownMetadataPending.has(key)) return;
         if (value === undefined || (this.ownServerMetadata.get(key) ?? null) === value) return;
-        this.sendOwnMetadata(key, value);
+        this.sendOwnMetadata(key, value, 'lurker');
       },
-      Math.min(wait, 300) * 1000,
+      // A sane ceiling on what a server may ask, above any real window.
+      Math.min(wait, 3600) * 1000,
     );
     timer.unref?.();
     this.ownMetadataRetries.set(key, timer);
@@ -4875,6 +4898,7 @@ export class IrcConnection {
     else this.ownServerMetadata.set(change.key, change.value);
     if (this.ownMetadataRetries.get(change.key) === null)
       this.ownMetadataRetries.delete(change.key);
+    if (!batched && this.replyOwner !== 'unasked') this.ownMetadataPending.delete(change.key);
     if (batched || (command !== '761' && command !== '766' && command !== 'METADATA')) return;
     const owner = this.replyOwner;
     const answer = owner === 'user' || (owner !== null && typeof owner === 'object');
@@ -11787,6 +11811,8 @@ export class IrcConnection {
         }
         try {
           if (this.takeRawMonitor(line)) continue;
+          // A METADATA * CLEAR here is the user's like any other (#1189).
+          this.noteRawMetadata(line, 'user');
           lastSent = false;
           onLastSent = null;
           this.replies.send(

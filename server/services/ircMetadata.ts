@@ -136,7 +136,8 @@ export function vetMetadataValue(
 ): string | null {
   if (raw === null) return null;
   const max =
-    METADATA_VALUE_MAX_CHARS[key] ?? (extra?.has(key) ? METADATA_EXTRA_VALUE_MAX_CHARS : undefined);
+    (Object.hasOwn(METADATA_VALUE_MAX_CHARS, key) ? METADATA_VALUE_MAX_CHARS[key] : undefined) ??
+    (extra?.has(key) ? METADATA_EXTRA_VALUE_MAX_CHARS : undefined);
   if (max === undefined) return null;
   // Line breaks and NUL can't legally be here; other controls (mIRC formatting)
   // are the display layer's to render or strip.
