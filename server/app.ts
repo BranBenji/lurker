@@ -110,7 +110,14 @@ export function buildApp(sessionSecret: string, options: BuildAppOptions = {}): 
   // bouncer on: nothing else advertises it, and it takes the bouncer's logins.
   if (!isNodeMode() && isBouncerEnabled()) app.use('/api/filehost', filehostRouter);
   app.use(cors({ origin: corsOrigins, credentials: true }));
-  app.use(express.json({ limit: '1mb' }));
+  // No compressed request bodies. body-parser would otherwise pipe a
+  // `Content-Encoding: gzip`, `deflate` or `br` body through zlib before any
+  // route or auth runs, handing an anonymous caller a decompressor to aim at
+  // (CVE-2026-111497 was Node's Brotli decoder). Nothing that talks to Lurker
+  // compresses what it sends — browsers, URLSession and OkHttp don't — so a
+  // compressed body is a probe, and gets a 415. The parsers in routes/oauth.ts
+  // and routes/drafts.ts follow suit.
+  app.use(express.json({ limit: '1mb', inflate: false }));
   app.use(cookieParser(sessionSecret));
 
   app.use('/api/auth', authRouter);

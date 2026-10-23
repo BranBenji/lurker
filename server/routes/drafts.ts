@@ -14,8 +14,9 @@ const router = Router();
 // `sendBeacon` ships a Blob, and the CORS-safelist excludes application/json,
 // so the client uses a text/plain Blob with a JSON string body. express.text
 // here picks that up regardless of Content-Type — the request body arrives as
-// a raw string and we JSON.parse it ourselves.
-const beaconBody = express.text({ type: '*/*', limit: '512kb' });
+// a raw string and we JSON.parse it ourselves. `inflate: false` as in app.ts:
+// a compressed body is refused, never decompressed.
+const beaconBody = express.text({ type: '*/*', limit: '512kb', inflate: false });
 
 // POST /api/drafts/flush — last-ditch save on tab close (or any other
 // fire-and-forget path where the WS may already be tearing down). The body
