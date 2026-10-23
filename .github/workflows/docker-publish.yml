@@ -31,12 +31,7 @@ env:
   # the engine's behaviour did not, so self-hosters keep the engine they are running
   # instead of having `docker compose pull` recreate it — and drop their IRC
   # connections — for nothing. Entries are one-shot: drop them once released.
-  #
-  # v2.5.0: the engine closure's only change since v2.4.3 is dotenv 18.0.5 →
-  # 18.0.8 (option parsing, CLI and fast-parser fixes; `dotenv/config` still
-  # defaults to quiet and the standard parser, so the engine reads its
-  # environment the same way). None of the engine's own files changed.
-  ENGINE_TAG_PINNED_RELEASES: 'v2.5.0'
+  ENGINE_TAG_PINNED_RELEASES: ''
 
 jobs:
   build-and-push:
