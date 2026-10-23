@@ -604,14 +604,25 @@ router.post('/:id/reconnect', (req: Request, res: Response) => {
 });
 
 // Our own IRCv3 metadata on the network (#1189): what Lurker saved and re-sets
-// after each connect. `live` is what the server has now (null when the
-// network isn't connected or can't carry it); `avatarPreview` is the saved
-// avatar as other people's clients fetch it, through the media proxy.
+// after each connect, and the saved unsets. `live` is what the server has now,
+// as far as Lurker would save it (null when the network isn't connected or
+// can't carry it), so a form filled from it saves; `avatarPreview` is the
+// saved avatar as other people's clients fetch it, through the media proxy.
 function metadataPayload(userId: number, networkId: number) {
-  const values = networkMetadataValues(networkId);
+  const { values, unset } = networkMetadataValues(networkId);
+  const server = ircManager.getConnection(userId, networkId)?.ownMetadataOnServer() ?? null;
+  let live: Record<string, string> | null = null;
+  if (server) {
+    live = {};
+    for (const [key, value] of Object.entries(server)) {
+      const kept = ownMetadataToSave(key, value);
+      if (kept) live[key] = kept;
+    }
+  }
   return {
     values,
-    live: ircManager.getConnection(userId, networkId)?.ownMetadataOnServer() ?? null,
+    unset,
+    live,
     avatarPreview: values.avatar ? avatarClientUrl(sizedAvatarUrl(values.avatar)) : null,
   };
 }
@@ -664,7 +675,7 @@ router.delete('/:id/metadata', (req: Request, res: Response) => {
     res.status(404).json({ error: 'network not found' });
     return;
   }
-  clearNetworkMetadata(id);
+  clearNetworkMetadata(req.user!.id, id);
   ircManager.getConnection(req.user!.id, id)?.reconcileOwnMetadata();
   res.json(metadataPayload(req.user!.id, id));
 });

@@ -1074,10 +1074,18 @@ describe('own metadata (#1189)', () => {
 
     const got = await aliceAgent.get(`/api/networks/${net.id}/metadata`);
     expect(got.body.values).toEqual({ 'display-name': 'Alice' });
+    expect(got.body.unset).toEqual(['avatar']);
     expect(got.body.avatarPreview).toBeNull();
 
     const cleared = await aliceAgent.delete(`/api/networks/${net.id}/metadata`);
     expect(cleared.body.values).toEqual({});
+    expect(cleared.body.unset.toSorted()).toEqual([
+      'avatar',
+      'display-name',
+      'homepage',
+      'pronouns',
+      'status',
+    ]);
   });
 
   it('refuses a value Lurker would not show, and saves nothing of that request', async () => {

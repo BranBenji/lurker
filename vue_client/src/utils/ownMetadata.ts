@@ -5,13 +5,17 @@
 // editor's source, and how a slash command on a disconnected network saves.
 
 import { api } from '../api.js';
-import type { OwnMetadataWrite } from '../lib/commands/metadata.js';
+import type { OwnMetadataWrite } from '../../../shared/metadataKeys.js';
+
+export { savedForLaterText } from '../../../shared/metadataKeys.js';
 
 export interface OwnMetadata {
   // What Lurker saved and re-sets after each connect.
   values: Record<string, string>;
-  // What the server has now; null when the network isn't connected or can't
-  // carry it.
+  // Saved unsets: keys Lurker clears on the server after each connect.
+  unset: string[];
+  // What the server has now, as far as Lurker could save it; null when the
+  // network isn't connected or can't carry it.
   live: Record<string, string> | null;
   // The saved avatar as other people's clients fetch it (the media proxy), or
   // null with previews off.
@@ -44,14 +48,4 @@ export function saveOwnMetadataWrite(
   return write === 'clear'
     ? clearOwnMetadata(networkId)
     : saveOwnMetadata(networkId, { [write.key]: write.value });
-}
-
-/** What a saved-for-later write says, the same words the server uses. */
-export function savedForLaterText(write: OwnMetadataWrite): string {
-  if (write === 'clear') {
-    return 'Metadata cleared; it is cleared on the server when this network connects.';
-  }
-  return write.value === null
-    ? `${write.key} unset; it is unset on the server when this network connects.`
-    : `${write.key} saved; it is set when this network connects.`;
 }

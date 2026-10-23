@@ -28,7 +28,7 @@ vi.mock('../api.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api.js')>()),
   api: (url: string, opts: { method?: string; body?: unknown } = {}) => {
     apiCalls.push({ url, ...opts });
-    return Promise.resolve({ values: {}, live: null, avatarPreview: null });
+    return Promise.resolve({ values: {}, unset: [], live: null, avatarPreview: null });
   },
 }));
 
@@ -106,11 +106,19 @@ describe('our own metadata commands', () => {
         body: { values: { avatar: 'https://example.org/me.png' } },
       },
     ]);
-    expect(said().at(-1)).toBe('avatar saved; it is set when this network connects.');
+    expect(said().at(-1)).toBe(
+      'avatar saved; it is set at the next connect, if this network supports metadata.',
+    );
 
     await run('/metadata clear');
     await flush();
     expect(apiCalls.at(-1)).toEqual({ url: '/api/networks/7/metadata', method: 'DELETE' });
+  });
+
+  it("reads someone's metadata on a network with no room for ours (soju)", async () => {
+    seed({ state: 'connected', metadataLimits: { ...LIMITS, maxKeys: 0 } });
+    await run('/metadata list alice');
+    expect(sent()).toEqual([{ type: 'raw', networkId: 7, line: 'METADATA alice LIST' }]);
   });
 
   it("refuses on a connected network that can't carry it", async () => {

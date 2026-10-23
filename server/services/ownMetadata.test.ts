@@ -14,7 +14,7 @@ import { createUser } from '../db/users.js';
 import { createNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
 import { listNetworkMetadata, saveNetworkMetadata } from '../db/networkMetadata.js';
-import { FakeIrcd } from '../test-utils/fakeIrcd.js';
+import { DEFAULT_CAPS, FakeIrcd } from '../test-utils/fakeIrcd.js';
 import type { FakeClient } from '../test-utils/fakeIrcd.js';
 import { until } from '../test-utils/until.js';
 
@@ -82,6 +82,8 @@ describe('saving', () => {
       await until(() => saved(network)['display-name'] === null, 5000, 'unset saved');
       conn.raw('METADATA * CLEAR');
       await until(() => saved(network).avatar === null, 5000, 'cleared');
+      // Every key Lurker shows is a saved unset now, saved or not before.
+      expect(saved(network).pronouns).toBeNull();
     } finally {
       conn.disconnect();
     }
@@ -100,6 +102,27 @@ describe('saving', () => {
       await until(() => metadataSent(ircd.client('halloyish')!).length >= 3, 5000, 'sent');
       expect(saved(network)).toEqual({ pronouns: 'they/them' });
     } finally {
+      conn.disconnect();
+    }
+  });
+
+  it("doesn't save a SET the server refused", async () => {
+    const network = makeNetwork('refused');
+    const { conn, events } = await connect(network);
+    try {
+      ircd.metadataSetsToThrottle = 1;
+      conn.raw('METADATA * SET status :too soon');
+      await until(
+        () => events.some((e) => String(e.text).includes('RATE_LIMITED')),
+        5000,
+        'the FAIL reached the user',
+      );
+      expect(saved(network)).toEqual({});
+      // And the next one, which the server takes, is.
+      conn.raw('METADATA * SET status :now');
+      await until(() => saved(network).status === 'now', 5000, 'saved from the answer');
+    } finally {
+      ircd.metadataSetsToThrottle = 0;
       conn.disconnect();
     }
   });
@@ -143,6 +166,26 @@ describe('saving', () => {
     }
   });
 
+  it("doesn't save a bare line without the batch cap, where a read comes bare too", async () => {
+    const unbatched = await FakeIrcd.start({
+      metadata: true,
+      caps: DEFAULT_CAPS.filter((cap) => cap !== 'batch'),
+    });
+    const network = makeNetwork('nobatch', unbatched.port);
+    try {
+      const { conn } = await connect(network, unbatched);
+      try {
+        unbatched.inject('nobatch', ':fake.server 761 * nobatch status * :an old record');
+        await until(() => conn.ownMetadataOnServer()?.status === 'an old record', 5000, 'read');
+        expect(saved(network)).toEqual({});
+      } finally {
+        conn.disconnect();
+      }
+    } finally {
+      await unbatched.close();
+    }
+  });
+
   it('saves without sending while the socket is down, and says so', async () => {
     const network = makeNetwork('offline');
     const { conn, events } = await connect(network);
@@ -152,7 +195,7 @@ describe('saving', () => {
       expect(saved(network)).toEqual({ 'display-name': 'Later' });
       expect(events.at(-1)).toMatchObject({
         type: 'notice',
-        text: 'display-name saved; it is set when this network connects.',
+        text: 'display-name saved; it is set at the next connect, if this network supports metadata.',
       });
       expect(events.some((e) => String(e.text).startsWith('not sent'))).toBe(false);
     } finally {

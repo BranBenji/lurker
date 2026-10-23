@@ -34,6 +34,7 @@ import {
   type MetadataLimits,
   type MetadataRecord,
 } from './ircMetadata.js';
+import { savedForLaterText, type OwnMetadataWrite } from '../../shared/metadataKeys.js';
 import { avatarClientUrl } from './avatarProxy.js';
 import {
   clearNetworkMetadata,
@@ -961,6 +962,9 @@ export class IrcConnection {
   private ownMetadataRetries: Map<string, ReturnType<typeof setTimeout> | null>;
   // Bumped when the socket goes, so a reconcile deferred past it does nothing.
   private ownMetadataEpoch: number;
+  // Whether the reconcile runs when the pending LIST ends: always after a fresh
+  // registration, and after a re-attach once the profile is saved meanwhile.
+  private ownMetadataReconcileWanted: boolean;
   // One presence watch list keyed by lowercased nick. Each entry records WHY
   // we're watching it. The MONITOR watch and the shared peer_presence_state row
   // are reference-counted against those reasons — added when the first reason
@@ -1443,6 +1447,7 @@ export class IrcConnection {
     this.ownMetadataSettled = false;
     this.ownMetadataRetries = new Map();
     this.ownMetadataEpoch = 0;
+    this.ownMetadataReconcileWanted = false;
     this.state = 'disconnected';
     this.channels = new Map();
     this.joinedFoldedCache = null;
@@ -2330,11 +2335,10 @@ export class IrcConnection {
       // IRCv3 metadata (#607): say which keys we want. On a restore too — a
       // repeated SUB is the sync (see subscribeMetadata).
       this.subscribeMetadata();
-      // Then our own saved profile (#1189), on a fresh registration only: a
-      // re-attached socket kept what it was told, and every change since went
-      // out on it live.
-      if (this.restoring) this.ownMetadataSettled = true;
-      else this.startOwnMetadataReconcile();
+      // Then our own saved profile (#1189), set again on a fresh registration
+      // only: a re-attached socket kept what it was told, and every change
+      // since went out on it live. It's still LISTed, to know what it holds.
+      this.startOwnMetadataReconcile(!this.restoring);
       // Defer the MONITOR + handshake until ISUPPORT tells us the server
       // supports it (same pattern the nick-regain watch uses). 005 always
       // follows 001, so the 'server options' handler trips shortly after.
@@ -4730,12 +4734,13 @@ export class IrcConnection {
     return Object.fromEntries(this.ownServerMetadata);
   }
 
-  // The user's (or a bouncer client's) SET or CLEAR on ourselves, saved as it
-  // goes out: the slash commands, /quote, MCP and every bouncer client take
-  // raw(). Lurker's own re-sets are what was saved already. A value Lurker
-  // wouldn't show goes to the server unsaved. Disconnected, the line can't go:
-  // it's saved, the user's is said so in place of "not sent", and it's set at
-  // the next connect. True when the line is taken.
+  // The user's (or a bouncer client's) SET or CLEAR on ourselves — the slash
+  // commands, /quote, MCP and every bouncer client take raw(). Connected, a SET
+  // is saved from the server's answer (noteOwnMetadataLine), so a value the
+  // server refuses isn't re-sent at every connect; a CLEAR is saved as it goes.
+  // Disconnected, the line can't go: it's saved, the user's is said so in place
+  // of "not sent", and it's set at the next connect. Lurker's own re-sets are
+  // what was saved already. True when the line is taken.
   private noteRawMetadata(line: string, asker: Asker): boolean {
     if (asker === 'lurker') return false;
     const write = parseOwnMetadataWrite(line, (target) => this.isSelfNick(target));
@@ -4743,42 +4748,41 @@ export class IrcConnection {
     const connected = this.state === 'connected';
     // Connected to a network that can't carry it: its 421 or FAIL says so.
     if (connected && !this.canSetOwnMetadata()) return false;
-    let saved: string | null = null;
+    if (connected && write !== 'clear') return false;
+    let saved: OwnMetadataWrite = write;
     try {
       if (write === 'clear') {
-        clearNetworkMetadata(this.network.id);
+        clearNetworkMetadata(this.network.user_id, this.network.id);
       } else {
         const value = ownMetadataToSave(write.key, write.value);
         if (value === undefined) return false;
         saveNetworkMetadata(this.network.user_id, this.network.id, write.key, value);
-        saved = value;
+        saved = { key: write.key, value };
       }
     } catch (e) {
       console.warn('[metadata] save failed:', (e as Error)?.message || e);
       return false;
     }
     if (connected || asker !== 'user') return false;
-    const text =
-      write === 'clear'
-        ? 'Metadata cleared; it is cleared on the server when this network connects.'
-        : saved === null
-          ? `${write.key} unset; it is unset on the server when this network connects.`
-          : `${write.key} saved; it is set when this network connects.`;
     this.publish({
       type: 'notice',
       target: this.serverTarget(),
       nick: 'lurker',
       notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
-      text,
+      text: savedForLaterText(saved),
     });
     return true;
   }
 
   // After a fresh registration (or the cap landing on a held socket): ask the
   // server for our own record, then set what it lacks. A LIST rather than
-  // waiting on the SUB's sync: it's ours alone, and it ends.
-  private startOwnMetadataReconcile(): void {
+  // waiting on the SUB's sync: it's ours alone, it ends, and it names every
+  // key, not only the subscribed ones. After an engine re-attach (`resend`
+  // false) the LIST only learns what the socket holds — nothing is set then,
+  // unless the profile was saved while it was out.
+  private startOwnMetadataReconcile(resend = true): void {
     this.ownMetadataSettled = false;
+    this.ownMetadataReconcileWanted = resend;
     let saved = 0;
     try {
       if (this.canSetOwnMetadata()) saved = listNetworkMetadata(this.network.id).size;
@@ -4796,7 +4800,7 @@ export class IrcConnection {
       setImmediate(() => {
         if (epoch !== this.ownMetadataEpoch || this.disposed) return;
         this.ownMetadataSettled = true;
-        this.reconcileOwnMetadata();
+        if (this.ownMetadataReconcileWanted) this.reconcileOwnMetadata();
       }),
     );
   }
@@ -4805,11 +4809,15 @@ export class IrcConnection {
    * Set on the server what differs from our saved profile: each saved value
    * it doesn't have, each saved unset it still has. Only what differs — ergo
    * throttles a user's own SETs (10 per 2 min by default) and counts one that
-   * changes nothing. A no-op before the connect reconcile is over; that one
-   * reads the saved rows when it ends.
+   * changes nothing. Before the connect reconcile's LIST is over it waits:
+   * that one reads the saved rows when it ends.
    */
   reconcileOwnMetadata(): void {
-    if (!this.ownMetadataSettled || this.state !== 'connected' || !this.canSetOwnMetadata()) return;
+    if (!this.ownMetadataSettled) {
+      this.ownMetadataReconcileWanted = true;
+      return;
+    }
+    if (this.state !== 'connected' || !this.canSetOwnMetadata()) return;
     let saved: Map<string, string | null>;
     try {
       saved = listNetworkMetadata(this.network.id);
@@ -4857,15 +4865,24 @@ export class IrcConnection {
   }
 
   // A line about ourselves: what the server has (for the reconcile's diff),
-  // and — once the reconcile is over — a change made elsewhere, saved. Only a
-  // bare, unasked line is one: another session's SET reaches us as a lone
-  // 761/766, while a burst, a LIST or a SYNC is a batch, and a read.
-  private noteOwnMetadataLine(change: MetadataChange, batched: boolean): void {
+  // and when it's a change, saved. Two lines are: the answer to the user's (or
+  // a bouncer client's) own SET, and — once the connect reconcile is over —
+  // another session's SET, which reaches us as a lone unasked 761/766. A
+  // burst, a LIST or a SYNC is a batch, and a read; so without the batch cap,
+  // where a read comes bare too, nobody else's change is saved.
+  private noteOwnMetadataLine(command: string, change: MetadataChange, batched: boolean): void {
     if (change.value === null || change.value === '') this.ownServerMetadata.delete(change.key);
     else this.ownServerMetadata.set(change.key, change.value);
     if (this.ownMetadataRetries.get(change.key) === null)
       this.ownMetadataRetries.delete(change.key);
-    if (!this.ownMetadataSettled || batched || this.replyOwner !== 'unasked') return;
+    if (batched || (command !== '761' && command !== '766' && command !== 'METADATA')) return;
+    const owner = this.replyOwner;
+    const answer = owner === 'user' || (owner !== null && typeof owner === 'object');
+    const elsewhere =
+      owner === 'unasked' &&
+      this.ownMetadataSettled &&
+      (this.client.network?.cap?.enabled ?? []).includes('batch');
+    if (!answer && !elsewhere) return;
     const value = ownMetadataToSave(change.key, change.value);
     if (value === undefined) return;
     try {
@@ -4891,7 +4908,7 @@ export class IrcConnection {
       !isChannelMetadataTarget(change.target) &&
       (change.target === '*' || this.isSelfNick(change.target))
     ) {
-      this.noteOwnMetadataLine(change, batched);
+      this.noteOwnMetadataLine(command, change, batched);
     }
     this.applyMetadata(change);
     // The user's own GET/LIST/SET/DEL, echoed where a /command's reply goes.

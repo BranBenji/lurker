@@ -16,16 +16,16 @@ import { isChannelTarget } from '../../shared/channels.js';
 import {
   METADATA_EXTRA_VALUE_MAX_CHARS,
   METADATA_KEY_RE,
+  METADATA_SUB_KEYS,
   METADATA_VALUE_MAX_CHARS,
+  type OwnMetadataWrite,
 } from '../../shared/metadataKeys.js';
 import { stripFormatting } from '../../shared/textMatch.js';
 import { parseLine } from './bouncerClientFilter.js';
 
 export const METADATA_CAP = 'draft/metadata-2';
 
-// In order of preference: a server with a small `max-subs` grants the first.
-// `color` is deliberately absent (#607): hex values fight every theme.
-export const METADATA_SUB_KEYS = ['display-name', 'avatar', 'pronouns', 'homepage', 'status'];
+export { METADATA_SUB_KEYS };
 
 // The avatar key may carry a `{size}` placeholder (IRCv3 registry); this is the
 // pixel size Lurker asks for. Every client renders it smaller than this.
@@ -173,9 +173,6 @@ export function ownMetadataToSave(key: string, raw: string | null): string | nul
   if (!value) return null;
   return vetMetadataValue(key, value, ANY_KEY) === null ? undefined : value;
 }
-
-// An outgoing change to our own metadata: one key, or all of them.
-export type OwnMetadataWrite = { key: string; value: string | null } | 'clear';
 
 /**
  * A `METADATA <target> SET <key> [<value>]` or `METADATA <target> CLEAR` line

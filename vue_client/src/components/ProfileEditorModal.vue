@@ -6,9 +6,10 @@
 <!--
   Your own IRCv3 metadata on one network (#1189): what Lurker saves and sets
   again after every connect. The slash commands (/displayname, /avatar,
-  /metadata) write the same rows; this is the view of them. Saving sends only
-  the fields that changed, and the server sets what it lacks now if the
-  network is connected, else at the next connect.
+  /metadata) write the same rows; this is the view of them. Save saves every
+  field as shown — one never saved shows what the server has, so saving keeps
+  it — and the server is set to what it lacks now if the network is connected,
+  else at the next connect.
 -->
 
 <template>
@@ -41,7 +42,7 @@
                 :value="form.avatar"
                 @input="form.avatar = imeSafeValue($event)"
                 @keydown.enter="blockImeEnter"
-                type="url"
+                inputmode="url"
                 :maxlength="max('avatar')"
                 placeholder="https://…/me.png"
                 autocomplete="off"
@@ -66,7 +67,7 @@
               :value="form.homepage"
               @input="form.homepage = imeSafeValue($event)"
               @keydown.enter="blockImeEnter"
-              type="url"
+              inputmode="url"
               :maxlength="max('homepage')"
               placeholder="https://…"
               autocomplete="off"
@@ -122,13 +123,15 @@ import { ownMetadataRefusal } from '../lib/commands/metadata.js';
 import { fetchOwnMetadata, saveOwnMetadata, type OwnMetadata } from '../utils/ownMetadata.js';
 import {
   METADATA_EXTRA_VALUE_MAX_CHARS,
+  METADATA_SUB_KEYS,
   METADATA_VALUE_MAX_CHARS,
 } from '../../../shared/metadataKeys.js';
 
 const props = defineProps<{ networkId: number }>();
 
-const FIELDS = ['display-name', 'avatar', 'pronouns', 'homepage', 'status'] as const;
-type Field = (typeof FIELDS)[number];
+// The keys Lurker shows; the template names each.
+type Field = 'display-name' | 'avatar' | 'pronouns' | 'homepage' | 'status';
+const FIELDS = METADATA_SUB_KEYS as Field[];
 
 const networks = useNetworksStore();
 const editor = useProfileEditor();
@@ -168,11 +171,18 @@ function max(field: Field): number {
   return METADATA_VALUE_MAX_CHARS[field] ?? METADATA_EXTRA_VALUE_MAX_CHARS;
 }
 
-// A saved key wins; one never saved shows what the server has now (set from
-// another client), so saving untouched keeps it.
-function fill(data: OwnMetadata): void {
+// A saved key wins, a saved unset included; one never saved shows what the
+// server has now (set from another client), so saving keeps it.
+function shown(data: OwnMetadata): Record<Field, string> {
   const next = blank();
-  for (const f of FIELDS) next[f] = data.values[f] ?? data.live?.[f] ?? '';
+  for (const f of FIELDS) {
+    next[f] = data.unset.includes(f) ? '' : (data.values[f] ?? data.live?.[f] ?? '');
+  }
+  return next;
+}
+
+function fill(data: OwnMetadata): void {
+  const next = shown(data);
   initial.value = next;
   Object.assign(form, next);
   avatarPreview.value = data.avatarPreview;
@@ -181,8 +191,7 @@ function fill(data: OwnMetadata): void {
 async function copyFrom(id: string): Promise<void> {
   error.value = '';
   try {
-    const data = await fetchOwnMetadata(Number(id));
-    for (const f of FIELDS) form[f] = data.values[f] ?? '';
+    Object.assign(form, shown(await fetchOwnMetadata(Number(id))));
   } catch (e) {
     error.value = `Couldn't read that network's profile: ${(e as Error).message}`;
   }
@@ -190,15 +199,12 @@ async function copyFrom(id: string): Promise<void> {
 
 async function save(): Promise<void> {
   if (!dirty.value || refusal.value) return;
-  const changed: Record<string, string | null> = {};
-  for (const f of FIELDS) {
-    const value = form[f].trim();
-    if (value !== initial.value[f]) changed[f] = value || null;
-  }
+  const values: Record<string, string | null> = {};
+  for (const f of FIELDS) values[f] = form[f].trim() || null;
   saving.value = true;
   error.value = '';
   try {
-    fill(await saveOwnMetadata(props.networkId, changed));
+    fill(await saveOwnMetadata(props.networkId, values));
     close();
   } catch (e) {
     error.value = (e as Error).message;

@@ -17,10 +17,8 @@
 // it as it goes out, and on a disconnected network the client saves it by
 // REST instead, to be set at the next connect.
 
-import { METADATA_KEY_RE } from '../../../../shared/metadataKeys.js';
+import { METADATA_KEY_RE, type OwnMetadataWrite } from '../../../../shared/metadataKeys.js';
 import type { NetworkState } from '../../stores/networks.js';
-
-export type OwnMetadataWrite = { key: string; value: string | null } | 'clear';
 
 export type MetadataCommand = { line: string; write?: OwnMetadataWrite } | { error: string };
 

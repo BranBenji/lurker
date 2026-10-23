@@ -77,8 +77,9 @@ again after every connect, since most servers forget it when you disconnect.
   the origin — and only while link previews are configured; otherwise everyone
   gets a generated tile in their nick colour. `color` is deliberately not read:
   hex values fight every theme.
-- **Your own metadata** — saved per network as each `SET` goes out (from the
-  web app, a bouncer client, or `/quote`). After a fresh registration Lurker
+- **Your own metadata** — saved per network when the server accepts a `SET`
+  (from the web app, a bouncer client, or `/quote`), so one it refuses isn't
+  sent again at every connect. After a fresh registration Lurker
   sends `METADATA * LIST` and then `SET`s only what the server lacks: Ergo keeps
   metadata only for always-on clients, and it rate-limits your own `SET`s
   whether or not they change anything, so a blind re-send would spend that

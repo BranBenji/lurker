@@ -52,16 +52,19 @@ describe('profile editor', () => {
     calls.length = 0;
   });
 
-  it("fills saved keys, the server's for the rest, and saves only what changed", async () => {
+  it("fills saved keys, the server's for the rest, and saves every field as shown", async () => {
     setNetwork({ state: 'connected', metadataLimits: LIMITS });
     reply = {
       values: { 'display-name': 'Saved Name' },
-      live: { 'display-name': 'Saved Name', pronouns: 'from halloy' },
+      // A saved unset stays empty, whatever the server still has.
+      unset: ['status'],
+      live: { 'display-name': 'Saved Name', pronouns: 'from halloy', status: 'stale' },
       avatarPreview: null,
     };
     const wrapper = await open();
     expect((input(wrapper, 'Display name').element as HTMLInputElement).value).toBe('Saved Name');
     expect((input(wrapper, 'Pronouns').element as HTMLInputElement).value).toBe('from halloy');
+    expect((input(wrapper, 'Status').element as HTMLInputElement).value).toBe('');
 
     await input(wrapper, 'Status').setValue('  lunch ');
     await input(wrapper, 'Display name').setValue('');
@@ -70,14 +73,23 @@ describe('profile editor', () => {
     expect(calls.at(-1)).toEqual({
       url: `/api/networks/${NET}/metadata`,
       method: 'PUT',
-      body: { values: { 'display-name': null, status: 'lunch' } },
+      // The server's pronouns, shown and kept, are saved now too.
+      body: {
+        values: {
+          'display-name': null,
+          avatar: null,
+          pronouns: 'from halloy',
+          homepage: null,
+          status: 'lunch',
+        },
+      },
     });
     expect(useProfileEditor().networkId.value).toBeNull();
   });
 
   it("is greyed, and says why, on a network that can't carry it", async () => {
     setNetwork({ state: 'connected', metadataLimits: { ...LIMITS, maxKeys: 0 } });
-    reply = { values: {}, live: null, avatarPreview: null };
+    reply = { values: {}, unset: [], live: null, avatarPreview: null };
     const wrapper = await open();
     expect(wrapper.find('.hint').text()).toMatch(/doesn't keep metadata/);
     expect(input(wrapper, 'Status').attributes('disabled')).toBeDefined();
@@ -86,7 +98,7 @@ describe('profile editor', () => {
 
   it('saves for later on a network that is not connected', async () => {
     setNetwork({ state: 'disconnected' });
-    reply = { values: {}, live: null, avatarPreview: null };
+    reply = { values: {}, unset: [], live: null, avatarPreview: null };
     const wrapper = await open();
     expect(wrapper.find('.hint').text()).toMatch(/set when it connects/);
     expect(input(wrapper, 'Status').attributes('disabled')).toBeUndefined();
@@ -94,12 +106,19 @@ describe('profile editor', () => {
 
   it("copies another network's saved profile into the form", async () => {
     setNetwork({ state: 'connected', metadataLimits: LIMITS });
-    reply = { values: {}, live: {}, avatarPreview: null };
+    reply = { values: {}, unset: [], live: {}, avatarPreview: null };
     const wrapper = await open();
-    reply = { values: { pronouns: 'they/them' }, live: null, avatarPreview: null };
+    // Saved there, or only on that server: both copy.
+    reply = {
+      values: { pronouns: 'they/them' },
+      unset: [],
+      live: { status: 'on that server' },
+      avatarPreview: null,
+    };
     await wrapper.find('select').setValue('8');
     await flushPromises();
     expect(calls.at(-1)!.url).toBe('/api/networks/8/metadata');
     expect((input(wrapper, 'Pronouns').element as HTMLInputElement).value).toBe('they/them');
+    expect((input(wrapper, 'Status').element as HTMLInputElement).value).toBe('on that server');
   });
 });

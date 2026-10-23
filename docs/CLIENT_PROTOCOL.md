@@ -1373,17 +1373,19 @@ add `key`/`code`/`status`). Exact multipart field names matter.
 | `GET /:id/certificate/export`                      | The pair as one PEM file (key then cert — the `client.pem` shape HexChat/WeeChat want), `Cache-Control: no-store`. `404` when no cert is attached. **The only route that returns the private key**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 
 Your own metadata (#1189): `GET /api/networks/:id/metadata` →
-`{values, live, avatarPreview}`. `values` is what Lurker saved for you on that
-network — the keys it sets again after every fresh registration, where the
-server lacks them. `live` is what the server holds now, `null` when the network
-isn't connected or can't carry your keys (no `draft/metadata-2`, or
-`max-keys=0`). `avatarPreview` is the saved avatar through the media proxy, or
+`{values, unset, live, avatarPreview}`. `values` is what Lurker saved for you
+on that network — the keys it sets again after every fresh registration, where
+the server lacks them — and `unset` the keys it clears there. `live` is what the
+server holds now, as far as Lurker would save it, `null` when the network isn't
+connected or can't carry your keys (no `draft/metadata-2`, or `max-keys=0`). `avatarPreview` is the saved avatar through the media proxy, or
 `null` with previews off. `PUT` with `{values: {key: value | null}}` saves the
 keys named (`null` or `""` unsets one) and leaves the rest; `DELETE` unsets every
-saved key. Both answer like `GET`, and on a connected network set what differs
-right away. A value Lurker wouldn't show is a `400` naming the `key`. The
-`/displayname`, `/avatar` and `/metadata set|del|clear` lines save the same rows
-as they go out, so a client that sends those lines raw needs neither route.
+saved key, and every key Lurker shows. Both answer like `GET`, and on a
+connected network set what differs right away. A value Lurker wouldn't show is a
+`400` naming the `key`. The `/displayname`, `/avatar` and `/metadata
+set|del|clear` lines save the same rows — a `SET` once the server accepts it —
+so a client that sends those lines raw on a connected network needs neither
+route.
 
 CertFP: a network may carry a TLS client certificate, presented on the handshake
 so services identify the user by its fingerprint — passively (NickServ CertFP) or

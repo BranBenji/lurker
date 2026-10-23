@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import db from './index.js';
+import { METADATA_SUB_KEYS } from '../../shared/metadataKeys.js';
 
 // Our own IRCv3 metadata on each network (#1189): what we last set, kept
 // because most servers forget it at disconnect. A null value is a saved
@@ -39,11 +40,18 @@ export function listNetworkMetadata(networkId: number): Map<string, string | nul
   return new Map(rows.map((row) => [row.key, row.value]));
 }
 
-/** The saved keys that have a value, for showing. */
-export function networkMetadataValues(networkId: number): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of listNetworkMetadata(networkId)) if (value !== null) out[key] = value;
-  return out;
+/** The saved keys that have a value, for showing, and the saved unsets. */
+export function networkMetadataValues(networkId: number): {
+  values: Record<string, string>;
+  unset: string[];
+} {
+  const values: Record<string, string> = {};
+  const unset: string[] = [];
+  for (const [key, value] of listNetworkMetadata(networkId)) {
+    if (value === null) unset.push(key);
+    else values[key] = value;
+  }
+  return { values, unset };
 }
 
 /** Save one key: a value, or null to keep it unset. */
@@ -63,7 +71,12 @@ export const saveNetworkMetadataMany = db.transaction(
   },
 );
 
-/** `METADATA * CLEAR`: every saved key becomes a saved unset. */
-export function clearNetworkMetadata(networkId: number): void {
+/**
+ * `METADATA * CLEAR`: every saved key becomes a saved unset, and so does every
+ * key Lurker shows — a server that kept one Lurker never saved (set from
+ * another client) has it cleared at the next connect too.
+ */
+export const clearNetworkMetadata = db.transaction((userId: number, networkId: number): void => {
   clearStmt.run(networkId);
-}
+  for (const key of METADATA_SUB_KEYS) upsertStmt.run({ networkId, userId, key, value: null });
+});

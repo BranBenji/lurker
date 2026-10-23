@@ -4380,7 +4380,8 @@ function handleCommand(line: string, networkId: number | null, target: string): 
         return true;
       }
       const netState = networks.states[networkId];
-      const refusal = ownMetadataRefusal(netState);
+      // A write only: reading someone's metadata needs no room for our own keys.
+      const refusal = parsed.write ? ownMetadataRefusal(netState) : null;
       if (refusal) {
         localInfo(networkId, target, `/${verb}: ${refusal}.`);
         return true;
