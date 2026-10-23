@@ -12,7 +12,6 @@ import {
   setupTestDb,
   testRequest,
   createTestApp,
-  createAuthedAgent,
   TEST_SESSION_SECRET,
 } from './test-utils/testApp.js';
 
@@ -245,10 +244,11 @@ describe('request body errors', () => {
 });
 
 describe('compressed request bodies', () => {
-  // Nothing that talks to Lurker compresses what it sends, so every parser is
-  // `inflate: false`: a `Content-Encoding` body is refused with a 415 before any
-  // route or auth runs, never piped through zlib (CVE-2026-111497 was Node's
-  // Brotli decoder, reachable by an anonymous POST while body-parser inflated).
+  // Nothing that talks to Lurker compresses what it sends, so a request with a
+  // `Content-Encoding` is refused with a 415 at the app's edge, ahead of every
+  // route, auth check and parser (middleware/requestBody.ts) — never piped
+  // through zlib, which body-parser does by default (CVE-2026-111497 was Node's
+  // Brotli decoder, reachable by an anonymous POST that way).
   const json = Buffer.from('{"grant_type":"authorization_code"}');
   const form = Buffer.from('grant_type=authorization_code');
 
@@ -282,12 +282,11 @@ describe('compressed request bodies', () => {
     expect(res.status).toBe(415);
   });
 
-  it('refuses a compressed beacon body with 415 (the drafts flush parser)', async () => {
+  it('refuses ahead of auth: an anonymous compressed beacon gets 415, not 401', async () => {
+    // routes/drafts.ts orders requireAuth before its own parser, so this 415 can
+    // only come from the edge.
     const app = await buildFor('standalone');
-    const { createUser } = await import('./db/users.js');
-    const user = createUser('inflate-beacon');
-    const agent = await createAuthedAgent(app, user.id);
-    const res = await agent
+    const res = await testRequest(app)
       .post('/api/drafts/flush')
       .set('Content-Type', 'text/plain')
       .set('Content-Encoding', 'gzip')
@@ -296,12 +295,15 @@ describe('compressed request bodies', () => {
   });
 
   it('still parses an uncompressed body', async () => {
+    // The token route reads grant_type from the parsed body and, with no
+    // client_id, answers 400 invalid_request: proof the JSON reached the handler.
     const app = await buildFor('standalone');
     const res = await testRequest(app)
       .post('/api/oauth/token')
       .set('Content-Type', 'application/json')
       .send(json);
-    expect(res.status).not.toBe(415);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('invalid_request');
   });
 
   it('the test harness mirrors the app', async () => {

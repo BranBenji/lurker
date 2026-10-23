@@ -58,8 +58,7 @@ export const registrationThrottle = new RequestThrottle({ windowMs: 10 * 60_000,
 // RFC 6749 token and revocation requests are form-encoded. Parsed on these two
 // routes only: a global urlencoded parser would let a cross-site form post to
 // every cookie-authenticated route, which JSON-only parsing currently prevents.
-// `inflate: false` as in app.ts: a compressed body is refused, never decompressed.
-const formBody = express.urlencoded({ extended: false, limit: '16kb', inflate: false });
+const formBody = express.urlencoded({ extended: false, limit: '16kb' });
 
 function noStore(res: Response): void {
   res.set('Cache-Control', 'no-store');

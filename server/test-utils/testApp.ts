@@ -22,6 +22,7 @@ import type { Express, Router, ErrorRequestHandler } from 'express';
 import cookieParser from 'cookie-parser';
 import { sign as signCookie } from 'cookie-signature';
 import request from 'supertest';
+import { isBodyParseError, refuseCompressedBodies } from '../middleware/requestBody.js';
 import fs from 'fs';
 import http from 'http';
 import os from 'os';
@@ -95,13 +96,12 @@ export function setupTestDb(suffix = ''): TestDbContext {
   };
 }
 
-// As app.ts: a body the parser refused (malformed, over the limit, compressed)
-// is answered with the parser's own 4xx, so a route test sees what the app gives.
+// As app.ts: a body the parser refused is answered with the parser's own 4xx,
+// so a route test sees what the app gives.
 const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
   if (res.headersSent) return next(err);
-  const { type, status } = (err ?? {}) as { type?: unknown; status?: unknown };
-  if (typeof type === 'string' && typeof status === 'number' && status >= 400 && status < 500) {
-    res.status(status).json({ error: 'invalid_request' });
+  if (isBodyParseError(err)) {
+    res.status(err.status).json({ error: 'invalid_request' });
     return;
   }
   res.status(500).json({ error: (err as Error).message || 'internal error' });
@@ -114,7 +114,8 @@ const errorHandler: ErrorRequestHandler = (err, _req, res, next) => {
 // router apps (e.g. exports + imports).
 export function createTestApp(routerMounts: Record<string, Router>): Express {
   const app = express();
-  app.use(express.json({ limit: '1mb', inflate: false })); // as app.ts
+  app.use(refuseCompressedBodies); // as app.ts
+  app.use(express.json({ limit: '1mb' }));
   app.use(cookieParser(TEST_SESSION_SECRET));
   for (const [mount, router] of Object.entries(routerMounts)) {
     app.use(mount, router);
