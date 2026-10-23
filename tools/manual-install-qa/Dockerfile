@@ -15,7 +15,7 @@
 # official image keeps node under /usr/local/bin; a distro package puts it in
 # /usr/bin, which is where an operator's unit (`ExecStart=/usr/bin/npm start`)
 # expects it — the symlinks below reproduce that layout.
-FROM node:24-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
+FROM node:24-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
 ENV container=docker
 RUN apt-get update && apt-get install -y --no-install-recommends \
       systemd systemd-sysv ca-certificates curl procps iproute2 openssl git \
