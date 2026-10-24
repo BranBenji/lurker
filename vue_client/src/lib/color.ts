@@ -53,9 +53,7 @@ function clamp255(n: number): number {
 
 /** Lower-case #rrggbb, the one canonical spelling the picker writes. */
 export function toHex({ r, g, b }: RGB): string {
-  return (
-    '#' + [r, g, b].map((c) => clamp255(c).toString(16).padStart(2, '0')).join('')
-  ).toLowerCase();
+  return '#' + [r, g, b].map((c) => clamp255(c).toString(16).padStart(2, '0')).join('');
 }
 
 export function rgbToHsv({ r, g, b }: RGB): HSV {

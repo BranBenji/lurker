@@ -72,6 +72,17 @@ const emit = defineEmits<{
 const { isMobile } = useViewport();
 const draft = ref(props.value);
 const dirty = computed(() => draft.value.trim() !== props.value.trim());
+// Opening the picker blurs the text field beside the swatch, whose @change
+// commit is still in flight when we mount — so the value we opened on can
+// change under us a moment later. While the user hasn't touched the draft it
+// follows; otherwise committing the stale opening value would undo the edit
+// they just typed.
+watch(
+  () => props.value,
+  (next, prev) => {
+    if (draft.value === prev) draft.value = next;
+  },
+);
 
 // Closing is one-shot: the scroll/resize/observer paths can all call finish()
 // before the parent has unmounted us, and a second commit would double-write.
@@ -81,11 +92,15 @@ function finish(): void {
   closed = true;
   if (dirty.value) emit('commit', draft.value.trim());
   emit('close');
+  props.anchor?.focus();
 }
 function cancel(): void {
   if (closed) return;
   closed = true;
   emit('close');
+  // Focus goes back where it came from, not to <body>: the card took it on
+  // mount, and a keyboard user's next Tab should continue from the swatch.
+  props.anchor?.focus();
 }
 function revert(): void {
   draft.value = props.value;
@@ -114,9 +129,12 @@ function place(): void {
   const el = cardEl.value;
   if (!a || !el) return;
   const r = a.getBoundingClientRect();
-  // The swatch scrolled out of the pane: the card would float detached from
-  // anything, so treat it like a click-away.
-  if (r.bottom < 0 || r.top > window.innerHeight) {
+  // The swatch scrolled out of its pane: the card would float detached from
+  // anything, so treat it like a click-away. The pane, not the window — the
+  // Settings page scrolls inside its content region under a fixed header, so
+  // a swatch can be hidden while still inside the viewport.
+  const bounds = scrollBounds(a);
+  if (r.bottom < bounds.top || r.top > bounds.bottom) {
     finish();
     return;
   }
@@ -133,6 +151,19 @@ function place(): void {
   if (x + w + pad > window.innerWidth) x = window.innerWidth - w - pad;
   if (x < pad) x = pad;
   if (x !== pos.value.x || y !== pos.value.y) pos.value = { x, y };
+}
+
+// The visible vertical extent of the anchor's nearest scrolling ancestor, or
+// the viewport when nothing between it and the document scrolls.
+function scrollBounds(el: HTMLElement): { top: number; bottom: number } {
+  for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+    const oy = getComputedStyle(p).overflowY;
+    if (oy === 'auto' || oy === 'scroll') {
+      const pr = p.getBoundingClientRect();
+      return { top: Math.max(0, pr.top), bottom: Math.min(window.innerHeight, pr.bottom) };
+    }
+  }
+  return { top: 0, bottom: window.innerHeight };
 }
 
 function onWindowPointerDown(e: PointerEvent): void {
@@ -215,7 +246,9 @@ onBeforeUnmount(detachDesktop);
   padding-top: var(--space-2);
   border-top: 1px solid var(--border);
 }
-.foot .link {
+/* Both the footer and the sheet's header action: scoped styles reach slot
+   content this component renders, so one rule serves both shells. */
+.link {
   background: none;
   border: none;
   padding: var(--space-2) 0;
@@ -223,11 +256,11 @@ onBeforeUnmount(detachDesktop);
   cursor: pointer;
   font: inherit;
 }
-.foot .link:hover:not(:disabled),
-.foot .done {
+.link:hover:not(:disabled),
+.done {
   color: var(--accent);
 }
-.foot .link:disabled {
+.link:disabled {
   opacity: 0.5;
   cursor: default;
 }

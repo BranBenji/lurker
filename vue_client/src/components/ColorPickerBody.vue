@@ -138,7 +138,7 @@
         :aria-pressed="isFavorite"
         @click="toggleFavorite"
       >
-        <StarIcon :fill="isFavorite ? 'currentColor' : 'none'" />
+        <StarIcon :class="{ 'icon-filled': isFavorite }" />
       </button>
     </div>
     <div v-if="favorites.length" class="swatches">
@@ -227,6 +227,9 @@ function resolveCssColor(value: string, host: HTMLElement | null): RGB | null {
     ctx.fillStyle = computedColor;
     ctx.fillRect(0, 0, 1, 1);
     const d = ctx.getImageData(0, 0, 1, 1).data;
+    // Nothing painted (transparent in a form the regex above didn't catch):
+    // no colour to report, same as parseComputedRgb's zero-alpha refusal.
+    if (d[3] === 0) return null;
     return { r: d[0], g: d[1], b: d[2] };
   } catch {
     return null;
@@ -439,8 +442,9 @@ function toggleFavorite(): void {
   const next = isFavorite.value
     ? storedFavorites.value.filter((f) => normalizeFavorite(f) !== hex)
     : [...storedFavorites.value, hex];
-  // Fire and forget: the store rolls the value back on a server refusal, and
-  // the picker has nowhere sensible to print an error about a bookmark.
+  // Fire and forget: the store writes nothing until the server answers, so a
+  // refusal just leaves the star as it was. The picker has nowhere sensible
+  // to print an error about a bookmark.
   void settings.setValue(FAVORITES_KEY, next).catch(() => {});
 }
 </script>
