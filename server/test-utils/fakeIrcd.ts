@@ -844,6 +844,13 @@ export class FakeIrcd extends EventEmitter {
     if (c) this.raw(c, line);
   }
 
+  // A line as if the client had sent it: the one a `hold` swallowed, once the
+  // test is ready for the server to act on it.
+  feed(nick: string, line: string): void {
+    const c = this.client(nick);
+    if (c) this.onLine(c, line);
+  }
+
   // Who hears a change on `target`: a channel's members, or every client that
   // shares a channel with the nick (and the nick itself).
   private metadataAudience(target: string): FakeClient[] {

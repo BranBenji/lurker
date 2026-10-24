@@ -454,6 +454,25 @@ export function rewriteNumericTarget(line: string, nick: string): string {
   return `${m[1]}${nick}${m[2]}`;
 }
 
+// Whether a raw server line (`[@tags ]:prefix NNN …`) is the given numeric.
+export function isNumericLine(line: string, numeric: string): boolean {
+  const m = /^(?:@\S+ )?:\S+ (\S+) /.exec(line);
+  return m?.[1] === numeric;
+}
+
+// The new nick when `line` is a NICK from `self` — the nick a client knows
+// itself by, compared under the network's casemapping — else null.
+export function selfNickChange(
+  line: string,
+  self: string | null,
+  networkId: number,
+): string | null {
+  if (!self) return null;
+  const m = /^(?:@\S+ )?:([^!@\s]+)\S* NICK :?(\S+)/.exec(line);
+  if (!m || foldTargetFor(networkId, m[1]) !== foldTargetFor(networkId, self)) return null;
+  return m[2];
+}
+
 /**
  * Filter one raw upstream line before it is relayed: drop the connection
  * plumbing Lurker handles itself. What each client may then receive is up to
@@ -920,6 +939,15 @@ class BouncerSession implements MonitorHolder, ReplyClient {
   private metadataBatchSeq = 0;
   private onUpstreamCaps: (() => void) | null = null;
   private onUpstreamMetadata: ((change: Record<string, unknown>) => void) | null = null;
+  // The upstream registering again under an attached client (#1202). Armed by
+  // its 001, consumed at the end of that burst by sendRegistrationUpdate.
+  private onUpstreamRegistered: (() => void) | null = null;
+  private onUpstreamMotd: (() => void) | null = null;
+  private burstPending = false;
+  // The nick this client was last told is its own: the attach burst's, then
+  // every self-NICK relayed since. The nick the upstream registers under can
+  // differ from it — a 433 fallback comes with no NICK line.
+  private toldNick: string | null = null;
   private regTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(socket: net.Socket) {
@@ -1540,26 +1568,9 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     } else {
       this.writeWelcomeNumerics(requested);
     }
-    if (requested !== liveNick) {
-      this.write(
-        `:${requested}!${conn.client.user?.username || 'lurker'}@${SERVER_NAME} NICK :${liveNick}`,
-      );
-    }
-    // Append our own ISUPPORT for tokens the upstream's 005 can't carry:
-    // BOUNCER_NETID (which network this connection bound) and the chathistory
-    // limits. Bundled into one 005 line, gated on the relevant caps.
-    const extraIsupport: string[] = [];
-    if (this.caps.has(CAP_BOUNCER_NETWORKS)) extraIsupport.push(`BOUNCER_NETID=${this.networkId}`);
-    if (this.caps.has(CAP_CHATHISTORY)) {
-      extraIsupport.push(`CHATHISTORY=${MAX_CHATHISTORY}`, 'MSGREFTYPES=timestamp');
-    }
-    const filehost = filehostToken(this.userId);
-    if (filehost) extraIsupport.push(filehost);
-    if (extraIsupport.length > 0) {
-      this.write(
-        `:${SERVER_NAME} 005 ${liveNick} ${extraIsupport.join(' ')} :are supported by this server`,
-      );
-    }
+    if (requested !== liveNick) this.writeSelfNick(requested, liveNick);
+    this.toldNick = liveNick;
+    this.writeExtraIsupport(liveNick);
     this.write(`:${SERVER_NAME} 422 ${liveNick} :MOTD File is missing`);
 
     if (conn.state !== 'connected') {
@@ -1648,6 +1659,8 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         if (!news) return;
       }
       this.write(out, relayedAt);
+      const renamed = selfNickChange(out, this.toldNick, this.networkId);
+      if (renamed) this.toldNick = renamed;
       // The network's own NAMES for a channel the burst held back: nothing more
       // to send for it.
       if (this.namesPending.size > 0) {
@@ -1679,6 +1692,20 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     };
     conn.client.on('cap ack', this.onUpstreamCaps);
     conn.client.on('cap del', this.onUpstreamCaps);
+    // A new registration burst, for sendRegistrationUpdate. Armed at the 001
+    // and sent at the end of the burst: the connection says 'connected' at the
+    // 001, before any 005 has arrived. A restore replays an old burst into the
+    // connection, not a new registration (bouncer.reattach.test.ts).
+    this.onUpstreamRegistered = () => {
+      if (!this.closed && !conn.disposed && !conn.restoring) this.burstPending = true;
+    };
+    this.onUpstreamMotd = () => {
+      if (!this.burstPending) return;
+      this.burstPending = false;
+      if (!this.closed && !conn.disposed) this.sendRegistrationUpdate();
+    };
+    conn.client.on('registered', this.onUpstreamRegistered);
+    conn.client.on('motd', this.onUpstreamMotd);
     // A metadata change that came as somebody else's reply (#607): the raw
     // relay gave it to its asker alone, so it's said here to everyone else
     // who subscribed to the key and can see the target.
@@ -1695,6 +1722,59 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       if (this.wantsMetadataLine(line)) this.write(line);
     };
     conn.client.on('lurker metadata', this.onUpstreamMetadata);
+  }
+
+  // Append our own ISUPPORT for tokens the upstream's 005 can't carry:
+  // BOUNCER_NETID (which network this connection bound) and the chathistory
+  // limits. Bundled into one 005 line, gated on the relevant caps.
+  private writeExtraIsupport(nick: string): void {
+    const extraIsupport: string[] = [];
+    if (this.caps.has(CAP_BOUNCER_NETWORKS)) extraIsupport.push(`BOUNCER_NETID=${this.networkId}`);
+    if (this.caps.has(CAP_CHATHISTORY)) {
+      extraIsupport.push(`CHATHISTORY=${MAX_CHATHISTORY}`, 'MSGREFTYPES=timestamp');
+    }
+    const filehost = filehostToken(this.userId);
+    if (filehost) extraIsupport.push(filehost);
+    if (extraIsupport.length > 0) {
+      this.write(
+        `:${SERVER_NAME} 005 ${nick} ${extraIsupport.join(' ')} :are supported by this server`,
+      );
+    }
+  }
+
+  // Move the client from the nick it knows itself by onto the connection's, as
+  // ZNC does (IRCNetwork.cpp:677): the client's own hostmask, not the network's.
+  private writeSelfNick(from: string, to: string): void {
+    const user = this.conn?.client.user?.username || 'lurker';
+    this.write(`:${from}!${user}@${SERVER_NAME} NICK :${to}`);
+  }
+
+  // The upstream registered again under this client (#1202). A client that
+  // bound while the network was down had Lurker's own 001–004 and no 005 at
+  // all; one that bound to a live network has the old socket's. The 001–005
+  // themselves are RELAY_DROP, replayed only at attach, so the new burst's
+  // 005s are sent now — whole, not diffed: a client replaces a token it is
+  // told again, and solanum repeats its own ISUPPORT after every VERSION.
+  // First the registered nick, when the client wasn't told it: a 433 fallback
+  // during registration has no NICK line, unlike a rename after it, which the
+  // relay carried and toldNick followed. soju sends the changed tokens and the
+  // NICK at upstream connect (user.go:702, downstream.go:1365); ZNC forwards
+  // the whole burst live and NICKs each client (IRCSock.cpp:870).
+  private sendRegistrationUpdate(): void {
+    const conn = this.conn!;
+    const live = conn.currentNick;
+    if (live && this.toldNick && live !== this.toldNick) {
+      this.writeSelfNick(this.toldNick, live);
+      this.toldNick = live;
+    }
+    const nick = this.toldNick || live || this.clientNick || '*';
+    for (const line of conn.registrationLines) {
+      if (!isNumericLine(line, '005')) continue;
+      const tagged = restrictTags(line, (key) => key === 'time');
+      const out = tagged && withoutUpstreamFilehost(tagged);
+      if (out) this.write(rewriteNumericTarget(out, nick));
+    }
+    this.writeExtraIsupport(nick);
   }
 
   // --- control (unbound) connection ------------------------------------------
@@ -3330,6 +3410,10 @@ class BouncerSession implements MonitorHolder, ReplyClient {
         if (this.onUpstreamMetadata) {
           this.conn.client.off('lurker metadata', this.onUpstreamMetadata);
         }
+        if (this.onUpstreamRegistered) {
+          this.conn.client.off('registered', this.onUpstreamRegistered);
+        }
+        if (this.onUpstreamMotd) this.conn.client.off('motd', this.onUpstreamMotd);
         // The keys only this client held go off the socket with it.
         this.conn.releaseMetadataHolder(this);
       } catch {
@@ -3338,6 +3422,8 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     }
     this.onRawUpstream = null;
     this.onUpstreamCaps = null;
+    this.onUpstreamRegistered = null;
+    this.onUpstreamMotd = null;
     // Take this client's nicks off the network's list, except ones someone else
     // still watches.
     if (this.conn?.monitor.removeHolder(this)) this.conn.syncMonitor();
