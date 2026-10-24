@@ -121,6 +121,23 @@ describe('useMessageActions', () => {
       expect(hasReply({ ...replyableMine, self: false })).toBe(true);
     });
 
+    it('puts react first, in the bar and the menu alike', () => {
+      useNetworksStore().states = { 1: { state: 'connected', canReact: true } } as never;
+      const line = other({ msgid: 'm1', type: 'message', target: '#chan', bufferId: 7 });
+      const api = useMessageActions();
+      expect(api.buildActions(line).map((a) => a.key)).toEqual([
+        'react',
+        'reply',
+        'quote',
+        'copy',
+        'copyQuote',
+        'link',
+        'save',
+        'ignore',
+      ]);
+      expect(api.buildItems(line, makeCtx())[0].label).toBe('React');
+    });
+
     it('offers react on a chat line, on a network that can carry it', () => {
       const line = other({ msgid: 'm1', type: 'message', target: '#chan' });
       const hasReact = (m: MessageLike) =>

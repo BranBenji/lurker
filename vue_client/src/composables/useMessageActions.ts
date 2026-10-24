@@ -207,6 +207,20 @@ export function useMessageActions(): MessageActionsAPI {
     if (!message) return [];
     const actions: MessageAction[] = [];
 
+    // A reaction replies to the line's msgid, so it needs a line a reply could
+    // name, on a network that can carry it (canReact — see the server's
+    // canSendReactions). Not a notice — the server's reactionSendTarget says
+    // why. It re-checks all of this; the gate just keeps a button off lines
+    // where it could only do nothing. First in the bar and the menu, where
+    // Discord and Slack put it: the action people reach for most.
+    if (
+      replyable(message) &&
+      message.type !== 'notice' &&
+      reactionsGoOut(message.networkId ?? message.network_id)
+    ) {
+      actions.push({ key: 'react', label: 'React', icon: FaceSlightlySmilingPlusIcon });
+    }
+
     // Ignore addresses another user: pointless on your own line, and the server
     // uses the hostmask for delivery, not ignore filtering.
     const addressable = !message.self && !!message.nick;
@@ -240,19 +254,6 @@ export function useMessageActions(): MessageActionsAPI {
       const nid = message.networkId ?? message.network_id;
       const who = useRelayBotsStore().unwrap(nid, message)?.nick ?? message.nick;
       actions.push({ key: 'quote', label: `Quote ${who}`, icon: MessageSquareQuoteIcon });
-    }
-
-    // A reaction replies to the line's msgid, so it needs a line a reply could
-    // name, on a network that can carry it (canReact — see the server's
-    // canSendReactions). Not a notice — the server's reactionSendTarget says
-    // why. It re-checks all of this; the gate just keeps a button off lines
-    // where it could only do nothing.
-    if (
-      replyable(message) &&
-      message.type !== 'notice' &&
-      reactionsGoOut(message.networkId ?? message.network_id)
-    ) {
-      actions.push({ key: 'react', label: 'React', icon: FaceSlightlySmilingPlusIcon });
     }
 
     if (message.text) {
