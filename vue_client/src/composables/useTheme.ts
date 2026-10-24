@@ -8,7 +8,7 @@ import { useViewport } from './useViewport.js';
 // Maps each settings key to the CSS custom property it controls. Anything in
 // here is live-rewritten on :root whenever the settings store changes, so the
 // whole UI re-themes immediately when the user edits a key in Settings.
-const COLOR_VARS: Record<string, string> = {
+export const COLOR_VARS: Record<string, string> = {
   'look.color.bg': '--bg',
   'look.color.bg_soft': '--bg-soft',
   'look.color.fg': '--fg',

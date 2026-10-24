@@ -56,12 +56,34 @@
         </option>
       </select>
       <span v-else-if="opt.type === 'color'" class="color-edit">
-        <span class="swatch" :style="{ background: value as string }"></span>
+        <!-- The swatch opens the picker; the field beside it stays the raw
+             editor for anything the picker can't draw (var(), color-mix()).
+             Click only opens: while the picker is up, clicking away, Enter or
+             "done" closes it (ColorPicker owns that), so a second swatch click
+             is a no-op rather than a toggle that would race the outside-click. -->
+        <button
+          ref="swatchEl"
+          type="button"
+          class="swatch"
+          :style="{ background: value as string }"
+          :disabled="!!hint"
+          title="pick a color"
+          aria-label="pick a color"
+          :aria-expanded="pickerOpen"
+          @click="pickerOpen = true"
+        ></button>
         <input
           type="text"
           :value="value"
           :disabled="!!hint"
           @change="$emit('commit', ($event.target as HTMLInputElement).value)"
+        />
+        <ColorPicker
+          v-if="pickerOpen"
+          :value="String(value ?? '')"
+          :anchor="swatchEl"
+          @commit="$emit('commit', $event)"
+          @close="pickerOpen = false"
         />
       </span>
       <textarea
@@ -120,6 +142,7 @@
 <script setup lang="ts">
 import { ref } from 'vue';
 import type { SettingOption, SettingValue } from '../../../shared/settingsRegistry.js';
+import ColorPicker from './ColorPicker.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -163,6 +186,8 @@ const emit = defineEmits<{
 }>();
 
 const revealed = ref(false);
+const pickerOpen = ref(false);
+const swatchEl = ref<HTMLElement | null>(null);
 
 // The one int constraint <input min/max> can't express: minNonzero leaves a
 // hole (valid: 0 or >= floor). Caught here so the hole never commits — the
@@ -289,10 +314,20 @@ function formatDefault(opt: SettingOption, v: SettingValue): string {
   white-space: nowrap;
 }
 .editor .swatch {
-  width: 14px;
-  height: 14px;
+  /* A button now (it opens the picker): drop the base button padding and
+     keep the flat square, a touch larger than the old 14px chip so it is a
+     target rather than a mark. */
+  width: 1.3em;
+  height: 1.3em;
+  padding: 0;
   border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   display: inline-block;
+  cursor: pointer;
+  flex: none;
+}
+.editor .swatch:disabled {
+  cursor: not-allowed;
 }
 .default-line {
   color: var(--fg-muted);
