@@ -3102,7 +3102,11 @@ watch(
   background-image: linear-gradient(var(--border), var(--border));
   background-size: 1px 100%;
   background-repeat: repeat-y;
-  background-position: calc(var(--space-4) + var(--avatar-gutter)) 0;
+  /* Snapped to the pixel grid: the tile is sized in em, so the gutter's edge
+     lands between device pixels at most font sizes (2.9em at 14px is 40.6px),
+     and a 1px line straddling two of them paints as two lighter half-lines —
+     visibly paler than the standard layout's separator in the same colour. */
+  background-position: round(calc(var(--space-4) + var(--avatar-gutter)), 1px) 0;
   background-attachment: local;
 }
 .message-list.compact.avatars .line {
