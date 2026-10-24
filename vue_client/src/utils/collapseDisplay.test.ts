@@ -40,6 +40,10 @@ function divider({
 // exercise the "same displayed time" branch deterministically.
 const minuteFormat = (iso: string | undefined): string => (iso ? iso.slice(11, 16) : '');
 
+// The compact layout's run types (#1180): what MessageList's `headedType` says.
+const compactTypes = (type: string | undefined) =>
+  type === 'message' || type === 'notice' || type === 'motd' || type === 'system';
+
 describe('collapseDisplay — author collapsing', () => {
   it('flags consecutive plain messages from the same nick', () => {
     const rows = [
@@ -139,7 +143,7 @@ describe('collapseDisplay — author collapsing', () => {
 
   // The compact layout (#1180): a bot's run of notices groups under one head,
   // as its messages would. Actions still name their own actor and stay anchors.
-  it('collapses consecutive notices from one nick with collapseNotices on', () => {
+  it('collapses consecutive notices from one nick when collapseTypes admits them', () => {
     const rows = [
       msg({ id: 1, nick: 'bot', time: '2026-05-16T10:00:00Z', type: 'notice' }),
       msg({ id: 2, nick: 'bot', time: '2026-05-16T10:00:10Z', type: 'notice' }),
@@ -149,10 +153,29 @@ describe('collapseDisplay — author collapsing', () => {
     ];
     collapseDisplay(rows, {
       collapseAuthors: true,
-      collapseNotices: true,
+      collapseTypes: compactTypes,
       authorWindowMs: 5 * 60_000,
     });
     expect(rows.map((r) => !!r.continuationAuthor)).toEqual([false, true, true, false, false]);
+  });
+
+  // The server buffer's own text has no nick: a run of numerics folds under
+  // one head, and `authorOf` tells two networks' system lines apart.
+  it('folds nick-less rows by the caption authorOf gives them', () => {
+    const rows = [
+      msg({ id: 1, nick: '', time: '2026-05-16T10:00:00Z', type: 'motd' }),
+      msg({ id: 2, nick: '', time: '2026-05-16T10:00:10Z', type: 'motd' }),
+      { m: { id: 3, time: '2026-05-16T10:00:20Z', type: 'system', scope: 'net:A' }, key: 3 },
+      { m: { id: 4, time: '2026-05-16T10:00:30Z', type: 'system', scope: 'net:A' }, key: 4 },
+      { m: { id: 5, time: '2026-05-16T10:00:40Z', type: 'system', scope: 'net:B' }, key: 5 },
+    ] as DisplayRow[];
+    collapseDisplay(rows, {
+      collapseAuthors: true,
+      collapseTypes: compactTypes,
+      authorOf: (m) => m.nick || String((m as { scope?: string }).scope ?? ''),
+      authorWindowMs: 5 * 60_000,
+    });
+    expect(rows.map((r) => !!r.continuationAuthor)).toEqual([false, true, false, true, false]);
   });
 
   // NOTICE is the sender saying "this is not a reply to talk back to": one
@@ -168,7 +191,7 @@ describe('collapseDisplay — author collapsing', () => {
     ];
     collapseDisplay(rows, {
       collapseAuthors: true,
-      collapseNotices: true,
+      collapseTypes: compactTypes,
       authorWindowMs: 5 * 60_000,
     });
     expect(rows.map((r) => !!r.continuationAuthor)).toEqual([false, false, true, false, true]);
@@ -182,18 +205,18 @@ describe('collapseDisplay — author collapsing', () => {
     ];
     collapseDisplay(rows, {
       collapseAuthors: true,
-      collapseNotices: true,
+      collapseTypes: compactTypes,
       authorWindowMs: 5 * 60_000,
     });
     expect(rows.every((r) => !r.continuationAuthor)).toBe(true);
   });
 
-  it('collapseNotices alone (authors off) collapses nothing', () => {
+  it('collapseTypes alone (authors off) collapses nothing', () => {
     const rows = [
       msg({ id: 1, nick: 'bot', time: '2026-05-16T10:00:00Z', type: 'notice' }),
       msg({ id: 2, nick: 'bot', time: '2026-05-16T10:00:10Z', type: 'notice' }),
     ];
-    collapseDisplay(rows, { collapseNotices: true, collapseTimestamps: true });
+    collapseDisplay(rows, { collapseTypes: compactTypes, collapseTimestamps: true });
     expect(rows.every((r) => !r.continuationAuthor)).toBe(true);
   });
 

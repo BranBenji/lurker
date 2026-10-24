@@ -16,17 +16,19 @@
 //                               the previous visible row displayed the same
 //                               formatted time string.
 //
-// Only `type === 'message'` participates in author collapsing, plus notices
-// when `collapseNotices` is set (the compact layout, #1180). In the standard
-// layout a notice's `-nick-` prefix belongs to its line, as an action's `*`
-// does, so collapsing it would break the visual identity; keep them as
-// anchors. The compact head carries the nick for a notice as it does for a
-// message, so there a bot's run of notices groups under one head. The type is
-// part of the run's identity: a notice never continues a message run or the
-// reverse (the apps' MessageGrouping rule — NOTICE means "don't reply to
-// this", and one head over both would erase the distinction the sender
-// chose). Actions name their own actor and stay anchors everywhere. System
-// events (join/part/etc.) and consolidation summary rows break the author run.
+// Only `type === 'message'` participates in author collapsing unless
+// `collapseTypes` widens it (the compact layout, #1180: every headed type).
+// In the standard layout a notice's `-nick-` prefix belongs to its line, as
+// an action's `*` does, so collapsing it would break the visual identity;
+// keep them as anchors. The compact head carries who spoke, so there a bot's
+// run of notices, or the server's run of its own text, groups under one head.
+// The type is part of the run's identity: a notice never continues a message
+// run or the reverse (the apps' MessageGrouping rule — NOTICE means "don't
+// reply to this", and one head over both would erase the distinction the
+// sender chose). Who spoke is `authorOf` (the nick by default; the caller
+// names a nick-less row's caption). Actions name their own actor and stay
+// anchors everywhere. System events (join/part/etc.) and consolidation
+// summary rows break the author run.
 //
 // Time collapsing applies to every row that displays a time (chat rows,
 // system rows, consolidation rows). Dividers carry no time and reset both
@@ -58,8 +60,11 @@ export interface DisplayRow {
 
 export interface CollapseOptions {
   collapseAuthors?: boolean;
-  // Notices collapse into runs of their own kind too (compact layout only).
-  collapseNotices?: boolean;
+  // Which row types fold into runs (each with its own kind); plain messages
+  // only when absent.
+  collapseTypes?: (type: string | undefined) => boolean;
+  // Who a row is from, for the run's identity; the nick when absent.
+  authorOf?: (m: MessageRowInner) => string;
   collapseTimestamps?: boolean;
   formatTime?: (iso: string | undefined) => string;
   authorWindowMs?: number;
@@ -67,7 +72,8 @@ export interface CollapseOptions {
 
 export function collapseDisplay(rows: DisplayRow[], options: CollapseOptions = {}): DisplayRow[] {
   const collapseAuthors = !!options.collapseAuthors;
-  const collapseNotices = collapseAuthors && !!options.collapseNotices;
+  const collapseTypes = options.collapseTypes ?? ((type) => type === 'message');
+  const authorOf = options.authorOf ?? ((m) => m.nick || '');
   const collapseTimestamps = !!options.collapseTimestamps;
   if (!collapseAuthors && !collapseTimestamps) return rows;
 
@@ -93,11 +99,7 @@ export function collapseDisplay(rows: DisplayRow[], options: CollapseOptions = {
     const timeStr = collapseTimestamps ? formatTime(iso) : '';
 
     const type = row.consolidation ? undefined : row.m?.type;
-    if (
-      collapseAuthors &&
-      row.m &&
-      (type === 'message' || (collapseNotices && type === 'notice'))
-    ) {
+    if (collapseAuthors && row.m && collapseTypes(type)) {
       // Self flag is part of the visual identity (self color vs. nick color),
       // so a self message after a non-self message from the same nick must
       // not collapse — even though that's a deeply unusual case. So is where a
@@ -108,7 +110,7 @@ export function collapseDisplay(rows: DisplayRow[], options: CollapseOptions = {
       // the type: a notice and a message from one nick are two runs. Nick
       // case is not: servers send a nick inconsistently cased, the colour
       // hash folds it, and so do the apps and the reply-quote run check.
-      const key = `${type}:${row.m.self ? '1' : '0'}:${(row.m.nick || '').toLowerCase()}:${row.m.relayBot || ''}:${row.m.relaySource || ''}`;
+      const key = `${type}:${row.m.self ? '1' : '0'}:${authorOf(row.m).toLowerCase()}:${row.m.relayBot || ''}:${row.m.relaySource || ''}`;
       // The delta must be non-negative: rows carry server-time, which a
       // bouncer replay can stamp OLDER than the preceding row's. A negative
       // delta would trivially pass the window check and collapse a replayed

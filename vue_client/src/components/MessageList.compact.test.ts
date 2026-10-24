@@ -73,6 +73,11 @@ function mountCompact(opts: { keepSettings?: boolean } = {}) {
     { ...message(14, 'oldme', 6), type: 'notice', self: true },
     // The server's own notice: its "nick" is a hostname, nobody to look up.
     { ...message(15, 'irc.example.net', 6, 10), type: 'notice' },
+    // The server buffer's own text (numerics, MOTD): no nick at all.
+    { ...message(16, '', 7), type: 'motd' },
+    { ...message(17, '', 7, 10), type: 'motd' },
+    { ...message(18, '', 7, 20), type: 'error' },
+    { ...message(19, '', 7, 30), type: 'motd' },
   ] as never;
   b.joined = true;
   b.hasMoreOlder = false;
@@ -191,9 +196,8 @@ describe('MessageList — compact notice runs', () => {
     expect(h!.querySelector('.time')?.textContent).toMatch(/\d\d:\d\d$/);
     expect(h!.querySelector('.mode-glyph')).toBeNull();
     // Plain text, as the standard layout prints the mark: no nick widget to
-    // resolve a display name or open a menu, and no avatar tile.
+    // resolve a display name or open a menu.
     expect(h!.querySelector('.nick-ref')).toBeNull();
-    expect(line(8).querySelector(':scope > .avatar')).toBeNull();
     expect(line(8).querySelector(':scope > .body')?.textContent).toBe('line 8');
     // Nothing of the standard layout's line-level prefix remains.
     expect(line(8).querySelector(':scope > .prefix')).toBeNull();
@@ -226,7 +230,7 @@ describe('MessageList — compact notice runs', () => {
     expect(mark.querySelector('[style]')).toBeNull();
   });
 
-  it('prints a server notice’s hostname as an inert mark, with no avatar', () => {
+  it('gives a notice head a placeholder tile: the colour and a megaphone, no face', () => {
     useSettingsStore().values = {
       'look.message.layout': 'compact',
       'look.message.avatars': true,
@@ -241,9 +245,56 @@ describe('MessageList — compact notice runs', () => {
     mountCompact({ keepSettings: true });
     expect(head(15)!.querySelector('.prefix')?.textContent).toBe('-irc.example.net-');
     expect(head(15)!.querySelector('.nick-ref')).toBeNull();
-    expect(line(15).querySelector(':scope > .avatar')).toBeNull();
-    // A message head in the same list does draw its tile.
-    expect(line(10).querySelector(':scope > .avatar')).not.toBeNull();
+    const tile = line(15).querySelector(':scope > .avatar') as HTMLElement;
+    expect(tile.classList.contains('notice')).toBe(true);
+    expect(tile.classList.contains('interactive')).toBe(false);
+    expect(tile.querySelector('svg.mark')).not.toBeNull();
+    expect(tile.querySelector('img')).toBeNull();
+    expect(tile.style.background).not.toBe('');
+    // Only the run's first row: the folded notice reserves the gutter, no tile.
+    expect(line(9).querySelector(':scope > .avatar')).toBeNull();
+    // A message head in the same list draws its face from the set.
+    const face = line(10).querySelector(':scope > .avatar') as HTMLElement;
+    expect(face.classList.contains('notice')).toBe(false);
+    expect(face.querySelector('img')).not.toBeNull();
+  });
+
+  // The server buffer's own text (#1180): the network's name over a run of
+  // it, as the apps caption it; an error stays a `!!` line of its own.
+  it('folds the server’s own text under one head captioned with the network', () => {
+    mountCompact();
+    const h = head(16)!;
+    expect(h.querySelector('.prefix')?.textContent).toBe('testnet');
+    expect(h.querySelector('.time')?.textContent).toMatch(/\d\d:\d\d$/);
+    expect(line(16).querySelector(':scope > .body')?.textContent).toBe('line 16');
+    expect(line(16).querySelector('.time.trailing')).toBeNull();
+    expect(line(17).classList.contains('cont-author')).toBe(true);
+    expect(head(17)).toBeNull();
+    expect(head(18)).toBeNull();
+    expect(line(18).querySelector(':scope > .prefix')?.textContent).toBe('!!');
+    expect(line(18).querySelector('.time.trailing')).not.toBeNull();
+    // The error broke the run: the next server line opens a new head.
+    expect(head(19)).not.toBeNull();
+  });
+
+  it('gives the server’s head a server tile on the plain background', () => {
+    useSettingsStore().values = {
+      'look.message.layout': 'compact',
+      'look.message.avatars': true,
+      'look.avatars.set': 'ealain',
+    } as never;
+    useAvatarSetsStore().builtinManifests = {
+      ealain: { count: 32, ext: 'webp' },
+      'plain-light': { count: 1, ext: 'webp' },
+      'plain-dark': { count: 1, ext: 'webp' },
+    };
+    mountCompact({ keepSettings: true });
+    const tile = line(16).querySelector(':scope > .avatar') as HTMLElement;
+    expect(tile.classList.contains('server')).toBe(true);
+    expect(tile.querySelector('svg.mark')).not.toBeNull();
+    expect(tile.style.background).toBe('');
+    expect(tile.getAttribute('aria-label')).toBe('testnet');
+    expect(line(18).querySelector(':scope > .avatar')).toBeNull();
   });
 
   it('leaves actions as single lines that never fold', () => {
