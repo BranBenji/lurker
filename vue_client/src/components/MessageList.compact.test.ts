@@ -47,7 +47,11 @@ function mountCompact(opts: { keepSettings?: boolean } = {}) {
   networks.states = { 1: { nick: 'me', state: 'connected', peerPresence: {} } } as never;
   const b = useBuffersStore().ensure(1, '#chan', 9);
   // dave is a local op; the relayed `dave` below is someone else entirely.
-  b.members = [{ nick: 'dave', modes: ['o'], away: false }];
+  // bot holds op too, which its notice mark must not wear.
+  b.members = [
+    { nick: 'dave', modes: ['o'], away: false },
+    { nick: 'bot', modes: ['o'], away: false },
+  ];
   b.messages = [
     message(1, 'alice', 0),
     message(2, 'alice', 0, 30),
@@ -57,6 +61,13 @@ function mountCompact(opts: { keepSettings?: boolean } = {}) {
     { ...message(6, 'dave', 4), relayBot: 'bridge', relaySource: 'github' },
     // A local dave right after the bridged one, inside the author window.
     message(7, 'dave', 4, 20),
+    // A bot's run of notices (#1180), then it speaks, then notices again.
+    { ...message(8, 'bot', 5), type: 'notice' },
+    { ...message(9, 'bot', 5, 10), type: 'notice' },
+    message(10, 'bot', 5, 20),
+    { ...message(11, 'bot', 5, 30), type: 'notice' },
+    { ...message(12, 'bot', 5, 40), type: 'action' },
+    { ...message(13, 'bot', 5, 50), type: 'action' },
   ] as never;
   b.joined = true;
   b.hasMoreOlder = false;
@@ -151,5 +162,75 @@ describe('MessageList — compact head timestamp', () => {
     mountCompact();
     // bob's 12:02 matches alice's line above, which collapsing would blank.
     expect(row(4).headTime).toBeTruthy();
+  });
+});
+
+// Notices in the compact layout (#1180): a head of their own, `-nick-` and the
+// time, and a bot's consecutive notices under one head — never shared with
+// its messages, as the apps group them.
+describe('MessageList — compact notice runs', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+  afterEach(() => {
+    wrapper?.unmount();
+    wrapper = null;
+  });
+
+  const line = (id: number) => wrapper!.find(`[data-msg-id="${id}"]`).element;
+  const head = (id: number) => line(id).querySelector(':scope > .head');
+
+  it('gives a notice the message head: -nick- and the time, no mode glyph', () => {
+    mountCompact();
+    const h = head(8);
+    expect(h).not.toBeNull();
+    expect(h!.querySelector('.prefix')?.textContent).toBe('-bot-');
+    expect(h!.querySelector('.time')?.textContent).toMatch(/\d\d:\d\d$/);
+    expect(h!.querySelector('.mode-glyph')).toBeNull();
+    expect(line(8).querySelector(':scope > .body')?.textContent).toBe('line 8');
+    // Nothing of the standard layout's line-level prefix remains.
+    expect(line(8).querySelector(':scope > .prefix')).toBeNull();
+    expect(line(8).querySelector('.time.trailing')).toBeNull();
+  });
+
+  it('folds a second notice from the same nick under the first head', () => {
+    mountCompact();
+    expect(line(9).classList.contains('cont-author')).toBe(true);
+    expect(head(9)).toBeNull();
+    expect(row(9)).toEqual({ headTime: null, bodyTime: null });
+  });
+
+  it('starts a new run when the bot speaks, and again when it notices', () => {
+    mountCompact();
+    // The message head wears the op glyph the notice mark did not.
+    const spoke = head(10);
+    expect(spoke).not.toBeNull();
+    expect(spoke!.querySelector('.prefix')?.textContent).toBe('@bot');
+    expect(spoke!.querySelector('.mode-glyph')?.textContent).toBe('@');
+    expect(head(11)).not.toBeNull();
+    expect(head(11)!.querySelector('.prefix')?.textContent).toBe('-bot-');
+  });
+
+  it('leaves actions as single lines that never fold', () => {
+    mountCompact();
+    for (const id of [12, 13]) {
+      expect(head(id)).toBeNull();
+      expect(line(id).classList.contains('cont-author')).toBe(false);
+      expect(line(id).querySelector(':scope > .prefix')?.textContent).toBe('*');
+      expect(line(id).querySelector('.time.trailing')).not.toBeNull();
+    }
+  });
+
+  it('keeps every notice on its own -nick- line in the standard layout', () => {
+    useSettingsStore().values = {
+      'look.message.layout': 'standard',
+      'look.message.collapse_authors': true,
+    } as never;
+    mountCompact({ keepSettings: true });
+    for (const id of [8, 9, 11]) {
+      expect(head(id)).toBeNull();
+      expect(line(id).classList.contains('cont-author')).toBe(false);
+      expect(line(id).querySelector(':scope > .prefix')?.textContent).toBe('-bot-');
+    }
+    // The toggle still groups plain messages there.
+    expect(line(2).classList.contains('cont-author')).toBe(true);
   });
 });

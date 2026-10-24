@@ -125,6 +125,66 @@ describe('collapseDisplay — author collapsing', () => {
     expect(rows.every((r) => !r.continuationAuthor)).toBe(true);
   });
 
+  // The compact layout (#1180): a bot's run of notices groups under one head,
+  // as its messages would. Actions still name their own actor and stay anchors.
+  it('collapses consecutive notices from one nick with collapseNotices on', () => {
+    const rows = [
+      msg({ id: 1, nick: 'bot', time: '2026-05-16T10:00:00Z', type: 'notice' }),
+      msg({ id: 2, nick: 'bot', time: '2026-05-16T10:00:10Z', type: 'notice' }),
+      msg({ id: 3, nick: 'bot', time: '2026-05-16T10:00:20Z', type: 'notice' }),
+      msg({ id: 4, nick: 'bot', time: '2026-05-16T10:00:30Z', type: 'action' }),
+      msg({ id: 5, nick: 'bot', time: '2026-05-16T10:00:40Z', type: 'action' }),
+    ];
+    collapseDisplay(rows, {
+      collapseAuthors: true,
+      collapseNotices: true,
+      authorWindowMs: 5 * 60_000,
+    });
+    expect(rows.map((r) => !!r.continuationAuthor)).toEqual([false, true, true, false, false]);
+  });
+
+  // NOTICE is the sender saying "this is not a reply to talk back to": one
+  // head over a notice and a message would erase that, so the type is part of
+  // the run's identity (the apps' MessageGrouping rule).
+  it('never joins a notice to a message run, or the reverse', () => {
+    const rows = [
+      msg({ id: 1, nick: 'bot', time: '2026-05-16T10:00:00Z' }),
+      msg({ id: 2, nick: 'bot', time: '2026-05-16T10:00:10Z', type: 'notice' }),
+      msg({ id: 3, nick: 'bot', time: '2026-05-16T10:00:20Z', type: 'notice' }),
+      msg({ id: 4, nick: 'bot', time: '2026-05-16T10:00:30Z' }),
+      msg({ id: 5, nick: 'bot', time: '2026-05-16T10:00:40Z' }),
+    ];
+    collapseDisplay(rows, {
+      collapseAuthors: true,
+      collapseNotices: true,
+      authorWindowMs: 5 * 60_000,
+    });
+    expect(rows.map((r) => !!r.continuationAuthor)).toEqual([false, false, true, false, true]);
+  });
+
+  it('keeps the window and the self split for notice runs', () => {
+    const rows = [
+      msg({ id: 1, nick: 'bot', time: '2026-05-16T10:00:00Z', type: 'notice' }),
+      msg({ id: 2, nick: 'bot', time: '2026-05-16T10:30:00Z', type: 'notice' }),
+      msg({ id: 3, nick: 'bot', time: '2026-05-16T10:30:10Z', type: 'notice', self: true }),
+    ];
+    collapseDisplay(rows, {
+      collapseAuthors: true,
+      collapseNotices: true,
+      authorWindowMs: 5 * 60_000,
+    });
+    expect(rows.every((r) => !r.continuationAuthor)).toBe(true);
+  });
+
+  it('collapseNotices alone (authors off) collapses nothing', () => {
+    const rows = [
+      msg({ id: 1, nick: 'bot', time: '2026-05-16T10:00:00Z', type: 'notice' }),
+      msg({ id: 2, nick: 'bot', time: '2026-05-16T10:00:10Z', type: 'notice' }),
+    ];
+    collapseDisplay(rows, { collapseNotices: true, collapseTimestamps: true });
+    expect(rows.every((r) => !r.continuationAuthor)).toBe(true);
+  });
+
   it('breaks the run on a system event between two messages', () => {
     const rows = [
       msg({ id: 1, nick: 'alice', time: '2026-05-16T10:00:00Z' }),
