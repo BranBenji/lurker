@@ -6,6 +6,7 @@ import {
   BookmarkCheckIcon,
   BookmarkIcon,
   CopyIcon,
+  CopyPlusIcon,
   HeartPlusIcon,
   LinkIcon,
   QuoteIcon,
@@ -18,6 +19,7 @@ import { useReactionsStore } from '../stores/reactions.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { tagSupport, useNetworksStore } from '../stores/networks.js';
 import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
+import { quoteMarks } from '../../../shared/replies.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useContextMenu } from './useContextMenu.js';
 
@@ -92,7 +94,15 @@ export interface MessageContext {
   onIgnore(message: MessageLike): void;
 }
 
-export type MessageActionKey = 'reply' | 'quote' | 'react' | 'copy' | 'link' | 'save' | 'ignore';
+export type MessageActionKey =
+  | 'reply'
+  | 'quote'
+  | 'react'
+  | 'copy'
+  | 'copyQuote'
+  | 'link'
+  | 'save'
+  | 'ignore';
 
 export interface MessageAction {
   key: MessageActionKey;
@@ -179,6 +189,17 @@ export function useMessageActions(): MessageActionsAPI {
     return `${window.location.origin}/buffer/${bufferId}?msg=${message.id}`;
   }
 
+  // What Copy quote copies: the line the way IRC writes it (quoteMarks), so a
+  // /me reads `* bob waves`. A relayed line is copied as the person inside the
+  // envelope, the way Quote names them.
+  function copyQuoteText(message: MessageLike): string {
+    const nid = message.networkId ?? message.network_id;
+    const relayed = useRelayBotsStore().unwrap(nid, message);
+    const [open, close] = quoteMarks(message.type);
+    const nick = relayed?.nick ?? message.nick ?? '';
+    return `${open}${nick}${close} ${relayed?.text ?? message.text ?? ''}`;
+  }
+
   function buildActions(message: MessageLike | null | undefined): MessageAction[] {
     if (!message) return [];
     const actions: MessageAction[] = [];
@@ -231,7 +252,13 @@ export function useMessageActions(): MessageActionsAPI {
       actions.push({ key: 'copy', label: 'Copy text', icon: CopyIcon });
     }
 
-    // Sits next to Copy text because it's the other "take this away with you"
+    // Copy quote (#1218): the same text with its author in front, `<bob> hi`,
+    // for quoting by hand or pasting somewhere else.
+    if (message.nick && message.text) {
+      actions.push({ key: 'copyQuote', label: 'Copy quote', icon: CopyPlusIcon });
+    }
+
+    // Sits with the two copies because it's the other "take this away with you"
     // action: a permalink to bookmark, or to open in a new window.
     if (linkBufferId(message) != null) {
       actions.push({ key: 'link', label: 'Copy link to message', icon: LinkIcon });
@@ -286,6 +313,11 @@ export function useMessageActions(): MessageActionsAPI {
       case 'copy':
         if (navigator.clipboard) {
           navigator.clipboard.writeText(String(message.text || '')).catch(() => {});
+        }
+        break;
+      case 'copyQuote':
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(copyQuoteText(message)).catch(() => {});
         }
         break;
       case 'link': {

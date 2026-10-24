@@ -36,14 +36,21 @@ describe('useMessageActions', () => {
   });
 
   describe('buildActions', () => {
-    it('returns reply, quote, copy, save, ignore for another user with text + id', () => {
+    it('returns reply, quote, copy, copyQuote, save, ignore for another user with text + id', () => {
       const actions = useMessageActions().buildActions(other());
-      expect(actions.map((a) => a.key)).toEqual(['reply', 'quote', 'copy', 'save', 'ignore']);
+      expect(actions.map((a) => a.key)).toEqual([
+        'reply',
+        'quote',
+        'copy',
+        'copyQuote',
+        'save',
+        'ignore',
+      ]);
     });
 
     it('drops reply + ignore on your own line', () => {
       const actions = useMessageActions().buildActions(other({ self: true }));
-      expect(actions.map((a) => a.key)).toEqual(['quote', 'copy', 'save']);
+      expect(actions.map((a) => a.key)).toEqual(['quote', 'copy', 'copyQuote', 'save']);
     });
 
     // #1119: Quote is plain text, so it needs nothing from the network — not a
@@ -169,7 +176,7 @@ describe('useMessageActions', () => {
 
     it('drops save when there is no stable id', () => {
       const actions = useMessageActions().buildActions(other({ id: null }));
-      expect(actions.map((a) => a.key)).toEqual(['reply', 'quote', 'copy', 'ignore']);
+      expect(actions.map((a) => a.key)).toEqual(['reply', 'quote', 'copy', 'copyQuote', 'ignore']);
     });
 
     it('drops save on a system-buffer line, which has no owning network', () => {
@@ -177,7 +184,7 @@ describe('useMessageActions', () => {
       // these (the ownership check joins through networks), so offering it
       // would be a button that silently does nothing.
       const actions = useMessageActions().buildActions(other({ networkId: null }));
-      expect(actions.map((a) => a.key)).toEqual(['reply', 'quote', 'copy', 'ignore']);
+      expect(actions.map((a) => a.key)).toEqual(['reply', 'quote', 'copy', 'copyQuote', 'ignore']);
     });
 
     it('does not label a system line saved when a real message shares its id', () => {
@@ -268,7 +275,7 @@ describe('useMessageActions', () => {
       expect(menu.state.open).toBe(true);
       expect(menu.state.x).toBe(12);
       expect(menu.state.y).toBe(34);
-      expect(menu.state.items.length).toBe(5);
+      expect(menu.state.items.length).toBe(6);
     });
 
     it('no-ops for a null message', () => {
@@ -303,7 +310,15 @@ describe('copy link to message (#744)', () => {
 
   it('offers the link once the buffer has a server id', () => {
     const actions = useMessageActions().buildActions(inBuffer('#chan', 7));
-    expect(actions.map((a) => a.key)).toEqual(['reply', 'quote', 'copy', 'link', 'save', 'ignore']);
+    expect(actions.map((a) => a.key)).toEqual([
+      'reply',
+      'quote',
+      'copy',
+      'copyQuote',
+      'link',
+      'save',
+      'ignore',
+    ]);
   });
 
   it('copies an absolute /buffer/<id>?msg=<id> URL', async () => {
@@ -368,5 +383,51 @@ describe('copy link to message (#744)', () => {
       .buildItems(inBuffer('#chan', 7), makeCtx())
       .map((i) => i.label);
     expect(labels).toContain('Copy link to message');
+  });
+});
+
+describe('copy quote (#1218)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    useContextMenu().close();
+  });
+
+  function copied(msg: MessageLike): string {
+    const writeText = vi.fn<(t: string) => Promise<void>>(() => Promise.resolve());
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    useMessageActions().run('copyQuote', msg, makeCtx());
+    vi.unstubAllGlobals();
+    return writeText.mock.calls[0][0];
+  }
+
+  it('copies the text with its author in front', () => {
+    expect(copied(other({ type: 'message' }))).toBe('<bob> hi');
+  });
+
+  it('writes a /me and a notice the way IRC does', () => {
+    expect(copied(other({ type: 'action', text: 'waves' }))).toBe('* bob waves');
+    expect(copied(other({ type: 'notice' }))).toBe('-bob- hi');
+  });
+
+  it('copies a relayed line as the person inside the envelope', () => {
+    useRelayBotsStore().byKey['1::bridge'] = { nick: 'bridge', pattern: '' };
+    expect(copied(other({ nick: 'bridge', text: '<alice> hi', type: 'message' }))).toBe(
+      '<alice> hi',
+    );
+  });
+
+  it('is offered wherever there is a nick and text, your own line included', () => {
+    const api = useMessageActions();
+    const has = (m: MessageLike) => api.buildActions(m).some((a) => a.key === 'copyQuote');
+    expect(has(other({ self: true, id: null, networkId: null }))).toBe(true);
+    expect(has(other({ text: '' }))).toBe(false);
+    expect(has(other({ nick: undefined }))).toBe(false);
+  });
+
+  it('reaches the context menu too, not just the hover bar', () => {
+    const labels = useMessageActions()
+      .buildItems(other(), makeCtx())
+      .map((i) => i.label);
+    expect(labels).toContain('Copy quote');
   });
 });
