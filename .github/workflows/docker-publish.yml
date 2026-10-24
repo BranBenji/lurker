@@ -32,12 +32,12 @@ env:
   # instead of having `docker compose pull` recreate it — and drop their IRC
   # connections — for nothing. Entries are one-shot: drop them once released.
   #
-  # v2.5.1: a Node security rebuild (CVE-2026-111497, the Brotli decoder). The
-  # engine's image changes, its code does not, and the bug cannot reach it: the
-  # engine speaks a line protocol over a raw TCP socket, never HTTP, and
-  # decompresses nothing. Self-hosters keep the engine they run; the next
-  # release that changes the engine carries the new Node with it.
-  ENGINE_TAG_PINNED_RELEASES: 'v2.5.1'
+  # v2.6.0: the engine closure's only change since v2.5.1 is ip-address 10.7.2 →
+  # 10.7.4 (via socks). The fix finds an IPv6 zone by index instead of a regex
+  # and caps in-addr.arpa names; socks only hands Address6 strings net.isIPv6
+  # accepted, which hold no line terminator, so it parses them the same way.
+  # None of the engine's own files changed.
+  ENGINE_TAG_PINNED_RELEASES: 'v2.6.0'
 
 jobs:
   build-and-push:
