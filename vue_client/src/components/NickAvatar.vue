@@ -13,7 +13,8 @@
   A `mark` tile (#1180) is a placeholder, never a face, an initial or a
   metadata picture: a notice's is a megaphone over the nick's colour, and the
   network's own voice (the server buffer's text, system and status lines) is
-  a server on the plain background. A notice's "nick" is often not a person
+  a server over the network's, hashed as the system buffer hashes its name.
+  A notice's "nick" is often not a person
   (the server's hostname, Lurker's own status lines), and the glyph says what
   the line is where a face would say who.
 -->
@@ -36,7 +37,7 @@
       class="mark"
       :class="ink"
       aria-hidden="true"
-    /><ServerIcon v-else-if="mark === 'server'" class="mark" aria-hidden="true" /><img
+    /><ServerIcon v-else-if="mark === 'server'" class="mark" :class="ink" aria-hidden="true" /><img
       v-else-if="src"
       :src="src"
       alt=""
@@ -70,9 +71,9 @@ const props = withDefaults(
     // No metadata avatar: the nick is a relay bot's envelope (someone on
     // another network); the generated tile still shows.
     plain?: boolean;
-    // A placeholder in place of the picture: a notice's megaphone over the
-    // nick's colour, or the network's server on the plain background. No
-    // image or initial, no metadata lookup.
+    // A placeholder in place of the picture: a notice's megaphone or the
+    // network's server, over the colour `nick` hashes to. No image or
+    // initial, no metadata lookup.
     mark?: 'notice' | 'server' | null;
   }>(),
   // An explicit undefined: Vue casts an absent Boolean prop to false, which
@@ -124,8 +125,6 @@ const isSelf = computed(() => {
   return !!own && !!props.nick && own.toLowerCase() === props.nick.toLowerCase();
 });
 const color = computed(() => {
-  // The network's voice is nobody's colour.
-  if (props.mark === 'server') return null;
   if (isSelf.value) return nicks.selfColor.value;
   return props.nick ? nicks.color(props.nick) : null;
 });
@@ -191,8 +190,5 @@ function onError(): void {
 .nick-avatar .mark {
   --icon-size: calc(var(--avatar-size, 2.25em) * 0.5);
   vertical-align: 0;
-}
-.nick-avatar.mark-server .mark {
-  color: var(--fg-muted);
 }
 </style>

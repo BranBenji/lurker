@@ -141,7 +141,7 @@
             <span
               class="prefix"
               :class="prefixClass(row.m)"
-              :style="nickHead(row.m) ? null : prefixStyle(row.m)"
+              :style="nickHead(row.m) ? null : headStyle(row.m)"
               ><NickRef
                 v-if="nickHead(row.m)"
                 :nick="row.m?.nick ?? ''"
@@ -809,6 +809,17 @@ function headCaption(m: ChatMessage | undefined): string {
     return (id != null ? networks.networkById(id)?.name : null) || 'Server';
   }
   return prefixText(m);
+}
+
+// A non-nick head's colour: the prefix's, except the server buffer's text,
+// whose caption is the network's name — in the network's hashed colour, as
+// the system buffer prints it (the standard layout's `--` stays muted).
+function headStyle(m: ChatMessage | undefined): CSSProperties | null {
+  if (m?.type === 'motd') {
+    const c = nicks.color(headCaption(m));
+    return c ? { color: c } : null;
+  }
+  return prefixStyle(m);
 }
 
 // Who a headed row is from, for folding a run and for its tile: the nick

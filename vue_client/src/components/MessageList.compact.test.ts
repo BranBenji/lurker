@@ -280,7 +280,7 @@ describe('MessageList — compact notice runs', () => {
     expect(head(19)).not.toBeNull();
   });
 
-  it('gives the server’s head a server tile on the plain background', () => {
+  it('colours the server’s head and tile in the network’s colour, as the system buffer does', () => {
     useSettingsStore().values = {
       'look.message.layout': 'compact',
       'look.message.avatars': true,
@@ -295,7 +295,9 @@ describe('MessageList — compact notice runs', () => {
     const tile = line(16).querySelector(':scope > .avatar') as HTMLElement;
     expect(tile.classList.contains('mark-server')).toBe(true);
     expect(tile.querySelector('svg.mark')).not.toBeNull();
-    expect(tile.style.background).toBe('');
+    const caption = head(16)!.querySelector('.prefix') as HTMLElement;
+    expect(caption.style.color).not.toBe('');
+    expect(tile.style.background).toContain(caption.style.color);
     expect(tile.getAttribute('aria-label')).toBe('testnet');
     expect(line(18).querySelector(':scope > .avatar')).toBeNull();
     // A self notice under an old nick: the tile agrees with the mark beside
