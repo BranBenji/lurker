@@ -69,6 +69,18 @@ describe('collapseDisplay — author collapsing', () => {
     expect(rows.every((r) => !r.continuationAuthor)).toBe(true);
   });
 
+  it('folds nick case: ChanServ and chanserv are one run, as their colour is one', () => {
+    const rows = [
+      msg({ id: 1, nick: 'ChanServ', time: '2026-05-16T10:00:00Z' }),
+      msg({ id: 2, nick: 'chanserv', time: '2026-05-16T10:00:10Z' }),
+    ];
+    collapseDisplay(rows, {
+      collapseAuthors: true,
+      authorWindowMs: 5 * 60_000,
+    });
+    expect(rows[1].continuationAuthor).toBe(true);
+  });
+
   it('does not collapse self vs. non-self messages from the same nick', () => {
     // Highly unusual — exists for completeness because the visual identity
     // (self color vs. hashed nick color) differs.

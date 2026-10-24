@@ -8,7 +8,9 @@
 //
 //   continuationAuthor: true  — suppress the nick prefix on this row because
 //                               the previous visible row was a plain message
-//                               from the same author within the gap window.
+//                               (or, with collapseNotices, a notice) of the
+//                               same type from the same author within the
+//                               gap window.
 //
 //   continuationTime: true    — suppress the timestamp on this row because
 //                               the previous visible row displayed the same
@@ -103,8 +105,10 @@ export function collapseDisplay(rows: DisplayRow[], options: CollapseOptions = {
       // and anyone on a bridged platform can pick an IRC regular's nick —
       // folding them into one run is misattribution, not polish (the iOS
       // port's MessageGrouping.sameAuthor folds on the same three). And so is
-      // the type: a notice and a message from one nick are two runs.
-      const key = `${type}:${row.m.self ? '1' : '0'}:${row.m.nick || ''}:${row.m.relayBot || ''}:${row.m.relaySource || ''}`;
+      // the type: a notice and a message from one nick are two runs. Nick
+      // case is not: servers send a nick inconsistently cased, the colour
+      // hash folds it, and so do the apps and the reply-quote run check.
+      const key = `${type}:${row.m.self ? '1' : '0'}:${(row.m.nick || '').toLowerCase()}:${row.m.relayBot || ''}:${row.m.relaySource || ''}`;
       // The delta must be non-negative: rows carry server-time, which a
       // bouncer replay can stamp OLDER than the preceding row's. A negative
       // delta would trivially pass the window check and collapse a replayed

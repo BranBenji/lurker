@@ -12,6 +12,7 @@ import MessageList from './MessageList.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useAvatarSetsStore } from '../stores/avatarSets.js';
 
 vi.mock('../composables/useSocket.js', () => ({
   socketSend: vi.fn<() => boolean>(() => true),
@@ -68,6 +69,10 @@ function mountCompact(opts: { keepSettings?: boolean } = {}) {
     { ...message(11, 'bot', 5, 30), type: 'notice' },
     { ...message(12, 'bot', 5, 40), type: 'action' },
     { ...message(13, 'bot', 5, 50), type: 'action' },
+    // A notice the user sent under a nick they no longer hold (me is `me`).
+    { ...message(14, 'oldme', 6), type: 'notice', self: true },
+    // The server's own notice: its "nick" is a hostname, nobody to look up.
+    { ...message(15, 'irc.example.net', 6, 10), type: 'notice' },
   ] as never;
   b.joined = true;
   b.hasMoreOlder = false;
@@ -185,6 +190,10 @@ describe('MessageList — compact notice runs', () => {
     expect(h!.querySelector('.prefix')?.textContent).toBe('-bot-');
     expect(h!.querySelector('.time')?.textContent).toMatch(/\d\d:\d\d$/);
     expect(h!.querySelector('.mode-glyph')).toBeNull();
+    // Plain text, as the standard layout prints the mark: no nick widget to
+    // resolve a display name or open a menu, and no avatar tile.
+    expect(h!.querySelector('.nick-ref')).toBeNull();
+    expect(line(8).querySelector(':scope > .avatar')).toBeNull();
     expect(line(8).querySelector(':scope > .body')?.textContent).toBe('line 8');
     // Nothing of the standard layout's line-level prefix remains.
     expect(line(8).querySelector(':scope > .prefix')).toBeNull();
@@ -207,6 +216,34 @@ describe('MessageList — compact notice runs', () => {
     expect(spoke!.querySelector('.mode-glyph')?.textContent).toBe('@');
     expect(head(11)).not.toBeNull();
     expect(head(11)!.querySelector('.prefix')?.textContent).toBe('-bot-');
+  });
+
+  it('colours the whole mark of a self notice in the self colour, under an old nick too', () => {
+    mountCompact();
+    const mark = head(14)!.querySelector('.prefix') as HTMLElement;
+    expect(mark.textContent).toBe('-oldme-');
+    expect(mark.style.color).toBe(useSettingsStore().effective('look.nick.self_color'));
+    expect(mark.querySelector('[style]')).toBeNull();
+  });
+
+  it('prints a server notice’s hostname as an inert mark, with no avatar', () => {
+    useSettingsStore().values = {
+      'look.message.layout': 'compact',
+      'look.message.avatars': true,
+      'look.avatars.set': 'ealain',
+    } as never;
+    // Every bundled tile set, as if its manifest had loaded (no fetch here).
+    useAvatarSetsStore().builtinManifests = {
+      ealain: { count: 32, ext: 'webp' },
+      'plain-light': { count: 1, ext: 'webp' },
+      'plain-dark': { count: 1, ext: 'webp' },
+    };
+    mountCompact({ keepSettings: true });
+    expect(head(15)!.querySelector('.prefix')?.textContent).toBe('-irc.example.net-');
+    expect(head(15)!.querySelector('.nick-ref')).toBeNull();
+    expect(line(15).querySelector(':scope > .avatar')).toBeNull();
+    // A message head in the same list does draw its tile.
+    expect(line(10).querySelector(':scope > .avatar')).not.toBeNull();
   });
 
   it('leaves actions as single lines that never fold', () => {

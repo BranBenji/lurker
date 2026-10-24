@@ -112,7 +112,7 @@
           <!-- The author's avatar (#607), in the gutter every row reserves
                while avatars are on; only the run's first row draws one. -->
           <NickAvatar
-            v-if="showAvatars && !row.continuationAuthor"
+            v-if="showAvatars && !row.continuationAuthor && row.m?.type === 'message'"
             class="avatar"
             :nick="row.m?.nick ?? ''"
             :network-id="buffer?.networkId ?? null"
@@ -126,15 +126,19 @@
              reads as one block under one time; continuation rows show no time.
              A notice's head keeps IRC's own mark for it, `-nick-` (#1180): the
              one thing separating "NickServ said this" from "NickServ noticed
-             this", as the apps caption it. No mode glyph on it — the mark
-             isn't a channel member's name. -->
+             this". Printed as the standard layout prints it and the apps
+             caption it — plain text in the nick's colour, no glyph, no avatar,
+             no menu: a notice's "nick" is often not a person at all (the
+             server's hostname, Lurker's own `lurker` and `DCC` status lines),
+             and a display-name or avatar lookup on one would dress a status
+             line as whoever holds that nick. -->
           <div v-if="!row.continuationAuthor" class="head">
             <span
               class="prefix"
               :class="prefixClass(row.m)"
-              :style="row.m?.type === 'notice' ? prefixStyle(row.m) : null"
-              ><template v-if="row.m?.type === 'notice'">-</template
+              :style="row.m?.type === 'message' ? null : prefixStyle(row.m)"
               ><NickRef
+                v-if="row.m?.type === 'message'"
                 :nick="row.m?.nick ?? ''"
                 :modes="authorModes(row.m)"
                 :show-prefix="showModePrefix"
@@ -142,7 +146,7 @@
                 :plain="!!row.m?.relaySource"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-              /><template v-if="row.m?.type === 'notice'">-</template></span
+              /><template v-else>{{ prefixText(row.m) }}</template></span
             >
             <!-- Where the relayed speaker is from, beside the name it qualifies
                  (as the iOS app places it), muted and unbracketed; the bot
@@ -806,9 +810,10 @@ function eligibleForActions(m: ChatMessage | undefined | null): boolean {
   return m.type === 'message' || m.type === 'action' || m.type === 'notice';
 }
 
-// The row types the compact layout gives a head line (nick + time) and groups
-// into author runs: messages and notices. An action names its actor in its
-// body and stays a single line, as every event row does.
+// The row types whose prefix is a nick (coloured as one): messages and
+// notices. These are the rows the compact layout gives a head line (nick +
+// time) and groups into author runs. An action names its actor in its body
+// and stays a single line, as every event row does.
 function headed(m: ChatMessage | undefined): boolean {
   return m?.type === 'message' || m?.type === 'notice';
 }
@@ -989,10 +994,8 @@ function authorModes(m: ChatMessage | undefined): string[] | undefined {
   if (!showModePrefix.value || !m?.nick) return undefined;
   // A relayed name isn't a channel member: a nicklist hit would be a
   // spelling coincidence decorating a visitor with a local `@`. Here, so
-  // every layout's head agrees. Nor is a notice's `-nick-` mark one, even
-  // when the bot holds a mode (the apps' rule): the mark names the kind of
-  // line, and the glyph would read as part of it.
-  if (m.relaySource || m.type !== 'message') return undefined;
+  // every layout's head agrees.
+  if (m.relaySource) return undefined;
   const b = buffer.value;
   if (!b || !isChannelTarget(b.target)) return undefined;
   return nickMember(m.nick)?.modes;
@@ -1691,7 +1694,7 @@ function joinAccountSuffix(m: ChatMessage | undefined): string {
 
 function prefixClass(m: ChatMessage | undefined) {
   return {
-    nick: m?.type === 'message' || m?.type === 'notice',
+    nick: headed(m),
     'action-marker': m?.type === 'action',
     italic: m?.type === 'action' && actionItalic.value,
     self: m?.self,
@@ -1706,7 +1709,7 @@ function prefixClass(m: ChatMessage | undefined) {
 }
 
 function prefixStyle(m: ChatMessage | undefined): CSSProperties | null {
-  if (m?.type === 'message' || m?.type === 'notice') {
+  if (m && headed(m)) {
     if (m.self) return { color: selfColor.value as string };
     const c = nicks.color(m.nick ?? '');
     return c ? { color: c } : null;
