@@ -7,7 +7,7 @@
 // to drop it from the list so it doesn't linger in /ignore or the settings pane.
 
 import ignoreRulesService from './ignoreRulesService.js';
-import { fanOutIgnoreList } from './wsHub.js';
+import { fanOutIgnoreList, refreshDmReadState } from './wsHub.js';
 
 const SWEEP_INTERVAL_MS = 60 * 1000;
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -21,7 +21,11 @@ export function sweepExpiredIgnores(): void {
     return;
   }
   // networkId null = a global rule lapsed; fanOutIgnoreList ships the right bucket.
-  for (const { userId, networkId } of affected) fanOutIgnoreList(userId, networkId);
+  // A lapsed `-time` mute un-mutes a DM's badge too (#1192).
+  for (const { userId, networkId } of affected) {
+    fanOutIgnoreList(userId, networkId);
+    refreshDmReadState(userId, networkId);
+  }
 }
 
 export function startIgnoreSweeper(): void {

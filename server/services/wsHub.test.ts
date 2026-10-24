@@ -20,6 +20,7 @@ let setReadState: typeof import('../db/bufferReads.js').setReadState;
 let computeTotalHighlights: typeof import('./wsHub.js').computeTotalHighlights;
 let eachUserBufferTarget: typeof import('./wsHub.js').eachUserBufferTarget;
 let ircManager: typeof import('./ircManager.js').default;
+let ignoreRulesService: typeof import('./ignoreRulesService.js').default;
 let buildBufferBacklog: typeof import('./wsHub.js').buildBufferBacklog;
 let buildBufferShell: typeof import('./wsHub.js').buildBufferShell;
 let buildResumeSlice: typeof import('./wsHub.js').buildResumeSlice;
@@ -50,6 +51,7 @@ beforeAll(async () => {
   buffers = await import('../db/buffers.js');
   ({ setClearedState, setReadState } = await import('../db/bufferReads.js'));
   ircManager = (await import('./ircManager.js')).default;
+  ignoreRulesService = (await import('./ignoreRulesService.js')).default;
   ({
     computeTotalHighlights,
     eachUserBufferTarget,
@@ -218,6 +220,108 @@ describe('buildBufferBacklog', () => {
     // == unread so the buffer-list row lights up yellow with the ● badge.
     expect(frame.unread).toBe(2);
     expect(frame.highlights).toBe(2);
+  });
+
+  // #1192. Every client renders a muted buffer as "highlights only", so a DM
+  // whose every line is a highlight could not be muted: the Muted rung looked
+  // exactly like Nothing. A whole-buffer NOUNREAD rule now withholds the
+  // promotion and a muted DM counts like a channel — real matches only.
+  describe('a muted DM (#1192)', () => {
+    const MUTE = ['NOUNREAD', 'NONOTIFY'];
+    // The ladder's rule shape: no mask, no pattern, scoped to the one target
+    // (or to the whole network when channels is null).
+    const rule = (levels: string[], channels: string[] | null, mask: string | null = null) => ({
+      mask,
+      channels,
+      pattern: null,
+      patternKind: 'substr' as const,
+      levels,
+      isExcept: false,
+      expiresAt: null,
+    });
+    // Add a rule for the test's duration; the returned remover keeps one test's
+    // mute from leaking into the next DM assertion in this shared DB.
+    function withRule(
+      networkIdOrNull: number | null,
+      r: ReturnType<typeof rule>,
+      body: () => void,
+    ): void {
+      const added = ignoreRulesService.add(userId, networkIdOrNull, r);
+      if (!added.ok) throw new Error(added.error);
+      try {
+        body();
+      } finally {
+        ignoreRulesService.removeById(userId, networkIdOrNull, added.id);
+      }
+    }
+    // A line the insert path stamped as a highlight-rule match.
+    function seedMatched(target: string, text: string): void {
+      buffers.ensureExists(userId, networkId, target);
+      insertMessage({
+        networkId,
+        target,
+        time: new Date().toISOString(),
+        type: 'message',
+        nick: 'bob',
+        text,
+        self: false,
+        matchedRuleId: 1,
+      });
+    }
+
+    it('counts only real highlight matches, like a channel, and recovers when unmuted', () => {
+      seed('gwen', 'one');
+      seed('gwen', 'two');
+      seedMatched('gwen', 'alice: three');
+      withRule(networkId, rule(MUTE, ['gwen']), () => {
+        const frame = buildBufferBacklog(userId, networkId, 'gwen');
+        // Still three unread — the clients hide that themselves for a muted
+        // buffer — but only the stamped match badges.
+        expect(frame.unread).toBe(3);
+        expect(frame.highlights).toBe(1);
+      });
+      // Rule gone: back to every-line-is-a-highlight.
+      const after = buildBufferBacklog(userId, networkId, 'gwen');
+      expect(after.unread).toBe(3);
+      expect(after.highlights).toBe(3);
+    });
+
+    it('is not muted by the "Nothing" rung (NONOTIFY alone)', () => {
+      seed('hank', 'one');
+      withRule(networkId, rule(['NONOTIFY'], ['hank']), () => {
+        const frame = buildBufferBacklog(userId, networkId, 'hank');
+        expect(frame.unread).toBe(1);
+        expect(frame.highlights).toBe(1);
+      });
+    });
+
+    it('is not muted by a per-sender NOUNREAD rule (insert-time accounting is deferred, #359)', () => {
+      seed('ivy', 'one');
+      withRule(networkId, rule(MUTE, null, 'bob'), () => {
+        const frame = buildBufferBacklog(userId, networkId, 'ivy');
+        expect(frame.highlights).toBe(1);
+      });
+    });
+
+    it('is muted by a muted network, and by a global rule naming the peer', () => {
+      seed('jo', 'one');
+      withRule(networkId, rule(MUTE, null), () => {
+        expect(buildBufferBacklog(userId, networkId, 'jo').highlights).toBe(0);
+      });
+      // A hand-typed `/ignore jo NOUNREAD NONOTIFY` lands in the global bucket;
+      // the compiled set is globals ∪ network, so it mutes the same.
+      withRule(null, rule(MUTE, ['jo']), () => {
+        expect(buildBufferBacklog(userId, networkId, 'jo').highlights).toBe(0);
+      });
+      expect(buildBufferBacklog(userId, networkId, 'jo').highlights).toBe(1);
+    });
+
+    it('matches the peer case-insensitively, as the clients do', () => {
+      seed('Kim', 'one');
+      withRule(networkId, rule(MUTE, ['kim']), () => {
+        expect(buildBufferBacklog(userId, networkId, 'Kim').highlights).toBe(0);
+      });
+    });
   });
 
   it('omits clear-state by default (no marker)', () => {
@@ -1033,6 +1137,22 @@ describe('computeTotalHighlights', () => {
 
     // Reading dave up to its newest line clears its contribution.
     setReadState(u, net, 'dave', d3);
+    expect(computeTotalHighlights(u)).toBe(base + 2);
+
+    // A muted DM drops out of the app-icon badge the way it drops out of the
+    // sidebar (#1192): frank's two plain lines are no longer highlights.
+    const mute = ignoreRulesService.add(u, net, {
+      mask: null,
+      channels: ['frank'],
+      pattern: null,
+      patternKind: 'substr',
+      levels: ['NOUNREAD', 'NONOTIFY'],
+      isExcept: false,
+      expiresAt: null,
+    });
+    if (!mute.ok) throw new Error(mute.error);
+    expect(computeTotalHighlights(u)).toBe(base);
+    ignoreRulesService.removeById(u, net, mute.id);
     expect(computeTotalHighlights(u)).toBe(base + 2);
   });
 });

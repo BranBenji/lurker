@@ -26,7 +26,7 @@ import highlightRulesService from './highlightRulesService.js';
 import draftsService from './draftsService.js';
 import * as systemLog from './systemLog.js';
 import * as pushService from './pushService.js';
-import { evaluateIgnores, type IgnoreVerdict } from './ignoreMatch.js';
+import { channelMutesUnread, evaluateIgnores, type IgnoreVerdict } from './ignoreMatch.js';
 import ignoreRulesService from './ignoreRulesService.js';
 import { parseIgnoreInput, maskToRuleInput } from './ignoreRuleInput.js';
 import { findSession } from '../db/sessions.js';
@@ -649,6 +649,17 @@ function systemLineNotifies(line: LogLine): boolean {
   return line.source === 'admin' || line.source === 'control-plane' || line.level === 'error';
 }
 
+// Whether a whole-buffer NOUNREAD rule covers this DM: the ladder's "Muted"
+// rung on the DM itself, or a muted network (#1192). The same predicate the
+// buffer lists run (channelMutesUnread), off the same compiled set the insert
+// path reads, so a mute lands in the counts the moment the rule does. A
+// per-sender (masked) NOUNREAD rule deliberately does not count — that is the
+// insert-time unread accounting #359 deferred.
+function dmMutesUnread(userId: number, networkId: number, target: string): boolean {
+  const compiled = ignoreRulesService.getCompiled(userId, networkId);
+  return compiled.length > 0 && channelMutesUnread(compiled, target);
+}
+
 function computeUnreadFor(
   userId: number,
   networkId: number | null,
@@ -675,9 +686,21 @@ function computeUnreadFor(
   // ordinary channel traffic. Display-only: notification/push decisions are
   // made per-message in highlightEngine and are unaffected. Channels keep their
   // real mention-only highlight count (an indexed query, no scan cap).
+  //
+  // A MUTED DM is the exception (#1192). Every client renders a muted buffer
+  // as "highlights only" — that is what makes a muted channel go quiet while a
+  // mention still badges — so a DM whose every line is a highlight could not be
+  // muted at all: Muted looked exactly like Nothing. Withholding the promotion
+  // here hands a muted DM the channel rule: plain lines are plain unread (which
+  // the clients already hide), and only a real highlight-rule match badges.
+  // Decided server-side so the three clients, the push badge total and the
+  // snapshot all agree without re-deriving the mute each.
   let highlights = 0;
   if (unread > 0) {
-    highlights = isDmTarget(target) ? unread : countHighlightsNewer(nid, target, lastReadId);
+    highlights =
+      isDmTarget(target) && !dmMutesUnread(userId, nid, target)
+        ? unread
+        : countHighlightsNewer(nid, target, lastReadId);
   }
   return {
     lastReadId: lastReadId || 0,
@@ -1865,6 +1888,30 @@ export function fanOutIgnoreList(userId: number, networkId: number | null): void
         ? ircManager.listGlobalIgnoresFor(userId)
         : ircManager.listIgnoredFor(userId, networkId),
   });
+}
+
+// Re-serve read-state for the user's DMs after an ignore rule changes. A DM's
+// `highlights` depends on the live rule set (dmMutesUnread), unlike a channel's,
+// which reads the insert-time stamps — so a mute or unmute moves a DM's badge
+// without any new message to carry the new count (#1192). Only DMs are walked,
+// and only this network's when the change was network-scoped; a global change
+// (networkId null) feeds every network's compiled set, so every DM is re-served.
+// With no socket open there is nobody to tell, and the next connect snapshot
+// computes fresh anyway.
+export function refreshDmReadState(userId: number, networkId: number | null): void {
+  if (!socketsByUser.has(userId)) return;
+  for (const buf of eachUserBufferTarget(userId)) {
+    if (buf.networkId == null) continue;
+    if (networkId !== null && buf.networkId !== networkId) continue;
+    if (!isDmTarget(buf.target)) continue;
+    broadcastReadState(
+      userId,
+      buf.networkId,
+      buf.target,
+      getReadState(userId, buf.networkId, buf.target),
+      buf.bufferId,
+    );
+  }
 }
 
 // One sweep of the liveness heartbeat over a batch of sockets. A socket that
@@ -3799,6 +3846,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         const result = ircManager.addIgnore(userId, networkId, input);
         if (!result.ok) break;
         fanOutIgnoreList(userId, networkId);
+        refreshDmReadState(userId, networkId);
         break;
       }
       case 'remove-ignore': {
@@ -3814,8 +3862,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         if (mask !== undefined && networkId !== null) {
           fanOutIgnoreList(userId, null);
           fanOutIgnoreList(userId, networkId);
+          refreshDmReadState(userId, null);
         } else {
           fanOutIgnoreList(userId, networkId);
+          refreshDmReadState(userId, networkId);
         }
         break;
       }

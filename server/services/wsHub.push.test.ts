@@ -246,6 +246,115 @@ async function connectWithPresence(visible: boolean): Promise<() => Promise<void
   return close;
 }
 
+// A DM's `highlights` depends on the live rule set (a whole-buffer NOUNREAD
+// rule withholds the every-line-is-a-highlight promotion, #1192), so muting or
+// unmuting a DM has to re-serve its read-state — no new message arrives to
+// carry the new count. Driven over a real socket because the re-serve hangs
+// off the add-ignore / remove-ignore verbs.
+describe('ignore-rule changes re-serve DM read-state (#1192)', () => {
+  type Frame = Record<string, unknown>;
+
+  // Opens a socket, collects every frame, and resolves once the connect
+  // snapshot has landed. `readState(target)` waits for the NEXT read-state
+  // frame for that buffer sent after the call — frames already collected are
+  // not re-read, so two waits on the same target see two re-serves.
+  async function connectCollecting() {
+    const { token } = createSession(userId);
+    const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
+    const frames: Frame[] = [];
+    ws.on('message', (data) => frames.push(JSON.parse(String(data)) as Frame));
+    const close = () =>
+      new Promise<void>((resolve) => {
+        ws.on('close', () => resolve());
+        ws.close();
+      });
+    const readState = (target: string): Promise<Frame> =>
+      new Promise<Frame>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          ws.off('message', onMessage);
+          reject(new Error(`timed out waiting for read-state ${target}`));
+        }, 5000);
+        const onMessage = (data: unknown) => {
+          const f = JSON.parse(String(data)) as Frame;
+          if (f.kind === 'read-state' && f.target === target) {
+            clearTimeout(timer);
+            ws.off('message', onMessage);
+            resolve(f);
+          }
+        };
+        ws.on('message', onMessage);
+      });
+    try {
+      await nextMessage(ws, 'the connect snapshot');
+    } catch (err) {
+      await close();
+      throw err;
+    }
+    return { ws, frames, close, readState };
+  }
+
+  const muteRule = (channels: string[] | null) => ({
+    mask: null,
+    channels,
+    pattern: null,
+    patternKind: 'substr',
+    levels: ['NOUNREAD', 'NONOTIFY'],
+    isExcept: false,
+    expiresAt: null,
+  });
+
+  function seedDm(target: string, text: string): void {
+    buffers.ensureExists(userId, networkId, target);
+    insertMessage({
+      networkId,
+      target,
+      time: new Date().toISOString(),
+      type: 'message',
+      nick: target,
+      text,
+      self: false,
+    });
+  }
+
+  it('muting a DM re-serves it with highlights withheld; unmuting restores them', async () => {
+    seedDm('mallory', 'one');
+    seedDm('mallory', 'two');
+    buffers.ensureExists(userId, networkId, '#lurker');
+    const { ws, frames, close, readState } = await connectCollecting();
+    try {
+      let pending = readState('mallory');
+      ws.send(JSON.stringify({ type: 'add-ignore', networkId, rule: muteRule(['mallory']) }));
+      const muted = await pending;
+      expect(muted).toMatchObject({ unread: 2, highlights: 0 });
+
+      // Only DMs are walked: a channel's count reads insert-time stamps and
+      // cannot change with the rule set, so it gets no frame.
+      expect(frames.some((f) => f.kind === 'read-state' && f.target === '#lurker')).toBe(false);
+
+      const id = ignoreRulesService
+        .list(userId, networkId)
+        .find((r) => r.channels?.[0] === 'mallory')!.id;
+      pending = readState('mallory');
+      ws.send(JSON.stringify({ type: 'remove-ignore', networkId, id }));
+      expect(await pending).toMatchObject({ unread: 2, highlights: 2 });
+    } finally {
+      await close();
+    }
+  });
+
+  it('a global rule re-serves DMs on every network', async () => {
+    seedDm('nina', 'one');
+    const { ws, close, readState } = await connectCollecting();
+    try {
+      const pending = readState('nina');
+      ws.send(JSON.stringify({ type: 'add-ignore', networkId: null, rule: muteRule(null) }));
+      expect(await pending).toMatchObject({ unread: 1, highlights: 0 });
+    } finally {
+      await close();
+    }
+  });
+});
+
 describe('maybePush gate chain', () => {
   it('pushes a DM when nothing suppresses it', async () => {
     emitDm();
