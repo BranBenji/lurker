@@ -3087,7 +3087,7 @@ watch(
 }
 /* Avatars (#607): a gutter on the left of EVERY compact row — continuation
    rows and event rows too, so bodies stay on one edge — with the tile drawn
-   at the top of a run's first row. Absolute so the row's grid is untouched.
+   on a run's first row. Absolute so the row's grid is untouched.
    The size is in em (one font size everywhere), smaller on a phone where
    compact is the default and width is scarce. A hairline down the gutter's
    right edge makes it read as a panel beside the text, continuous through
@@ -3095,7 +3095,7 @@ watch(
    (background-attachment: local), at the row's own left padding plus the
    tile and a gap. */
 .message-list.compact.avatars {
-  --avatar-size: 2.9em;
+  --avatar-size: 2.7em;
   /* The same space on the tile's right as the list's own padding gives it on
      the left, so the tile sits centred in its panel. */
   --avatar-gutter: calc(var(--avatar-size) + var(--space-4));
@@ -3127,13 +3127,14 @@ watch(
   background: var(--border);
   pointer-events: none;
 }
-/* A touch below the row's own top padding: the head line's text sits a
-   little way into its line box, and a tile flush with the padding reads as
-   floating above the nick. In em, so it follows the font. */
+/* Centred on the run's first two lines — the head and the first body line,
+   the height of the row's background when the message is short — so the
+   tile sits in the middle of a hovered or highlighted row rather than
+   hanging from its top. Past the padding, each line is one `lh`. */
 .message-list.compact.avatars .line > .avatar {
   position: absolute;
   left: var(--space-4);
-  top: calc(var(--space-1) + 0.2em);
+  top: calc(var(--space-1) + (2lh - var(--avatar-size)) / 2);
 }
 /* With the body flush under the nick, weight is what tells the head line
    from the text — the same job the standard grid's column gap does. */
