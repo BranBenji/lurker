@@ -600,6 +600,8 @@ export class FakeIrcd extends EventEmitter {
         victim.channels.delete(chan.toLowerCase());
         return;
       }
+      case 'MOTD':
+        return this.sendMotd(c);
       default:
         return this.num(c, '421', cmd, 'Unknown command');
     }
@@ -728,21 +730,26 @@ export class FakeIrcd extends EventEmitter {
     }
     for (const line of this.opts.burstLines?.(c) ?? []) this.raw(c, line);
     this.num(c, '251', 'There are 1 users on 1 servers');
+    this.sendMotd(c);
+    this.emit('registered', c);
+  }
+
+  // The MOTD (or its absence), at registration and for a MOTD command.
+  private sendMotd(c: FakeClient): void {
     if (this.opts.motd === false) {
       this.num(c, '422', 'MOTD File is missing');
-    } else {
-      this.num(c, '375', `- ${this.serverName} Message of the day -`);
-      this.num(c, '372', '- welcome to the fake');
-      for (let i = 0; i < (this.opts.motdPadLines ?? 0); i++) {
-        this.num(
-          c,
-          '372',
-          `- ${String(i).padStart(4, '0')} ${'pad '.repeat(i % 10 === 9 ? 8 : 255)}`,
-        );
-      }
-      this.num(c, '376', 'End of /MOTD command.');
+      return;
     }
-    this.emit('registered', c);
+    this.num(c, '375', `- ${this.serverName} Message of the day -`);
+    this.num(c, '372', '- welcome to the fake');
+    for (let i = 0; i < (this.opts.motdPadLines ?? 0); i++) {
+      this.num(
+        c,
+        '372',
+        `- ${String(i).padStart(4, '0')} ${'pad '.repeat(i % 10 === 9 ? 8 : 255)}`,
+      );
+    }
+    this.num(c, '376', 'End of /MOTD command.');
   }
 
   // WHO for a channel's members, or for one nick. A `%<fields>[,<token>]` second
@@ -842,6 +849,13 @@ export class FakeIrcd extends EventEmitter {
   inject(nick: string, line: string): void {
     const c = this.client(nick);
     if (c) this.raw(c, line);
+  }
+
+  // A line as if the client had sent it: the one a `hold` swallowed, once the
+  // test is ready for the server to act on it.
+  feed(nick: string, line: string): void {
+    const c = this.client(nick);
+    if (c) this.onLine(c, line);
   }
 
   // Who hears a change on `target`: a channel's members, or every client that
