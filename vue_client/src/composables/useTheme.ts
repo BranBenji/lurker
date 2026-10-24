@@ -4,11 +4,12 @@
 import { watchEffect } from 'vue';
 import { useSettingsStore } from '../stores/settings.js';
 import { useViewport } from './useViewport.js';
+import { parseComputedRgb, parseHex } from '../lib/color.js';
 
 // Maps each settings key to the CSS custom property it controls. Anything in
 // here is live-rewritten on :root whenever the settings store changes, so the
 // whole UI re-themes immediately when the user edits a key in Settings.
-const COLOR_VARS: Record<string, string> = {
+export const COLOR_VARS: Record<string, string> = {
   'look.color.bg': '--bg',
   'look.color.bg_soft': '--bg-soft',
   'look.color.fg': '--fg',
@@ -42,11 +43,9 @@ function schemeFromLuma(r: number, g: number, b: number): 'light' | 'dark' {
 
 // Hex fallback for environments where computed style is unavailable (jsdom).
 function colorSchemeFor(bg: string): 'light' | 'dark' {
-  const hex = /^#(?:([0-9a-f]{3})|([0-9a-f]{6}))$/i.exec(bg.trim());
-  if (!hex) return 'dark';
-  const digits = hex[2] ?? hex[1].replace(/./g, (c) => c + c);
-  const n = parseInt(digits, 16);
-  return schemeFromLuma((n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff);
+  const rgb = parseHex(bg);
+  if (!rgb) return 'dark';
+  return schemeFromLuma(rgb.r, rgb.g, rgb.b);
 }
 
 // Color settings are free-text strings (the server accepts any string; the row
@@ -58,16 +57,11 @@ function colorSchemeFor(bg: string): 'light' | 'dark' {
 // parsing when there's no usable answer (jsdom, transparent).
 function computedColorScheme(fallbackBg: string): 'light' | 'dark' {
   const resolved = document.body ? getComputedStyle(document.body).backgroundColor : '';
-  const m = /^rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+%?))?\s*\)$/.exec(
-    resolved || '',
-  );
-  if (m) {
-    // Numeric alpha, not a string compare: browsers canonically serialize a
-    // transparent computed color as `rgba(0, 0, 0, 0)`, but `0.0`/`0%` forms
-    // must fall through to the fallback too — their RGB is meaningless.
-    const alpha = m[4] === undefined ? 1 : parseFloat(m[4]) / (m[4].endsWith('%') ? 100 : 1);
-    if (alpha > 0) return schemeFromLuma(Number(m[1]), Number(m[2]), Number(m[3]));
-  }
+  // parseComputedRgb refuses a zero alpha in any spelling (`0`, `0.0`, `0%`):
+  // a transparent body serialises as `rgba(0, 0, 0, 0)`, whose RGB is
+  // meaningless, so it falls through to the hex fallback like jsdom does.
+  const rgb = parseComputedRgb(resolved || '');
+  if (rgb) return schemeFromLuma(rgb.r, rgb.g, rgb.b);
   return colorSchemeFor(fallbackBg);
 }
 

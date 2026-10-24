@@ -421,6 +421,21 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'set to it is invisible.',
   },
 
+  {
+    key: 'look.color.favorites',
+    label: 'Favorite colors',
+    category: 'appearance',
+    group: 'palette',
+    // Deliberately NOT themed: these are the user's own swatches, shown at the
+    // bottom of the color picker so a colour chosen once can be picked again.
+    // A theme is a snapshot of a look; a favourite is a bookmark, and it should
+    // survive switching themes.
+    type: 'string-list',
+    default: [],
+    description:
+      'Colors saved from the color picker (the star button), one per line. ' +
+      'Shown as swatches at the bottom of the picker on every color setting.',
+  },
   // ─── Alternating message rows ─────────────────────────────────────────
   {
     key: 'look.color.message.alt_bg',
