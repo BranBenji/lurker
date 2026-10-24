@@ -470,10 +470,23 @@ describe('SendPacer', () => {
       pacer.write('PRIVMSG #c :too');
       expect(sent).toHaveLength(5);
       paced = false;
-      pacer.repace();
+      pacer.redrain();
       expect(sent).toHaveLength(7);
       vi.advanceTimersByTime(10_000);
       expect(sent).toHaveLength(7);
+    });
+
+    it('turned off with the clock already past the budget, the backlog goes now too', () => {
+      // A unit is admitted on its first line and charged whole, so it can
+      // leave the clock past the budget; unpaced, nothing waits that out.
+      fill();
+      pacer.unit(['PRIVMSG #c :1/3', 'PRIVMSG #c :2/3', 'PRIVMSG #c :3/3']);
+      pacer.write('PRIVMSG #c :waiting');
+      vi.advanceTimersByTime(2000);
+      expect(sent).toHaveLength(8);
+      paced = false;
+      pacer.redrain();
+      expect(sent).toHaveLength(9);
     });
 
     it('still holds while holding() says so, and still drops with its socket', () => {
@@ -500,7 +513,7 @@ describe('SendPacer', () => {
       for (let i = 0; i < 20; i++) pacer.write(`PRIVMSG #c :${i}`);
       expect(sent).toHaveLength(20);
       paced = true;
-      pacer.repace();
+      pacer.redrain();
       for (let i = 0; i < 6; i++) pacer.write(`PRIVMSG #c :again ${i}`);
       // Five fit under the fresh budget; the sixth waits its 2 s.
       expect(sent).toHaveLength(25);

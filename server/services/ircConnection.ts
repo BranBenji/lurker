@@ -6177,7 +6177,7 @@ export class IrcConnection {
   networkEdited(network: Network): void {
     if (network.flood_protection === this.network.flood_protection) return;
     this.network.flood_protection = network.flood_protection;
-    this.sendPacer.repace();
+    this.sendPacer.redrain();
   }
 
   // Periodic PING with a `lurker-lag-<sent>` token. PONG echoes the token back

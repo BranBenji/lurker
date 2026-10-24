@@ -269,7 +269,10 @@ export class SendPacer {
 
   // A new item may be the head now (a higher lane), and a wait scheduled for
   // the old head (a long MONITOR line: 6 s) is not its wait: pick again.
-  private redrain(): void {
+  /** Reconsider a scheduled wait now rather than when its timer fires: a new
+   *  item may belong ahead of the slow head it was scheduled for, or the
+   *  pacing rule changed (`paced` flipped). */
+  redrain(): void {
     if (!this.draining) this.clearTimer();
     this.drain();
   }
@@ -297,12 +300,6 @@ export class SendPacer {
   /** Try again: the connection came (back) up. */
   resume(): void {
     this.drain();
-  }
-
-  /** The pacing rule changed (`paced` flipped): a wait scheduled under the old
-   *  rule is reconsidered now rather than when its timer fires. */
-  repace(): void {
-    this.redrain();
   }
 
   /** A new socket: what waited was meant for the old one, and the server
@@ -389,17 +386,16 @@ export class SendPacer {
         // server's clock never runs more than BURST_BUDGET_MS ahead of real
         // time by our count. A thunk is run once the shortest line would fit,
         // so what it builds is as fresh as it can be; a unit is admitted on
-        // its first line and goes whole.
-        const ahead = this.since - this.now();
-        const cost = this.paced()
-          ? head.build
-            ? BASE_COST_MS
-            : costOf(head.unit ? head.unit[0] : head.text!)
-          : 0;
-        const over = ahead + cost - BURST_BUDGET_MS;
-        if (over > 0) {
-          this.schedule(over);
-          return;
+        // its first line and goes whole. Unpaced, nothing waits: not even for
+        // what a unit charged past the budget before the switch was flipped.
+        if (this.paced()) {
+          const ahead = this.since - this.now();
+          const cost = head.build ? BASE_COST_MS : costOf(head.unit ? head.unit[0] : head.text!);
+          const over = ahead + cost - BURST_BUDGET_MS;
+          if (over > 0) {
+            this.schedule(over);
+            return;
+          }
         }
         this.lanes[head.priority].shift();
         // Not wanted any more: nothing goes, and a thunk isn't even built.

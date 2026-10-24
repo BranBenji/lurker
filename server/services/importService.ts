@@ -217,6 +217,34 @@ function rekeyRow(
   return out;
 }
 
+// What a column takes when an archive predates it: the table's own default,
+// read once per table from the schema. An older archive lacks every column
+// added since it was written (trusted_certificates, position, proxy_enabled,
+// flood_protection, …), and binding NULL for a NOT NULL one refused the row
+// and so the whole restore. Only literal defaults are honoured — a number or a
+// quoted string, which is what the ensureColumn migrations declare; an
+// expression (created_at's strftime) is left to NULL as before, and every
+// archive carries that column anyway.
+const tableDefaults = new Map<string, Map<string, unknown>>();
+function columnDefaults(table: string): Map<string, unknown> {
+  let defaults = tableDefaults.get(table);
+  if (defaults) return defaults;
+  defaults = new Map();
+  const info = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+    name: string;
+    notnull: number;
+    dflt_value: string | null;
+  }>;
+  for (const col of info) {
+    const raw = col.dflt_value;
+    if (!col.notnull || raw === null) continue;
+    if (/^-?\d+(\.\d+)?$/.test(raw)) defaults.set(col.name, Number(raw));
+    else if (/^'.*'$/s.test(raw)) defaults.set(col.name, raw.slice(1, -1).replace(/''/g, "'"));
+  }
+  tableDefaults.set(table, defaults);
+  return defaults;
+}
+
 function insertOne(stmt: Statement, cols: string[], row: Record<string, unknown>): RunResult {
   const args = cols.map((c) => (c in row ? row[c] : null));
   return stmt.run(...args);
@@ -271,11 +299,10 @@ function insertTable(
   for (const original of rows) {
     const row = rekeyRow(original, def, idMaps, targetUserId);
 
-    // Pre-trust-toggle exports don't carry this NOT NULL column; default to
-    // secure behavior during import. (networks-specific legacy default, not
-    // an encryption concern.)
-    if (table === 'networks' && row.trusted_certificates === undefined) {
-      row.trusted_certificates = 1;
+    // A column the archive predates takes the table's default (a pre-toggle
+    // archive imports with trusted_certificates on, flood protection on).
+    for (const [col, value] of columnDefaults(table)) {
+      if (row[col] === undefined) row[col] = value;
     }
 
     // target_folded is derived state (the registry's one folded lookup key);
