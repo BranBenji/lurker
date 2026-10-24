@@ -224,9 +224,12 @@ export async function thumbnail(
   ).toBuffer();
 }
 
-// Avatars (#1189) are drawn small, but the profile modal and a 3x screen draw
-// them at a few hundred device pixels; 512 keeps them sharp there, like THUMB_SIZE.
-const AVATAR_SIZE = 512;
+// Avatars (#1189): the profile modal draws one at 4em, ~190 device px on a 3x
+// phone, and 256 keeps it sharp there. ⚠ The same size as lurker-previews'
+// AVATAR_SIZE (server/avatar.ts), which resizes every avatar Lurker shows: a
+// bigger upload buys nothing here, costs clients that fetch it unresized, and
+// spends the decoder's animated pixel budget (frames × pixels) four times as fast.
+const AVATAR_SIZE = 256;
 
 // An image made an avatar: cropped to a square, at most AVATAR_SIZE on a side,
 // never enlarged. A still keeps its busiest region (sharp's attention

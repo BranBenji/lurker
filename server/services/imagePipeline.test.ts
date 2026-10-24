@@ -256,13 +256,13 @@ describe('imagePipeline.avatar', () => {
       .toBuffer();
   }
 
-  it('crops a still to a 512 square, as WebP', async () => {
+  it('crops a still to a 256 square, as WebP', async () => {
     const out = await avatar(await staticPng(1200, 800), { quality: 80 });
     const meta = await sharp(out.buffer).metadata();
-    expect([meta.format, meta.width, meta.height]).toEqual(['webp', 512, 512]);
+    expect([meta.format, meta.width, meta.height]).toEqual(['webp', 256, 256]);
     expect([out.width, out.height, out.animated, out.mime]).toEqual([
-      512,
-      512,
+      256,
+      256,
       false,
       'image/webp',
     ]);
@@ -288,7 +288,7 @@ describe('imagePipeline.avatar', () => {
     );
     const out = await avatar(svg, { quality: 80 });
     const meta = await sharp(out.buffer).metadata();
-    expect([meta.format, meta.width, meta.height]).toEqual(['webp', 512, 512]);
+    expect([meta.format, meta.width, meta.height]).toEqual(['webp', 256, 256]);
   });
 
   it('follows the jpeg escape hatch', async () => {
