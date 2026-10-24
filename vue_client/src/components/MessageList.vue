@@ -3113,6 +3113,20 @@ watch(
   position: relative;
   padding-left: calc(var(--space-4) + var(--avatar-gutter) + var(--space-5));
 }
+/* The hairline again, on the row itself: a hovered, selected or highlighted
+   row paints its own background over the scroller's and would cut the line,
+   where the standard layout's separator (the body's pseudo-element) stays
+   through hover. The scroller's copy still spans the gaps between rows. */
+.message-list.compact.avatars .line::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: round(calc(var(--space-4) + var(--avatar-gutter)), 1px);
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
 /* A touch below the row's own top padding: the head line's text sits a
    little way into its line box, and a tile flush with the padding reads as
    floating above the nick. In em, so it follows the font. */
