@@ -421,7 +421,6 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'set to it is invisible.',
   },
 
-  // ─── Alternating message rows ─────────────────────────────────────────
   {
     key: 'look.color.favorites',
     label: 'Favorite colors',
@@ -437,6 +436,7 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'Colors saved from the color picker (the star button), one per line. ' +
       'Shown as swatches at the bottom of the picker on every color setting.',
   },
+  // ─── Alternating message rows ─────────────────────────────────────────
   {
     key: 'look.color.message.alt_bg',
     label: 'Alternating row background',

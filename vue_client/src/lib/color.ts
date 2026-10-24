@@ -23,9 +23,11 @@ export interface HSV {
 const HEX_RE = /^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 
 /**
- * Parse a CSS hex literal (#rgb, #rgba, #rrggbb, #rrggbbaa). Alpha is read and
- * discarded: the picker has no alpha channel, so a translucent value edits as
- * its opaque colour and comes back opaque once the user moves a slider.
+ * Parse a CSS hex literal (#rgb, #rgba, #rrggbb, #rrggbbaa). A translucent
+ * alpha is dropped: the picker has no alpha channel, so such a value edits as
+ * its opaque colour and comes back opaque once the user moves a slider. A ZERO
+ * alpha is different — the colour paints nothing, so its RGB is meaningless and
+ * the parse fails rather than reporting black.
  */
 export function parseHex(input: string): RGB | null {
   const m = HEX_RE.exec(input.trim());
@@ -37,6 +39,7 @@ export function parseHex(input: string): RGB | null {
       .map((c) => c + c)
       .join('');
   }
+  if (hex.length === 8 && hex.slice(6) === '00') return null;
   return {
     r: parseInt(hex.slice(0, 2), 16),
     g: parseInt(hex.slice(2, 4), 16),
@@ -180,10 +183,18 @@ export function harmonies(base: RGB): HarmonySwatch[] {
  * Parse the computed `color` the browser hands back for a probe element:
  * `rgb(r, g, b)`, `rgba(r, g, b, a)` or the modern `rgb(r g b / a)`. Returns
  * null for anything else (a browser that keeps `oklch(...)` as the computed
- * value, say) so the caller can fall back to a canvas read.
+ * value, say) so the caller can fall back to a canvas read — and null for a
+ * zero alpha, in any of its spellings (`0`, `0.0`, `0%`): browsers serialise
+ * `transparent` as `rgba(0, 0, 0, 0)`, whose RGB says nothing about the colour.
  */
 export function parseComputedRgb(input: string): RGB | null {
-  const m = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(input.trim());
+  const m = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:\s*[,/]\s*([\d.]+%?))?\s*\)$/i.exec(
+    input.trim(),
+  );
   if (!m) return null;
+  if (m[4] !== undefined) {
+    const alpha = parseFloat(m[4]) / (m[4].endsWith('%') ? 100 : 1);
+    if (!(alpha > 0)) return null;
+  }
   return { r: clamp255(Number(m[1])), g: clamp255(Number(m[2])), b: clamp255(Number(m[3])) };
 }

@@ -3,16 +3,18 @@
   SPDX-License-Identifier: MPL-2.0
 
   The colour picker shell. Desktop: a floating card anchored under the swatch
-  that opened it (teleported to body, viewport-clamped, re-placed on scroll and
-  resize). Mobile: the standard AppModal sheet. Both wrap ColorPickerBody.
+  that opened it (teleported to body, viewport-clamped, re-placed on scroll,
+  resize and its own size changes). Mobile: the standard AppModal sheet. Both
+  wrap ColorPickerBody, and a viewport flip while open swaps shells in place.
 
   Commit semantics mirror the text field it sits beside, whose blur commits:
-  clicking away, Enter, the sheet's close button and "done" all commit the
-  draft if it changed. Escape is the one way out WITHOUT committing; "revert"
-  puts the opening value back without closing. Nothing is written while the
-  user drags — Settings is a full page with no chat behind it, so there is
-  nothing to preview live, and the theme editor that will have a live view
-  gets its own shell over the same body.
+  clicking away, Enter in the field, the sheet's close button, "done", and the
+  swatch scrolling out of view all commit the draft if it changed. Escape is
+  the one way out WITHOUT committing, in both shells; "revert" puts the
+  opening value back without closing. Nothing is written while the user drags
+  — Settings is a full page with no chat behind it, so there is nothing to
+  preview live, and the theme editor that will have a live view gets its own
+  shell over the same body.
 -->
 
 <template>
@@ -21,7 +23,11 @@
       <template #actions>
         <button class="link" type="button" :disabled="!dirty" @click="revert">revert</button>
       </template>
-      <ColorPickerBody v-model="draft" :initial="value" />
+      <!-- AppModal maps Escape to `close`, which here means commit. Catch it
+           first so Escape abandons the draft on this shell too. -->
+      <div @keydown.esc.stop.prevent="cancel">
+        <ColorPickerBody v-model="draft" :initial="value" />
+      </div>
     </AppModal>
     <div
       v-else
@@ -44,7 +50,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import AppModal from './AppModal.vue';
 import ColorPickerBody from './ColorPickerBody.vue';
 import { useViewport } from '../composables/useViewport.js';
@@ -65,11 +71,18 @@ const { isMobile } = useViewport();
 const draft = ref(props.value);
 const dirty = computed(() => draft.value.trim() !== props.value.trim());
 
+// Closing is one-shot: the scroll/resize/observer paths can all call finish()
+// before the parent has unmounted us, and a second commit would double-write.
+let closed = false;
 function finish(): void {
+  if (closed) return;
+  closed = true;
   if (dirty.value) emit('commit', draft.value.trim());
   emit('close');
 }
 function cancel(): void {
+  if (closed) return;
+  closed = true;
   emit('close');
 }
 function revert(): void {
@@ -91,14 +104,20 @@ const cardEl = ref<HTMLElement | null>(null);
 const pos = ref({ x: 0, y: 0 });
 
 // Under the anchor, left-aligned; above it when the bottom would clip; then
-// clamped into the viewport the way ContextMenu does. Rows that appear as the
-// draft changes (favourites, harmony) change the card's height, so onUpdated
-// re-places too.
+// clamped into the viewport the way ContextMenu does. Writes `pos` only when
+// it moves: the card re-renders on every draft change, and a fresh object per
+// render from a hook would re-trigger that render without end.
 function place(): void {
   const a = props.anchor;
   const el = cardEl.value;
   if (!a || !el) return;
   const r = a.getBoundingClientRect();
+  // The swatch scrolled out of the pane: the card would float detached from
+  // anything, so treat it like a click-away.
+  if (r.bottom < 0 || r.top > window.innerHeight) {
+    finish();
+    return;
+  }
   const w = el.offsetWidth;
   const h = el.offsetHeight;
   const pad = 4;
@@ -111,36 +130,62 @@ function place(): void {
   }
   if (x + w + pad > window.innerWidth) x = window.innerWidth - w - pad;
   if (x < pad) x = pad;
-  pos.value = { x, y };
+  if (x !== pos.value.x || y !== pos.value.y) pos.value = { x, y };
 }
 
 function onWindowPointerDown(e: PointerEvent): void {
   const t = e.target;
   if (!(t instanceof Node)) return;
   if (cardEl.value?.contains(t)) return;
-  // The swatch's own click toggles the picker; closing here too would reopen it.
+  // The swatch's own click only opens; a pointerdown on it while open is the
+  // user prodding the thing that is already up, not a dismissal.
   if (props.anchor?.contains(t)) return;
   finish();
 }
 
-onMounted(async () => {
-  if (isMobile.value) return;
+// The desktop listeners follow the shell, not the component: a window
+// narrowed past the breakpoint (an iPad rotated) swaps the card for the sheet
+// while the picker is open, and a stale pointerdown listener with no card to
+// test against would commit on the first tap inside the sheet.
+let desktopAttached = false;
+let resizeObserver: ResizeObserver | null = null;
+
+async function attachDesktop(): Promise<void> {
+  if (desktopAttached) return;
+  desktopAttached = true;
   await nextTick();
+  if (!desktopAttached) return;
   place();
   cardEl.value?.focus();
-  window.addEventListener('pointerdown', onWindowPointerDown);
+  window.addEventListener('pointerdown', onWindowPointerDown, { capture: true });
   window.addEventListener('resize', place);
   // Capture: the settings pane scrolls, not the window, and scroll doesn't bubble.
   window.addEventListener('scroll', place, { capture: true, passive: true });
-});
-onUpdated(() => {
-  if (!isMobile.value) place();
-});
-onBeforeUnmount(() => {
-  window.removeEventListener('pointerdown', onWindowPointerDown);
+  // Rows that appear as the draft changes (favourites, harmony) change the
+  // card's height; the observer re-places without a render hook in the loop.
+  if (typeof ResizeObserver !== 'undefined' && cardEl.value) {
+    resizeObserver = new ResizeObserver(() => place());
+    resizeObserver.observe(cardEl.value);
+  }
+}
+function detachDesktop(): void {
+  if (!desktopAttached) return;
+  desktopAttached = false;
+  window.removeEventListener('pointerdown', onWindowPointerDown, { capture: true });
   window.removeEventListener('resize', place);
   window.removeEventListener('scroll', place, { capture: true });
+  resizeObserver?.disconnect();
+  resizeObserver = null;
+}
+
+onMounted(() => {
+  if (!isMobile.value) void attachDesktop();
 });
+watch(isMobile, (mobile) => {
+  if (mobile) detachDesktop();
+  else void attachDesktop();
+});
+onBeforeUnmount(detachDesktop);
 </script>
 
 <style scoped>

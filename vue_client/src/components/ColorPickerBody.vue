@@ -234,10 +234,7 @@ const hsv = reactive<HSV>({ h: 0, s: 0, v: 0 });
 let sliderHex: string | null = null;
 
 function refresh(): void {
-  const host = rootEl.value;
-  rgb.value = resolveCssColor(props.modelValue, host);
-  themeBg.value = resolveCssColor('var(--bg)', host);
-  themeFg.value = resolveCssColor('var(--fg)', host);
+  rgb.value = resolveCssColor(props.modelValue, rootEl.value);
   if (!rgb.value) return;
   const hex = toHex(rgb.value);
   if (hex === sliderHex) return;
@@ -252,6 +249,45 @@ function refresh(): void {
 
 onMounted(refresh);
 watch(() => props.modelValue, refresh);
+
+interface ThemeSwatch {
+  key: string;
+  cssVar: string;
+  hex: string;
+  title: string;
+}
+const themeRow = ref<ThemeSwatch[]>([]);
+
+// The theme's colours go through the same probe, but only when the theme
+// changes — never per keystroke or pointermove, which is what the draft
+// watcher above runs on. Each probe is a forced style recalc, and the theme
+// row alone is twenty of them.
+function refreshTheme(): void {
+  const host = rootEl.value;
+  themeBg.value = resolveCssColor('var(--bg)', host);
+  themeFg.value = resolveCssColor('var(--fg)', host);
+  // One swatch per distinct colour the active look resolves to, labelled by
+  // the first setting that produces it, so a theme whose link colour is
+  // var(--fg) shows one foreground swatch, not two.
+  const out: ThemeSwatch[] = [];
+  const seen = new Set<string>();
+  for (const [key, cssVar] of Object.entries(COLOR_VARS)) {
+    const resolved = resolveCssColor(String(settings.effective(key) ?? ''), host);
+    if (!resolved) continue;
+    const hex = toHex(resolved);
+    if (seen.has(hex)) continue;
+    seen.add(hex);
+    out.push({ key, cssVar, hex, title: `${getOption(key)?.label ?? key} ${hex}` });
+  }
+  themeRow.value = out;
+}
+const themeSignature = computed(() =>
+  Object.keys(COLOR_VARS)
+    .map((key) => String(settings.effective(key) ?? ''))
+    .join('\n'),
+);
+onMounted(refreshTheme);
+watch(themeSignature, refreshTheme);
 
 const currentHex = computed(() => (rgb.value ? toHex(rgb.value) : ''));
 // What the previews paint: the resolved literal when there is one, else the
@@ -334,36 +370,26 @@ const harmonyRow = computed(() => (rgb.value ? harmonies(rgb.value) : []));
 
 const asReference = ref(false);
 
-interface ThemeSwatch {
-  key: string;
-  cssVar: string;
-  hex: string;
-  title: string;
-}
-
-// One swatch per distinct colour the active look resolves to, labelled by the
-// first setting that produces it. Resolved through the same probe so a theme
-// whose link colour is var(--fg) shows one foreground swatch, not two.
-const themeRow = computed<ThemeSwatch[]>(() => {
-  const host = rootEl.value;
-  const out: ThemeSwatch[] = [];
-  const seen = new Set<string>();
-  for (const [key, cssVar] of Object.entries(COLOR_VARS)) {
-    const resolved = resolveCssColor(String(settings.effective(key) ?? ''), host);
-    if (!resolved) continue;
-    const hex = toHex(resolved);
-    if (seen.has(hex)) continue;
-    seen.add(hex);
-    out.push({ key, cssVar, hex, title: `${getOption(key)?.label ?? key} ${hex}` });
-  }
-  return out;
-});
-
 // ─── favourites ──────────────────────────────────────────────────────────
 
-const favorites = computed<string[]>(() => {
+// The stored list is also a plain textarea in Settings, so it can hold any
+// casing, whitespace or duplicates. Display normalises and dedupes; the write
+// below touches only the entry it is about and leaves the rest as typed.
+const normalizeFavorite = (s: unknown) => String(s).trim().toLowerCase();
+const storedFavorites = computed<string[]>(() => {
   const raw = settings.effective(FAVORITES_KEY);
-  return Array.isArray(raw) ? raw.map((s) => String(s).trim().toLowerCase()).filter(Boolean) : [];
+  return Array.isArray(raw) ? raw.map(String) : [];
+});
+const favorites = computed<string[]>(() => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of storedFavorites.value) {
+    const n = normalizeFavorite(entry);
+    if (!n || seen.has(n)) continue;
+    seen.add(n);
+    out.push(n);
+  }
+  return out;
 });
 const isFavorite = computed(() => !!currentHex.value && favorites.value.includes(currentHex.value));
 
@@ -371,8 +397,8 @@ function toggleFavorite(): void {
   const hex = currentHex.value;
   if (!hex) return;
   const next = isFavorite.value
-    ? favorites.value.filter((f) => f !== hex)
-    : [...favorites.value, hex];
+    ? storedFavorites.value.filter((f) => normalizeFavorite(f) !== hex)
+    : [...storedFavorites.value, hex];
   // Fire and forget: the store rolls the value back on a server refusal, and
   // the picker has nowhere sensible to print an error about a bookmark.
   void settings.setValue(FAVORITES_KEY, next).catch(() => {});

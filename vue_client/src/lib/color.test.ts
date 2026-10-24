@@ -20,6 +20,9 @@ describe('parseHex / toHex', () => {
     expect(parseHex('#f0f8')).toEqual({ r: 255, g: 0, b: 255 });
     expect(parseHex('#a99dec')).toEqual({ r: 0xa9, g: 0x9d, b: 0xec });
     expect(parseHex('#A99DEC80')).toEqual({ r: 0xa9, g: 0x9d, b: 0xec });
+    // Zero alpha paints nothing: no RGB to report.
+    expect(parseHex('#0000')).toBeNull();
+    expect(parseHex('#a99dec00')).toBeNull();
     expect(parseHex(' #212022 ')).toEqual({ r: 0x21, g: 0x20, b: 0x22 });
   });
 
@@ -127,6 +130,11 @@ describe('mix / parseComputedRgb', () => {
     expect(parseComputedRgb('rgb(169, 157, 236)')).toEqual({ r: 169, g: 157, b: 236 });
     expect(parseComputedRgb('rgba(169, 157, 236, 0.5)')).toEqual({ r: 169, g: 157, b: 236 });
     expect(parseComputedRgb('rgb(169 157 236 / 0.5)')).toEqual({ r: 169, g: 157, b: 236 });
+    expect(parseComputedRgb('rgb(169 157 236 / 50%)')).toEqual({ r: 169, g: 157, b: 236 });
+    // transparent, in every spelling a browser serialises it with.
+    expect(parseComputedRgb('rgba(0, 0, 0, 0)')).toBeNull();
+    expect(parseComputedRgb('rgba(0, 0, 0, 0.0)')).toBeNull();
+    expect(parseComputedRgb('rgb(0 0 0 / 0%)')).toBeNull();
     expect(parseComputedRgb('oklch(0.7 0.1 300)')).toBeNull();
     expect(parseComputedRgb('')).toBeNull();
   });
