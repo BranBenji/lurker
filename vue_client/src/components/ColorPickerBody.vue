@@ -177,11 +177,14 @@ import {
 import type { HSV, RGB } from '../lib/color.js';
 
 const FAVORITES_KEY = 'look.color.favorites';
+const VAR_REF_RE = /^var\(\s*--[\w-]+\s*\)$/;
 
 const props = defineProps<{
   modelValue: string;
   /** The value the picker opened with, for the before half of the preview. */
   initial: string;
+  /** The registry key being edited, so the reference swap never names itself. */
+  settingKey?: string;
 }>();
 
 const emit = defineEmits<{
@@ -266,6 +269,12 @@ interface ThemeSwatch {
   title: string;
 }
 const themeRow = ref<ThemeSwatch[]>([]);
+// Reference targets per hex: theme keys whose STORED value is a literal, minus
+// the key being edited. A key holding a var() of its own is never a target —
+// var(--link) where link is var(--accent) is one hop from a cycle, which the
+// browser resolves to nothing at all — and the setting's own variable would
+// point it at itself.
+const referenceTargets = ref(new Map<string, ThemeSwatch>());
 
 // The theme's colours go through the same probe, but only when the theme
 // changes — never per keystroke or pointermove, which is what the draft
@@ -280,15 +289,23 @@ function refreshTheme(): void {
   // var(--fg) shows one foreground swatch, not two.
   const out: ThemeSwatch[] = [];
   const seen = new Set<string>();
+  const targets = new Map<string, ThemeSwatch>();
   for (const [key, cssVar] of Object.entries(COLOR_VARS)) {
-    const resolved = resolveCssColor(String(settings.effective(key) ?? ''), host);
+    const stored = String(settings.effective(key) ?? '');
+    const resolved = resolveCssColor(stored, host);
     if (!resolved) continue;
     const hex = toHex(resolved);
-    if (seen.has(hex)) continue;
-    seen.add(hex);
-    out.push({ key, cssVar, hex, title: `${getOption(key)?.label ?? key} ${hex}` });
+    const sw: ThemeSwatch = { key, cssVar, hex, title: `${getOption(key)?.label ?? key} ${hex}` };
+    if (!seen.has(hex)) {
+      seen.add(hex);
+      out.push(sw);
+    }
+    if (key !== props.settingKey && !VAR_REF_RE.test(stored.trim()) && !targets.has(hex)) {
+      targets.set(hex, sw);
+    }
   }
   themeRow.value = out;
+  referenceTargets.value = targets;
 }
 const themeSignature = computed(() =>
   Object.keys(COLOR_VARS)
@@ -377,20 +394,19 @@ const harmonyRow = computed(() => (rgb.value ? harmonies(rgb.value) : []));
 
 // ─── theme colours ───────────────────────────────────────────────────────
 
-const VAR_REF_RE = /^var\(\s*(--[\w-]+)\s*\)$/;
-
-// The swap button's target. The draft resolves to one of the theme's colours
-// either because the user picked that swatch (offer the reference) or because
-// it already IS a var() to it (offer the literal). Any other colour: no button.
+// The swap button's target. A draft that already is a var() offers its
+// resolved literal — the way out of a reference, including a self-reference
+// typed into the field. Otherwise a draft matching a reference target (above)
+// offers that target's var(). Any other colour: no button.
 const referenceSwap = computed<{ value: string; title: string } | null>(() => {
   const hex = currentHex.value;
   if (!hex) return null;
-  const sw = themeRow.value.find((t) => t.hex === hex);
+  if (VAR_REF_RE.test(props.modelValue.trim())) {
+    return { value: hex, title: 'Freeze the resolved color as a literal' };
+  }
+  const sw = referenceTargets.value.get(hex);
   if (!sw) return null;
   const label = getOption(sw.key)?.label ?? sw.key;
-  if (VAR_REF_RE.test(props.modelValue.trim())) {
-    return { value: hex, title: `Freeze the current ${label} color as a literal` };
-  }
   return { value: `var(${sw.cssVar})`, title: `Follow the theme's ${label} color` };
 });
 

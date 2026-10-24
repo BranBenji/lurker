@@ -82,6 +82,7 @@
           v-if="pickerOpen"
           :value="String(value ?? '')"
           :anchor="swatchEl"
+          :setting-key="opt.key"
           @commit="$emit('commit', $event)"
           @close="pickerOpen = false"
         />

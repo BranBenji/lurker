@@ -26,7 +26,7 @@
       <!-- AppModal maps Escape to `close`, which here means commit. Catch it
            first so Escape abandons the draft on this shell too. -->
       <div @keydown.esc.stop.prevent="cancel">
-        <ColorPickerBody v-model="draft" :initial="value" />
+        <ColorPickerBody v-model="draft" :initial="value" :setting-key="settingKey" />
       </div>
     </AppModal>
     <div
@@ -40,7 +40,7 @@
       @keydown.esc.stop.prevent="cancel"
       @keydown.enter="onEnter"
     >
-      <ColorPickerBody v-model="draft" :initial="value" />
+      <ColorPickerBody v-model="draft" :initial="value" :setting-key="settingKey" />
       <footer class="foot">
         <button class="link" type="button" :disabled="!dirty" @click="revert">revert</button>
         <button class="link done" type="button" @click="finish">done</button>
@@ -60,6 +60,8 @@ const props = defineProps<{
   value: string;
   /** The swatch button that opened the picker; the desktop card hangs off it. */
   anchor: HTMLElement | null;
+  /** The registry key being edited; see ColorPickerBody's reference swap. */
+  settingKey?: string;
 }>();
 
 const emit = defineEmits<{
