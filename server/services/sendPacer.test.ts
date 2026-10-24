@@ -511,14 +511,16 @@ describe('SendPacer', () => {
     it('turned back on, the clock starts from nothing: what went unpaced is not charged', () => {
       paced = false;
       for (let i = 0; i < 20; i++) pacer.write(`PRIVMSG #c :${i}`);
-      expect(sent).toHaveLength(20);
+      // A unit is charged whole after it goes, and unpaced that is nothing too.
+      pacer.unit([LONG, LONG, LONG]);
+      expect(sent).toHaveLength(23);
       paced = true;
       pacer.redrain();
       for (let i = 0; i < 6; i++) pacer.write(`PRIVMSG #c :again ${i}`);
       // Five fit under the fresh budget; the sixth waits its 2 s.
-      expect(sent).toHaveLength(25);
+      expect(sent).toHaveLength(28);
       vi.advanceTimersByTime(2000);
-      expect(sent).toHaveLength(26);
+      expect(sent).toHaveLength(29);
     });
   });
 
