@@ -81,6 +81,10 @@ export interface Network {
    *  Written by setNetworkUserModes only, not part of NetworkFields: it is what
    *  the user typed at the server, not a form field. */
   user_modes: string | null;
+  /** Whether this connection's outbound lines are paced against the server's
+   *  flood clock (#1193); 1 unless the user turned it off for a network whose
+   *  server exempts them. Applies live: the connection reads it per line. */
+  flood_protection: number;
   created_at: string;
 }
 
@@ -111,6 +115,7 @@ export interface NetworkFields {
   proxy_port?: number | null;
   proxy_username?: string | null;
   proxy_password?: string | null;
+  flood_protection?: boolean | number | null;
 }
 
 export function listNetworksForUser(userId: number): Network[] {
@@ -156,6 +161,7 @@ export function createNetwork(userId: number, fields: NetworkFields): Network | 
     proxy_port,
     proxy_username,
     proxy_password,
+    flood_protection,
   } = fields;
   const { next } = db
     .prepare('SELECT COALESCE(MAX(position), -1) + 1 AS next FROM networks WHERE user_id = ?')
@@ -163,8 +169,8 @@ export function createNetwork(userId: number, fields: NetworkFields): Network | 
   const result = db
     .prepare(
       `
-    INSERT INTO networks (user_id, name, host, port, tls, trusted_certificates, nick, username, realname, server_password, autoconnect, sasl_account, sasl_password, connect_commands, proxy_enabled, proxy_type, proxy_host, proxy_port, proxy_username, proxy_password, position)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO networks (user_id, name, host, port, tls, trusted_certificates, nick, username, realname, server_password, autoconnect, sasl_account, sasl_password, connect_commands, proxy_enabled, proxy_type, proxy_host, proxy_port, proxy_username, proxy_password, position, flood_protection)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
     )
     .run(
@@ -196,6 +202,9 @@ export function createNetwork(userId: number, fields: NetworkFields): Network | 
       proxy_username || null,
       encryptSecret(proxy_password || null),
       next,
+      // On when absent or null, like autoconnect: off is something a user
+      // asks for, never what a body that didn't mention it gets.
+      flood_protection === undefined || flood_protection === null ? 1 : flood_protection ? 1 : 0,
     );
   // The network's `:server:` buffer is a real registry row (kind 'server',
   // schema 17) — minted with the network so its console history and read
@@ -229,6 +238,7 @@ export function updateNetwork(
     'proxy_port',
     'proxy_username',
     'proxy_password',
+    'flood_protection',
   ];
   const setClauses: string[] = [];
   const params: unknown[] = [];
@@ -239,7 +249,8 @@ export function updateNetwork(
         key === 'tls' ||
         key === 'autoconnect' ||
         key === 'trusted_certificates' ||
-        key === 'proxy_enabled'
+        key === 'proxy_enabled' ||
+        key === 'flood_protection'
       ) {
         // A null is "unset", as on create — and on an update, unset means
         // unchanged. Coercing it would switch the flag OFF, which for `tls` is

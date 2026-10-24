@@ -1402,6 +1402,9 @@ export class IrcConnection {
       // reconcile PARTs mid-restore, and chat goes.
       holding: (line) => this.restoring && line !== undefined && swallowedWhileRestoring(line),
       onDepth: (waiting) => this.publishSendQueue(waiting),
+      // Per line, so turning a network's flood protection off (#1193) applies
+      // to what is already waiting (networkEdited).
+      paced: () => this.network.flood_protection !== 0,
     });
     connection.write = (data: string, callback?: () => void) =>
       callback || this.sendingNow
@@ -6164,6 +6167,17 @@ export class IrcConnection {
       target: this.serverTarget(),
       waiting,
     });
+  }
+
+  // The network row was edited while this connection lives (ircManager
+  // .networkChanged). Most fields apply on the next connect, since they shape
+  // the dial or the registration; flood protection (#1193) applies here and
+  // now: the queue reads it per line, and a wait scheduled under the old rule
+  // is reconsidered, so a backlog goes at once when protection is turned off.
+  networkEdited(network: Network): void {
+    if (network.flood_protection === this.network.flood_protection) return;
+    this.network.flood_protection = network.flood_protection;
+    this.sendPacer.redrain();
   }
 
   // Periodic PING with a `lurker-lag-<sent>` token. PONG echoes the token back

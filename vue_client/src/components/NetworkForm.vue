@@ -281,6 +281,15 @@
             <input v-model="form.trusted_certificates" type="checkbox" />
             <span>Only allow trusted certificates</span>
           </label>
+          <label class="check">
+            <input v-model="form.flood_protection" type="checkbox" />
+            <span>Flood protection</span>
+          </label>
+          <small v-if="!form.flood_protection"
+            >Lines go out as fast as you send them. Only for a network that exempts you, or a
+            bouncer that paces upstream itself; elsewhere the server disconnects you for
+            flooding.</small
+          >
         </div>
         <p v-if="error" class="error">{{ error }}</p>
       </div>
@@ -362,6 +371,8 @@ const form = reactive({
   sasl_password: '',
   default_channel: LURKER_CHANNEL,
   autoconnect: netRaw ? !!netRaw.autoconnect : true,
+  // Off only where the server exempts the user (#1193); applies live.
+  flood_protection: netRaw ? netRaw.flood_protection !== false : true,
   connect_commands: (netRaw?.connect_commands as string | undefined) ?? '',
   // Add flow only: the routes need a network to write to, so at this point the
   // certificate is an intent the create request carries. It is minted server
@@ -398,7 +409,8 @@ const showAdvanced = ref(
       netRaw?.autoconnect === false ||
       !!netRaw?.client_cert ||
       !!proxyRaw ||
-      netRaw?.trusted_certificates === false),
+      netRaw?.trusted_certificates === false ||
+      netRaw?.flood_protection === false),
 );
 
 // "Leave blank to keep", the same contract server_password has: the field
@@ -720,6 +732,7 @@ async function submit(): Promise<void> {
         realname: form.realname,
         sasl_account: form.sasl_account,
         autoconnect: form.autoconnect,
+        flood_protection: form.flood_protection,
         connect_commands: form.connect_commands,
       };
       // A typed value replaces; an explicit clear sends '' to wipe the saved

@@ -126,6 +126,12 @@ export interface SendPacerOptions {
   /** How many items wait, whenever that changes (coalesced per tick; an
    *  empty queue is reported once it has stayed empty EMPTY_HOLD_MS). */
   onDepth?: (waiting: number) => void;
+  /** Whether this connection is paced at all (#1193). Asked for every line
+   *  as its turn comes, so a flip applies to what already waits: off, a line
+   *  costs nothing and goes at once, in the same order. A network whose
+   *  server exempts the user (an oper, a bouncer that paces upstream itself)
+   *  turns it off. Absent means paced. */
+  paced?: () => boolean;
   /** Monotonic ms; injectable for tests. */
   now?: () => number;
   maxKeyed?: number;
@@ -263,7 +269,10 @@ export class SendPacer {
 
   // A new item may be the head now (a higher lane), and a wait scheduled for
   // the old head (a long MONITOR line: 6 s) is not its wait: pick again.
-  private redrain(): void {
+  /** Reconsider a scheduled wait now rather than when its timer fires: a new
+   *  item may belong ahead of the slow head it was scheduled for, or the
+   *  pacing rule changed (`paced` flipped). */
+  redrain(): void {
     if (!this.draining) this.clearTimer();
     this.drain();
   }
@@ -377,13 +386,16 @@ export class SendPacer {
         // server's clock never runs more than BURST_BUDGET_MS ahead of real
         // time by our count. A thunk is run once the shortest line would fit,
         // so what it builds is as fresh as it can be; a unit is admitted on
-        // its first line and goes whole.
-        const ahead = this.since - this.now();
-        const cost = head.build ? BASE_COST_MS : costOf(head.unit ? head.unit[0] : head.text!);
-        const over = ahead + cost - BURST_BUDGET_MS;
-        if (over > 0) {
-          this.schedule(over);
-          return;
+        // its first line and goes whole. Unpaced, nothing waits: not even for
+        // what a unit charged past the budget before the switch was flipped.
+        if (this.paced()) {
+          const ahead = this.since - this.now();
+          const cost = head.build ? BASE_COST_MS : costOf(head.unit ? head.unit[0] : head.text!);
+          const over = ahead + cost - BURST_BUDGET_MS;
+          if (over > 0) {
+            this.schedule(over);
+            return;
+          }
         }
         this.lanes[head.priority].shift();
         // Not wanted any more: nothing goes, and a thunk isn't even built.
@@ -488,7 +500,7 @@ export class SendPacer {
     const text = entry.text!;
     this.guarded('send', () => this.opts.send(text));
     const at = this.now();
-    if (charge) this.charge(costOf(text), at);
+    if (charge) this.charge(this.costOf(text), at);
     if (entry.onSent) this.guarded('an onSent hook', () => entry.onSent!(at));
   }
 
@@ -496,7 +508,7 @@ export class SendPacer {
     let cost = 0;
     for (const line of entry.unit!) {
       this.guarded('send', () => this.opts.send(line));
-      cost += costOf(line);
+      cost += this.costOf(line);
     }
     const at = this.now();
     this.charge(cost, at);
@@ -520,6 +532,18 @@ export class SendPacer {
     } catch (err) {
       console.warn(`[irc] send: ${what} threw:`, err);
     }
+  }
+
+  // Paced unless the connection says otherwise.
+  private paced(): boolean {
+    return this.opts.paced ? this.opts.paced() : true;
+  }
+
+  // What a line is charged: nothing while unpaced. What was charged before a
+  // flip stands and decays as it would have: the server may have counted it,
+  // and an estimate that drifts drifts safe.
+  private costOf(line: string): number {
+    return this.paced() ? costOf(line) : 0;
   }
 
   private charge(cost: number, at: number): void {

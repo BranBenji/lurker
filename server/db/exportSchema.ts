@@ -174,6 +174,9 @@ export const EXPORT_TABLES = Object.freeze({
       // The user modes replayed after registration (#1181): something the user
       // set, so a restored network keeps its +g.
       'user_modes',
+      // Flood protection off is something the user asked for on a network that
+      // exempts them (#1193); a restore keeps it.
+      'flood_protection',
     ],
   },
 

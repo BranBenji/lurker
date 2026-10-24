@@ -212,6 +212,26 @@ describe('POST /api/networks', () => {
     expect(off.body.network.autoconnect).toBe(false);
   });
 
+  // Flood protection (#1193): on unless asked off, a boolean in the payload,
+  // and a null on PATCH leaves it alone like the other flags.
+  it('flood_protection is on by default, off when asked, and a PATCH flips it', async () => {
+    const dflt = await makeNet(aliceAgent, { name: 'flood-default' });
+    expect(dflt.status).toBe(201);
+    expect(dflt.body.network.flood_protection).toBe(true);
+    const off = await makeNet(aliceAgent, { name: 'flood-off', flood_protection: false });
+    expect(off.body.network.flood_protection).toBe(false);
+    const id = off.body.network.id;
+    const left = await aliceAgent.patch(`/api/networks/${id}`).send({ flood_protection: null });
+    expect(left.body.network.flood_protection).toBe(false);
+    const on = await aliceAgent.patch(`/api/networks/${id}`).send({ flood_protection: true });
+    expect(on.body.network.flood_protection).toBe(true);
+    const listed = await aliceAgent.get('/api/networks');
+    const row = listed.body.networks.find((n: { id: number }) => n.id === id);
+    expect(row.flood_protection).toBe(true);
+    const zero = await aliceAgent.patch(`/api/networks/${id}`).send({ flood_protection: 0 });
+    expect(zero.body.network.flood_protection).toBe(false);
+  });
+
   it('500s and does not connect if createNetwork returns undefined', async () => {
     const networksDb = await import('../db/networks.js');
     const spy = vi.spyOn(networksDb, 'createNetwork').mockReturnValueOnce(undefined);

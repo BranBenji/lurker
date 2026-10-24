@@ -11,7 +11,7 @@
 import '../test-utils/isolateDb.js';
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { IrcConnection } from './ircConnection.js';
-import { EMPTY_HOLD_MS } from './sendPacer.js';
+import { BURST_BUDGET_MS, EMPTY_HOLD_MS } from './sendPacer.js';
 import type { ReplyClient } from './replyRouter.js';
 import { e2eManager } from './e2e/manager.js';
 import { createUser } from '../db/users.js';
@@ -36,9 +36,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function makeConn(): IrcConnection {
+function makeConn(flood_protection = 1): IrcConnection {
   return new IrcConnection({
     network: {
+      flood_protection,
       client_cert: null,
       client_key: null,
       proxy_enabled: 0,
@@ -82,8 +83,10 @@ interface Wire {
 // A registered connection with its wire captured, and short lines sent to
 // fill the 10 s budget, so the next line waits 2 s. `join` names channels we
 // are in; our own JOIN sends a line or two, which count toward the budget.
-function backlog(opts: { state?: string; join?: string[]; peers?: string[] } = {}): Wire {
-  const conn = makeConn();
+function backlog(
+  opts: { state?: string; join?: string[]; peers?: string[]; flood_protection?: number } = {},
+): Wire {
+  const conn = makeConn(opts.flood_protection);
   conn.state = opts.state ?? 'connected';
   const lines: string[] = [];
   const published: Array<Record<string, unknown>> = [];
@@ -694,6 +697,48 @@ describe('handshake replies', () => {
     expect(replies).toHaveLength(20);
     expect(replies[0]).toContain('peer5 ');
     expect(rekeys).toHaveLength(25);
+    conn.dispose();
+  });
+});
+
+describe('flood protection off (#1193)', () => {
+  it('sends a burst at once on a network the user turned it off for, and reports nothing waiting', () => {
+    const { conn, lines, published } = backlog({ flood_protection: 0 });
+    for (let i = 0; i < 10; i++) conn.say('#c', `burst ${i}`);
+    expect(lines).toHaveLength(15);
+    expect(lines.at(-1)).toBe('PRIVMSG #c :burst 9');
+    vi.advanceTimersByTime(EMPTY_HOLD_MS);
+    expect(published.filter((e) => e.type === 'send-queue' && e.waiting !== 0)).toEqual([]);
+    conn.dispose();
+  });
+
+  it('turned off while lines wait, the edit applies to them at once', () => {
+    const { conn, lines } = backlog();
+    conn.say('#c', 'waiting');
+    conn.say('#c', 'too');
+    expect(lines).toHaveLength(5);
+    conn.networkEdited({ ...conn.network, flood_protection: 0 });
+    expect(lines.slice(-2)).toEqual(['PRIVMSG #c :waiting', 'PRIVMSG #c :too']);
+    expect(conn.network.flood_protection).toBe(0);
+    // Turned back on, the next burst is paced again. What the backlog was
+    // charged before the flip still stands (the server may have counted it),
+    // so once that has decayed five go and the sixth waits.
+    conn.networkEdited({ ...conn.network, flood_protection: 1 });
+    vi.advanceTimersByTime(BURST_BUDGET_MS);
+    for (let i = 0; i < 6; i++) conn.say('#c', `again ${i}`);
+    expect(lines).toHaveLength(12);
+    vi.advanceTimersByTime(2000);
+    expect(lines).toHaveLength(13);
+    conn.dispose();
+  });
+
+  it('an edit that leaves protection as it was changes nothing about a wait', () => {
+    const { conn, lines } = backlog();
+    conn.say('#c', 'waiting');
+    conn.networkEdited({ ...conn.network, flood_protection: 1, nick: 'renamed' });
+    expect(lines).toHaveLength(5);
+    vi.advanceTimersByTime(2000);
+    expect(lines).toHaveLength(6);
     conn.dispose();
   });
 });

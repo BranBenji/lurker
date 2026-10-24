@@ -489,6 +489,73 @@ describe('importFromZipBuffer — roundtrip', () => {
     expect(imported.trusted_certificates).toBe(1);
   });
 
+  it('imports an archive from before a NOT NULL column existed, with the table default', async () => {
+    // Every column added since an archive was written is missing from it;
+    // flood_protection (#1193), position and proxy_enabled are NOT NULL and
+    // take their defaults rather than refusing the row.
+    const { alice } = seedAlice();
+    const buf = await exportToBuffer(alice.id, { includeMessages: false });
+    const yauzl = await import('yauzl');
+    const { ZipArchive } = await import('archiver');
+
+    const entries = await new Promise<Map<string, Buffer>>((resolve, reject) => {
+      yauzl.fromBuffer(buf, { lazyEntries: true }, (err, zip) => {
+        if (err) return reject(err);
+        const out = new Map<string, Buffer>();
+        zip.readEntry();
+        zip.on('entry', (entry) => {
+          if (entry.fileName.endsWith('/')) return zip.readEntry();
+          zip.openReadStream(entry, (e2, stream) => {
+            if (e2) return reject(e2);
+            const chunks: Buffer[] = [];
+            stream.on('data', (c: Buffer) => chunks.push(c));
+            stream.on('end', () => {
+              out.set(entry.fileName, Buffer.concat(chunks));
+              zip.readEntry();
+            });
+            stream.on('error', reject);
+          });
+        });
+        zip.on('end', () => resolve(out));
+        zip.on('error', reject);
+      });
+    });
+
+    const data = JSON.parse(entries.get('data.json')!.toString('utf8')) as Record<
+      string,
+      Array<Record<string, unknown>>
+    >;
+    for (const row of data.networks || []) {
+      delete row.flood_protection;
+      delete row.position;
+      delete row.proxy_enabled;
+      delete row.trusted_certificates;
+    }
+    entries.set('data.json', Buffer.from(JSON.stringify(data)));
+
+    const archive = new ZipArchive();
+    const rebuiltChunks: Buffer[] = [];
+    archive.on('data', (c: Buffer) => rebuiltChunks.push(c));
+    for (const [name, content] of entries) archive.append(content, { name });
+    await archive.finalize();
+    const rebuilt = Buffer.concat(rebuiltChunks);
+
+    const target = createUser(`older_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+    const result = await importFromZipBuffer(target.id, rebuilt);
+    expect(result.counts.networks).toBe(1);
+    const imported = db
+      .prepare(
+        'SELECT flood_protection, position, proxy_enabled, trusted_certificates FROM networks WHERE user_id = ?',
+      )
+      .get(target.id);
+    expect(imported).toEqual({
+      flood_protection: 1,
+      position: 0,
+      proxy_enabled: 0,
+      trusted_certificates: 1,
+    });
+  });
+
   it('rejects malicious ignored_masks rows on import (bad regex / non-ISO expiry)', async () => {
     const { alice } = seedAlice();
     const buf = await exportToBuffer(alice.id, { includeMessages: false });

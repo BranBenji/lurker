@@ -27,7 +27,11 @@ A tour of the Lurker window and how messages are organized.
   paste or a burst so the server doesn't drop the connection for flooding; a line
   that never made it (the connection dropped first) is marked in its buffer. What
   you type goes ahead of Lurker's own housekeeping (refreshing names and modes
-  after a join or a reconnect), and behind the join itself.
+  after a join or a reconnect), and behind the join itself. If a server exempts
+  you from its flood limits (you're an oper there, or you connect through a
+  bouncer that paces on its own), turn **Flood protection** off in that
+  network's advanced options, or `/network modify <name> -noflood`; lines then
+  go out at once.
 
 ## Direct messages & presence
 
