@@ -477,6 +477,48 @@ describe('MessageList — replies to relayed lines', () => {
     return { p, r };
   }
 
+  // Quote and Copy quote (#1119, #1218) take the row as it reads: a relayed
+  // line as the person inside the envelope.
+  const actionButton = (w: VueWrapper, id: number, title: string) =>
+    rowOf(w, id)
+      .findAll('.row-actions button')
+      .find((b) => b.attributes('title') === title);
+  function stubClipboard() {
+    const writeText = vi.fn<(t: string) => Promise<void>>(() => Promise.resolve());
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    return writeText;
+  }
+
+  it('quotes and copies a relayed line as the person inside the envelope', async () => {
+    markRelay('bridgebot');
+    const quote = vi.spyOn(composerOverlay, 'quoteInComposer').mockImplementation(() => {});
+    const writeText = stubClipboard();
+    const p = line('bridgebot', '<alice> which branch?');
+    const w = mountWith([p]);
+    await actionButton(w, p.id, 'Quote alice')!.trigger('click');
+    expect(quote).toHaveBeenCalledWith({ nick: 'alice', type: 'message', text: 'which branch?' });
+    await actionButton(w, p.id, 'Copy quote')!.trigger('click');
+    expect(writeText).toHaveBeenCalledWith('<alice> which branch?');
+  });
+
+  // A bridge's reply addressed to alice reads `<bob> hi` once the address is
+  // stripped. That is the bridge's text, not an envelope to open again.
+  it("keeps a bridge's reply as the bridge's, once its address is stripped", async () => {
+    markRelay('bridgebot');
+    const quote = vi.spyOn(composerOverlay, 'quoteInComposer').mockImplementation(() => {});
+    const writeText = stubClipboard();
+    const p = line('alice', 'who said it?', { msgid: 'm1' });
+    const r = line('bridgebot', 'alice: <bob> hi', {
+      replyTo: { msgid: 'm1', parent: parent({ id: p.id, text: 'who said it?' }) },
+    });
+    const w = mountWith([p, r]);
+    expect(ownText(rowOf(w, r.id))).toBe('<bob> hi');
+    await actionButton(w, r.id, 'Quote bridgebot')!.trigger('click');
+    expect(quote).toHaveBeenCalledWith({ nick: 'bridgebot', type: 'message', text: '<bob> hi' });
+    await actionButton(w, r.id, 'Copy quote')!.trigger('click');
+    expect(writeText).toHaveBeenCalledWith('<bridgebot> <bob> hi');
+  });
+
   it('quotes the person, not the bridge, and drops the address that names her', () => {
     markRelay('bridgebot');
     const { p, r } = relayed('[Discord] <alice> which branch?');

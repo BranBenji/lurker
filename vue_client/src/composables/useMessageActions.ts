@@ -6,20 +6,21 @@ import {
   BookmarkCheckIcon,
   BookmarkIcon,
   CopyIcon,
-  HeartPlusIcon,
+  CopyPlusIcon,
+  FaceSlightlySmilingPlusIcon,
   LinkIcon,
-  QuoteIcon,
-  ReplyIcon,
+  MessageSquareQuoteIcon,
+  MessageSquareReplyIcon,
 } from '@lucide/vue';
 import type { LucideIcon } from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useReactionsStore } from '../stores/reactions.js';
-import { useRelayBotsStore } from '../stores/relayBots.js';
 import { tagSupport, useNetworksStore } from '../stores/networks.js';
 import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useContextMenu } from './useContextMenu.js';
+import { copyQuoteFor } from '../utils/replyText.js';
 
 export interface MessageLike {
   id?: number | null;
@@ -92,7 +93,15 @@ export interface MessageContext {
   onIgnore(message: MessageLike): void;
 }
 
-export type MessageActionKey = 'reply' | 'quote' | 'react' | 'copy' | 'link' | 'save' | 'ignore';
+export type MessageActionKey =
+  | 'reply'
+  | 'quote'
+  | 'react'
+  | 'copy'
+  | 'copyQuote'
+  | 'link'
+  | 'save'
+  | 'ignore';
 
 export interface MessageAction {
   key: MessageActionKey;
@@ -179,9 +188,33 @@ export function useMessageActions(): MessageActionsAPI {
     return `${window.location.origin}/buffer/${bufferId}?msg=${message.id}`;
   }
 
+  // What Copy quote copies: the line as Quote would put it above the draft,
+  // without the `> ` — a /me reads `* bob waves`, a spoiler stays `||…||`.
+  function copyQuoteText(message: MessageLike): string {
+    return copyQuoteFor({
+      nick: message.nick ?? '',
+      type: message.type,
+      text: message.text ?? '',
+    });
+  }
+
   function buildActions(message: MessageLike | null | undefined): MessageAction[] {
     if (!message) return [];
     const actions: MessageAction[] = [];
+
+    // A reaction replies to the line's msgid, so it needs a line a reply could
+    // name, on a network that can carry it (canReact — see the server's
+    // canSendReactions). Not a notice — the server's reactionSendTarget says
+    // why. It re-checks all of this; the gate just keeps a button off lines
+    // where it could only do nothing. First in the bar and the menu, where
+    // Discord and Slack put it: the action people reach for most.
+    if (
+      replyable(message) &&
+      message.type !== 'notice' &&
+      reactionsGoOut(message.networkId ?? message.network_id)
+    ) {
+      actions.push({ key: 'react', label: 'React', icon: FaceSlightlySmilingPlusIcon });
+    }
 
     // Ignore addresses another user: pointless on your own line, and the server
     // uses the hostmask for delivery, not ignore filtering.
@@ -196,42 +229,43 @@ export function useMessageActions(): MessageActionsAPI {
     // offered only where one would go out.
     const unaddressed = !!message.self || privateTarget(message.target);
     if (addressable && !unaddressed) {
-      actions.push({ key: 'reply', label: `Reply to ${message.nick}`, icon: ReplyIcon });
+      actions.push({
+        key: 'reply',
+        label: `Reply to ${message.nick}`,
+        icon: MessageSquareReplyIcon,
+      });
     } else if (unaddressed && message.nick && replyable(message) && tagsGoOut) {
       const label = message.self ? 'Reply to yourself' : `Reply to ${message.nick}`;
-      actions.push({ key: 'reply', label, icon: ReplyIcon });
+      actions.push({ key: 'reply', label, icon: MessageSquareReplyIcon });
     }
 
     // Quote (#1119) is Reply's plain-text sibling: `> <nick> text` above the
     // draft, for the people on clients that never see a reply tag. It needs no
     // network and no msgid — only words to quote — so it's offered on your own
     // lines and in DMs too, and on a line a Reply can't take.
+    //
+    // MessageList hands over the row as displayed, so a relayed line already
+    // names the person inside its envelope. Unwrapping it again would misread a
+    // bridge's reply whose address was stripped to leave `<bob> hi`.
     if (message.nick && message.text) {
-      // Named for the person quoted: on a relayed line, the one inside the
-      // envelope, as the quote line will read (MessageList's onQuote unwraps).
-      const nid = message.networkId ?? message.network_id;
-      const who = useRelayBotsStore().unwrap(nid, message)?.nick ?? message.nick;
-      actions.push({ key: 'quote', label: `Quote ${who}`, icon: QuoteIcon });
-    }
-
-    // A reaction replies to the line's msgid, so it needs a line a reply could
-    // name, on a network that can carry it (canReact — see the server's
-    // canSendReactions). Not a notice — the server's reactionSendTarget says
-    // why. It re-checks all of this; the gate just keeps a button off lines
-    // where it could only do nothing.
-    if (
-      replyable(message) &&
-      message.type !== 'notice' &&
-      reactionsGoOut(message.networkId ?? message.network_id)
-    ) {
-      actions.push({ key: 'react', label: 'React', icon: HeartPlusIcon });
+      actions.push({
+        key: 'quote',
+        label: `Quote ${message.nick}`,
+        icon: MessageSquareQuoteIcon,
+      });
     }
 
     if (message.text) {
       actions.push({ key: 'copy', label: 'Copy text', icon: CopyIcon });
     }
 
-    // Sits next to Copy text because it's the other "take this away with you"
+    // Copy quote (#1218): the same text with its author in front, `<bob> hi`,
+    // for quoting by hand or pasting somewhere else.
+    if (message.nick && message.text) {
+      actions.push({ key: 'copyQuote', label: 'Copy quote', icon: CopyPlusIcon });
+    }
+
+    // Sits with the two copies because it's the other "take this away with you"
     // action: a permalink to bookmark, or to open in a new window.
     if (linkBufferId(message) != null) {
       actions.push({ key: 'link', label: 'Copy link to message', icon: LinkIcon });
@@ -286,6 +320,11 @@ export function useMessageActions(): MessageActionsAPI {
       case 'copy':
         if (navigator.clipboard) {
           navigator.clipboard.writeText(String(message.text || '')).catch(() => {});
+        }
+        break;
+      case 'copyQuote':
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(copyQuoteText(message)).catch(() => {});
         }
         break;
       case 'link': {

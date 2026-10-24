@@ -459,7 +459,7 @@ import ReactionRow from './ReactionRow.vue';
 import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
 import { useRepliesStore } from '../stores/replies.js';
 import { emitJumpIntent } from '../composables/useJumpIntent.js';
-import { CopyIcon, IdCardIcon, ReplyIcon, SatelliteDishIcon } from '@lucide/vue';
+import { CopyIcon, IdCardIcon, MessageSquareReplyIcon, SatelliteDishIcon } from '@lucide/vue';
 
 // Extended BufferMessage fields accessed in the template and script
 // (beyond the core BufferMessage definition which uses [key: string]: unknown).
@@ -896,16 +896,16 @@ const actionContext: MessageContext = {
     if (!unaddressed) addressNick(msg.nick);
     else if (started) focusComposer();
   },
-  // Quote (#1119): the line as plain text above the draft. A relayed line is
-  // quoted as the person inside the envelope, the way the reply quote shows it.
+  // Quote (#1119): the line as plain text above the draft. The row is the
+  // displayed one, so a relayed line already names the person inside the
+  // envelope; unwrapping it again would misread a bridge's reply whose address
+  // was stripped to leave `<bob> hi`.
   onQuote: (msg) => {
     if (!msg.nick) return;
-    const networkId = msg.networkId ?? msg.network_id ?? buffer.value?.networkId;
-    const relayed = networkId == null ? null : relayBots.unwrap(networkId, msg);
     quoteInComposer({
-      nick: relayed?.nick ?? msg.nick,
+      nick: msg.nick,
       type: msg.type,
-      text: relayed?.text ?? (msg.text as string | undefined) ?? '',
+      text: (msg.text as string | undefined) ?? '',
     });
   },
   onIgnore: (msg) => {
@@ -1092,7 +1092,7 @@ function openRelayNickMenu(
 ): void {
   const marked = relayBots.isRelay(networkId, nick);
   const items: ContextMenuItem[] = [
-    { label: `Reply to ${nick}`, icon: ReplyIcon, onClick: () => addressNick(nick) },
+    { label: `Reply to ${nick}`, icon: MessageSquareReplyIcon, onClick: () => addressNick(nick) },
     {
       label: 'Copy Nickname',
       icon: CopyIcon,

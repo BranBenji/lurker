@@ -48,8 +48,7 @@ export function quoteLineFor(
   maxBytes?: number,
   measure: (s: string) => number = byteLen,
 ): string {
-  const [open, close] = quoteMarks(line.type);
-  const head = `> ${open}${line.nick}${close}`;
+  const head = `> ${quoteHead(line)}`;
   const text = flattenRuns(line.text, true);
   if (!text) return head;
   const full = `${head} ${text}`;
@@ -65,6 +64,20 @@ export function quoteLineFor(
     room -= measure(out) - maxBytes;
   }
   return head;
+}
+
+// What Copy quote (#1218) copies: the Quote action's line without the `> ` or
+// the wire budget — `<alice> what she said`, read by the same rules, so the two
+// agree on a line's formatting, spoilers and line breaks.
+export function copyQuoteFor(line: QuoteSource): string {
+  const head = quoteHead(line);
+  const text = flattenRuns(line.text, true);
+  return text ? `${head} ${text}` : head;
+}
+
+function quoteHead(line: QuoteSource): string {
+  const [open, close] = quoteMarks(line.type);
+  return `${open}${line.nick}${close}`;
 }
 
 // A draft's leading quote lines (the Quote action's, each `> …` and complete)
