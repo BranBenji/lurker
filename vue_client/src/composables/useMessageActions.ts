@@ -7,7 +7,7 @@ import {
   BookmarkIcon,
   CopyIcon,
   CopyPlusIcon,
-  HeartPlusIcon,
+  FaceSlightlySmilingPlusIcon,
   LinkIcon,
   MessageSquareQuoteIcon,
   MessageSquareReplyIcon,
@@ -252,7 +252,7 @@ export function useMessageActions(): MessageActionsAPI {
       message.type !== 'notice' &&
       reactionsGoOut(message.networkId ?? message.network_id)
     ) {
-      actions.push({ key: 'react', label: 'React', icon: HeartPlusIcon });
+      actions.push({ key: 'react', label: 'React', icon: FaceSlightlySmilingPlusIcon });
     }
 
     if (message.text) {
