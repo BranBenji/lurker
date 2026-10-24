@@ -159,6 +159,14 @@ describe('GET /api/link-preview/avatar/:token', () => {
     const huge = Buffer.concat([webp.subarray(0, 16), Buffer.alloc(1024 * 1024)]);
     stub.onAvatar = answer(200, huge, { 'content-type': 'image/webp' });
     expect((await agent.get(avatarClientUrl(`${base}/huge.png`)!)).status).toBe(404);
+    // Small, but a full-size canvas: what a skewed or compromised decoder could send.
+    const wide = await sharp({
+      create: { width: 2048, height: 2048, channels: 3, background: '#000' },
+    })
+      .webp()
+      .toBuffer();
+    stub.onAvatar = answer(200, wide, { 'content-type': 'image/webp' });
+    expect((await agent.get(avatarClientUrl(`${base}/wide.png`)!)).status).toBe(404);
     stub.onAvatar = answer(500);
     expect((await agent.get(avatarClientUrl(`${base}/crashed.png`)!)).status).toBe(404);
   });

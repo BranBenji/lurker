@@ -41,7 +41,7 @@ import {
   verifyProxyToken,
   verifyPosterToken,
 } from '../services/mediaProxyToken.js';
-import { imageSignatureOf, SIGNATURE_BYTES } from '../utils/imageSignature.js';
+import { imageSignatureOf, SIGNATURE_BYTES, webpCanvasSize } from '../utils/imageSignature.js';
 import { previewsEnabled } from '../utils/previews.js';
 import { SlotPool } from '../utils/slotPool.js';
 
@@ -506,6 +506,8 @@ router.get('/poster/:token', async (req: Request, res: Response) => {
 /** An avatar from the decoder is a ≤256 px WebP, tens of KB, an animated one ≤512 KB. A
  *  bigger body is a decoder we shouldn't believe. */
 const MAX_AVATAR_BYTES = 1024 * 1024;
+/** The decoder's square is at most 256 px a side. */
+const MAX_AVATAR_SIDE = 256;
 
 /**
  * Avatar asks of the decoder in flight. Its own pool, not `mediaPool`: an ask holds its slot
@@ -545,10 +547,15 @@ async function askDecoderForAvatar(key: string, raw: string): Promise<AvatarOutc
       case 'ok': {
         // ⚠ The decoder's "WebP" is a claim until its magic bytes say so: it's the box we
         // expect compromised first. Anything else is no avatar, and the client's tile shows.
+        // Its canvas too, read from the header: a full-size WebP is small when it's plain.
         const body = got.webp;
+        const canvas = webpCanvasSize(body);
         if (
           body.length > MAX_AVATAR_BYTES ||
-          imageSignatureOf(body.subarray(0, SIGNATURE_BYTES)) !== 'image/webp'
+          imageSignatureOf(body.subarray(0, SIGNATURE_BYTES)) !== 'image/webp' ||
+          !canvas ||
+          canvas.width > MAX_AVATAR_SIDE ||
+          canvas.height > MAX_AVATAR_SIDE
         ) {
           return { kind: 'none' };
         }

@@ -91,3 +91,29 @@ export function imageSignatureOf(head: Buffer): string | null {
   if (starts(head, [0x00, 0x00, 0x01, 0x00])) return 'image/x-icon';
   return null;
 }
+
+/**
+ * A WebP's canvas size from its header, without decoding it, or null when the header isn't
+ * one of the three WebP forms. For the avatar route (lurker#1190), which must not serve a
+ * decoder's "avatar" that is really a full-size canvas: a 4096 px solid colour is 30 KB.
+ */
+export function webpCanvasSize(buf: Buffer): { width: number; height: number } | null {
+  if (buf.length < 30 || ASCII(buf, 0, 4) !== 'RIFF' || ASCII(buf, 8, 12) !== 'WEBP') return null;
+  switch (ASCII(buf, 12, 16)) {
+    // Extended (alpha, animation): 24-bit width-1 and height-1 at 24 and 27.
+    case 'VP8X':
+      return { width: buf.readUIntLE(24, 3) + 1, height: buf.readUIntLE(27, 3) + 1 };
+    // Lossy: a keyframe's start code, then 14-bit width and height.
+    case 'VP8 ':
+      if (buf[23] !== 0x9d || buf[24] !== 0x01 || buf[25] !== 0x2a) return null;
+      return { width: buf.readUInt16LE(26) & 0x3fff, height: buf.readUInt16LE(28) & 0x3fff };
+    // Lossless: a 0x2f signature, then 14-bit width-1 and height-1.
+    case 'VP8L': {
+      if (buf[20] !== 0x2f) return null;
+      const bits = buf.readUInt32LE(21);
+      return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 };
+    }
+    default:
+      return null;
+  }
+}
