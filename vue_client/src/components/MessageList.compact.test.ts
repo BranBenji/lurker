@@ -246,7 +246,10 @@ describe('MessageList — compact notice runs', () => {
     expect(head(15)!.querySelector('.prefix')?.textContent).toBe('-irc.example.net-');
     expect(head(15)!.querySelector('.nick-ref')).toBeNull();
     const tile = line(15).querySelector(':scope > .avatar') as HTMLElement;
-    expect(tile.classList.contains('notice')).toBe(true);
+    expect(tile.classList.contains('mark-notice')).toBe(true);
+    // Never the list's own `.notice` (its dividers' class): a child's root wears the
+    // parent's scoped rules, and that one centres, pads and re-homes the tile.
+    expect(tile.classList.contains('notice')).toBe(false);
     expect(tile.classList.contains('interactive')).toBe(false);
     expect(tile.querySelector('svg.mark')).not.toBeNull();
     expect(tile.querySelector('img')).toBeNull();
@@ -255,7 +258,7 @@ describe('MessageList — compact notice runs', () => {
     expect(line(9).querySelector(':scope > .avatar')).toBeNull();
     // A message head in the same list draws its face from the set.
     const face = line(10).querySelector(':scope > .avatar') as HTMLElement;
-    expect(face.classList.contains('notice')).toBe(false);
+    expect(face.classList.contains('mark-notice')).toBe(false);
     expect(face.querySelector('img')).not.toBeNull();
   });
 
@@ -290,7 +293,7 @@ describe('MessageList — compact notice runs', () => {
     };
     mountCompact({ keepSettings: true });
     const tile = line(16).querySelector(':scope > .avatar') as HTMLElement;
-    expect(tile.classList.contains('server')).toBe(true);
+    expect(tile.classList.contains('mark-server')).toBe(true);
     expect(tile.querySelector('svg.mark')).not.toBeNull();
     expect(tile.style.background).toBe('');
     expect(tile.getAttribute('aria-label')).toBe('testnet');

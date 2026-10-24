@@ -24,8 +24,8 @@
     :class="{
       interactive,
       metadata: fromMetadata,
-      notice: mark === 'notice',
-      server: mark === 'server',
+      'mark-notice': mark === 'notice',
+      'mark-server': mark === 'server',
     }"
     :style="{ background: color ?? undefined }"
     :title="nick"
@@ -179,9 +179,11 @@ function onError(): void {
   color: rgba(28, 26, 30, 0.85);
 }
 /* The placeholders: a glyph centred and sized like an initial, half the
-   tile, through the icon token the global .lucide box reads. */
-.nick-avatar.notice,
-.nick-avatar.server {
+   tile, through the icon token the global .lucide box reads. Classed
+   mark-*, not `notice`: the root of a child component wears its parent's
+   scoped rules too, and MessageList has a `.notice` for its dividers. */
+.nick-avatar.mark-notice,
+.nick-avatar.mark-server {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -190,7 +192,7 @@ function onError(): void {
   --icon-size: calc(var(--avatar-size, 2.25em) * 0.5);
   vertical-align: 0;
 }
-.nick-avatar.server .mark {
+.nick-avatar.mark-server .mark {
   color: var(--fg-muted);
 }
 </style>
