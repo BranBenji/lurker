@@ -295,6 +295,40 @@ describe('MessageList — compact notice runs', () => {
     expect(tile.style.background).toBe('');
     expect(tile.getAttribute('aria-label')).toBe('testnet');
     expect(line(18).querySelector(':scope > .avatar')).toBeNull();
+    // A self notice under an old nick: the tile agrees with the mark beside
+    // it (the row's stored flag, not a guess from the current nick).
+    const mine = line(14).querySelector(':scope > .avatar') as HTMLElement;
+    expect(mine.style.background).toContain(
+      useSettingsStore().effective('look.nick.self_color') as string,
+    );
+  });
+
+  // A placeholder tile is not a person: a tap on it reaches the row, where a
+  // phone opens the message menu from any part of it. The author's tile
+  // keeps the tap for the nick menu.
+  it('lets a tap on a placeholder tile fall through to the row', () => {
+    useSettingsStore().values = {
+      'look.message.layout': 'compact',
+      'look.message.avatars': true,
+      'look.avatars.set': 'ealain',
+    } as never;
+    useAvatarSetsStore().builtinManifests = {
+      ealain: { count: 32, ext: 'webp' },
+      'plain-light': { count: 1, ext: 'webp' },
+      'plain-dark': { count: 1, ext: 'webp' },
+    };
+    mountCompact({ keepSettings: true });
+    const reached = (id: number) => {
+      const seen = vi.fn<() => void>();
+      line(id).addEventListener('click', seen);
+      line(id)
+        .querySelector(':scope > .avatar')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      return seen.mock.calls.length > 0;
+    };
+    expect(reached(8)).toBe(true);
+    expect(reached(16)).toBe(true);
+    expect(reached(10)).toBe(false);
   });
 
   it('leaves actions as single lines that never fold', () => {

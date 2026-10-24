@@ -8,9 +8,9 @@
 //
 //   continuationAuthor: true  — suppress the nick prefix on this row because
 //                               the previous visible row was a plain message
-//                               (or, with collapseNotices, a notice) of the
-//                               same type from the same author within the
-//                               gap window.
+//                               (or another type `collapseTypes` admits) of
+//                               the same type from the same author within
+//                               the gap window.
 //
 //   continuationTime: true    — suppress the timestamp on this row because
 //                               the previous visible row displayed the same
@@ -33,6 +33,26 @@
 // Time collapsing applies to every row that displays a time (chat rows,
 // system rows, consolidation rows). Dividers carry no time and reset both
 // chains so the marker stands alone.
+
+// The row types the compact layout gives a head line (who spoke, and the
+// time) and groups into runs under it: the apps' `isBubble` — every line
+// whose author is separate from its text. A nick's lines, and the network
+// (or Lurker) speaking in its own voice: the server buffer's text, system,
+// E2E, CTCP and DCC status. An action and the activity events (join, part,
+// mode, topic, …) name their actor inside the sentence, so a head would say
+// it twice: they stay single lines. An error is one line of its own too.
+export const HEADED_TYPES: ReadonlySet<string> = new Set([
+  'message',
+  'notice',
+  'motd',
+  'system',
+  'e2e',
+  'ctcp',
+  'dcc',
+]);
+export function headedType(type: string | undefined): boolean {
+  return !!type && HEADED_TYPES.has(type);
+}
 
 export interface MessageRowInner {
   id?: number | string;
@@ -110,7 +130,7 @@ export function collapseDisplay(rows: DisplayRow[], options: CollapseOptions = {
       // the type: a notice and a message from one nick are two runs. Nick
       // case is not: servers send a nick inconsistently cased, the colour
       // hash folds it, and so do the apps and the reply-quote run check.
-      const key = `${type}:${row.m.self ? '1' : '0'}:${authorOf(row.m).toLowerCase()}:${row.m.relayBot || ''}:${row.m.relaySource || ''}`;
+      const key = `${type}:${row.m.self ? '1' : '0'}:${authorOf(row.m).toLowerCase()}:${(row.m.relayBot || '').toLowerCase()}:${row.m.relaySource || ''}`;
       // The delta must be non-negative: rows carry server-time, which a
       // bouncer replay can stamp OLDER than the preceding row's. A negative
       // delta would trivially pass the window check and collapse a replayed

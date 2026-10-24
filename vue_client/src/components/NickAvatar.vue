@@ -63,6 +63,10 @@ const props = withDefaults(
     networkId?: number | null;
     // Pointer affordance; the click handler is the consumer's (attribute fallthrough).
     interactive?: boolean;
+    // Whether this is the user's own line, when the caller knows (the row's
+    // stored flag). Otherwise guessed from the network's current nick — wrong
+    // for a line sent under a nick since changed.
+    self?: boolean;
     // No metadata avatar: the nick is a relay bot's envelope (someone on
     // another network); the generated tile still shows.
     plain?: boolean;
@@ -71,7 +75,9 @@ const props = withDefaults(
     // image or initial, no metadata lookup.
     mark?: 'notice' | 'server' | null;
   }>(),
-  { networkId: null, interactive: false, plain: false, mark: null },
+  // An explicit undefined: Vue casts an absent Boolean prop to false, which
+  // would read as "not you" and switch the guess off everywhere.
+  { networkId: null, interactive: false, self: undefined, plain: false, mark: null },
 );
 
 const networks = useNetworksStore();
@@ -113,6 +119,7 @@ const initial = computed(() => {
 const ink = computed(() => avatarSets.activeSet?.initialInk ?? 'light');
 
 const isSelf = computed(() => {
+  if (props.self !== undefined) return props.self;
   const own = props.networkId != null ? networks.states[props.networkId]?.nick : null;
   return !!own && !!props.nick && own.toLowerCase() === props.nick.toLowerCase();
 });

@@ -116,14 +116,13 @@
           <NickAvatar
             v-if="showAvatars && !row.continuationAuthor"
             class="avatar"
-            :nick="avatarMark(row.m) === 'notice' ? (row.m?.nick ?? '') : headCaption(row.m)"
+            :nick="headAuthor(row.m)"
             :network-id="buffer?.networkId ?? null"
+            :self="row.m?.self"
             :plain="!!row.m?.relaySource"
             :mark="avatarMark(row.m)"
-            :interactive="row.m?.type === 'message'"
-            @click.stop.prevent="
-              row.m?.type === 'message' && onNickMenu($event, row.m?.nick, row.m)
-            "
+            :interactive="nickHead(row.m)"
+            @click="onAvatarClick($event, row.m)"
           />
           <!-- Compact-mode headed rows (`headed`): who spoke and a timestamp
              on a head line above the body. The head is omitted entirely on
@@ -142,9 +141,9 @@
             <span
               class="prefix"
               :class="prefixClass(row.m)"
-              :style="row.m?.type === 'message' ? null : prefixStyle(row.m)"
+              :style="nickHead(row.m) ? null : prefixStyle(row.m)"
               ><NickRef
-                v-if="row.m?.type === 'message'"
+                v-if="nickHead(row.m)"
                 :nick="row.m?.nick ?? ''"
                 :modes="authorModes(row.m)"
                 :show-prefix="showModePrefix"
@@ -420,7 +419,7 @@ import {
 import { consolidateRows } from '../utils/consolidate.js';
 import { historyCountBy } from '../lib/historyPaging.js';
 import type { ConsolidationGroup, NickEntry, RenameEntry } from '../../../shared/consolidate.js';
-import { collapseDisplay } from '../utils/collapseDisplay.js';
+import { collapseDisplay, headedType } from '../utils/collapseDisplay.js';
 import { asEventMode, eventModeKey, isNoiseType } from '../../../shared/eventFilter.js';
 import { smartHidesMode } from '../../../shared/modes.js';
 import { describeMode } from '../../../shared/modeNarration.js';
@@ -787,49 +786,53 @@ function eligibleForActions(m: ChatMessage | undefined | null): boolean {
 function nickRow(m: ChatMessage | undefined): boolean {
   return m?.type === 'message' || m?.type === 'notice';
 }
+// The one head that is a person's name with everything that comes with it
+// (the NickRef, its glyph and menu, the author's tile): a plain message.
+function nickHead(m: ChatMessage | undefined): boolean {
+  return m?.type === 'message';
+}
 
-// The row types the compact layout gives a head line (who spoke, and the
-// time) and groups into runs under it: the apps' `isBubble` — every line
-// whose author is separate from its text. A nick's lines, and the network
-// (or Lurker) speaking in its own voice: the server buffer's text, system,
-// E2E, CTCP and DCC status. An action and the activity events (join, part,
-// mode, topic, …) name their actor inside the sentence, so a head would say
-// it twice: they stay single lines. An error is one line of its own too.
-const HEADED_TYPES = new Set(['message', 'notice', 'motd', 'system', 'e2e', 'ctcp', 'dcc']);
-function headedType(type: string | undefined): boolean {
-  return !!type && HEADED_TYPES.has(type);
-}
-function headed(m: ChatMessage | undefined): boolean {
-  return headedType(m?.type);
-}
+// The rows the compact layout gives a head line and folds into runs: see
+// headedType (collapseDisplay owns the run rule).
 function compactHead(m: ChatMessage | undefined): boolean {
-  return compactMode.value && headed(m);
+  return compactMode.value && headedType(m?.type);
 }
 
 // What a non-nick head is captioned: the prefix the standard layout prints
 // (`-nick-`, `E2E`, `CTCP`, `DCC`, the system line's network), except the
 // server buffer's own text, whose `--` is a column marker, not a name — the
-// network's name instead, as the apps caption it.
+// network's name instead, as the apps caption it (a neutral "Server" until
+// the networks store can say it).
 function headCaption(m: ChatMessage | undefined): string {
   if (m?.type === 'motd') {
     const id = buffer.value?.networkId;
-    const name = id != null ? networks.networkById(id)?.name : null;
-    return name || prefixText(m);
+    return (id != null ? networks.networkById(id)?.name : null) || 'Server';
   }
   return prefixText(m);
 }
 
-// Who a headed row is from, for folding a run: the nick where there is one,
-// else the caption, so two networks' system lines never share a head.
-function headAuthor(m: ChatMessage): string {
-  return nickRow(m) ? (m.nick ?? '') : headCaption(m);
+// Who a headed row is from, for folding a run and for its tile: the nick
+// where there is one, else the caption, so two networks' system lines never
+// share a head.
+function headAuthor(m: ChatMessage | undefined): string {
+  return nickRow(m) ? (m?.nick ?? '') : headCaption(m);
 }
 
 // The tile a head draws with avatars on: the author's, or a placeholder
 // glyph for a notice and for the network's own voice (see NickAvatar).
 function avatarMark(m: ChatMessage | undefined): 'notice' | 'server' | null {
-  if (m?.type === 'message') return null;
+  if (nickHead(m)) return null;
   return m?.type === 'notice' ? 'notice' : 'server';
+}
+
+// A tap on the author's tile opens their menu, as the nick does. A
+// placeholder tile is not a person: the tap falls through to the row, where
+// a phone (no hover bar) opens the message menu from any part of it.
+function onAvatarClick(e: MouseEvent, m: ChatMessage | undefined): void {
+  if (!nickHead(m)) return;
+  e.stopPropagation();
+  e.preventDefault();
+  onNickMenu(e, m?.nick, m);
 }
 
 function parseUserHost(userhost: string | null | undefined): {
@@ -1586,7 +1589,7 @@ const renderRows = computed((): RenderRow[] => {
       // Compact: every headed type folds into runs (#1180); the standard
       // layout folds plain messages only.
       collapseTypes: compactMode.value ? headedType : undefined,
-      authorOf: (m) => headAuthor(m as ChatMessage),
+      authorOf: (m) => headAuthor(m as ChatMessage | undefined),
       authorWindowMs: collapseAuthorsWindowMs.value,
       collapseTimestamps: effectiveCollapseTimestamps.value,
       formatTime: (iso) => time(iso),

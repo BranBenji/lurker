@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { DisplayRow } from './collapseDisplay.js';
-import { collapseDisplay } from './collapseDisplay.js';
+import { collapseDisplay, headedType } from './collapseDisplay.js';
 
 // Build a chat row with the same shape MessageList's renderRows emits.
 function msg({
@@ -40,9 +40,8 @@ function divider({
 // exercise the "same displayed time" branch deterministically.
 const minuteFormat = (iso: string | undefined): string => (iso ? iso.slice(11, 16) : '');
 
-// The compact layout's run types (#1180): what MessageList's `headedType` says.
-const compactTypes = (type: string | undefined) =>
-  type === 'message' || type === 'notice' || type === 'motd' || type === 'system';
+// The compact layout's run types (#1180): the rule MessageList passes.
+const compactTypes = headedType;
 
 describe('collapseDisplay — author collapsing', () => {
   it('flags consecutive plain messages from the same nick', () => {
@@ -78,6 +77,38 @@ describe('collapseDisplay — author collapsing', () => {
       msg({ id: 1, nick: 'ChanServ', time: '2026-05-16T10:00:00Z' }),
       msg({ id: 2, nick: 'chanserv', time: '2026-05-16T10:00:10Z' }),
     ];
+    collapseDisplay(rows, {
+      collapseAuthors: true,
+      authorWindowMs: 5 * 60_000,
+    });
+    expect(rows[1].continuationAuthor).toBe(true);
+  });
+
+  it('folds the relay bot’s case too: Bridge and bridge carry one alice', () => {
+    const rows = [
+      {
+        m: {
+          id: 1,
+          nick: 'alice',
+          time: '2026-05-16T10:00:00Z',
+          type: 'message',
+          relayBot: 'Bridge',
+          relaySource: 'discord',
+        },
+        key: 1,
+      },
+      {
+        m: {
+          id: 2,
+          nick: 'alice',
+          time: '2026-05-16T10:00:10Z',
+          type: 'message',
+          relayBot: 'bridge',
+          relaySource: 'discord',
+        },
+        key: 2,
+      },
+    ] as DisplayRow[];
     collapseDisplay(rows, {
       collapseAuthors: true,
       authorWindowMs: 5 * 60_000,
