@@ -13,10 +13,15 @@ import { createPinia, setActivePinia } from 'pinia';
 type Call = { url: string; method?: string; body?: unknown };
 const calls: Call[] = [];
 let reply: unknown = null;
+const multipart: Array<{ url: string; fields: Record<string, unknown> }> = [];
 vi.mock('../api.js', () => ({
   api: (url: string, opts: { method?: string; body?: unknown } = {}) => {
     calls.push({ url, ...opts });
     return Promise.resolve(reply);
+  },
+  apiMultipart: (url: string, fd: FormData) => {
+    multipart.push({ url, fields: Object.fromEntries(fd.entries()) });
+    return Promise.resolve({ id: 5, url: 'https://cdn.example/me.webp', mime: 'image/webp' });
   },
 }));
 
@@ -50,6 +55,7 @@ describe('profile editor', () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     calls.length = 0;
+    multipart.length = 0;
   });
 
   it("fills saved keys, the server's for the rest, and saves what changed or isn't saved", async () => {
@@ -113,6 +119,35 @@ describe('profile editor', () => {
     expect(input(wrapper, 'Status').attributes('disabled')).toBeDefined();
     expect((input(wrapper, 'Status').element as HTMLInputElement).value).toBe('lunch');
     expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('uploads an avatar, fills the field with its link, and previews the crop', async () => {
+    setNetwork({ state: 'connected', metadataLimits: LIMITS });
+    reply = {
+      values: { avatar: 'https://old.example/a.png' },
+      unset: [],
+      live: {},
+      avatarPreview: '/proxied/old',
+    };
+    const wrapper = await open();
+    expect(wrapper.find('img.avatar').attributes('src')).toBe('/proxied/old');
+
+    const picker = wrapper.find('input[type="file"]');
+    const file = new File([new Uint8Array([1, 2, 3])], 'me.png', { type: 'image/png' });
+    Object.defineProperty(picker.element, 'files', { value: [file] });
+    await picker.trigger('change');
+    await flushPromises();
+
+    expect(multipart.at(-1)!.url).toBe('/api/uploads');
+    expect(multipart.at(-1)!.fields.purpose).toBe('avatar');
+    expect((input(wrapper, 'Avatar URL').element as HTMLInputElement).value).toBe(
+      'https://cdn.example/me.webp',
+    );
+    expect(wrapper.find('img.avatar').attributes('src')).toBe('/api/uploads/5/thumb');
+
+    // A typed link isn't fetched to preview it.
+    await input(wrapper, 'Avatar URL').setValue('https://elsewhere.example/b.png');
+    expect(wrapper.find('img.avatar').exists()).toBe(false);
   });
 
   it("copies another network's saved profile into the form", async () => {

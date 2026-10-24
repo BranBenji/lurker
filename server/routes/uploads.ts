@@ -170,6 +170,14 @@ router.post('/', uploadToDisk, async (req: Request, res: Response, next: NextFun
     // string, arriving as a multipart text field like uploaderId does.
     const tokenRaw = (req.body as { progressToken?: unknown } | undefined)?.progressToken;
 
+    // What the file is for: an ordinary upload, or an avatar the profile editor
+    // has cropped (#1189). A field like the others, sent before the file.
+    const purpose = (req.body as { purpose?: unknown } | undefined)?.purpose ?? 'upload';
+    if (purpose !== 'upload' && purpose !== 'avatar') {
+      res.status(400).json({ error: "purpose must be 'upload' or 'avatar'" });
+      return;
+    }
+
     const uploaded = await processUpload({
       userId: req.user!.id,
       isAdmin: req.user!.role === 'admin',
@@ -179,6 +187,7 @@ router.post('/', uploadToDisk, async (req: Request, res: Response, next: NextFun
       originalName: req.file.originalname,
       requestedUploaderId: requestedId,
       progressToken: typeof tokenRaw === 'string' && tokenRaw ? capText(tokenRaw, 64) : null,
+      avatar: purpose === 'avatar',
       baseUrl: () => requestBaseUrl(req),
     });
     res.json(uploaded);

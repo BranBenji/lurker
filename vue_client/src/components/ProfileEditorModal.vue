@@ -6,7 +6,9 @@
 <!--
   Your own IRCv3 metadata on one network (#1189): what Lurker saves and sets
   again after every connect. The slash commands (/displayname, /avatar,
-  /metadata) write the same rows; this is the view of them. Save saves what
+  /metadata) write the same rows; this is the view of them. Upload sends an
+  image through the user's uploader, cropped square, and fills the avatar
+  field with its link. Save saves what
   changed, and what's shown from the server but not saved yet, and sets what
   the server lacks. Clear unsets every saved key. It opens only on a connected
   network that carries metadata; one that drops while it's open greys it.
@@ -34,7 +36,7 @@
           <label>
             <span class="title">Avatar URL</span>
             <div class="avatar-row">
-              <img v-if="avatarPreview" class="avatar" :src="avatarPreview" alt="" />
+              <img v-if="preview" class="avatar" :src="preview" alt="" />
               <input
                 :disabled="locked"
                 :value="form.avatar"
@@ -44,6 +46,21 @@
                 :maxlength="max('avatar')"
                 placeholder="https://…/me.png"
                 autocomplete="off"
+              />
+              <button
+                type="button"
+                class="btn-secondary"
+                :disabled="locked || uploading"
+                @click="fileInput?.click()"
+              >
+                {{ uploading ? 'Uploading…' : 'Upload…' }}
+              </button>
+              <input
+                ref="fileInput"
+                type="file"
+                accept="image/*"
+                class="file-input"
+                @change="onPicked"
               />
             </div>
           </label>
@@ -109,7 +126,11 @@
         >
           Clear
         </button>
-        <button type="submit" class="btn-primary" :disabled="!dirty || !!refusal || saving">
+        <button
+          type="submit"
+          class="btn-primary"
+          :disabled="!dirty || !!refusal || saving || uploading"
+        >
           Save
         </button>
       </footer>
@@ -122,6 +143,7 @@ import { computed, onMounted, reactive, ref } from 'vue';
 import AppModal from './AppModal.vue';
 import RenderSegments from './RenderSegments.vue';
 import { useNetworksStore } from '../stores/networks.js';
+import { useUploadsStore } from '../stores/uploads.js';
 import { useProfileEditor } from '../composables/useProfileEditor.js';
 import { blockImeEnter, imeSafeValue } from '../composables/useImeSafeInput.js';
 import { formattingSegments } from '../utils/nickColor.js';
@@ -145,13 +167,20 @@ type Field = 'display-name' | 'avatar' | 'pronouns' | 'homepage' | 'status';
 const FIELDS = METADATA_SUB_KEYS as Field[];
 
 const networks = useNetworksStore();
+const uploads = useUploadsStore();
 const editor = useProfileEditor();
 
 const form = reactive<Record<Field, string>>(blank());
 const initial = ref<Record<Field, string>>(blank());
 // Keys with a saved row (a value or an unset); the rest show the server's.
 const savedKeys = ref(new Set<string>());
+// The saved avatar, and how other people's clients fetch it (the media proxy).
+const savedAvatar = ref('');
 const avatarPreview = ref<string | null>(null);
+// The last upload: its link, and its thumb, which is of the crop.
+const uploaded = ref<{ url: string; thumb: string } | null>(null);
+const uploading = ref(false);
+const fileInput = ref<HTMLInputElement | null>(null);
 const loading = ref(true);
 const saving = ref(false);
 const error = ref('');
@@ -163,6 +192,13 @@ const netState = computed(() => networks.states[props.networkId]);
 const refusal = computed(() => ownMetadataRefusal(netState.value));
 const otherNetworks = computed(() => networks.networks.filter((n) => n.id !== props.networkId));
 const displayNameSegments = computed(() => formattingSegments(form['display-name']));
+// What the field's link shows as, where Lurker knows: an upload's thumb, or
+// the saved avatar. A typed link isn't fetched just to preview it.
+const preview = computed(() => {
+  const url = form.avatar.trim();
+  if (uploaded.value && url === uploaded.value.url) return uploaded.value.thumb;
+  return url && url === savedAvatar.value ? avatarPreview.value : null;
+});
 const locked = computed(() => !!refusal.value || loading.value);
 const dirty = computed(() => FIELDS.some((f) => form[f].trim() !== initial.value[f]));
 
@@ -198,6 +234,7 @@ function fill(data: OwnMetadata): void {
   savedKeys.value = new Set([...Object.keys(data.values), ...data.unset]);
   initial.value = next;
   Object.assign(form, next);
+  savedAvatar.value = data.values.avatar ?? '';
   avatarPreview.value = data.avatarPreview;
 }
 
@@ -207,6 +244,31 @@ async function copyFrom(id: string): Promise<void> {
     Object.assign(form, shown(await fetchOwnMetadata(Number(id))));
   } catch (e) {
     error.value = `Couldn't read that network's profile: ${(e as Error).message}`;
+  }
+}
+
+async function onPicked(e: Event): Promise<void> {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) return;
+  uploading.value = true;
+  error.value = '';
+  try {
+    const result = await uploads.upload(file, file.name, { avatar: true });
+    if (!result) {
+      error.value = 'Another upload is still going; try again when it finishes.';
+      return;
+    }
+    uploaded.value = {
+      url: result.url,
+      thumb: result.thumbnail_url || `/api/uploads/${result.id}/thumb`,
+    };
+    form.avatar = result.url;
+  } catch (e) {
+    error.value = `Upload failed: ${(e as Error).message}`;
+  } finally {
+    uploading.value = false;
   }
 }
 
@@ -301,6 +363,16 @@ label small {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+}
+.avatar-row input:not(.file-input) {
+  flex: 1;
+  min-width: 0;
+}
+.avatar-row button {
+  flex: none;
+}
+.file-input {
+  display: none;
 }
 .avatar {
   width: 2.5em;

@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
-import { optimize, thumbnail } from './imagePipeline.js';
+import { avatar, optimize, thumbnail } from './imagePipeline.js';
 
 // All fixtures are synthesised on the fly so the test stays self-contained
 // and doesn't need committed binary blobs.
@@ -240,6 +240,61 @@ describe('imagePipeline.thumbnail', () => {
     const meta = await sharp(thumb).metadata();
     expect(meta.format).toBe('jpeg');
     expect(meta.width).toBe(512);
+  });
+});
+
+describe('imagePipeline.avatar', () => {
+  // A 3-frame GIF big enough to crop, made from raw frames stacked by pageHeight.
+  async function animatedGifSized(width: number, height: number, pages = 3): Promise<Buffer> {
+    const raw = Buffer.alloc(width * height * pages * 4);
+    for (let i = 0; i < raw.length; i += 4) {
+      raw[i] = Math.floor(i / (width * height * 4)) * 100;
+      raw[i + 3] = 255;
+    }
+    return sharp(raw, { raw: { width, height: height * pages, channels: 4, pageHeight: height } })
+      .gif()
+      .toBuffer();
+  }
+
+  it('crops a still to a 512 square, as WebP', async () => {
+    const out = await avatar(await staticPng(1200, 800), { quality: 80 });
+    const meta = await sharp(out.buffer).metadata();
+    expect([meta.format, meta.width, meta.height]).toEqual(['webp', 512, 512]);
+    expect([out.width, out.height, out.animated, out.mime]).toEqual([
+      512,
+      512,
+      false,
+      'image/webp',
+    ]);
+  });
+
+  it('never enlarges: a small image becomes the square of its short side', async () => {
+    const out = await avatar(await staticPng(300, 200), { quality: 80 });
+    const meta = await sharp(out.buffer).metadata();
+    expect([meta.width, meta.height]).toEqual([200, 200]);
+  });
+
+  it('keeps an animated GIF animated, each frame cropped', async () => {
+    const out = await avatar(await animatedGifSized(300, 200), { quality: 80 });
+    const meta = await sharp(out.buffer, { animated: true }).metadata();
+    expect([meta.format, meta.pages, meta.width, meta.pageHeight]).toEqual(['gif', 3, 200, 200]);
+    expect([out.animated, out.mime]).toEqual([true, 'image/gif']);
+  });
+
+  it('rasterises an SVG to a full-size square', async () => {
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">' +
+        '<rect width="20" height="10" fill="red"/></svg>',
+    );
+    const out = await avatar(svg, { quality: 80 });
+    const meta = await sharp(out.buffer).metadata();
+    expect([meta.format, meta.width, meta.height]).toEqual(['webp', 512, 512]);
+  });
+
+  it('follows the jpeg escape hatch', async () => {
+    const out = await avatar(await staticPng(600, 600), { quality: 80, format: 'jpeg' });
+    expect((await sharp(out.buffer).metadata()).format).toBe('jpeg');
+    expect(out.ext).toBe('jpg');
   });
 });
 

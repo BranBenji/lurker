@@ -230,8 +230,13 @@ export function createUploadSession(
   body: Record<string, unknown>,
 ): UploadSessionStatus {
   const purpose = body.purpose;
-  if (purpose !== 'upload' && purpose !== 'import' && purpose !== 'dcc-send') {
-    throw new UploadRequestError(400, "purpose must be 'upload', 'import' or 'dcc-send'");
+  if (
+    purpose !== 'upload' &&
+    purpose !== 'avatar' &&
+    purpose !== 'import' &&
+    purpose !== 'dcc-send'
+  ) {
+    throw new UploadRequestError(400, "purpose must be 'upload', 'avatar', 'import' or 'dcc-send'");
   }
   if (purpose === 'dcc-send') {
     if (!dccSendEnabledForUser(user.id)) {

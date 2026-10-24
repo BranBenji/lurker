@@ -102,6 +102,7 @@ router.post('/:id/complete', async (req: Request, res: Response, next: NextFunct
             requestedUploaderId: row.uploader_id,
             progressToken: typeof tokenRaw === 'string' && tokenRaw ? capText(tokenRaw, 64) : null,
             chunked: true,
+            avatar: row.purpose === 'avatar',
             baseUrl: () => requestBaseUrl(req),
           });
           return { status: 200, body: { ...uploaded } };

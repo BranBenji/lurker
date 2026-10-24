@@ -80,6 +80,9 @@ export interface UploadInput {
   /** Arrived in chunks (#650): no proxy limit applied to the file, so none
    *  caps it here. */
   chunked?: boolean;
+  /** An avatar for the profile editor (#1189): an image, cropped square and
+   *  sized (imagePipeline.avatar). */
+  avatar?: boolean;
   /** The instance's public origin, asked for only when a local upload's
    *  root-relative URL needs absolutizing. '' leaves the URL relative. */
   baseUrl: () => string;
@@ -171,6 +174,16 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
     throw err;
   }
   const contentClass = classified.contentClass;
+  // An avatar is a still or animated bitmap the crop can cut. sharp reads an
+  // APNG's first frame only, so cropping one would lose its animation.
+  if (input.avatar && (contentClass !== 'image' || classified.mime === 'image/apng')) {
+    throw new UploadRequestError(
+      415,
+      contentClass === 'image'
+        ? "an animated PNG can't be cropped; try a GIF or WebP"
+        : 'an avatar must be an image',
+    );
+  }
 
   // Validate stage: the resolved driver must accept this class. This is what
   // makes hosted (whose dropper takes images + text only) refuse media, without
@@ -229,21 +242,26 @@ export async function processUpload(input: UploadInput): Promise<UploadOutput> {
     const quality = resolved.policy.quality ?? (Number(settings['uploads.image.quality']) || 85);
     let optimized: imagePipeline.OptimizeResult;
     try {
-      optimized = await imagePipeline.optimize(input.tempPath, {
-        maxDim: staticImageMaxDimension(resolved.policy, settings),
-        quality,
-        format,
-        // SVG is rejected only where the resolved uploader's policy says so
-        // (the hosted locked uploader serves raster + .txt). Self-host keeps
-        // the SVG passthrough. Was: rasterOnly = isNodeMode().
-        rasterOnly: resolved.policy.rasterOnly,
-      });
+      optimized = input.avatar
+        ? await imagePipeline.avatar(input.tempPath, { quality, format })
+        : await imagePipeline.optimize(input.tempPath, {
+            maxDim: staticImageMaxDimension(resolved.policy, settings),
+            quality,
+            format,
+            // SVG is rejected only where the resolved uploader's policy says so
+            // (the hosted locked uploader serves raster + .txt). Self-host keeps
+            // the SVG passthrough. Was: rasterOnly = isNodeMode().
+            rasterOnly: resolved.policy.rasterOnly,
+          });
     } catch (err) {
       const e = err as { code?: string; message?: string };
       if (e.code === 'UNSUPPORTED_FORMAT') throw new UploadRequestError(415, e.message ?? '');
       throw err;
     }
-    thumb = await imagePipeline.thumbnail(input.tempPath, { format });
+    // An avatar's thumb is of the crop, so the editor's preview is what goes out.
+    thumb = await imagePipeline.thumbnail(input.avatar ? optimized.buffer : input.tempPath, {
+      format,
+    });
     // The optimized image is small and bounded (resized + re-encoded), so it
     // stays a buffer — round-tripping it through another temp file would be
     // pointless I/O. The heap blowup this PR removes was the ORIGINAL bytes.
