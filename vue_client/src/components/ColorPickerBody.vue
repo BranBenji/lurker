@@ -100,10 +100,19 @@
 
     <div class="rowlab">
       theme
-      <label class="asref" title="Insert var(--name) so this setting follows the theme color">
-        <input v-model="asReference" type="checkbox" />
-        as reference
-      </label>
+      <!-- One click, no mode: while the colour IS one of the theme's, offer
+           the var() that names it, so the setting follows the theme colour
+           instead of freezing its current value; while the value already is
+           such a reference, offer the literal back. -->
+      <button
+        v-if="referenceSwap"
+        type="button"
+        class="link refswap"
+        :title="referenceSwap.title"
+        @click="emit('update:modelValue', referenceSwap.value)"
+      >
+        {{ referenceSwap.value }}
+      </button>
     </div>
     <div class="swatches">
       <button
@@ -115,7 +124,7 @@
         :style="{ background: sw.hex }"
         :title="sw.title"
         :aria-label="sw.title"
-        @click="emit('update:modelValue', asReference ? `var(${sw.cssVar})` : sw.hex)"
+        @click="emit('update:modelValue', sw.hex)"
       ></button>
     </div>
 
@@ -368,7 +377,22 @@ const harmonyRow = computed(() => (rgb.value ? harmonies(rgb.value) : []));
 
 // ─── theme colours ───────────────────────────────────────────────────────
 
-const asReference = ref(false);
+const VAR_REF_RE = /^var\(\s*(--[\w-]+)\s*\)$/;
+
+// The swap button's target. The draft resolves to one of the theme's colours
+// either because the user picked that swatch (offer the reference) or because
+// it already IS a var() to it (offer the literal). Any other colour: no button.
+const referenceSwap = computed<{ value: string; title: string } | null>(() => {
+  const hex = currentHex.value;
+  if (!hex) return null;
+  const sw = themeRow.value.find((t) => t.hex === hex);
+  if (!sw) return null;
+  const label = getOption(sw.key)?.label ?? sw.key;
+  if (VAR_REF_RE.test(props.modelValue.trim())) {
+    return { value: hex, title: `Freeze the current ${label} color as a literal` };
+  }
+  return { value: `var(${sw.cssVar})`, title: `Follow the theme's ${label} color` };
+});
 
 // ─── favourites ──────────────────────────────────────────────────────────
 
@@ -534,14 +558,17 @@ function toggleFavorite(): void {
   color: var(--fg-muted);
   text-transform: lowercase;
 }
-.asref {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
+.refswap {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
   cursor: pointer;
+  font: inherit;
+  text-transform: none;
 }
-.asref input {
-  margin: 0;
+.refswap:hover {
+  color: var(--fg);
 }
 .star {
   background: none;
