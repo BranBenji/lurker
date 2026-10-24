@@ -454,12 +454,6 @@ export function rewriteNumericTarget(line: string, nick: string): string {
   return `${m[1]}${nick}${m[2]}`;
 }
 
-// Whether a raw server line (`[@tags ]:prefix NNN …`) is the given numeric.
-export function isNumericLine(line: string, numeric: string): boolean {
-  const m = /^(?:@\S+ )?:\S+ (\S+) /.exec(line);
-  return m?.[1] === numeric;
-}
-
 // The new nick when `line` is a NICK from `self` — the nick a client knows
 // itself by, compared under the network's casemapping — else null.
 export function selfNickChange(
@@ -1555,16 +1549,7 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     // the network's own 001–005 when we have them so the client sees the real
     // ISUPPORT tokens (CHANTYPES/PREFIX/NETWORK drive its parsing).
     if (conn.state === 'connected' && conn.registrationLines.length > 0) {
-      // Saved at registration with the upstream's tags, so any per-delivery tag
-      // on them (msgid, batch) is stale by now. Like ZNC, the replay keeps at
-      // most `time`, and write() drops that too unless the client negotiated
-      // server-time (#892). The network's own FILEHOST never goes out: our
-      // clients upload with their Lurker credentials (filehostToken).
-      for (const line of conn.registrationLines) {
-        const tagged = restrictTags(line, (key) => key === 'time');
-        const out = tagged && withoutUpstreamFilehost(tagged);
-        if (out) this.write(rewriteNumericTarget(out, requested));
-      }
+      for (const line of conn.registrationLines) this.replayBurstLine(line, requested);
     } else {
       this.writeWelcomeNumerics(requested);
     }
@@ -1646,20 +1631,31 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       // `out`, not event.line: irc-framework's raw line keeps its CRLF, which
       // would end up on the channel name.
       const joined = selfJoinChannel(out, this.currentNick());
+      // Our own NICK, from the nick this client knows us by (look before
+      // parsing: almost no relayed line is a NICK).
+      const renamed = out.includes(' NICK ')
+        ? selfNickChange(out, this.toldNick, this.networkId)
+        : null;
       // A replayed line reaches this client only if it's news.
       // - A JOIN: only for a channel the client hasn't been sent a JOIN for.
       //   irssi rebuilds any channel it gets a second self-JOIN for. A client
       //   that attached while the link was down, or partway through the replay,
       //   learns its channels this way.
+      // - A self-NICK off the nick it was told: the replayed 001 carries the
+      //   nick the socket registered with, and the NICK behind it the live one
+      //   (ircConnection 'registered'). A client that attached between the two
+      //   was told the first; one that stayed knows the second already, and
+      //   its prefix doesn't match.
       // - The rest: only for a client that hasn't had a welcome.
       if (replaying) {
         const news = joined
           ? !this.joinsSent.has(foldTargetFor(this.networkId, joined))
-          : !this.welcomed;
+          : renamed
+            ? true
+            : !this.welcomed;
         if (!news) return;
       }
       this.write(out, relayedAt);
-      const renamed = selfNickChange(out, this.toldNick, this.networkId);
       if (renamed) this.toldNick = renamed;
       // The network's own NAMES for a channel the burst held back: nothing more
       // to send for it.
@@ -1706,6 +1702,11 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     };
     conn.client.on('registered', this.onUpstreamRegistered);
     conn.client.on('motd', this.onUpstreamMotd);
+    // Attached between the 001 and the end of its burst: the attach replayed
+    // what of the burst had come, and the 001 that would have armed this is
+    // past. Lurker's boot is this window for a client whose reconnect beats
+    // the network's 005s.
+    this.burstPending = conn.state === 'connected' && !conn.isupportComplete && !conn.restoring;
     // A metadata change that came as somebody else's reply (#607): the raw
     // relay gave it to its asker alone, so it's said here to everyone else
     // who subscribed to the key and can see the target.
@@ -1769,12 +1770,21 @@ class BouncerSession implements MonitorHolder, ReplyClient {
     }
     const nick = this.toldNick || live || this.clientNick || '*';
     for (const line of conn.registrationLines) {
-      if (!isNumericLine(line, '005')) continue;
-      const tagged = restrictTags(line, (key) => key === 'time');
-      const out = tagged && withoutUpstreamFilehost(tagged);
-      if (out) this.write(rewriteNumericTarget(out, nick));
+      if (parseClientLine(line)?.command === '005') this.replayBurstLine(line, nick);
     }
     this.writeExtraIsupport(nick);
+  }
+
+  // One line of the network's registration burst, to a client. Saved at
+  // registration with the upstream's tags, so any per-delivery tag on it
+  // (msgid, batch) is stale by now. Like ZNC, the replay keeps at most `time`,
+  // and write() drops that too unless the client negotiated server-time (#892).
+  // The network's own FILEHOST never goes out: our clients upload with their
+  // Lurker credentials (filehostToken). The numeric is pointed at `nick`.
+  private replayBurstLine(line: string, nick: string): void {
+    const tagged = restrictTags(line, (key) => key === 'time');
+    const out = tagged && withoutUpstreamFilehost(tagged);
+    if (out) this.write(rewriteNumericTarget(out, nick));
   }
 
   // --- control (unbound) connection ------------------------------------------

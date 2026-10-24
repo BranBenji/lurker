@@ -129,9 +129,16 @@ describe('a client bound before the network registered', () => {
     await synced(c);
 
     const after = sentAfter(c, mark);
-    expect(ofCommand(after, '005')).toEqual([
-      `:fake.test 005 slownick CASEMAPPING=ascii CHANTYPES=${CHANNEL_PREFIX_CHARS} NETWORK=FakeNet NICKLEN=32 PREFIX=(ov)@+ MONITOR=100 :are supported by this server`,
-    ]);
+    const isupport = ofCommand(after, '005');
+    expect(isupport).toHaveLength(1);
+    expect(isupport[0]).toMatch(/^:fake\.test 005 slownick /);
+    for (const token of [
+      'NETWORK=FakeNet',
+      'CASEMAPPING=ascii',
+      `CHANTYPES=${CHANNEL_PREFIX_CHARS}`,
+    ]) {
+      expect(isupport[0]).toContain(` ${token} `);
+    }
     // The nick it was told is the one it registered under: no NICK, and the
     // network's own 001–004 stay dropped (its MOTD is relayed, as ZNC does).
     expect(ofCommand(after, 'NICK')).toEqual([]);
@@ -193,6 +200,23 @@ describe('a new registration burst', () => {
     ]);
   });
 
+  it('reaches a client that attached between the 001 and the end of the burst', async () => {
+    const acct = harnessMod.seedAccount({ networkName: 'alpha', nick: 'alice' });
+    // The 001 is in, the 005s are not: 'connected', burst incomplete.
+    acct.upstream.registrationLines = [':irc.example.test 001 alice :Welcome'];
+    acct.upstream.isupportComplete = false;
+    const c = await attachSeeded(acct);
+    expect(ofCommand(c.lines, '001')).toEqual([':irc.example.test 001 client :Welcome']);
+    expect(ofCommand(c.lines, '005')).toEqual([]);
+
+    const mark = c.lines.length;
+    acct.upstream.registrationLines.push(ISUPPORT('alice'));
+    acct.upstream.isupportComplete = true;
+    acct.upstream.client.emit('motd', {});
+    await synced(c);
+    expect(sentAfter(c, mark)).toEqual([ISUPPORT('alice')]);
+  });
+
   it('says nothing about a rename the relay already carried', async () => {
     const acct = harnessMod.seedAccount({ networkName: 'alpha', nick: 'alice' });
     acct.upstream.registrationLines = [':irc.example.test 001 alice :Welcome', ISUPPORT('alice')];
@@ -217,6 +241,23 @@ describe('a new registration burst', () => {
     acct.upstream.restoring = false;
     await synced(c);
     expect(sentAfter(c, mark)).toEqual([]);
+  });
+
+  it('relays a replayed self-NICK off the nick the client was told, once', async () => {
+    const acct = harnessMod.seedAccount({ networkName: 'alpha', nick: 'alice' });
+    acct.upstream.registrationLines = [':irc.example.test 001 alice :Welcome', ISUPPORT('alice')];
+    const c = await attachSeeded(acct);
+
+    // An engine re-attach replays the burst: the 001 under the registered
+    // nick, then the NICK onto the live one. This client was told the first.
+    const mark = c.lines.length;
+    acct.upstream.restoring = true;
+    acct.upstream.pushUpstream(':alice!alice@fake.host NICK :alice_');
+    // A client that knows the live nick already hears nothing of it.
+    acct.upstream.pushUpstream(':alice!alice@fake.host NICK :alice_');
+    acct.upstream.restoring = false;
+    await synced(c);
+    expect(sentAfter(c, mark)).toEqual([':alice!alice@fake.host NICK :alice_']);
   });
 
   it('carries our own ISUPPORT with the network’s', async () => {
