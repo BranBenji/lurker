@@ -461,6 +461,9 @@ function countFor(unread: number, highlights: number): number {
 // and show the ● per the global display mode, which is the whole point of
 // muting a busy-but-followed room. Mute is now an ignore rule carrying NOUNREAD
 // (issue #359): channel, DM, or a network-wide rule that covers every child.
+// A DM's `highlighted` normally equals its unread (every DM line is a mention),
+// which would make this downgrade a no-op — so the server withholds that
+// promotion for a muted DM and reports real highlight matches only (#1192).
 function isChannelMuted(buf: Buffer | null): boolean {
   return !!buf && buf.networkId != null && ignores.bufferMutesUnread(buf.networkId, buf.target);
 }

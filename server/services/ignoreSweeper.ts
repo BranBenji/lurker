@@ -7,7 +7,7 @@
 // to drop it from the list so it doesn't linger in /ignore or the settings pane.
 
 import ignoreRulesService from './ignoreRulesService.js';
-import { fanOutIgnoreList } from './wsHub.js';
+import { fanOutIgnoreList, refreshDmReadState } from './wsHub.js';
 
 const SWEEP_INTERVAL_MS = 60 * 1000;
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -22,6 +22,21 @@ export function sweepExpiredIgnores(): void {
   }
   // networkId null = a global rule lapsed; fanOutIgnoreList ships the right bucket.
   for (const { userId, networkId } of affected) fanOutIgnoreList(userId, networkId);
+  // A lapsed `-time` mute un-mutes a DM's badge too (#1192): one DM walk per
+  // user — every network when a global rule lapsed, else each touched network
+  // once. The sweep doesn't know the lapsed rules' shapes, so it re-serves on
+  // any lapse; expiries are rare and a minute apart.
+  const scopes = new Map<number, Set<number> | null>();
+  for (const { userId, networkId } of affected) {
+    const cur = scopes.get(userId);
+    if (cur === null) continue;
+    if (networkId == null) scopes.set(userId, null);
+    else (cur ?? scopes.set(userId, new Set()).get(userId)!).add(networkId);
+  }
+  for (const [userId, nets] of scopes) {
+    if (nets === null) refreshDmReadState(userId, null);
+    else for (const nid of nets) refreshDmReadState(userId, nid);
+  }
 }
 
 export function startIgnoreSweeper(): void {

@@ -659,6 +659,16 @@ Server-authoritative, per buffer:
 broadcast to **all** the user's sockets after every countable event and every
 mark-read. Never count unread locally (§9.4).
 
+**A DM's `highlights` equals its `unread`** — every DM line is a mention of
+you — **unless a whole-buffer NOUNREAD rule covers it** (the notification
+menu's Muted rung on that DM, or on its network; §6 `add-ignore`). A muted DM
+then counts like a channel: only real highlight-rule matches. Render a muted
+buffer as highlights-only, DM or channel alike, and the right badge falls out.
+Because this half of the count reads the live rule set, the server re-serves
+`read-state` for every DM when a rule of that shape is added or removed (or
+lapses), and for a DM behind every `buffer-renamed`, merged or not; a channel's
+counts read insert-time stamps and get no frame.
+
 ---
 
 ## 6. Client → server verbs

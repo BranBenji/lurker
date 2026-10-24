@@ -11,6 +11,11 @@ How Lurker keeps you informed across all your devices.
 - One **enabled** toggle per signal — Lurker decides whether to show an in-app
   toast or send a web-push notification based on where your attention is.
 - Highlights and direct messages as notification triggers.
+- Each channel, DM and network has a notification level in its menu: **All
+  messages**, **Highlights only**, **Nothing** (no alerts, the unread count
+  stays) and **Muted** (no alerts and no unread count; a highlight still badges).
+  Underneath they are ignore rules, so they appear in `/ignore`'s list and
+  follow you to every device.
 
 ## Web push
 
