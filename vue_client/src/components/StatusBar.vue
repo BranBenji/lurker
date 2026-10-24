@@ -98,9 +98,9 @@
           class="seg reply"
           :title="`Replying to ${pendingReply.self ? 'yourself' : pendingReply.nick} — Escape to cancel`"
           ><span class="reply-body"
-            ><ReplyIcon role="img" aria-label="Replying to" /><span class="reply-label">{{
-              compact ? '' : 'replying to'
-            }}</span
+            ><MessageSquareReplyIcon role="img" aria-label="Replying to" /><span
+              class="reply-label"
+              >{{ compact ? '' : 'replying to' }}</span
             ><span v-if="pendingReply.self" class="reply-self">yourself</span
             ><NickRef v-else :nick="pendingReply.nick" /><span class="reply-excerpt">{{
               pendingReplyExcerpt ? `: ${pendingReplyExcerpt}` : ''
@@ -255,9 +255,9 @@ import {
   ArrowUpIcon,
   KeyboardIcon,
   LockIcon,
+  MessageSquareReplyIcon,
   PaletteIcon,
   PaperclipIcon,
-  ReplyIcon,
   XIcon,
 } from '@lucide/vue';
 import type { LucideIcon } from '@lucide/vue';

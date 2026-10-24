@@ -7,9 +7,9 @@ import {
   GavelIcon,
   IdCardIcon,
   MailIcon,
+  MessageSquareReplyIcon,
   MicIcon,
   MicOffIcon,
-  ReplyIcon,
   ShieldHalfIcon,
   StickyNoteIcon,
   UserLockIcon,
@@ -131,7 +131,7 @@ export function useMemberActions(): MemberActionsAPI {
     if (!isSelf && !privateTarget(ctx.channel)) {
       items.push({
         label: `Reply to ${nick}`,
-        icon: ReplyIcon,
+        icon: MessageSquareReplyIcon,
         onClick: () => addressNick(nick),
       });
     }

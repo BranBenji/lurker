@@ -9,8 +9,8 @@ import {
   CopyPlusIcon,
   HeartPlusIcon,
   LinkIcon,
-  QuoteIcon,
-  ReplyIcon,
+  MessageSquareQuoteIcon,
+  MessageSquareReplyIcon,
 } from '@lucide/vue';
 import type { LucideIcon } from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
@@ -19,9 +19,9 @@ import { useReactionsStore } from '../stores/reactions.js';
 import { useRelayBotsStore } from '../stores/relayBots.js';
 import { tagSupport, useNetworksStore } from '../stores/networks.js';
 import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
-import { quoteMarks } from '../../../shared/replies.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useContextMenu } from './useContextMenu.js';
+import { copyQuoteFor } from '../utils/replyText.js';
 
 export interface MessageLike {
   id?: number | null;
@@ -189,15 +189,18 @@ export function useMessageActions(): MessageActionsAPI {
     return `${window.location.origin}/buffer/${bufferId}?msg=${message.id}`;
   }
 
-  // What Copy quote copies: the line the way IRC writes it (quoteMarks), so a
-  // /me reads `* bob waves`. A relayed line is copied as the person inside the
-  // envelope, the way Quote names them.
-  function copyQuoteText(message: MessageLike): string {
-    const nid = message.networkId ?? message.network_id;
+  // What Copy quote copies: the line as Quote would put it above the draft,
+  // without the `> ` — a /me reads `* bob waves`, a spoiler stays `||…||`. A
+  // relayed line is copied as the person inside the envelope, the way Quote
+  // names them, with the same fall back to the buffer's network.
+  function copyQuoteText(message: MessageLike, ctx: MessageContext): string {
+    const nid = message.networkId ?? message.network_id ?? ctx.networkId;
     const relayed = useRelayBotsStore().unwrap(nid, message);
-    const [open, close] = quoteMarks(message.type);
-    const nick = relayed?.nick ?? message.nick ?? '';
-    return `${open}${nick}${close} ${relayed?.text ?? message.text ?? ''}`;
+    return copyQuoteFor({
+      nick: relayed?.nick ?? message.nick ?? '',
+      type: message.type,
+      text: relayed?.text ?? message.text ?? '',
+    });
   }
 
   function buildActions(message: MessageLike | null | undefined): MessageAction[] {
@@ -217,10 +220,14 @@ export function useMessageActions(): MessageActionsAPI {
     // offered only where one would go out.
     const unaddressed = !!message.self || privateTarget(message.target);
     if (addressable && !unaddressed) {
-      actions.push({ key: 'reply', label: `Reply to ${message.nick}`, icon: ReplyIcon });
+      actions.push({
+        key: 'reply',
+        label: `Reply to ${message.nick}`,
+        icon: MessageSquareReplyIcon,
+      });
     } else if (unaddressed && message.nick && replyable(message) && tagsGoOut) {
       const label = message.self ? 'Reply to yourself' : `Reply to ${message.nick}`;
-      actions.push({ key: 'reply', label, icon: ReplyIcon });
+      actions.push({ key: 'reply', label, icon: MessageSquareReplyIcon });
     }
 
     // Quote (#1119) is Reply's plain-text sibling: `> <nick> text` above the
@@ -232,7 +239,7 @@ export function useMessageActions(): MessageActionsAPI {
       // envelope, as the quote line will read (MessageList's onQuote unwraps).
       const nid = message.networkId ?? message.network_id;
       const who = useRelayBotsStore().unwrap(nid, message)?.nick ?? message.nick;
-      actions.push({ key: 'quote', label: `Quote ${who}`, icon: QuoteIcon });
+      actions.push({ key: 'quote', label: `Quote ${who}`, icon: MessageSquareQuoteIcon });
     }
 
     // A reaction replies to the line's msgid, so it needs a line a reply could
@@ -317,7 +324,7 @@ export function useMessageActions(): MessageActionsAPI {
         break;
       case 'copyQuote':
         if (navigator.clipboard) {
-          navigator.clipboard.writeText(copyQuoteText(message)).catch(() => {});
+          navigator.clipboard.writeText(copyQuoteText(message, ctx)).catch(() => {});
         }
         break;
       case 'link': {

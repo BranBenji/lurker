@@ -5,7 +5,12 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { setActivePinia, createPinia } from 'pinia';
-import { BanIcon, BookmarkCheckIcon, QuoteIcon, ReplyIcon } from '@lucide/vue';
+import {
+  BanIcon,
+  BookmarkCheckIcon,
+  MessageSquareQuoteIcon,
+  MessageSquareReplyIcon,
+} from '@lucide/vue';
 import { useMessageActions, type MessageContext, type MessageLike } from './useMessageActions.js';
 import { useContextMenu } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
@@ -226,7 +231,7 @@ describe('useMessageActions', () => {
       const api = useMessageActions();
       const ctx = makeCtx();
       const m = other();
-      const reply = api.buildItems(m, ctx).find((i) => i.icon === ReplyIcon);
+      const reply = api.buildItems(m, ctx).find((i) => i.icon === MessageSquareReplyIcon);
       reply?.onClick?.();
       expect(ctx.onReply).toHaveBeenCalledWith(m);
     });
@@ -235,7 +240,7 @@ describe('useMessageActions', () => {
       const api = useMessageActions();
       const ctx = makeCtx();
       const m = other();
-      const quote = api.buildItems(m, ctx).find((i) => i.icon === QuoteIcon);
+      const quote = api.buildItems(m, ctx).find((i) => i.icon === MessageSquareQuoteIcon);
       quote?.onClick?.();
       expect(ctx.onQuote).toHaveBeenCalledWith(m);
     });
@@ -407,6 +412,27 @@ describe('copy quote (#1218)', () => {
   it('writes a /me and a notice the way IRC does', () => {
     expect(copied(other({ type: 'action', text: 'waves' }))).toBe('* bob waves');
     expect(copied(other({ type: 'notice' }))).toBe('-bob- hi');
+  });
+
+  // The rules Quote reads a line by (#1119): no formatting codes on the
+  // clipboard, a spoiler kept hidden as `||…||`, line breaks folded so the
+  // author's name covers the whole line.
+  it('copies the text the way Quote reads it', () => {
+    expect(copied(other({ type: 'message', text: '\x02hey\x02 \x0301,01secret\x03' }))).toBe(
+      '<bob> hey ||secret||',
+    );
+    expect(copied(other({ type: 'message', text: 'first\nsecond' }))).toBe('<bob> first second');
+  });
+
+  it('unwraps a relayed line on the buffer network when the row carries none', () => {
+    useRelayBotsStore().byKey['1::bridge'] = { nick: 'bridge', pattern: '' };
+    const msg = other({
+      nick: 'bridge',
+      text: '<alice> hi',
+      type: 'message',
+      networkId: undefined,
+    });
+    expect(copied(msg)).toBe('<alice> hi');
   });
 
   it('copies a relayed line as the person inside the envelope', () => {

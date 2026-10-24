@@ -459,7 +459,7 @@ import ReactionRow from './ReactionRow.vue';
 import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
 import { useRepliesStore } from '../stores/replies.js';
 import { emitJumpIntent } from '../composables/useJumpIntent.js';
-import { CopyIcon, IdCardIcon, ReplyIcon, SatelliteDishIcon } from '@lucide/vue';
+import { CopyIcon, IdCardIcon, MessageSquareReplyIcon, SatelliteDishIcon } from '@lucide/vue';
 
 // Extended BufferMessage fields accessed in the template and script
 // (beyond the core BufferMessage definition which uses [key: string]: unknown).
@@ -1092,7 +1092,7 @@ function openRelayNickMenu(
 ): void {
   const marked = relayBots.isRelay(networkId, nick);
   const items: ContextMenuItem[] = [
-    { label: `Reply to ${nick}`, icon: ReplyIcon, onClick: () => addressNick(nick) },
+    { label: `Reply to ${nick}`, icon: MessageSquareReplyIcon, onClick: () => addressNick(nick) },
     {
       label: 'Copy Nickname',
       icon: CopyIcon,
