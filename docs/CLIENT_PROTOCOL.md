@@ -412,8 +412,8 @@ One per network inside `kind:'snapshot'` (`ircConnection.snapshot()`,
 Offline networks appear with `state:'disconnected'`, `channels:[]`,
 `peerPresence:{}`. `userMetadata` (#607) is every nick's IRCv3 metadata the
 connection holds, keyed like `peerPresence` and kept current by `user-metadata`
-events; `avatarUrl` is server-minted and opaque (the media proxy or a CDN —
-never the origin URL the user set), and `null` when the server can't serve it,
+events; `avatarUrl` is server-minted and opaque (the avatar route, a square of
+at most 256 px, or a CDN — never the origin URL the user set), and `null` when the server can't serve it,
 in which case show your generated tile. Absent on a server that predates it.
 The snapshot does **not** include network display
 names/hosts — fetch `GET /api/networks` for the roster (the iOS app does this

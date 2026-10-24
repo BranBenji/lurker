@@ -23,6 +23,8 @@
 //                 other non-ok / non-image → 404
 //                 dead origin   → 502
 //                 declared size > 8 MB (or Content-Range total) → 413
+//   /avatar   → the test's `onAvatar`, or — unset — 404, which is what a decoder that
+//               predates lurker#1190 answers (the real one never 404s there)
 
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -67,6 +69,10 @@ export interface StubDecoder {
    *  that MISBEHAVES (wrong content type, oversize body), so the cell's own
    *  re-checks can be pinned. Cleared by setting null. */
   onFetch: ((url: string, res: import('node:http').ServerResponse) => void) | null;
+  /** Every URL /avatar was asked about, in order. */
+  avatarAsks: string[];
+  /** How /avatar answers. Null: 404, a decoder without the endpoint. */
+  onAvatar: ((url: string, res: import('node:http').ServerResponse) => void) | null;
   close: () => Promise<void>;
 }
 
@@ -249,6 +255,8 @@ export async function startStubDecoder(): Promise<StubDecoder> {
     fetchAsks: [],
     onResolve: () => ({ status: 'dead' }),
     onFetch: null,
+    avatarAsks: [],
+    onAvatar: null,
     close: async () => {},
   };
 
@@ -272,6 +280,13 @@ export async function startStubDecoder(): Promise<StubDecoder> {
         }
         relayFetch(res, body.url, body.range);
         return;
+      }
+      if (req.url === '/avatar') {
+        stub.avatarAsks.push(body.url);
+        if (stub.onAvatar) {
+          stub.onAvatar(body.url, res);
+          return;
+        }
       }
       res.writeHead(404).end();
     })().catch(() => {

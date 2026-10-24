@@ -4,9 +4,9 @@
 // The cell's half of the lurker-previews seam (lurker-dev/LINK_PREVIEWS_ISOLATION.md).
 //
 // Everything that touches an origin or parses what one sent lives in the decoder
-// now; this module is how the cell asks. Two calls, mirroring the decoder's two
+// now; this module is how the cell asks. Three calls, mirroring the decoder's
 // endpoints: `decoderResolve` for metadata verdicts, `decoderFetch` for image
-// bytes. The decoder is configured by `LURKER_PREVIEWS_URL` and previews simply
+// bytes, `decoderAvatar` for an avatar it resized (lurker#1190). The decoder is configured by `LURKER_PREVIEWS_URL` and previews simply
 // degrade to `unavailable` (transient, self-healing) when it is absent — there is
 // deliberately NO in-cell fallback path, because two resolution paths is how the
 // SSRF guard drifts.
@@ -253,6 +253,53 @@ export async function decoderResolve(url: string, wantPoster: boolean): Promise<
           retryAfterS: Number.isFinite(retry) && retry > 0 ? retry : 30,
         };
       }
+      default:
+        return { status: 'down' };
+    }
+  } catch (err) {
+    noteDecoderUnreachable(err);
+    return { status: 'down' };
+  }
+}
+
+/** The decoder bounds one avatar at 30 s; this only has to outlast it. */
+const AVATAR_TIMEOUT_MS = 32_000;
+
+export type DecoderAvatar =
+  | { status: 'ok'; webp: Buffer }
+  /** The decoder has no /avatar: it predates lurker#1190. Relay the origin instead. */
+  | { status: 'unsupported' }
+  | { status: 'backoff'; retryAfterS: number }
+  /** Refused, dead, not an image, over a bound: no avatar, the client's tile shows. */
+  | { status: 'none' }
+  | { status: 'down' };
+
+/**
+ * Ask the decoder for an avatar: the image at `url`, a square WebP of at most 256 px.
+ * NEVER throws. The bytes are small and bounded (the same 2 MB ceiling as a resolve body),
+ * so they're buffered, and checked by the caller as data from the box we expect compromised.
+ */
+export async function decoderAvatar(url: string): Promise<DecoderAvatar> {
+  const base = baseUrl();
+  if (!base) return { status: 'down' };
+  try {
+    const res = await post(base, '/avatar', { url }, AVATAR_TIMEOUT_MS);
+    noteDecoderReached();
+    switch (res.status) {
+      case 200:
+        return { status: 'ok', webp: res.body };
+      // ⚠ The decoder's /avatar never answers 404 itself; its 404 is "no such endpoint".
+      case 404:
+        return { status: 'unsupported' };
+      case 503: {
+        const retry = Number(res.headers['retry-after']);
+        return { status: 'backoff', retryAfterS: Number.isFinite(retry) && retry > 0 ? retry : 30 };
+      }
+      case 403:
+      case 413:
+      case 415:
+      case 502:
+        return { status: 'none' };
       default:
         return { status: 'down' };
     }

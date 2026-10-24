@@ -72,10 +72,12 @@ again after every connect, since most servers forget it when you disconnect.
   `pronouns`, `homepage` and `status`, keeps a record per nick for the life of
   the connection, and re-syncs on every re-attach. Three line shapes are read
   as one: the spec's `METADATA`, and the `761`/`766` numerics Ergo sends them
-  as. An avatar URL set by another user is an involuntary fetch, so it's served
-  through the same proxy as a link-preview thumbnail — the client never sees
-  the origin — and only while link previews are configured; otherwise everyone
-  gets a generated tile in their nick colour. `color` is deliberately not read:
+  as. An avatar URL set by another user is an involuntary fetch, so it goes
+  through the link-preview decoder — the client never sees the origin — which
+  crops it to a square of at most 256 px and caches that (animated GIFs and
+  WebPs stay animated unless they're too big, then they're their first frame),
+  and only while link previews are configured; otherwise everyone gets a
+  generated tile in their nick colour. `color` is deliberately not read:
   hex values fight every theme.
 - **Your own metadata** — saved per network when the server accepts a `SET`
   (from the web app, a bouncer client, or `/quote`), so one it refuses isn't

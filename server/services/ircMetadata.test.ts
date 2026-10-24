@@ -103,7 +103,7 @@ describe('vetting a value', () => {
     expect(vetMetadataValue('display-name', '\x0304Bob\x0f')).toBe('\x0304Bob\x0f');
   });
   it('takes only http(s) for the URL keys, with {size} filled in for avatars', () => {
-    expect(vetMetadataValue('avatar', 'https://x/a/{size}.png')).toBe('https://x/a/128.png');
+    expect(vetMetadataValue('avatar', 'https://x/a/{size}.png')).toBe('https://x/a/256.png');
     expect(vetMetadataValue('avatar', 'javascript:alert(1)')).toBeNull();
     expect(vetMetadataValue('avatar', 'data:image/png;base64,AAAA')).toBeNull();
     expect(vetMetadataValue('avatar', 'not a url')).toBeNull();
