@@ -454,6 +454,10 @@ export function rewriteNumericTarget(line: string, nick: string): string {
   return `${m[1]}${nick}${m[2]}`;
 }
 
+// A relayed line that may be a NICK, for a look before parsing. The command is
+// case-insensitive on the wire, as every IRC command is.
+const SELF_NICK_HINT = / nick /i;
+
 // The new nick when `line` is a NICK from `self` — the nick a client knows
 // itself by, compared under the network's casemapping — else null.
 export function selfNickChange(
@@ -462,7 +466,7 @@ export function selfNickChange(
   networkId: number,
 ): string | null {
   if (!self) return null;
-  const m = /^(?:@\S+ )?:([^!@\s]+)\S* NICK :?(\S+)/.exec(line);
+  const m = /^(?:@\S+ )?:([^!@\s]+)\S* NICK :?(\S+)/i.exec(line);
   if (!m || foldTargetFor(networkId, m[1]) !== foldTargetFor(networkId, self)) return null;
   return m[2];
 }
@@ -1633,7 +1637,7 @@ class BouncerSession implements MonitorHolder, ReplyClient {
       const joined = selfJoinChannel(out, this.currentNick());
       // Our own NICK, from the nick this client knows us by (look before
       // parsing: almost no relayed line is a NICK).
-      const renamed = out.includes(' NICK ')
+      const renamed = SELF_NICK_HINT.test(out)
         ? selfNickChange(out, this.toldNick, this.networkId)
         : null;
       // A replayed line reaches this client only if it's news.

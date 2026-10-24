@@ -149,7 +149,7 @@ describe('a client bound before the network registered', () => {
     // The 376 a /MOTD brings is not a registration.
     const quiet = c.lines.length;
     c.send('MOTD');
-    await c.waitForCommand('376');
+    await vi.waitFor(() => expect(ofCommand(c.lines.slice(quiet), '376')).toHaveLength(1));
     await synced(c);
     expect(ofCommand(c.lines.slice(quiet), '005')).toEqual([]);
   }, 15000);
@@ -222,12 +222,13 @@ describe('a new registration burst', () => {
     acct.upstream.registrationLines = [':irc.example.test 001 alice :Welcome', ISUPPORT('alice')];
     const c = await attachSeeded(acct);
 
-    // Nick enforcement renamed us mid-burst; the relay forwarded the NICK.
+    // Nick enforcement renamed us mid-burst; the relay forwarded the NICK. The
+    // command's case is the server's to choose.
     const mark = c.lines.length;
-    acct.upstream.pushUpstream(':alice!alice@fake.host NICK :alicia');
+    acct.upstream.pushUpstream(':alice!alice@fake.host nick :alicia');
     reregister(acct, 'alicia');
     await synced(c);
-    expect(sentAfter(c, mark)).toEqual([':alice!alice@fake.host NICK :alicia', ISUPPORT('alicia')]);
+    expect(sentAfter(c, mark)).toEqual([':alice!alice@fake.host nick :alicia', ISUPPORT('alicia')]);
   });
 
   it('is nothing to say to a client the connection is replaying its session into', async () => {
