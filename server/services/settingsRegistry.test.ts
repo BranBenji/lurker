@@ -3,6 +3,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { validate, REGISTRY, getOption, defaultsAsObject } from './settingsRegistry.js';
+import { THEMED_KEYS } from '../../shared/settingsRegistry.js';
+import { builtinThemes } from '../../shared/themePresets.js';
 
 // Pick representative keys from the live registry so the tests track real
 // schema, not hand-picked fixtures.
@@ -135,5 +137,37 @@ describe('defaultsAsObject', () => {
     for (const opt of REGISTRY) {
       expect(defaults[opt.key]).toEqual(opt.default);
     }
+  });
+});
+
+describe('themed keys', () => {
+  it('snapshots the compact density knobs (#1186) alongside the fonts and colours', () => {
+    const knobs = [
+      'look.message.compact.group_gap',
+      'look.message.compact.line_height',
+      'look.message.compact.indent',
+    ];
+    for (const key of knobs) {
+      expect(THEMED_KEYS).toContain(key);
+      expect(getOption(key)?.type).toBe('int');
+    }
+    // Both built-ins carry them at the registry default, so a theme applied
+    // today renders the compact layout exactly as before the keys existed.
+    for (const theme of builtinThemes()) {
+      for (const key of knobs) expect(theme.values[key]).toBe(getOption(key)!.default);
+    }
+  });
+
+  it('ranges: a gap of 0 and a solid line height are allowed, a negative gap is not', () => {
+    for (const [key, v] of [
+      ['look.message.compact.group_gap', 0],
+      ['look.message.compact.line_height', 100],
+      ['look.message.compact.indent', 0],
+    ] as const) {
+      const out = validate(key, v);
+      expect(out.ok && out.value).toBe(v);
+    }
+    expect(validate('look.message.compact.group_gap', -1).ok).toBe(false);
+    expect(validate('look.message.compact.line_height', 99).ok).toBe(false);
   });
 });
