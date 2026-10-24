@@ -19,9 +19,27 @@
 
 <template>
   <Teleport to="body">
-    <AppModal v-if="isMobile" size="sm" title="color" word="color" @close="finish">
-      <template #actions>
-        <button class="link" type="button" :disabled="!dirty" @click="revert">revert</button>
+    <AppModal v-if="isMobile" size="sm" word="color" @close="finish">
+      <!-- Own header: AppModal's stock one ends in an X, which reads as
+           "cancel" when it actually commits. Say "done" instead, with the
+           undo glyph for revert — the same pair as the desktop footer. -->
+      <template #head>
+        <header class="sheet-head">
+          <h2>color</h2>
+          <div class="sheet-actions">
+            <button
+              class="icon-btn"
+              type="button"
+              :disabled="!dirty"
+              title="revert to the color you opened with"
+              aria-label="revert to the color you opened with"
+              @click="revert"
+            >
+              <Undo2Icon />
+            </button>
+            <button class="link done" type="button" @click="finish">done</button>
+          </div>
+        </header>
       </template>
       <!-- AppModal maps Escape to `close`, which here means commit. Catch it
            first so Escape abandons the draft on this shell too. -->
@@ -42,7 +60,16 @@
     >
       <ColorPickerBody v-model="draft" :initial="value" :setting-key="settingKey" />
       <footer class="foot">
-        <button class="link" type="button" :disabled="!dirty" @click="revert">revert</button>
+        <button
+          class="icon-btn"
+          type="button"
+          :disabled="!dirty"
+          title="revert to the color you opened with"
+          aria-label="revert to the color you opened with"
+          @click="revert"
+        >
+          <Undo2Icon />
+        </button>
         <button class="link done" type="button" @click="finish">done</button>
       </footer>
     </div>
@@ -51,6 +78,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { Undo2Icon } from '@lucide/vue';
 import AppModal from './AppModal.vue';
 import ColorPickerBody from './ColorPickerBody.vue';
 import { useViewport } from '../composables/useViewport.js';
@@ -242,12 +270,36 @@ onBeforeUnmount(detachDesktop);
 .foot {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   gap: var(--space-6);
   padding-top: var(--space-2);
   border-top: 1px solid var(--border);
 }
-/* Both the footer and the sheet's header action: scoped styles reach slot
-   content this component renders, so one rule serves both shells. */
+/* Mirrors AppModal's .head / .title-wrap h2 / .close-btn, which are scoped
+   there and don't reach a replaced header. */
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-6);
+  padding: 0 0 var(--space-5);
+  margin-bottom: var(--space-6);
+  border-bottom: 1px solid var(--border);
+}
+.sheet-head h2 {
+  margin: 0;
+  color: var(--accent);
+  font-weight: var(--font-weight);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.sheet-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+/* Both shells' "done" and undo: scoped styles reach slot content this
+   component renders, so one set of rules serves the footer and the header. */
 .link {
   background: none;
   border: none;
@@ -260,7 +312,21 @@ onBeforeUnmount(detachDesktop);
 .done {
   color: var(--accent);
 }
-.link:disabled {
+.icon-btn {
+  background: none;
+  border: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--icon-lg);
+  padding: var(--space-2) var(--space-4);
+  display: inline-flex;
+}
+.icon-btn:hover:not(:disabled) {
+  color: var(--accent);
+}
+.link:disabled,
+.icon-btn:disabled {
   opacity: 0.5;
   cursor: default;
 }
