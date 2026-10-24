@@ -186,20 +186,45 @@ describe('saving', () => {
     }
   });
 
-  it('saves without sending while the socket is down, and says so', async () => {
+  it('saves nothing while the socket is down', async () => {
     const network = makeNetwork('offline');
-    const { conn, events } = await connect(network);
+    saveNetworkMetadata(userId, network.id, 'status', 'kept');
+    const { conn } = await connect(network);
     await drop(conn, 'offline');
     try {
       conn.raw('METADATA * SET display-name :Later');
-      expect(saved(network)).toEqual({ 'display-name': 'Later' });
-      expect(events.at(-1)).toMatchObject({
-        type: 'notice',
-        text: 'display-name saved; it is set at the next connect, if this network supports metadata.',
-      });
-      expect(events.some((e) => String(e.text).startsWith('not sent'))).toBe(false);
+      conn.raw('METADATA * CLEAR');
+      expect(saved(network)).toEqual({ status: 'kept' });
     } finally {
       conn.dispose();
+    }
+  });
+
+  it("a SET the server refused doesn't hold its key back from the next re-set", async () => {
+    const network = makeNetwork('held');
+    const { conn, me } = await connect(network);
+    try {
+      await until(() => me.sent.some((l) => l.startsWith('METADATA * SUB')), 5000, 'SUB');
+      ircd.metadataSetsToThrottle = 1;
+      ircd.metadataRetryAfter = '3600';
+      conn.raw('METADATA * SET avatar :https://example.org/typed.png');
+      await until(() => ircd.metadataSetsToThrottle === 0, 5000, 'refused');
+      // The profile editor's save, after the refusal.
+      saveNetworkMetadata(userId, network.id, 'avatar', 'https://example.org/saved.png');
+      conn.reconcileOwnMetadata('user');
+      await until(
+        () => ircd.metadata.get('held')?.get('avatar') === 'https://example.org/saved.png',
+        5000,
+        'set',
+      );
+      expect(metadataSent(me).filter((l) => l.startsWith('METADATA * SET'))).toEqual([
+        'METADATA * SET avatar :https://example.org/typed.png',
+        'METADATA * SET avatar :https://example.org/saved.png',
+      ]);
+    } finally {
+      ircd.metadataSetsToThrottle = 0;
+      ircd.metadataRetryAfter = '1';
+      conn.disconnect();
     }
   });
 });
@@ -299,6 +324,30 @@ describe('after a fresh registration', () => {
       expect(metadataSent(me).filter((l) => l.startsWith('METADATA * SET'))).toEqual([
         'METADATA * SET display-name :Patient',
         'METADATA * SET display-name :Patient',
+      ]);
+    } finally {
+      ircd.metadataSetsToThrottle = 0;
+      conn.disconnect();
+    }
+  });
+
+  it("retries the profile editor's RATE_LIMITED key too, and tells the user", async () => {
+    const network = makeNetwork('eager');
+    const { conn, me, events } = await connect(network);
+    try {
+      await until(() => me.sent.some((l) => l.startsWith('METADATA * SUB')), 5000, 'SUB');
+      ircd.metadataSetsToThrottle = 1;
+      saveNetworkMetadata(userId, network.id, 'avatar', 'https://example.org/a.png');
+      conn.reconcileOwnMetadata('user');
+      await until(
+        () => ircd.metadata.get('eager')?.get('avatar') === 'https://example.org/a.png',
+        5000,
+        'set on the retry',
+      );
+      expect(events.some((e) => String(e.text).includes('RATE_LIMITED'))).toBe(true);
+      expect(metadataSent(me)).toEqual([
+        'METADATA * SET avatar :https://example.org/a.png',
+        'METADATA * SET avatar :https://example.org/a.png',
       ]);
     } finally {
       ircd.metadataSetsToThrottle = 0;

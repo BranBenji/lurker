@@ -417,6 +417,7 @@ function openBufferActions() {
       {
         label: 'Edit profile',
         icon: UserPenIcon,
+        disabled: !profileEditor.canOpen(a.networkId),
         onClick: () => profileEditor.open(a.networkId),
       },
     );

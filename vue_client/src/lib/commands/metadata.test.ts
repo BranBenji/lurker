@@ -99,7 +99,13 @@ describe('where our own metadata can go (#1189)', () => {
       }),
     ).toMatch(/doesn't keep/);
   });
-  it('lets a capable network, or one not connected (saved for later), through', () => {
+  it('refuses a network that is not connected', () => {
+    expect(ownMetadataRefusal({ networkId: 1, channels: [], state: 'disconnected' })).toBe(
+      'not connected',
+    );
+    expect(ownMetadataRefusal(undefined)).toBe('not connected');
+  });
+  it('lets a connected network with room for a key through', () => {
     expect(
       ownMetadataRefusal({
         networkId: 1,
@@ -108,7 +114,5 @@ describe('where our own metadata can go (#1189)', () => {
         metadataLimits: limits,
       }),
     ).toBeNull();
-    expect(ownMetadataRefusal({ networkId: 1, channels: [], state: 'disconnected' })).toBeNull();
-    expect(ownMetadataRefusal(undefined)).toBeNull();
   });
 });

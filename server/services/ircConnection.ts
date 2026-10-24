@@ -34,7 +34,7 @@ import {
   type MetadataLimits,
   type MetadataRecord,
 } from './ircMetadata.js';
-import { savedForLaterText, type OwnMetadataWrite } from '../../shared/metadataKeys.js';
+import { ownMetadataRefusal } from '../../shared/metadataKeys.js';
 import { avatarClientUrl } from './avatarProxy.js';
 import {
   clearNetworkMetadata,
@@ -4735,51 +4735,34 @@ export class IrcConnection {
 
   /** Our own metadata as the server has it now, or null when it can't carry any. */
   ownMetadataOnServer(): Record<string, string> | null {
-    if (this.state !== 'connected' || !this.canSetOwnMetadata()) return null;
+    if (this.ownMetadataRefusal()) return null;
     return Object.fromEntries(this.ownServerMetadata);
   }
 
+  /** Why our own metadata can't be set here now, or null when it can. */
+  ownMetadataRefusal(): string | null {
+    return ownMetadataRefusal(this.state === 'connected', this.metadataLimits());
+  }
+
   // The user's (or a bouncer client's) SET or CLEAR on ourselves — the slash
-  // commands, /quote, MCP and every bouncer client take raw(). Connected, a SET
-  // is saved from the server's answer (noteOwnMetadataLine), so a value the
-  // server refuses isn't re-sent at every connect; a CLEAR is saved as it goes.
-  // Disconnected, the line can't go: it's saved, the user's is said so in place
-  // of "not sent", and it's set at the next connect. Lurker's own re-sets are
-  // what was saved already. True when the line is taken.
-  private noteRawMetadata(line: string, asker: Asker): boolean {
-    if (asker === 'lurker') return false;
+  // commands, /quote, MCP and every bouncer client take raw(). A SET is saved
+  // from the server's answer (noteOwnMetadataLine), so a value the server
+  // refuses isn't re-sent at every connect; a CLEAR is saved as it goes. Only
+  // on a socket that can carry it: disconnected, the line is dropped and said
+  // so like any other. Lurker's own re-sets are what was saved already.
+  private noteRawMetadata(line: string, asker: Asker): void {
+    if (asker === 'lurker' || this.ownMetadataRefusal()) return;
     const write = parseOwnMetadataWrite(line, (target) => this.isSelfNick(target));
-    if (!write) return false;
-    const connected = this.state === 'connected';
-    // Connected to a network that can't carry it: its 421 or FAIL says so.
-    if (connected && !this.canSetOwnMetadata()) return false;
-    if (connected && write !== 'clear') {
+    if (!write) return;
+    if (write !== 'clear') {
       this.ownMetadataPending.set(write.key, write.value);
-      return false;
+      return;
     }
-    let saved: OwnMetadataWrite = write;
     try {
-      if (write === 'clear') {
-        clearNetworkMetadata(this.network.user_id, this.network.id);
-      } else {
-        const value = ownMetadataToSave(write.key, write.value);
-        if (value === undefined) return false;
-        saveNetworkMetadata(this.network.user_id, this.network.id, write.key, value);
-        saved = { key: write.key, value };
-      }
+      clearNetworkMetadata(this.network.user_id, this.network.id);
     } catch (e) {
       console.warn('[metadata] save failed:', (e as Error)?.message || e);
-      return false;
     }
-    if (connected || asker !== 'user') return false;
-    this.publish({
-      type: 'notice',
-      target: this.serverTarget(),
-      nick: 'lurker',
-      notable: false, // #470: status line — not counted as unread (see MessageInput.notable)
-      text: savedForLaterText(saved),
-    });
-    return true;
   }
 
   // After a fresh registration (or the cap landing on a held socket): ask the
@@ -4955,9 +4938,18 @@ export class IrcConnection {
   // FAIL METADATA <CODE> [<target> [<key>]] :<text>. Only the user's own
   // command is told: Lurker's SUB failing is nothing the user can act on, and
   // a server with metadata off doesn't advertise the cap in the first place.
+  // A RATE_LIMITED SET from Lurker or the user is retried from the saved row:
+  // the profile editor's was saved before it went, and a typed one's retry
+  // sends only what was saved before it, if the server lacks that.
   private onMetadataFail(params: string[]): void {
-    if (this.replyOwner === 'lurker' && (params[1] ?? '').toUpperCase() === 'RATE_LIMITED') {
-      this.retryOwnMetadata(params[3]?.toLowerCase(), Number(params[4]));
+    const key = params[3]?.toLowerCase();
+    const owner = this.replyOwner;
+    if (owner === 'user' && key) this.ownMetadataPending.delete(key);
+    if (
+      (owner === 'lurker' || owner === 'user') &&
+      (params[1] ?? '').toUpperCase() === 'RATE_LIMITED'
+    ) {
+      this.retryOwnMetadata(key, Number(params[4]));
     }
     if (!this.replyForUser()) return;
     const code = params[1] ?? '';
@@ -11365,7 +11357,7 @@ export class IrcConnection {
     // eslint-disable-next-line no-control-regex
     const clean = line.replace(/[\u000d\u000a\u0000]/g, '');
     if (this.takeRawMonitor(clean)) return;
-    if (this.noteRawMetadata(clean, asker)) return;
+    this.noteRawMetadata(clean, asker);
     // A raw JOIN/PART changes membership just as join()/part() do, and nothing
     // else would record it. Recorded as intent, at write: the close that
     // would drop the line forgets the membership with it.

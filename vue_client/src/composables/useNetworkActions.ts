@@ -77,6 +77,7 @@ export function useNetworkActions() {
       {
         label: 'Edit Profile…',
         icon: UserPenIcon,
+        disabled: !profileEditor.canOpen(net.id),
         onClick: () => profileEditor.open(net.id),
       },
       connectionItem(net.id),

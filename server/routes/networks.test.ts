@@ -66,6 +66,7 @@ const fakeManager = {
   getConnection(userId: number, networkId: number) {
     return this.liveNetworkId === networkId
       ? {
+          ownMetadataRefusal: () => null,
           ownMetadataOnServer: () => ({ 'display-name': 'On The Server' }),
           reconcileOwnMetadata: (asker?: string) =>
             this.calls.push(['reconcile', userId, networkId, asker]),
@@ -1090,8 +1091,23 @@ describe('own metadata (#1189)', () => {
     ]);
   });
 
+  it('refuses a change unless it can go now, and saves nothing', async () => {
+    const net = (await makeNet(aliceAgent, { name: 'meta-down' })).body.network;
+    const put = await aliceAgent
+      .put(`/api/networks/${net.id}/metadata`)
+      .send({ values: { pronouns: 'they/them' } });
+    expect(put.status).toBe(409);
+    expect(put.body.error).toBe('not connected');
+    expect((await aliceAgent.delete(`/api/networks/${net.id}/metadata`)).status).toBe(409);
+    const got = await aliceAgent.get(`/api/networks/${net.id}/metadata`);
+    expect(got.body.values).toEqual({});
+    expect(got.body.unset).toEqual([]);
+    expect(got.body.live).toBeNull();
+  });
+
   it('refuses a value Lurker would not show, and saves nothing of that request', async () => {
     const net = (await makeNet(aliceAgent, { name: 'meta-bad' })).body.network;
+    fakeManager.liveNetworkId = net.id;
     const res = await aliceAgent.put(`/api/networks/${net.id}/metadata`).send({
       values: { pronouns: 'they/them', homepage: 'javascript:alert(1)' },
     });
@@ -1099,11 +1115,11 @@ describe('own metadata (#1189)', () => {
     expect(res.body.key).toBe('homepage');
     const got = await aliceAgent.get(`/api/networks/${net.id}/metadata`);
     expect(got.body.values).toEqual({});
-    expect(got.body.live).toBeNull();
   });
 
   it('keeps a key named like an Object property', async () => {
     const net = (await makeNet(aliceAgent, { name: 'meta-proto' })).body.network;
+    fakeManager.liveNetworkId = net.id;
     const res = await aliceAgent
       .put(`/api/networks/${net.id}/metadata`)
       .set('Content-Type', 'application/json')

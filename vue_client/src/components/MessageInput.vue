@@ -178,7 +178,6 @@ import {
   parseDisplayNameCommand,
   parseMetadataCommand,
 } from '../lib/commands/metadata.js';
-import { saveOwnMetadataWrite, savedForLaterText } from '../utils/ownMetadata.js';
 import { parseAvatarsCommand } from '../lib/commands/avatars.js';
 import { useAvatarSetsStore } from '../stores/avatarSets.js';
 import { parseThemeCommand } from '../lib/commands/theme.js';
@@ -4384,14 +4383,6 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       const refusal = parsed.write ? ownMetadataRefusal(netState) : null;
       if (refusal) {
         localInfo(networkId, target, `/${verb}: ${refusal}.`);
-        return true;
-      }
-      const write = parsed.write;
-      if (write && netState?.state !== 'connected') {
-        saveOwnMetadataWrite(networkId, write).then(
-          () => localInfo(networkId, target, savedForLaterText(write)),
-          (err: Error) => localInfo(networkId, target, `/${verb}: not saved (${err.message}).`),
-        );
         return true;
       }
       return sendOrToast({ type: 'raw', networkId, line: parsed.line }, line);

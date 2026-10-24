@@ -4,9 +4,8 @@
 // @vitest-environment happy-dom
 
 // /avatar, /displayname and /metadata through the real composer (#1189):
-// connected, the line goes out (the server saves it as it does); not
-// connected, it's saved by REST for the next connect; on a network that can't
-// carry it, it's refused here rather than drawing a 421.
+// connected, the line goes out (the server saves it from the answer); not
+// connected, or on a network that can't carry it, it's refused here.
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { mount, type VueWrapper } from '@vue/test-utils';
@@ -94,25 +93,12 @@ describe('our own metadata commands', () => {
     expect(apiCalls).toEqual([]);
   });
 
-  it('saves by REST on a network that is not connected', async () => {
+  it('refuses on a network that is not connected', async () => {
     seed({ state: 'disconnected' });
     await run('/avatar https://example.org/me.png');
-    await flush();
     expect(sent()).toEqual([]);
-    expect(apiCalls).toEqual([
-      {
-        url: '/api/networks/7/metadata',
-        method: 'PUT',
-        body: { values: { avatar: 'https://example.org/me.png' } },
-      },
-    ]);
-    expect(said().at(-1)).toBe(
-      'avatar saved; it is set at the next connect, if this network supports metadata.',
-    );
-
-    await run('/metadata clear');
-    await flush();
-    expect(apiCalls.at(-1)).toEqual({ url: '/api/networks/7/metadata', method: 'DELETE' });
+    expect(apiCalls).toEqual([]);
+    expect(said().at(-1)).toBe('/avatar: not connected.');
   });
 
   it("reads someone's metadata on a network with no room for ours (soju)", async () => {

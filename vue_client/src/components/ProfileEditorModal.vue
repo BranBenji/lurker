@@ -7,17 +7,15 @@
   Your own IRCv3 metadata on one network (#1189): what Lurker saves and sets
   again after every connect. The slash commands (/displayname, /avatar,
   /metadata) write the same rows; this is the view of them. Save saves what
-  changed, and what's shown from the server but not saved yet; the server is
-  set to what it lacks now if the network is connected, else at the next
-  connect. Clear unsets every saved key.
+  changed, and what's shown from the server but not saved yet, and sets what
+  the server lacks. Clear unsets every saved key. It opens only on a connected
+  network that carries metadata; one that drops while it's open greys it.
 -->
 
 <template>
   <AppModal word="profile" :title="`profile on ${networkName}`" size="sm" @close="close">
     <form class="modal-form" @submit.prevent="save">
       <div class="profile-form">
-        <p v-if="refusal" class="hint">Not here: {{ refusal }}.</p>
-        <p v-else-if="!connected" class="hint">Not connected: saved now, set when it connects.</p>
         <div class="fields">
           <label>
             <span class="title">Display name</span>
@@ -162,7 +160,6 @@ const networkName = computed(
   () => networks.networks.find((n) => n.id === props.networkId)?.name ?? 'network',
 );
 const netState = computed(() => networks.states[props.networkId]);
-const connected = computed(() => netState.value?.state === 'connected');
 const refusal = computed(() => ownMetadataRefusal(netState.value));
 const otherNetworks = computed(() => networks.networks.filter((n) => n.id !== props.networkId));
 const displayNameSegments = computed(() => formattingSegments(form['display-name']));
@@ -171,7 +168,7 @@ const dirty = computed(() => FIELDS.some((f) => form[f].trim() !== initial.value
 
 const limitsText = computed(() => {
   const limits = netState.value?.metadataLimits;
-  if (!connected.value || !limits || refusal.value) return '';
+  if (!limits || refusal.value) return '';
   const parts: string[] = [];
   if (limits.maxKeys) parts.push(`${limits.maxKeys} keys`);
   if (limits.maxValueBytes) parts.push(`${limits.maxValueBytes} bytes a value`);
@@ -310,12 +307,6 @@ label small {
   height: 2.5em;
   object-fit: cover;
   flex: none;
-}
-.hint {
-  margin: 0;
-  color: var(--fg-muted);
-  border-left: 2px solid var(--accent);
-  padding-left: var(--space-3);
 }
 .meta {
   margin: 0;

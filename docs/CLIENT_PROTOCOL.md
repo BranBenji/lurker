@@ -1380,9 +1380,11 @@ server holds now, as far as Lurker would save it, `null` when the network isn't
 connected or can't carry your keys (no `draft/metadata-2`, or `max-keys=0`). `avatarPreview` is the saved avatar through the media proxy, or
 `null` with previews off. `PUT` with `{values: {key: value | null}}` saves the
 keys named (`null` or `""` unsets one) and leaves the rest; `DELETE` unsets every
-saved key, and every key Lurker shows. Both answer like `GET`, and on a
-connected network set what differs right away. A value Lurker wouldn't show is a
-`400` naming the `key`. The `/displayname`, `/avatar` and `/metadata
+saved key, and every key Lurker shows. Both answer like `GET` and set what
+differs right away; both are a `409` with the reason in `error` unless the
+network is connected and can carry your keys, so a profile is never saved for a
+network that would never set it. A value Lurker wouldn't show is a `400` naming
+the `key`. The `/displayname`, `/avatar` and `/metadata
 set|del|clear` lines save the same rows — a `SET` once the server accepts it —
 so a client that sends those lines raw on a connected network needs neither
 route.

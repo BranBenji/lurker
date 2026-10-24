@@ -627,6 +627,16 @@ function metadataPayload(userId: number, networkId: number) {
   };
 }
 
+// A profile is edited only where it can go now: connected, to a network that
+// carries metadata. `409` with the reason otherwise.
+function ownMetadataRefused(userId: number, networkId: number, res: Response): boolean {
+  const conn = ircManager.getConnection(userId, networkId);
+  const refusal = conn ? conn.ownMetadataRefusal() : 'not connected';
+  if (!refusal) return false;
+  res.status(409).json({ error: refusal });
+  return true;
+}
+
 router.get('/:id/metadata', (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (!getNetwork(id, req.user!.id)) {
@@ -638,7 +648,7 @@ router.get('/:id/metadata', (req: Request, res: Response) => {
 
 // `{ values: { key: value | null } }`: the keys named are saved (null or ''
 // unsets one), the rest left as they are, and what the server lacks is set
-// now if the network is connected. The same rules as /metadata set.
+// now. The same rules as /metadata set.
 router.put('/:id/metadata', (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (!getNetwork(id, req.user!.id)) {
@@ -650,6 +660,7 @@ router.put('/:id/metadata', (req: Request, res: Response) => {
     res.status(400).json({ error: 'values must be an object' });
     return;
   }
+  if (ownMetadataRefused(req.user!.id, id, res)) return;
   const values = new Map<string, string | null>();
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     if (value !== null && typeof value !== 'string') {
@@ -669,13 +680,14 @@ router.put('/:id/metadata', (req: Request, res: Response) => {
   res.json(metadataPayload(req.user!.id, id));
 });
 
-// Every saved key unset, here and — now or at the next connect — on the server.
+// Every saved key unset, here and on the server.
 router.delete('/:id/metadata', (req: Request, res: Response) => {
   const id = Number(req.params.id);
   if (!getNetwork(id, req.user!.id)) {
     res.status(404).json({ error: 'network not found' });
     return;
   }
+  if (ownMetadataRefused(req.user!.id, id, res)) return;
   clearNetworkMetadata(req.user!.id, id);
   ircManager.getConnection(req.user!.id, id)?.reconcileOwnMetadata('user');
   res.json(metadataPayload(req.user!.id, id));

@@ -91,21 +91,28 @@ describe('profile editor', () => {
     expect(useProfileEditor().networkId.value).toBeNull();
   });
 
-  it("is greyed, and says why, on a network that can't carry it", async () => {
+  it('opens only on a connected network that carries metadata', () => {
+    const editor = useProfileEditor();
+    setNetwork({ state: 'connected', metadataLimits: LIMITS });
+    expect(editor.canOpen(NET)).toBe(true);
     setNetwork({ state: 'connected', metadataLimits: { ...LIMITS, maxKeys: 0 } });
-    reply = { values: {}, unset: [], live: null, avatarPreview: null };
-    const wrapper = await open();
-    expect(wrapper.find('.hint').text()).toMatch(/doesn't keep metadata/);
-    expect(input(wrapper, 'Status').attributes('disabled')).toBeDefined();
-    expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeDefined();
+    expect(editor.canOpen(NET)).toBe(false);
+    setNetwork({ state: 'connected', metadataLimits: null });
+    expect(editor.canOpen(NET)).toBe(false);
+    setNetwork({ state: 'disconnected', metadataLimits: LIMITS });
+    expect(editor.canOpen(NET)).toBe(false);
   });
 
-  it('saves for later on a network that is not connected', async () => {
-    setNetwork({ state: 'disconnected' });
-    reply = { values: {}, unset: [], live: null, avatarPreview: null };
+  it('greys, keeping what was typed, when the network drops while it is open', async () => {
+    setNetwork({ state: 'connected', metadataLimits: LIMITS });
+    reply = { values: {}, unset: [], live: {}, avatarPreview: null };
     const wrapper = await open();
-    expect(wrapper.find('.hint').text()).toMatch(/set when it connects/);
-    expect(input(wrapper, 'Status').attributes('disabled')).toBeUndefined();
+    await input(wrapper, 'Status').setValue('lunch');
+    useNetworksStore().states[NET]!.state = 'disconnected';
+    await flushPromises();
+    expect(input(wrapper, 'Status').attributes('disabled')).toBeDefined();
+    expect((input(wrapper, 'Status').element as HTMLInputElement).value).toBe('lunch');
+    expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeDefined();
   });
 
   it("copies another network's saved profile into the form", async () => {

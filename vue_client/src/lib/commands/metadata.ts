@@ -14,10 +14,13 @@
 //   /displayname <name> | off        the display-name key
 //
 // A change to our own keys says what it writes too (#1189): the server saves
-// it as it goes out, and on a disconnected network the client saves it by
-// REST instead, to be set at the next connect.
+// it from the answer, and the client refuses it where it can't go.
 
-import { METADATA_KEY_RE, type OwnMetadataWrite } from '../../../../shared/metadataKeys.js';
+import {
+  METADATA_KEY_RE,
+  ownMetadataRefusal as refusalFor,
+  type OwnMetadataWrite,
+} from '../../../../shared/metadataKeys.js';
 import type { NetworkState } from '../../stores/networks.js';
 
 export type MetadataCommand = { line: string; write?: OwnMetadataWrite } | { error: string };
@@ -36,16 +39,9 @@ function setLine(key: string, value: string | null): MetadataCommand {
   };
 }
 
-/**
- * Why a connected network can't carry our own metadata, or null when it can
- * (or isn't connected, where it's saved for later). soju offers the cap with
- * max-keys=0 and refuses a SET on `*`.
- */
+/** Why our own metadata can't be set on this network now, or null when it can. */
 export function ownMetadataRefusal(state: NetworkState | undefined): string | null {
-  if (state?.state !== 'connected') return null;
-  if (!state.metadataLimits) return "this network doesn't support IRCv3 metadata";
-  if (state.metadataLimits.maxKeys === 0) return "this network doesn't keep metadata for you";
-  return null;
+  return refusalFor(state?.state === 'connected', state?.metadataLimits);
 }
 
 /** `/metadata <sub> …` → the wire line, or what to tell the user. */

@@ -2,12 +2,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Our own IRCv3 metadata as Lurker saved it per network (#1189): the profile
-// editor's source, and how a slash command on a disconnected network saves.
+// editor's source.
 
 import { api } from '../api.js';
-import type { OwnMetadataWrite } from '../../../shared/metadataKeys.js';
-
-export { savedForLaterText } from '../../../shared/metadataKeys.js';
 
 export interface OwnMetadata {
   // What Lurker saved and re-sets after each connect.
@@ -38,14 +35,4 @@ export function saveOwnMetadata(
 
 export function clearOwnMetadata(networkId: number): Promise<OwnMetadata> {
   return api<OwnMetadata>(base(networkId), { method: 'DELETE' });
-}
-
-/** A slash command's write, saved by REST. */
-export function saveOwnMetadataWrite(
-  networkId: number,
-  write: OwnMetadataWrite,
-): Promise<OwnMetadata> {
-  return write === 'clear'
-    ? clearOwnMetadata(networkId)
-    : saveOwnMetadata(networkId, { [write.key]: write.value });
 }

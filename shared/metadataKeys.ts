@@ -28,10 +28,17 @@ export const METADATA_EXTRA_VALUE_MAX_CHARS = 512;
 // A change to our own metadata: one key (null unsets it), or all of them.
 export type OwnMetadataWrite = { key: string; value: string | null } | 'clear';
 
-/** What a change saved while the network isn't connected says, server or client. */
-export function savedForLaterText(write: OwnMetadataWrite): string {
-  if (write === 'clear') return 'Metadata cleared; it is cleared at the next connect.';
-  return write.value === null
-    ? `${write.key} unset; it is unset at the next connect.`
-    : `${write.key} saved; it is set at the next connect, if this network supports metadata.`;
+/**
+ * Why our own metadata can't be set on a network now, or null when it can:
+ * connected, with the cap and room for a key (soju offers the cap with
+ * max-keys=0 and refuses a SET on `*`). The server and the client say the same.
+ */
+export function ownMetadataRefusal(
+  connected: boolean,
+  limits: { maxKeys: number | null } | null | undefined,
+): string | null {
+  if (!connected) return 'not connected';
+  if (!limits) return "this network doesn't support IRCv3 metadata";
+  if (limits.maxKeys === 0) return "this network doesn't keep metadata for you";
+  return null;
 }
