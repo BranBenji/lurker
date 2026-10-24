@@ -529,10 +529,12 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   },
 
   // ─── Compact layout density (#1186) ──────────────────────────────────
-  // Themed like the fonts: how tight the rows sit is part of a look, and the
-  // phone apps (where compact is the default) honour the same three values.
-  // Units a native renderer can apply without CSS: pixels, a percentage, and
-  // characters. None of these touch the standard layout.
+  // Themed like the fonts: how tight the rows sit is part of a look. The
+  // phone apps, where compact is the default, are meant to read the same
+  // three values (a Mobile: follow-up), so the units are ones a native
+  // renderer applies without CSS: pixels, a percentage, and characters. The
+  // ceilings are layout sanity for a phone's width, not policy. None of
+  // these touch the standard layout.
   {
     key: 'look.message.compact.group_gap',
     label: 'Compact group gap (px)',
@@ -573,6 +575,8 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     min: 0,
     max: 8,
     default: 1,
+    // Greyed out while avatars are on: the gutter is the indent then.
+    dependsOn: [{ key: 'look.message.avatars', in: [false] }],
     description:
       'How many characters the text of a message sits in from the nick ' +
       'above it in the compact layout. 0 puts the text flush under the ' +

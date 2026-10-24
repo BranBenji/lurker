@@ -3144,11 +3144,17 @@ watch(
 /* Centred on the run's first two lines — the head and the first body line,
    the height of the row's background when the message is short — so the
    tile sits in the middle of a hovered or highlighted row rather than
-   hanging from its top. Past the padding, each line is one `lh`. */
+   hanging from its top. Past the padding, each line is one `lh`. A tight
+   line height (#1186) can leave two lines shorter than the tile: the row
+   then grows to hold it, and the tile sits at the padding instead of
+   poking into the group above. */
 .message-list.compact.avatars .line > .avatar {
   position: absolute;
   left: var(--space-4);
-  top: calc(var(--space-1) + (2lh - var(--avatar-size)) / 2);
+  top: calc(var(--space-1) + (max(2lh, var(--avatar-size)) - var(--avatar-size)) / 2);
+}
+.message-list.compact.avatars .line:has(> .avatar) {
+  min-height: calc(var(--avatar-size) + 2 * var(--space-1));
 }
 /* With the body flush under the nick, weight is what tells the head line
    from the text — the same job the standard grid's column gap does. */

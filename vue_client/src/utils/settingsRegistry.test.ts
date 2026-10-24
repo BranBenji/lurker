@@ -304,3 +304,11 @@ describe('dependencyStateFor', () => {
     );
   });
 });
+
+describe('optionEnabled — compact body indent (#1186)', () => {
+  it('is live without avatars and greyed out with them, since the gutter is the indent then', () => {
+    const indent = REGISTRY.find((o) => o.key === 'look.message.compact.indent')!;
+    expect(optionEnabled(indent, () => false)).toBe(true);
+    expect(optionEnabled(indent, () => true)).toBe(false);
+  });
+});

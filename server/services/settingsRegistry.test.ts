@@ -151,8 +151,8 @@ describe('themed keys', () => {
       expect(THEMED_KEYS).toContain(key);
       expect(getOption(key)?.type).toBe('int');
     }
-    // Both built-ins carry them at the registry default, so a theme applied
-    // today renders the compact layout exactly as before the keys existed.
+    // Both built-ins carry them at the registry default, so applying a theme
+    // sets the same density a fresh install shows.
     for (const theme of builtinThemes()) {
       for (const key of knobs) expect(theme.values[key]).toBe(getOption(key)!.default);
     }
