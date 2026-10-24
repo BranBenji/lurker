@@ -70,12 +70,15 @@ describe('useMessageActions', () => {
       expect(quote(other({ nick: undefined }))).toBeUndefined();
     });
 
-    it('names the person inside a relayed line, as the quote will', () => {
+    // MessageList hands over the row as displayed, a relayed line already
+    // unwrapped: a bridge's text that only looks like an envelope (a reply with
+    // its address stripped) is the bridge's own, and stays so.
+    it('names the line as the row shows it, without unwrapping it again', () => {
       useRelayBotsStore().byKey['1::bridge'] = { nick: 'bridge', pattern: '' };
       const actions = useMessageActions().buildActions(
-        other({ nick: 'bridge', text: '<alice> hi', type: 'message' }),
+        other({ nick: 'bridge', text: '<bob> hi', type: 'message' }),
       );
-      expect(actions.find((a) => a.key === 'quote')?.label).toBe('Quote alice');
+      expect(actions.find((a) => a.key === 'quote')?.label).toBe('Quote bridge');
     });
 
     // #997: on your own line Reply can only make a real reply, so it needs a
@@ -441,21 +444,10 @@ describe('copy quote (#1218)', () => {
     expect(copied(other({ type: 'message', text: 'first\nsecond' }))).toBe('<bob> first second');
   });
 
-  it('unwraps a relayed line on the buffer network when the row carries none', () => {
+  it('copies the line as the row shows it, without unwrapping it again', () => {
     useRelayBotsStore().byKey['1::bridge'] = { nick: 'bridge', pattern: '' };
-    const msg = other({
-      nick: 'bridge',
-      text: '<alice> hi',
-      type: 'message',
-      networkId: undefined,
-    });
-    expect(copied(msg)).toBe('<alice> hi');
-  });
-
-  it('copies a relayed line as the person inside the envelope', () => {
-    useRelayBotsStore().byKey['1::bridge'] = { nick: 'bridge', pattern: '' };
-    expect(copied(other({ nick: 'bridge', text: '<alice> hi', type: 'message' }))).toBe(
-      '<alice> hi',
+    expect(copied(other({ nick: 'bridge', text: '<bob> hi', type: 'message' }))).toBe(
+      '<bridge> <bob> hi',
     );
   });
 

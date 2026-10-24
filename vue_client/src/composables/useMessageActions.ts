@@ -16,7 +16,6 @@ import type { LucideIcon } from '@lucide/vue';
 import type { ContextMenuItem } from './useContextMenu.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useReactionsStore } from '../stores/reactions.js';
-import { useRelayBotsStore } from '../stores/relayBots.js';
 import { tagSupport, useNetworksStore } from '../stores/networks.js';
 import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
 import { useBuffersStore } from '../stores/buffers.js';
@@ -190,16 +189,12 @@ export function useMessageActions(): MessageActionsAPI {
   }
 
   // What Copy quote copies: the line as Quote would put it above the draft,
-  // without the `> ` — a /me reads `* bob waves`, a spoiler stays `||…||`. A
-  // relayed line is copied as the person inside the envelope, the way Quote
-  // names them, with the same fall back to the buffer's network.
-  function copyQuoteText(message: MessageLike, ctx: MessageContext): string {
-    const nid = message.networkId ?? message.network_id ?? ctx.networkId;
-    const relayed = useRelayBotsStore().unwrap(nid, message);
+  // without the `> ` — a /me reads `* bob waves`, a spoiler stays `||…||`.
+  function copyQuoteText(message: MessageLike): string {
     return copyQuoteFor({
-      nick: relayed?.nick ?? message.nick ?? '',
+      nick: message.nick ?? '',
       type: message.type,
-      text: relayed?.text ?? message.text ?? '',
+      text: message.text ?? '',
     });
   }
 
@@ -248,12 +243,16 @@ export function useMessageActions(): MessageActionsAPI {
     // draft, for the people on clients that never see a reply tag. It needs no
     // network and no msgid — only words to quote — so it's offered on your own
     // lines and in DMs too, and on a line a Reply can't take.
+    //
+    // MessageList hands over the row as displayed, so a relayed line already
+    // names the person inside its envelope. Unwrapping it again would misread a
+    // bridge's reply whose address was stripped to leave `<bob> hi`.
     if (message.nick && message.text) {
-      // Named for the person quoted: on a relayed line, the one inside the
-      // envelope, as the quote line will read (MessageList's onQuote unwraps).
-      const nid = message.networkId ?? message.network_id;
-      const who = useRelayBotsStore().unwrap(nid, message)?.nick ?? message.nick;
-      actions.push({ key: 'quote', label: `Quote ${who}`, icon: MessageSquareQuoteIcon });
+      actions.push({
+        key: 'quote',
+        label: `Quote ${message.nick}`,
+        icon: MessageSquareQuoteIcon,
+      });
     }
 
     if (message.text) {
@@ -325,7 +324,7 @@ export function useMessageActions(): MessageActionsAPI {
         break;
       case 'copyQuote':
         if (navigator.clipboard) {
-          navigator.clipboard.writeText(copyQuoteText(message, ctx)).catch(() => {});
+          navigator.clipboard.writeText(copyQuoteText(message)).catch(() => {});
         }
         break;
       case 'link': {

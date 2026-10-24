@@ -896,16 +896,16 @@ const actionContext: MessageContext = {
     if (!unaddressed) addressNick(msg.nick);
     else if (started) focusComposer();
   },
-  // Quote (#1119): the line as plain text above the draft. A relayed line is
-  // quoted as the person inside the envelope, the way the reply quote shows it.
+  // Quote (#1119): the line as plain text above the draft. The row is the
+  // displayed one, so a relayed line already names the person inside the
+  // envelope; unwrapping it again would misread a bridge's reply whose address
+  // was stripped to leave `<bob> hi`.
   onQuote: (msg) => {
     if (!msg.nick) return;
-    const networkId = msg.networkId ?? msg.network_id ?? buffer.value?.networkId;
-    const relayed = networkId == null ? null : relayBots.unwrap(networkId, msg);
     quoteInComposer({
-      nick: relayed?.nick ?? msg.nick,
+      nick: msg.nick,
       type: msg.type,
-      text: relayed?.text ?? (msg.text as string | undefined) ?? '',
+      text: (msg.text as string | undefined) ?? '',
     });
   },
   onIgnore: (msg) => {
