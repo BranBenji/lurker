@@ -128,6 +128,55 @@ describe('GET /api/link-preview/avatar/:token', () => {
     expect(res.headers['retry-after']).toBe('9');
   });
 
+  it('asks the decoder once for viewers who arrive together', async () => {
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    stub.onAvatar = (_url, res) => {
+      void held.then(() => res.writeHead(200, { 'content-type': 'image/webp' }).end(webp));
+    };
+    const url = avatarClientUrl(`${base}/popular.png`)!;
+    const both = Promise.all([agent.get(url), agent.get(url)]);
+    await new Promise((r) => setTimeout(r, 50));
+    release();
+    const [a, b] = await both;
+    expect([a.status, b.status]).toEqual([200, 200]);
+    expect(stub.avatarAsks).toEqual([`${base}/popular.png`]);
+  });
+
+  it('keeps nothing the origin said not to keep, and asks again next time', async () => {
+    stub.onAvatar = answer(200, webp, {
+      'content-type': 'image/webp',
+      'cache-control': 'no-store',
+    });
+    const url = avatarClientUrl(`${base}/private.png`)!;
+    await agent.get(url).expect(200);
+    await whenStoresSettle();
+    await agent.get(url).expect(200);
+    expect(stub.avatarAsks).toHaveLength(2);
+  });
+
+  it('is a 404 for an answer too big to be an avatar, or a status it does not know', async () => {
+    const huge = Buffer.concat([webp.subarray(0, 16), Buffer.alloc(1024 * 1024)]);
+    stub.onAvatar = answer(200, huge, { 'content-type': 'image/webp' });
+    expect((await agent.get(avatarClientUrl(`${base}/huge.png`)!)).status).toBe(404);
+    stub.onAvatar = answer(500);
+    expect((await agent.get(avatarClientUrl(`${base}/crashed.png`)!)).status).toBe(404);
+  });
+
+  it('stays transient when the decoder hop itself fails', async () => {
+    stub.onAvatar = (_url, res) => res.socket?.destroy();
+    const res = await agent.get(avatarClientUrl(`${base}/hop.png`)!).expect(503);
+    expect(res.headers['retry-after']).toBe('30');
+  });
+
+  it('refuses an avatar token on the media route, without asking the decoder', async () => {
+    const token = String(avatarClientUrl(`${base}/me.png`))
+      .split('/')
+      .at(-1);
+    await agent.get(`/api/link-preview/media/${token}`).expect(403);
+    expect(stub.fetchAsks).toEqual([]);
+  });
+
   it('serves only what it minted: a media token is a 403 here', async () => {
     const media = await agent.get(`/api/link-preview/avatar/${mintProxyToken(`${base}/me.png`)}`);
     expect(media.status).toBe(403);

@@ -114,8 +114,9 @@ export function verifyPosterToken(token: string): string | null {
 
 /**
  * An avatar capability (lurker#1190) signs `avatar:<origin url>`: the avatar route asks the
- * decoder for that URL resized, and serves nothing it was not minted for. Prefixed so it can't
- * be replayed as a media token (whose payload is the bare URL) or the other way round.
+ * decoder for that URL resized, and serves nothing it was not minted for. Prefixed so a media
+ * token (a bare URL) is refused here, and the media route refuses any payload that isn't an
+ * http(s) URL, so this one is refused there.
  */
 const AVATAR_TOKEN_PREFIX = 'avatar:';
 

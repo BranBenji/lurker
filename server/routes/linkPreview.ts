@@ -177,7 +177,9 @@ router.get('/media/:token', async (req: Request, res: Response) => {
   // anyway — the token proves we approved this URL at some point; it says nothing
   // about where the name points NOW.)
   const raw = verifyProxyToken(String(req.params.token));
-  if (!raw) {
+  // ⚠ A URL, and only a URL. The poster and avatar tokens sign prefixed payloads with the
+  // same key; one replayed here must be refused by the cell, not left to the decoder.
+  if (!raw || !/^https?:\/\//i.test(raw)) {
     res.status(403).end();
     return;
   }
@@ -250,9 +252,7 @@ async function relayImage(req: Request, res: Response, raw: string): Promise<voi
   if (cacheEnabled() && !isRange) {
     const hit = await lookup(cacheKey);
     if (hit) {
-      applyMediaHeaders(res, hit.contentType);
-      res.setHeader('Content-Length', String(hit.body.length));
-      res.status(200).end(hit.body);
+      sendCached(res, hit);
       return;
     }
   }
@@ -494,9 +494,7 @@ router.get('/poster/:token', async (req: Request, res: Response) => {
       res.status(404).end();
       return;
     }
-    applyMediaHeaders(res, hit.contentType);
-    res.setHeader('Content-Length', String(hit.body.length));
-    res.status(200).end(hit.body);
+    sendCached(res, hit);
   } finally {
     // ⚠ `finally`, not a `close` listener as the media route uses: this response is
     // `end()`ed synchronously with a buffer already in hand, so the slot is done with when
@@ -508,6 +506,85 @@ router.get('/poster/:token', async (req: Request, res: Response) => {
 /** An avatar from the decoder is a ≤256 px WebP, tens of KB, an animated one ≤512 KB. A
  *  bigger body is a decoder we shouldn't believe. */
 const MAX_AVATAR_BYTES = 1024 * 1024;
+
+/**
+ * Avatar asks of the decoder in flight. Its own pool, not `mediaPool`: an ask holds its slot
+ * for the decoder's fetch and decode, up to its 40 s timeout, and a run of slow avatar origins
+ * must not leave every /media and /poster on the instance answering 503. Four, against the
+ * decoder's two: one cell keeps it busy without much of a queue there.
+ */
+const avatarPool = new SlotPool({ size: 4, maxQueued: 200, waitMs: 5_000 });
+
+/** What an avatar ask came to, shared by every viewer who asked meanwhile. */
+type AvatarOutcome =
+  | { kind: 'ok'; webp: Buffer }
+  | { kind: 'relay' }
+  | { kind: 'busy'; retryAfterS: number }
+  | { kind: 'none' };
+
+/**
+ * One ask per avatar at a time. A user who speaks in a busy channel is seen by every attached
+ * client at once, and each would otherwise fetch and decode the same image.
+ */
+const avatarAsks = new Map<string, Promise<AvatarOutcome>>();
+
+function askAvatar(key: string, raw: string): Promise<AvatarOutcome> {
+  let ask = avatarAsks.get(key);
+  if (!ask) {
+    ask = askDecoderForAvatar(key, raw).finally(() => avatarAsks.delete(key));
+    avatarAsks.set(key, ask);
+  }
+  return ask;
+}
+
+async function askDecoderForAvatar(key: string, raw: string): Promise<AvatarOutcome> {
+  if (!(await avatarPool.acquire())) return { kind: 'busy', retryAfterS: 5 };
+  try {
+    const got = await decoderAvatar(raw);
+    switch (got.status) {
+      case 'ok': {
+        // ⚠ The decoder's "WebP" is a claim until its magic bytes say so: it's the box we
+        // expect compromised first. Anything else is no avatar, and the client's tile shows.
+        const body = got.webp;
+        if (
+          body.length > MAX_AVATAR_BYTES ||
+          imageSignatureOf(body.subarray(0, SIGNATURE_BYTES)) !== 'image/webp'
+        ) {
+          return { kind: 'none' };
+        }
+        // Kept when the origin permits it (its Cache-Control, forwarded), as a relay is.
+        // Not awaited: the readers have the bytes either way, and `store` checks them again
+        // and never throws; a failure stays a miss, and the next viewer asks again.
+        if (cacheable('image/webp', false, got.cacheControl)) {
+          const settle = trackPendingStore();
+          void store(key, body, 'image/webp')
+            .catch(() => false)
+            .finally(settle);
+        }
+        return { kind: 'ok', webp: body };
+      }
+      case 'unsupported':
+        // A decoder older than its /avatar: the origin's bytes, relayed as before lurker#1190.
+        return { kind: 'relay' };
+      case 'backoff':
+        return { kind: 'busy', retryAfterS: got.retryAfterS };
+      case 'down':
+        // The seam itself, transient by definition (a deploy, a restart), as on /media.
+        return { kind: 'busy', retryAfterS: 30 };
+      case 'none':
+        return { kind: 'none' };
+    }
+  } finally {
+    avatarPool.release();
+  }
+}
+
+/** A cached object, answered. Every byte answer from the cache goes out this way. */
+function sendCached(res: Response, hit: { body: Buffer; contentType: string }): void {
+  applyMediaHeaders(res, hit.contentType);
+  res.setHeader('Content-Length', String(hit.body.length));
+  res.status(200).end(hit.body);
+}
 
 router.get('/avatar/:token', async (req: Request, res: Response) => {
   if (!previewsEnabled()) {
@@ -529,70 +606,40 @@ router.get('/avatar/:token', async (req: Request, res: Response) => {
   }
   const key = avatarCacheKey(raw);
 
-  if (!(await mediaPool.acquire())) {
-    res.set('Retry-After', '5');
-    res.status(503).end();
-    return;
-  }
-  let relay = false;
-  try {
-    if (cacheEnabled()) {
+  // A hit reads the whole object into RSS, so it takes a media slot like every other hit.
+  if (cacheEnabled()) {
+    if (!(await mediaPool.acquire())) {
+      res.set('Retry-After', '5');
+      res.status(503).end();
+      return;
+    }
+    try {
       const hit = await lookup(key);
       if (hit) {
-        applyMediaHeaders(res, hit.contentType);
-        res.setHeader('Content-Length', String(hit.body.length));
-        res.status(200).end(hit.body);
+        sendCached(res, hit);
         return;
       }
+    } finally {
+      mediaPool.release();
     }
-    const got = await decoderAvatar(raw);
-    switch (got.status) {
-      case 'ok': {
-        // ⚠ The decoder's "WebP" is a claim until its magic bytes say so: it's the box we
-        // expect compromised first. Anything else is no avatar, and the client's tile shows.
-        const body = got.webp;
-        if (
-          body.length > MAX_AVATAR_BYTES ||
-          imageSignatureOf(body.subarray(0, SIGNATURE_BYTES)) !== 'image/webp'
-        ) {
-          res.status(404).end();
-          return;
-        }
-        // Not awaited: the reader has the bytes either way. `store` checks them again and
-        // never throws; a failure stays a miss, and the next viewer asks the decoder again.
-        if (cacheEnabled()) {
-          const settle = trackPendingStore();
-          void store(key, body, 'image/webp')
-            .catch(() => false)
-            .finally(settle);
-        }
-        applyMediaHeaders(res, 'image/webp');
-        res.setHeader('Content-Length', String(body.length));
-        res.status(200).end(body);
-        return;
-      }
-      case 'unsupported':
-        // A decoder older than its /avatar: the origin's bytes, relayed as before lurker#1190.
-        relay = true;
-        break;
-      case 'backoff':
-        res.set('Retry-After', String(got.retryAfterS));
-        res.status(503).end();
-        return;
-      case 'down':
-        // The seam itself, transient by definition (a deploy, a restart), as on /media.
-        res.set('Retry-After', '30');
-        res.status(503).end();
-        return;
-      case 'none':
-        res.status(404).end();
-        return;
-    }
-  } finally {
-    mediaPool.release();
   }
-  // After the slot is back: the relay takes its own.
-  if (relay) await relayImage(req, res, raw);
+
+  const outcome = await askAvatar(key, raw);
+  switch (outcome.kind) {
+    case 'ok':
+      sendCached(res, { body: outcome.webp, contentType: 'image/webp' });
+      return;
+    case 'relay':
+      await relayImage(req, res, raw);
+      return;
+    case 'busy':
+      res.set('Retry-After', String(outcome.retryAfterS));
+      res.status(503).end();
+      return;
+    case 'none':
+      res.status(404).end();
+      return;
+  }
 });
 
 export default router;
