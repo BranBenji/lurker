@@ -305,6 +305,40 @@ describe('POST /api/uploads', () => {
   });
 });
 
+describe('POST /api/uploads — an avatar (#1189)', () => {
+  it('crops the image square, and thumbs the crop', async () => {
+    const wide = await sharp({
+      create: { width: 60, height: 40, channels: 3, background: { r: 0, g: 200, b: 0 } },
+    })
+      .png()
+      .toBuffer();
+    const res = await agent
+      .post('/api/uploads')
+      .field('purpose', 'avatar')
+      .attach('image', wide, { filename: 'me.png', contentType: 'image/png' });
+    expect(res.status).toBe(200);
+    const meta = await sharp(stub.capturedBytes!).metadata();
+    expect([meta.width, meta.height]).toEqual([40, 40]);
+  });
+
+  it('refuses a file that is not an image', async () => {
+    const res = await agent
+      .post('/api/uploads')
+      .field('purpose', 'avatar')
+      .attach('image', Buffer.from('hello'), { filename: 'me.txt', contentType: 'text/plain' });
+    expect(res.status).toBe(415);
+    expect(res.body.error).toBe('an avatar must be an image');
+  });
+
+  it('400s a purpose it does not know', async () => {
+    const res = await agent
+      .post('/api/uploads')
+      .field('purpose', 'banner')
+      .attach('image', smallPng, { filename: 'b.png', contentType: 'image/png' });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe('local-style (storesRemotely:false) uploads', () => {
   it('absolutizes a relative driver URL against the request origin', async () => {
     stub.capabilities.storesRemotely = false;

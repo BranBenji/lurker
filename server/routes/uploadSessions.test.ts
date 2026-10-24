@@ -8,6 +8,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach } from 'vitest';
 import { vi } from 'vitest';
 import fs from 'node:fs';
+import sharp from 'sharp';
 import type { Express } from 'express';
 import type { LurkerTestAgent } from '../test-utils/testApp.js';
 import { setupTestDb, createTestApp, createAuthedAgent } from '../test-utils/testApp.js';
@@ -214,6 +215,26 @@ describe('/api/upload-sessions', () => {
     } finally {
       limits.setUploadChunkBytesForTests(CHUNK);
     }
+  });
+
+  it("crops an avatar's image square, as the single request does (#1189)", async () => {
+    const png = await sharp({
+      create: { width: 30, height: 20, channels: 3, background: { r: 0, g: 128, b: 255 } },
+    })
+      .png()
+      .toBuffer();
+    const created = await open({
+      purpose: 'avatar',
+      size: png.length,
+      filename: 'me.png',
+      mime: 'image/png',
+    });
+    expect(created.status).toBe(201);
+    await sendAll(created.body.id, png);
+    const done = await alice.post(`/api/upload-sessions/${created.body.id}/complete`).send({});
+    expect(done.status).toBe(200);
+    const meta = await sharp(stub.received!).metadata();
+    expect([meta.width, meta.height]).toEqual([20, 20]);
   });
 
   it('is invisible to another account', async () => {

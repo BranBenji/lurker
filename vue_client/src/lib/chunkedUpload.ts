@@ -13,7 +13,7 @@
 import { api, apiSend, type ApiError } from '../api.js';
 
 export interface ChunkedUploadOptions {
-  purpose: 'upload' | 'import' | 'dcc-send';
+  purpose: 'upload' | 'avatar' | 'import' | 'dcc-send';
   filename: string;
   /** Rides to complete, for the server's processing progress frames. */
   progressToken?: string;

@@ -173,6 +173,7 @@ import { parseXdccCommand } from '../lib/commands/xdcc.js';
 import { isXdccPlaceholder } from '../../../shared/xdcc.js';
 import { bufferPeer } from '../lib/commands/ping.js';
 import {
+  ownMetadataRefusal,
   parseAvatarCommand,
   parseDisplayNameCommand,
   parseMetadataCommand,
@@ -4353,7 +4354,9 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       );
     }
     // IRCv3 metadata (#607): our own keys. The reply (a 761, or a FAIL) is
-    // echoed by the server where a /command's reply goes.
+    // echoed by the server where a /command's reply goes. A change is saved
+    // per network (#1189): by the server as it goes out, or here by REST when
+    // the network isn't connected, to be set at the next connect.
     case 'metadata':
     case 'avatar':
     case 'displayname': {
@@ -4373,6 +4376,13 @@ function handleCommand(line: string, networkId: number | null, target: string): 
             : parseMetadataCommand(argLine);
       if ('error' in parsed) {
         localInfo(networkId, target, parsed.error);
+        return true;
+      }
+      const netState = networks.states[networkId];
+      // A write only: reading someone's metadata needs no room for our own keys.
+      const refusal = parsed.write ? ownMetadataRefusal(netState) : null;
+      if (refusal) {
+        localInfo(networkId, target, `/${verb}: ${refusal}.`);
         return true;
       }
       return sendOrToast({ type: 'raw', networkId, line: parsed.line }, line);

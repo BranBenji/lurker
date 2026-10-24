@@ -66,6 +66,30 @@ function encode(pipeline: Sharp, format: OutputFormat, quality: number): Sharp {
   return format === 'jpeg' ? pipeline.jpeg({ quality, mozjpeg: true }) : pipeline.webp({ quality });
 }
 
+// sharp's reading of an image, and its format; UNSUPPORTED_FORMAT when it
+// can't read one, or reads one Lurker doesn't take.
+async function readImage(input: Buffer | string): Promise<{ meta: Metadata; fmt: FormatInfo }> {
+  let meta: Metadata;
+  try {
+    meta = await sharp(input).metadata();
+  } catch (cause) {
+    const err = new Error(
+      `unable to read image: ${(cause as Error).message || String(cause)}`,
+    ) as Error & { code: string };
+    err.code = 'UNSUPPORTED_FORMAT';
+    throw err;
+  }
+  const fmt = meta.format ? FORMAT_INFO[meta.format] : undefined;
+  if (!fmt) {
+    const err = new Error(`unsupported image format: ${meta.format || 'unknown'}`) as Error & {
+      code: string;
+    };
+    err.code = 'UNSUPPORTED_FORMAT';
+    throw err;
+  }
+  return { meta, fmt };
+}
+
 // Optimize a static image (resize longest edge to maxDim, re-encode to `format`).
 // Animated images (sharp.metadata.pages > 1) bypass the resize/re-encode and
 // are returned verbatim, which is a hard requirement so reaction GIFs / animated
@@ -89,24 +113,7 @@ export async function optimize(
   const readInput = async (): Promise<Buffer> =>
     typeof input === 'string' ? fs.promises.readFile(input) : input;
 
-  let meta: Metadata;
-  try {
-    meta = await sharp(input).metadata();
-  } catch (cause) {
-    const err = new Error(
-      `unable to read image: ${(cause as Error).message || String(cause)}`,
-    ) as Error & { code: string };
-    err.code = 'UNSUPPORTED_FORMAT';
-    throw err;
-  }
-  const fmt = meta.format ? FORMAT_INFO[meta.format] : undefined;
-  if (!fmt) {
-    const err = new Error(`unsupported image format: ${meta.format || 'unknown'}`) as Error & {
-      code: string;
-    };
-    err.code = 'UNSUPPORTED_FORMAT';
-    throw err;
-  }
+  const { meta, fmt } = await readImage(input);
 
   const animated = (meta.pages || 1) > 1;
   if (animated) {
@@ -215,4 +222,71 @@ export async function thumbnail(
     format,
     quality,
   ).toBuffer();
+}
+
+// Avatars (#1189) are drawn small, but the profile modal and a 3x screen draw
+// them at a few hundred device pixels; 512 keeps them sharp there, like THUMB_SIZE.
+const AVATAR_SIZE = 512;
+
+// An image made an avatar: cropped to a square, at most AVATAR_SIZE on a side,
+// never enlarged. A still keeps its busiest region (sharp's attention
+// strategy); an animated GIF or WebP keeps its frames, cropped about the
+// centre — sharp has no strategy for a multi-page image — and re-encodes to
+// itself, which drops its metadata. One sharp can't crop animated is
+// flattened to its first frame, as optimize() does. An SVG is rasterised:
+// other clients draw an avatar as a bitmap.
+export async function avatar(
+  input: Buffer | string,
+  { quality, format = 'webp' }: { quality: number; format?: OutputFormat },
+): Promise<OptimizeResult> {
+  const { meta, fmt } = await readImage(input);
+  const width = meta.width || 0;
+  const height = meta.pageHeight || meta.height || 0;
+  const vector = meta.format === 'svg';
+  // An SVG renders at 72 dpi: enough density for the short side to fill the square.
+  const density = vector
+    ? Math.min(2400, Math.max(72, (72 * AVATAR_SIZE) / Math.max(1, Math.min(width, height))))
+    : undefined;
+  const side = vector ? AVATAR_SIZE : Math.max(1, Math.min(AVATAR_SIZE, width, height));
+
+  if ((meta.pages || 1) > 1 && (meta.format === 'gif' || meta.format === 'webp')) {
+    try {
+      const out = await sharp(input, { animated: true })
+        .resize(side, side, { fit: 'cover', position: 'centre' })
+        .toFormat(meta.format, meta.format === 'webp' ? { quality } : {})
+        .toBuffer();
+      return {
+        buffer: out,
+        mime: fmt.mime,
+        ext: fmt.ext,
+        width: side,
+        height: side,
+        byteSize: out.length,
+        animated: true,
+      };
+    } catch {
+      // Flattened below, like a format with no animated encoder.
+    }
+  }
+
+  const outFmt = FORMAT_INFO[format];
+  // rotate() before the crop: the square is cut from the image as it's seen,
+  // EXIF orientation applied. A rotated still's sides swap, but the short one
+  // is the same either way.
+  const out = await encode(
+    sharp(input, density ? { density } : {})
+      .rotate()
+      .resize(side, side, { fit: 'cover', position: 'attention' }),
+    format,
+    quality,
+  ).toBuffer();
+  return {
+    buffer: out,
+    mime: outFmt.mime,
+    ext: outFmt.ext,
+    width: side,
+    height: side,
+    byteSize: out.length,
+    animated: false,
+  };
 }

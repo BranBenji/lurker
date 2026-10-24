@@ -212,7 +212,13 @@ export const useUploadsStore = defineStore('uploads', {
     },
   },
   actions: {
-    async upload(file: File | Blob, filename: string | null = null) {
+    // `avatar`: the profile editor's (#1189). The server crops it square, and
+    // its URL goes into the editor's field, not the composer.
+    async upload(
+      file: File | Blob,
+      filename: string | null = null,
+      { avatar = false }: { avatar?: boolean } = {},
+    ) {
       if (this.current) return; // Single concurrent upload — keeps the status bar coherent.
       const token = makeClientId();
       const fd = new FormData();
@@ -221,6 +227,7 @@ export const useUploadsStore = defineStore('uploads', {
       // so a token appended behind a 200 MB file would not exist yet when the route
       // reads it.
       fd.append('progressToken', token);
+      if (avatar) fd.append('purpose', 'avatar');
       fd.append('image', file, name);
       this.current = {
         token,
@@ -246,14 +253,14 @@ export const useUploadsStore = defineStore('uploads', {
         const result =
           this.chunkBytes != null && file.size > this.chunkBytes
             ? await uploadInChunks(file, {
-                purpose: 'upload',
+                purpose: avatar ? 'avatar' : 'upload',
                 filename: name,
                 progressToken: token,
                 onProgress,
                 onSent: () => onProgress(100),
               })
             : await apiMultipart('/api/uploads', fd, { onProgress });
-        emitInsert(result.url);
+        if (!avatar) emitInsert(result.url);
         // Prepend the new row optimistically without a refetch. Prefer a remote
         // thumbnail URL the server returned (node edition stores thumbs on the
         // CDN); otherwise, for images, fall back to the local BLOB-serving route

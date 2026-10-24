@@ -23,6 +23,7 @@ const fakeManager = {
   reset() {
     this.calls = [];
     this.certAtDial = null;
+    this.liveNetworkId = null;
   },
   startNetwork(userId: number, networkId: number) {
     this.calls.push(['startNetwork', userId, networkId]);
@@ -61,6 +62,18 @@ const fakeManager = {
     this.calls.push(['partChannel', userId, networkId, channel, reason]);
     return this.partReturn !== undefined ? this.partReturn : true;
   },
+  // A live connection for the metadata routes (#1189), when a test sets one.
+  getConnection(userId: number, networkId: number) {
+    return this.liveNetworkId === networkId
+      ? {
+          ownMetadataRefusal: () => null,
+          ownMetadataOnServer: () => ({ 'display-name': 'On The Server' }),
+          reconcileOwnMetadata: (asker?: string) =>
+            this.calls.push(['reconcile', userId, networkId, asker]),
+        }
+      : null;
+  },
+  liveNetworkId: null as number | null,
   certAtDial: null as string | null,
   joinReturn: undefined as boolean | undefined,
   partReturn: undefined as boolean | undefined,
@@ -1037,5 +1050,90 @@ describe('network proxy', () => {
     } finally {
       setAllowUserDefinedNetworks(true);
     }
+  });
+});
+
+describe('own metadata (#1189)', () => {
+  it('saves the keys named, leaves the rest, and reconciles a live network', async () => {
+    const net = (await makeNet(aliceAgent, { name: 'meta-net' })).body.network;
+    fakeManager.liveNetworkId = net.id;
+    const put = await aliceAgent.put(`/api/networks/${net.id}/metadata`).send({
+      values: { 'display-name': ' Alice ', avatar: 'https://example.org/a/{size}.png' },
+    });
+    expect(put.status).toBe(200);
+    expect(put.body.values).toEqual({
+      'display-name': 'Alice',
+      avatar: 'https://example.org/a/{size}.png',
+    });
+    expect(put.body.live).toEqual({ 'display-name': 'On The Server' });
+    // The user's own act: its FAILs reach the user.
+    expect(fakeManager.calls).toContainEqual(['reconcile', alice.id, net.id, 'user']);
+
+    // An empty value unsets one key; the other stays.
+    const unset = await aliceAgent
+      .put(`/api/networks/${net.id}/metadata`)
+      .send({ values: { avatar: '' } });
+    expect(unset.body.values).toEqual({ 'display-name': 'Alice' });
+
+    const got = await aliceAgent.get(`/api/networks/${net.id}/metadata`);
+    expect(got.body.values).toEqual({ 'display-name': 'Alice' });
+    expect(got.body.unset).toEqual(['avatar']);
+    expect(got.body.avatarPreview).toBeNull();
+
+    const cleared = await aliceAgent.delete(`/api/networks/${net.id}/metadata`);
+    expect(cleared.body.values).toEqual({});
+    expect(cleared.body.unset.toSorted()).toEqual([
+      'avatar',
+      'display-name',
+      'homepage',
+      'pronouns',
+      'status',
+    ]);
+  });
+
+  it('refuses a change unless it can go now, and saves nothing', async () => {
+    const net = (await makeNet(aliceAgent, { name: 'meta-down' })).body.network;
+    const put = await aliceAgent
+      .put(`/api/networks/${net.id}/metadata`)
+      .send({ values: { pronouns: 'they/them' } });
+    expect(put.status).toBe(409);
+    expect(put.body.error).toBe('not connected');
+    expect((await aliceAgent.delete(`/api/networks/${net.id}/metadata`)).status).toBe(409);
+    const got = await aliceAgent.get(`/api/networks/${net.id}/metadata`);
+    expect(got.body.values).toEqual({});
+    expect(got.body.unset).toEqual([]);
+    expect(got.body.live).toBeNull();
+  });
+
+  it('refuses a value Lurker would not show, and saves nothing of that request', async () => {
+    const net = (await makeNet(aliceAgent, { name: 'meta-bad' })).body.network;
+    fakeManager.liveNetworkId = net.id;
+    const res = await aliceAgent.put(`/api/networks/${net.id}/metadata`).send({
+      values: { pronouns: 'they/them', homepage: 'javascript:alert(1)' },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.key).toBe('homepage');
+    const got = await aliceAgent.get(`/api/networks/${net.id}/metadata`);
+    expect(got.body.values).toEqual({});
+  });
+
+  it('keeps a key named like an Object property', async () => {
+    const net = (await makeNet(aliceAgent, { name: 'meta-proto' })).body.network;
+    fakeManager.liveNetworkId = net.id;
+    const res = await aliceAgent
+      .put(`/api/networks/${net.id}/metadata`)
+      .set('Content-Type', 'application/json')
+      .send('{"values":{"__proto__":"a value","constructor":"another"}}');
+    expect(res.status).toBe(200);
+    expect(Object.keys(res.body.values).toSorted()).toEqual(['__proto__', 'constructor']);
+  });
+
+  it("is the network owner's only", async () => {
+    const net = (await makeNet(aliceAgent, { name: 'meta-mine' })).body.network;
+    expect((await bobAgent.get(`/api/networks/${net.id}/metadata`)).status).toBe(404);
+    expect(
+      (await bobAgent.put(`/api/networks/${net.id}/metadata`).send({ values: {} })).status,
+    ).toBe(404);
+    expect((await bobAgent.delete(`/api/networks/${net.id}/metadata`)).status).toBe(404);
   });
 });

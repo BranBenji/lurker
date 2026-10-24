@@ -9,8 +9,10 @@ import {
   METADATA_SUB_KEYS,
   channelMetadataView,
   metadataSubKeysFor,
+  ownMetadataToSave,
   parseMetadataLimits,
   parseMetadataLine,
+  parseOwnMetadataWrite,
   sizedAvatarUrl,
   userMetadataView,
   vetMetadataValue,
@@ -147,5 +149,62 @@ describe('what the record may hold', () => {
     expect(vetMetadataValue('color', '#ff0000', extra)).toBe('#ff0000');
     expect(vetMetadataValue('color', 'x'.repeat(513), extra)).toBeNull();
     expect(vetMetadataValue('bot', 'yes', extra)).toBeNull();
+  });
+});
+
+describe('our own metadata on its way out (#1189)', () => {
+  const self = (target: string) => target.toLowerCase() === 'me';
+
+  it('reads a SET on `*` or our nick, and a CLEAR', () => {
+    expect(parseOwnMetadataWrite('METADATA * SET avatar :https://x.example/a.png', self)).toEqual({
+      key: 'avatar',
+      value: 'https://x.example/a.png',
+    });
+    expect(parseOwnMetadataWrite('METADATA Me SET Display-Name :Me Myself', self)).toEqual({
+      key: 'display-name',
+      value: 'Me Myself',
+    });
+    expect(parseOwnMetadataWrite('@label=1 METADATA * SET pronouns they', self)).toEqual({
+      key: 'pronouns',
+      value: 'they',
+    });
+    expect(parseOwnMetadataWrite('METADATA * CLEAR', self)).toBe('clear');
+  });
+
+  it('reads a SET with no value, or an empty one, as an unset', () => {
+    expect(parseOwnMetadataWrite('METADATA * SET status', self)).toEqual({
+      key: 'status',
+      value: null,
+    });
+    expect(parseOwnMetadataWrite('METADATA * SET status :', self)).toEqual({
+      key: 'status',
+      value: null,
+    });
+  });
+
+  it("ignores someone else's target, a channel, and the reads", () => {
+    expect(parseOwnMetadataWrite('METADATA bob SET avatar :x', self)).toBeNull();
+    expect(parseOwnMetadataWrite('METADATA #chan SET avatar :x', self)).toBeNull();
+    expect(parseOwnMetadataWrite('METADATA * LIST', self)).toBeNull();
+    expect(parseOwnMetadataWrite('METADATA * SUB avatar', self)).toBeNull();
+    expect(parseOwnMetadataWrite('PRIVMSG * :METADATA * SET avatar :x', self)).toBeNull();
+  });
+
+  it('saves the value as typed, and refuses what Lurker would not show', () => {
+    // The avatar keeps its {size}: it's re-set verbatim.
+    expect(ownMetadataToSave('avatar', ' https://x.example/{size}.png ')).toBe(
+      'https://x.example/{size}.png',
+    );
+    expect(ownMetadataToSave('avatar', 'javascript:alert(1)')).toBeUndefined();
+    expect(ownMetadataToSave('display-name', '\u0002\u0002')).toBeUndefined();
+    expect(ownMetadataToSave('display-name', 'x'.repeat(65))).toBeUndefined();
+    expect(ownMetadataToSave('Bad Key', 'x')).toBeUndefined();
+    // Named like an Object property: still bounded like any other key.
+    expect(ownMetadataToSave('constructor', 'x'.repeat(513))).toBeUndefined();
+    expect(ownMetadataToSave('constructor', 'x'.repeat(512))).toBe('x'.repeat(512));
+    // A key Lurker doesn't show is kept, bounded like a status.
+    expect(ownMetadataToSave('color', '#ff0000')).toBe('#ff0000');
+    expect(ownMetadataToSave('status', '')).toBeNull();
+    expect(ownMetadataToSave('status', null)).toBeNull();
   });
 });

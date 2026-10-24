@@ -79,6 +79,9 @@ export interface FakeIrcdOptions {
   // subscribed clients sharing a channel, a SUB answered with a 770 and a
   // `774 * *ALL` asking for a SYNC, lists and syncs as `metadata` batches.
   metadata?: boolean;
+  // The metadata cap's value, in place of the default limits: soju's
+  // `before-connect,max-keys=0,max-value-bytes=1`, say.
+  metadataCapValue?: string;
 }
 
 export interface FakeClient {
@@ -150,6 +153,10 @@ export class FakeIrcd extends EventEmitter {
   readonly saslAccounts = new Map<string, string>();
   // Metadata per target (lowercase nick or channel): key → value.
   readonly metadata = new Map<string, Map<string, string>>();
+  // ergo's own-nick SET throttle, scripted: the next N SETs on yourself are
+  // refused `FAIL METADATA RATE_LIMITED <target> <key> <retry-after>`.
+  metadataSetsToThrottle = 0;
+  metadataRetryAfter = '1';
   // Test hook: return true to swallow a client command — no reply of any kind —
   // for a test of what the client does when a reply never comes.
   hold: ((cmd: string, params: string[], c: FakeClient) => boolean) | null = null;
@@ -171,7 +178,9 @@ export class FakeIrcd extends EventEmitter {
       this.caps.push(`sasl=${mechanisms.join(',')}`);
     }
     if (opts.metadata)
-      this.caps.push('draft/metadata-2=max-subs=10,max-keys=10,max-value-bytes=512');
+      this.caps.push(
+        `draft/metadata-2=${opts.metadataCapValue ?? 'max-subs=10,max-keys=10,max-value-bytes=512'}`,
+      );
     this.serverName = opts.serverName ?? 'fake.test';
     this.network = opts.network ?? 'FakeNet';
   }
@@ -910,6 +919,10 @@ export class FakeIrcd extends EventEmitter {
         if (!METADATA_KEY_RE.test(key)) return fail('INVALID_KEY', key, ':Invalid key name');
         if (!isChannelTarget(target) && target.toLowerCase() !== c.nick!.toLowerCase()) {
           return fail('KEY_NO_PERMISSION', target, key, ':You do not have permission');
+        }
+        if (!isChannelTarget(target) && this.metadataSetsToThrottle > 0) {
+          this.metadataSetsToThrottle--;
+          return fail('RATE_LIMITED', rawTarget, key, this.metadataRetryAfter, ':Please wait');
         }
         const value = p.length >= 4 ? (p[3] ?? '') : null;
         // The setter's own reply, then the audience (which excludes the setter).

@@ -299,6 +299,15 @@ export const EXPORT_TABLES = Object.freeze({
     ],
   },
 
+  // Our own IRCv3 metadata per network (#1189). A null value is a saved unset.
+  network_metadata: {
+    mode: 'export',
+    scope: 'user_id',
+    section: 'data',
+    fkRekey: { user_id: 'users', network_id: 'networks' },
+    columns: ['network_id', 'user_id', 'key', 'value', 'updated_at'],
+  },
+
   user_settings: {
     mode: 'export',
     scope: 'user_id',
@@ -889,6 +898,7 @@ export const IMPORT_ORDER = Object.freeze([
   'buffer_retention',
   'user_drafts',
   'network_away_state',
+  'network_metadata',
   'input_history',
   'upload_history',
   // Messages depend on networks and highlight_rules.

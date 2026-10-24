@@ -12,18 +12,36 @@
 //   /metadata clear                  METADATA * CLEAR
 //   /avatar <url> | off              the avatar key
 //   /displayname <name> | off        the display-name key
+//
+// A change to our own keys says what it writes too (#1189): the server saves
+// it from the answer, and the client refuses it where it can't go.
 
-const KEY_RE = /^[a-z0-9_./-]+$/;
+import {
+  METADATA_KEY_RE,
+  ownMetadataRefusal as refusalFor,
+  type OwnMetadataWrite,
+} from '../../../../shared/metadataKeys.js';
+import type { NetworkState } from '../../stores/networks.js';
 
-export type MetadataCommand = { line: string } | { error: string };
+export type MetadataCommand = { line: string; write?: OwnMetadataWrite } | { error: string };
 
 const USAGE =
   'usage: /metadata set <key> <value> · /metadata del <key> · /metadata list [nick|#chan] · /metadata clear';
 
 function setLine(key: string, value: string | null): MetadataCommand {
-  if (!KEY_RE.test(key)) return { error: `invalid metadata key: ${key} (a-z, 0-9, _ . / -)` };
+  if (!METADATA_KEY_RE.test(key)) {
+    return { error: `invalid metadata key: ${key} (a-z, 0-9, _ . / -)` };
+  }
   const clean = value === null ? null : value.replace(/[\r\n\0]/g, '').trim();
-  return { line: clean ? `METADATA * SET ${key} :${clean}` : `METADATA * SET ${key}` };
+  return {
+    line: clean ? `METADATA * SET ${key} :${clean}` : `METADATA * SET ${key}`,
+    write: { key, value: clean || null },
+  };
+}
+
+/** Why our own metadata can't be set on this network now, or null when it can. */
+export function ownMetadataRefusal(state: NetworkState | undefined): string | null {
+  return refusalFor(state?.state === 'connected', state?.metadataLimits);
 }
 
 /** `/metadata <sub> …` → the wire line, or what to tell the user. */
@@ -49,7 +67,7 @@ export function parseMetadataCommand(argLine: string): MetadataCommand {
       return { line: `METADATA ${target} LIST` };
     }
     case 'clear':
-      return { line: 'METADATA * CLEAR' };
+      return { line: 'METADATA * CLEAR', write: 'clear' };
     default:
       return { error: USAGE };
   }

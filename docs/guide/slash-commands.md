@@ -27,7 +27,9 @@ If you know the command, you never need to reach for the mouse.
 - `/displayname <name>` and `/avatar <https://…/image.png>` — the name and
   picture other people see for you on networks that keep profile data (IRCv3
   metadata; Ergo does). `off` clears either. `/metadata set|del|list|clear`
-  reaches any key.
+  reaches any key. Lurker remembers what you set per network and sets it again
+  each time you connect; the network menu's Edit Profile shows it all, and
+  uploads a picture for you, cropped square.
 - `/avatars` — list the tile sets behind generated avatars; `/avatars use <set>`
   picks one, `/avatars delete <set>` removes an upload. The sets live in
   Settings › Appearance › Avatars.

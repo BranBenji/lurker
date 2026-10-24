@@ -300,6 +300,10 @@
       :nick="whois.viewer.nick"
       :network-id="whois.viewer.networkId"
     />
+    <ProfileEditorModal
+      v-if="profileEditor.networkId.value != null"
+      :network-id="profileEditor.networkId.value"
+    />
     <!-- NickNoteModal comes last so when both are open (edit-note-from-profile)
          it lands on top — AppModal uses a fixed z-index, so DOM order is the
          tiebreaker. -->
@@ -360,6 +364,8 @@ import { useChannelListModal } from '../composables/useChannelListModal.js';
 import { useJoinChannelModal } from '../composables/useJoinChannelModal.js';
 import { useMediaViewer } from '../composables/useMediaViewer.js';
 import { useNetworkEditor } from '../composables/useNetworkEditor.js';
+import { useProfileEditor } from '../composables/useProfileEditor.js';
+import ProfileEditorModal from '../components/ProfileEditorModal.vue';
 import { useJumpToMessage } from '../composables/useJumpToMessage.js';
 import { useNavHistoryStore } from '../stores/navHistory.js';
 import {
@@ -427,6 +433,7 @@ const channelListModal = reactive(useChannelListModal());
 const joinChannelModal = reactive(useJoinChannelModal());
 const viewer = reactive(useMediaViewer());
 const networkEditor = reactive(useNetworkEditor());
+const profileEditor = useProfileEditor();
 const navHistory = useNavHistoryStore();
 const showBookmarks = ref(false);
 const channelModal = useChannelModal();

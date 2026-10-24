@@ -13,33 +13,26 @@
 // 761s. All three shapes reduce to one change here.
 
 import { isChannelTarget } from '../../shared/channels.js';
+import {
+  METADATA_EXTRA_VALUE_MAX_CHARS,
+  METADATA_KEY_RE,
+  METADATA_SUB_KEYS,
+  METADATA_VALUE_MAX_CHARS,
+  type OwnMetadataWrite,
+} from '../../shared/metadataKeys.js';
 import { stripFormatting } from '../../shared/textMatch.js';
+import { parseLine } from './bouncerClientFilter.js';
 
 export const METADATA_CAP = 'draft/metadata-2';
 
-// In order of preference: a server with a small `max-subs` grants the first.
-// `color` is deliberately absent (#607): hex values fight every theme.
-export const METADATA_SUB_KEYS = ['display-name', 'avatar', 'pronouns', 'homepage', 'status'];
+export { METADATA_SUB_KEYS };
 
 // The avatar key may carry a `{size}` placeholder (IRCv3 registry); this is the
 // pixel size Lurker asks for. Every client renders it smaller than this.
 export const AVATAR_SIZE = 128;
 
-// Values longer than this are dropped rather than truncated: a truncated URL
-// is a different URL, and a truncated name reads as someone else's.
-const MAX_VALUE_CHARS: Record<string, number> = {
-  'display-name': 64,
-  pronouns: 64,
-  status: 200,
-  homepage: 2048,
-  avatar: 2048,
-};
-
-const KEY_RE = /^[a-z0-9_./-]+$/;
-
-// A key Lurker doesn't show but a bouncer client asked for: kept so a SUB can
-// be answered from state, bounded like a status.
-const EXTRA_VALUE_CHARS = 512;
+// A key Lurker doesn't show but a bouncer client asked for is kept so a SUB
+// can be answered from state, bounded by METADATA_EXTRA_VALUE_MAX_CHARS.
 // Zero-width and joiner characters: a name made only of these is no name.
 const INVISIBLE_RE = /[\u200b-\u200d\u2060\ufeff]/g;
 
@@ -74,7 +67,7 @@ export function parseMetadataLimits(advertised: string | undefined | null): Meta
 }
 
 export function isValidMetadataKey(key: string): boolean {
-  return KEY_RE.test(key);
+  return METADATA_KEY_RE.test(key);
 }
 
 /** The keys to SUB, trimmed to what the server allows. 0 means none. */
@@ -142,7 +135,9 @@ export function vetMetadataValue(
   extra?: { has(key: string): boolean },
 ): string | null {
   if (raw === null) return null;
-  const max = MAX_VALUE_CHARS[key] ?? (extra?.has(key) ? EXTRA_VALUE_CHARS : undefined);
+  const max =
+    (Object.hasOwn(METADATA_VALUE_MAX_CHARS, key) ? METADATA_VALUE_MAX_CHARS[key] : undefined) ??
+    (extra?.has(key) ? METADATA_EXTRA_VALUE_MAX_CHARS : undefined);
   if (max === undefined) return null;
   // Line breaks and NUL can't legally be here; other controls (mIRC formatting)
   // are the display layer's to render or strip.
@@ -164,6 +159,46 @@ export function vetMetadataValue(
 /** The registry's `{size}` placeholder, filled in. */
 export function sizedAvatarUrl(url: string, size = AVATAR_SIZE): string {
   return url.replace(/\{size\}/g, String(size));
+}
+
+const ANY_KEY = { has: () => true };
+
+/**
+ * What to save for one of our own keys (#1189): the value as typed (an avatar
+ * keeps its `{size}`), null for an unset, or undefined for a value Lurker
+ * wouldn't show — that one isn't saved, so it isn't re-set on every connect.
+ */
+export function ownMetadataToSave(key: string, raw: string | null): string | null | undefined {
+  if (!METADATA_KEY_RE.test(key)) return undefined;
+  const value = (raw ?? '').replace(/[\r\n\0]/g, '').trim();
+  if (!value) return null;
+  return vetMetadataValue(key, value, ANY_KEY) === null ? undefined : value;
+}
+
+/**
+ * A `METADATA <target> SET <key> [<value>]` or `METADATA <target> CLEAR` line
+ * on its way out, when the target is us: `*`, or our nick (halloy's form). A
+ * SET with no value, or an empty one, is an unset, as ergo reads it.
+ */
+export function parseOwnMetadataWrite(
+  line: string,
+  isSelf: (target: string) => boolean,
+): OwnMetadataWrite | null {
+  const msg = parseLine(line);
+  if (!msg || msg.command !== 'METADATA') return null;
+  const [target, sub, key] = msg.params;
+  if (!target || (target !== '*' && !isSelf(target))) return null;
+  switch ((sub ?? '').toUpperCase()) {
+    case 'CLEAR':
+      return 'clear';
+    case 'SET': {
+      if (!key) return null;
+      const value = msg.params[3];
+      return { key: key.toLowerCase(), value: value ? value : null };
+    }
+    default:
+      return null;
+  }
 }
 
 // What a client is sent for a user. `avatarUrl` is minted by `mint`
