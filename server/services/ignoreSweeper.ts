@@ -21,10 +21,21 @@ export function sweepExpiredIgnores(): void {
     return;
   }
   // networkId null = a global rule lapsed; fanOutIgnoreList ships the right bucket.
-  // A lapsed `-time` mute un-mutes a DM's badge too (#1192).
+  for (const { userId, networkId } of affected) fanOutIgnoreList(userId, networkId);
+  // A lapsed `-time` mute un-mutes a DM's badge too (#1192): one DM walk per
+  // user — every network when a global rule lapsed, else each touched network
+  // once. The sweep doesn't know the lapsed rules' shapes, so it re-serves on
+  // any lapse; expiries are rare and a minute apart.
+  const scopes = new Map<number, Set<number> | null>();
   for (const { userId, networkId } of affected) {
-    fanOutIgnoreList(userId, networkId);
-    refreshDmReadState(userId, networkId);
+    const cur = scopes.get(userId);
+    if (cur === null) continue;
+    if (networkId == null) scopes.set(userId, null);
+    else (cur ?? scopes.set(userId, new Set()).get(userId)!).add(networkId);
+  }
+  for (const [userId, nets] of scopes) {
+    if (nets === null) refreshDmReadState(userId, null);
+    else for (const nid of nets) refreshDmReadState(userId, nid);
   }
 }
 

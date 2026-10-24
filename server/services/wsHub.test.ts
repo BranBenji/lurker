@@ -308,8 +308,11 @@ describe('buildBufferBacklog', () => {
       withRule(networkId, rule(MUTE, null), () => {
         expect(buildBufferBacklog(userId, networkId, 'jo').highlights).toBe(0);
       });
-      // A hand-typed `/ignore jo NOUNREAD NONOTIFY` lands in the global bucket;
-      // the compiled set is globals ∪ network, so it mutes the same.
+      // The same shape in the global bucket (the ladder writes network-scoped
+      // rules; a global one can only come from an import or an older build):
+      // the compiled set is globals ∪ network, so it mutes the same. Note a
+      // hand-typed `/ignore jo NOUNREAD NONOTIFY` is NOT this shape — the
+      // parser stores a bare nick as a mask, i.e. a per-sender rule.
       withRule(null, rule(MUTE, ['jo']), () => {
         expect(buildBufferBacklog(userId, networkId, 'jo').highlights).toBe(0);
       });

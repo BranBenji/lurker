@@ -25,7 +25,9 @@ const MAX_PATTERN_LENGTH = 512;
 
 class IgnoreRulesService {
   // Keyed by `${userId}:${networkId}`; getCompiled is only ever called with a
-  // real networkId (from a live connection), so we never key on a null network.
+  // real networkId — a live connection's insert path, or any network with an
+  // unread DM when its counts are served (#1192) — so we never key on a null
+  // network.
   private cache = new Map<string, Compiled>();
 
   private key(userId: number, networkId: number): string {

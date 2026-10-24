@@ -14,7 +14,8 @@ How Lurker keeps you informed across all your devices.
 - Each channel, DM and network has a notification level in its menu: **All
   messages**, **Highlights only**, **Nothing** (no alerts, the unread count
   stays) and **Muted** (no alerts and no unread count; a highlight still badges).
-  The levels are ignore rules underneath, so `/ignore` can set them too.
+  Underneath they are ignore rules, so they appear in `/ignore`'s list and
+  follow you to every device.
 
 ## Web push
 

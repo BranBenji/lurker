@@ -297,7 +297,7 @@ describe('ignore-rule changes re-serve DM read-state (#1192)', () => {
     mask: null,
     channels,
     pattern: null,
-    patternKind: 'substr',
+    patternKind: 'substr' as const,
     levels: ['NOUNREAD', 'NONOTIFY'],
     isExcept: false,
     expiresAt: null,
@@ -338,6 +338,67 @@ describe('ignore-rule changes re-serve DM read-state (#1192)', () => {
       ws.send(JSON.stringify({ type: 'remove-ignore', networkId, id }));
       expect(await pending).toMatchObject({ unread: 2, highlights: 2 });
     } finally {
+      await close();
+    }
+  });
+
+  it('a rule that cannot mute a buffer re-serves nothing', async () => {
+    seedDm('oscar', 'one');
+    const { ws, frames, close } = await connectCollecting();
+    try {
+      // The "Nothing" rung: NONOTIFY alone leaves the promotion in place, so a
+      // re-serve would only repeat the counts every tab already holds.
+      ws.send(
+        JSON.stringify({
+          type: 'add-ignore',
+          networkId,
+          rule: { ...muteRule(['oscar']), levels: ['NONOTIFY'] },
+        }),
+      );
+      // Frames are processed in order: a snapshot reply after the add proves any
+      // read-state the add would have sent is already in `frames`.
+      ws.send(JSON.stringify({ type: 'snapshot' }));
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('timed out waiting for snapshot')), 5000);
+        ws.on('message', (data) => {
+          if ((JSON.parse(String(data)) as Frame).kind === 'snapshot') {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+      });
+      expect(frames.some((f) => f.kind === 'ignore-list-updated')).toBe(true);
+      expect(frames.some((f) => f.kind === 'read-state')).toBe(false);
+    } finally {
+      await close();
+    }
+  });
+
+  it('a DM rename re-serves the count under the new name, merged or not', async () => {
+    // A mute covers the OLD nick; after the peer renames, the buffer is no
+    // longer covered and its lines promote again. Nothing countable arrives
+    // with a NICK, so the rename frame has to carry the recount.
+    seedDm('pat', 'one');
+    const mute = ignoreRulesService.add(userId, networkId, muteRule(['pat']));
+    if (!mute.ok) throw new Error(mute.error);
+    const { ws, close, readState } = await connectCollecting();
+    try {
+      const renamed = buffers.ensureExists(userId, networkId, 'pat').record;
+      const pending = readState('patrick');
+      ircManager.emit('event', {
+        userId,
+        networkId,
+        type: 'buffer-renamed',
+        from: 'pat',
+        to: 'patrick',
+        bufferId: renamed.id,
+        merged: false,
+      });
+      const frame = await pending;
+      expect(frame).toMatchObject({ bufferId: renamed.id, unread: 0 });
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      ignoreRulesService.removeById(userId, networkId, mute.id);
       await close();
     }
   });
