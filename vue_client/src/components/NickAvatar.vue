@@ -9,28 +9,49 @@
   (served by the media proxy, never the origin) when there is one. An image
   that fails to load falls back to the tile, so a dead URL never leaves a
   blank. Sized by the --avatar-size custom property the surface sets.
+
+  A `mark` tile (#1180) is a placeholder, never a face, an initial or a
+  metadata picture: a notice's is a megaphone over the nick's colour, and the
+  network's own voice (the server buffer's text, system and status lines) is
+  a server over the network's, hashed as the system buffer hashes its name.
+  A notice's "nick" is often not a person
+  (the server's hostname, Lurker's own status lines), and the glyph says what
+  the line is where a face would say who.
 -->
 
 <template>
   <span
     class="nick-avatar"
-    :class="{ interactive, metadata: fromMetadata }"
+    :class="{
+      interactive,
+      metadata: fromMetadata,
+      'mark-notice': mark === 'notice',
+      'mark-server': mark === 'server',
+    }"
     :style="{ background: color ?? undefined }"
     :title="nick"
     role="img"
     :aria-label="nick"
-    ><img v-if="src" :src="src" alt="" draggable="false" @error="onError" /><span
-      v-else-if="initial"
-      class="initial"
-      :class="initial.ink"
+    ><MegaphoneIcon
+      v-if="mark === 'notice'"
+      class="mark"
+      :class="ink"
       aria-hidden="true"
-      >{{ initial.letter }}</span
-    ></span
+    /><ServerIcon v-else-if="mark === 'server'" class="mark" :class="ink" aria-hidden="true" /><img
+      v-else-if="src"
+      :src="src"
+      alt=""
+      draggable="false"
+      @error="onError"
+    /><span v-else-if="initial" class="initial" :class="initial.ink" aria-hidden="true">{{
+      initial.letter
+    }}</span></span
   >
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
+import { MegaphoneIcon, ServerIcon } from '@lucide/vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useAvatarSetsStore } from '../stores/avatarSets.js';
 import { useNickColors } from '../composables/useNickColors.js';
@@ -43,11 +64,21 @@ const props = withDefaults(
     networkId?: number | null;
     // Pointer affordance; the click handler is the consumer's (attribute fallthrough).
     interactive?: boolean;
+    // Whether this is the user's own line, when the caller knows (the row's
+    // stored flag). Otherwise guessed from the network's current nick — wrong
+    // for a line sent under a nick since changed.
+    self?: boolean;
     // No metadata avatar: the nick is a relay bot's envelope (someone on
     // another network); the generated tile still shows.
     plain?: boolean;
+    // A placeholder in place of the picture: a notice's megaphone or the
+    // network's server, over the colour `nick` hashes to. No image or
+    // initial, no metadata lookup.
+    mark?: 'notice' | 'server' | null;
   }>(),
-  { networkId: null, interactive: false, plain: false },
+  // An explicit undefined: Vue casts an absent Boolean prop to false, which
+  // would read as "not you" and switch the guess off everywhere.
+  { networkId: null, interactive: false, self: undefined, plain: false, mark: null },
 );
 
 const networks = useNetworksStore();
@@ -60,7 +91,7 @@ onMounted(() => {
 });
 
 const meta = computed(() =>
-  props.plain ? null : networks.metadataFor(props.networkId, props.nick),
+  props.plain || props.mark ? null : networks.metadataFor(props.networkId, props.nick),
 );
 const failed = ref(false);
 // A new URL gets its own chance.
@@ -84,8 +115,12 @@ const initial = computed(() => {
   const first = Array.from(shown ?? props.nick)[0];
   return first ? { ink, letter: first.toUpperCase() } : null;
 });
+// The megaphone's ink: the Initial sets say which reads on their tiles; a
+// picture set has no say, and the silhouettes are light.
+const ink = computed(() => avatarSets.activeSet?.initialInk ?? 'light');
 
 const isSelf = computed(() => {
+  if (props.self !== undefined) return props.self;
   const own = props.networkId != null ? networks.states[props.networkId]?.nick : null;
   return !!own && !!props.nick && own.toLowerCase() === props.nick.toLowerCase();
 });
@@ -134,10 +169,26 @@ function onError(): void {
   line-height: 1;
   user-select: none;
 }
-.nick-avatar .initial.light {
+.nick-avatar .initial.light,
+.nick-avatar .mark.light {
   color: rgba(255, 255, 255, 0.85);
 }
-.nick-avatar .initial.dark {
+.nick-avatar .initial.dark,
+.nick-avatar .mark.dark {
   color: rgba(28, 26, 30, 0.85);
+}
+/* The placeholders: a glyph centred and sized like an initial, half the
+   tile, through the icon token the global .lucide box reads. Classed
+   mark-*, not `notice`: the root of a child component wears its parent's
+   scoped rules too, and MessageList has a `.notice` for its dividers. */
+.nick-avatar.mark-notice,
+.nick-avatar.mark-server {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.nick-avatar .mark {
+  --icon-size: calc(var(--avatar-size, 2.25em) * 0.5);
+  vertical-align: 0;
 }
 </style>

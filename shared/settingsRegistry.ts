@@ -464,9 +464,10 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       '"compact" forces the two-line layout (nick + time on top, body ' +
       'below) everywhere — useful on low-resolution desktop displays ' +
       'where the columns squeeze the body too far. In compact mode ' +
-      'repeated authors always collapse, and only the head line of each ' +
-      'run shows a time, so the timestamp collapse setting below does ' +
-      'not apply.',
+      'repeated authors always collapse (notices, status lines and the ' +
+      "server's own text too, each in runs of its own), and only the head " +
+      'line of each run shows a time, so the timestamp collapse setting ' +
+      'below does not apply.',
   },
   {
     key: 'look.message.collapse_authors',
@@ -477,10 +478,11 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     default: false,
     description:
       'Hide the nick on consecutive messages from the same author so a run ' +
-      'reads as one grouped block. Only plain messages collapse; actions, ' +
-      'notices, and system events always show their author. Reset by any ' +
-      'divider (date/unread/away/back) or by a gap larger than the window ' +
-      'below.',
+      'reads as one grouped block. In the standard layout only plain ' +
+      'messages collapse; actions, notices, and system events always show ' +
+      'their author (the compact layout groups more: see Message layout). ' +
+      'Reset by any divider (date/unread/away/back) or by a gap larger ' +
+      'than the window below.',
   },
   {
     key: 'look.message.collapse_authors_window',

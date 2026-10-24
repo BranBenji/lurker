@@ -108,25 +108,42 @@
         :data-msg-id="row.m?.id ?? null"
         @click="onMessageRowClick($event, row.m)"
       >
-        <template v-if="compactMode && row.m?.type === 'message'">
+        <template v-if="compactHead(row.m)">
           <!-- The author's avatar (#607), in the gutter every row reserves
-               while avatars are on; only the run's first row draws one. -->
+               while avatars are on; only the run's first row draws one. A
+               notice's or the server's is a placeholder (a megaphone, a
+               server) with no menu: see NickAvatar. -->
           <NickAvatar
             v-if="showAvatars && !row.continuationAuthor"
             class="avatar"
-            :nick="row.m?.nick ?? ''"
+            :nick="headAuthor(row.m)"
             :network-id="buffer?.networkId ?? null"
+            :self="row.m?.self"
             :plain="!!row.m?.relaySource"
-            interactive
-            @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
+            :mark="avatarMark(row.m)"
+            :interactive="nickHead(row.m)"
+            @click="onAvatarClick($event, row.m)"
           />
-          <!-- Compact-mode message rows: nick and a right-aligned timestamp
+          <!-- Compact-mode headed rows (`headed`): who spoke and a timestamp
              on a head line above the body. The head is omitted entirely on
-             author continuations so a run of same-author messages reads as
-             one block under one time; continuation rows show no time. -->
+             author continuations so a run of same-author lines reads as one
+             block under one time; continuation rows show no time. A nick's
+             head is the NickRef; every other head is a caption printed as
+             the standard layout prints its prefix (#1180) — a notice's
+             `-nick-`, IRC's own mark for it and the one thing separating
+             "NickServ said this" from "NickServ noticed this"; the network's
+             name over its own text, as the apps caption it. Plain text, no
+             glyph, no menu: a notice's "nick" is often not a person at all
+             (the server's hostname, Lurker's own `lurker` and `DCC` status
+             lines), and a display-name or avatar lookup on one would dress a
+             status line as whoever holds that nick. -->
           <div v-if="!row.continuationAuthor" class="head">
-            <span class="prefix" :class="prefixClass(row.m)"
+            <span
+              class="prefix"
+              :class="prefixClass(row.m)"
+              :style="nickHead(row.m) ? null : headStyle(row.m)"
               ><NickRef
+                v-if="nickHead(row.m)"
                 :nick="row.m?.nick ?? ''"
                 :modes="authorModes(row.m)"
                 :show-prefix="showModePrefix"
@@ -134,7 +151,8 @@
                 :plain="!!row.m?.relaySource"
                 interactive
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-            /></span>
+              /><template v-else>{{ headCaption(row.m) }}</template></span
+            >
             <!-- Where the relayed speaker is from, beside the name it qualifies
                  (as the iOS app places it), muted and unbracketed; the bot
                  itself is the tooltip. -->
@@ -146,40 +164,6 @@
             >
             <span class="time">{{ time(row.m?.time) }}</span>
           </div>
-          <span class="body" :class="bodyClass(row.m)">
-            <!-- IRCv3 reply (#993): the line this one answers, as the body's first
-                 line — part of the message, so it doesn't break the author's run. -->
-            <ReplyQuote
-              v-if="row.m?.replyTo && !row.replyContinued"
-              :parent="row.replyParent ?? null"
-              :network-id="buffer?.networkId ?? null"
-              @jump="onReplyContextClick"
-            />
-            <MessageBody
-              v-if="previewBody(row.m)"
-              :text="row.m?.text"
-              :segments="textSegments(row.m)"
-              :self-color="selfColor"
-              :network-id="buffer?.networkId ?? null"
-              interactive-nicks
-              :blockquotes="row.m?.type === 'message'"
-              @nick-click="onMentionMenu"
-              @measured="repinAfterPreviewGrowth(true)"
-            /><RenderSegments
-              v-else
-              :segments="textSegments(row.m)"
-              :self-color="selfColor"
-              :network-id="buffer?.networkId ?? null"
-              interactive-nicks
-              :blockquotes="row.m?.type === 'message'"
-              @nick-click="onMentionMenu"
-            /><ReactionRow
-              v-if="row.m && reactable(row.m)"
-              :message="row.m"
-              :interactive="!row.m.e2e"
-              @measured="repinAfterPreviewGrowth(true)"
-            />
-          </span>
         </template>
         <template v-else>
           <span class="time">{{ row.continuationTime ? '' : time(row.m?.time) }}</span>
@@ -198,159 +182,161 @@
                 @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /></template
             ><template v-else>{{ row.continuationAuthor ? '' : prefixText(row.m) }}</template></span
           >
-          <span class="body" :class="bodyClass(row.m)">
-            <!-- IRCv3 reply (#993): the line this one answers, as the body's first
+        </template>
+        <!-- One body for both layouts: the per-type chain below is the only
+             copy, so a compact head sits over exactly what the standard
+             prefix sits beside. -->
+        <span class="body" :class="bodyClass(row.m)">
+          <!-- IRCv3 reply (#993): the line this one answers, as the body's first
                  line — part of the message, so it doesn't break the author's run. -->
-            <ReplyQuote
-              v-if="row.m?.replyTo && !row.replyContinued"
-              :parent="row.replyParent ?? null"
-              :network-id="buffer?.networkId ?? null"
-              @jump="onReplyContextClick"
-            />
-            <span
-              v-if="row.m?.relaySource && !row.continuationAuthor"
-              class="relay-via"
-              :title="'Relayed via ' + row.m.relayBot"
-              >[{{ relayLabel(row.m) }}]</span
-            ><!-- ⚠⚠ FIRST in the chain, and RenderSegments is now the `v-else-if` behind it.
+          <ReplyQuote
+            v-if="row.m?.replyTo && !row.replyContinued"
+            :parent="row.replyParent ?? null"
+            :network-id="buffer?.networkId ?? null"
+            @jump="onReplyContextClick"
+          />
+          <span
+            v-if="row.m?.relaySource && !row.continuationAuthor && !compactHead(row.m)"
+            class="relay-via"
+            :title="'Relayed via ' + row.m.relayBot"
+            >[{{ relayLabel(row.m) }}]</span
+          ><!-- ⚠⚠ FIRST in the chain, and RenderSegments is now the `v-else-if` behind it.
                  MessageBody is a strictly narrower case (message|action, previews live, text
                  that could hold a link) than `hasInlineText`, so the order is what makes the
                  two mutually exclusive — reversed, every previewable message would render its
                  body twice. It has to be a branch of THIS chain rather than a sibling: see the
                  note where MessageAttachments used to sit, a few branches down. --><MessageBody
-              v-if="previewBody(row.m)"
-              :text="row.m?.text"
-              :segments="textSegments(row.m)"
-              :self-color="selfColor"
-              :network-id="buffer?.networkId ?? null"
-              interactive-nicks
-              :blockquotes="row.m?.type === 'message'"
-              @nick-click="onMentionMenu"
-              @measured="repinAfterPreviewGrowth(true)"
-            /><RenderSegments
-              v-else-if="hasInlineText(row.m)"
-              :segments="textSegments(row.m)"
-              :self-color="selfColor"
-              :network-id="buffer?.networkId ?? null"
-              interactive-nicks
-              :blockquotes="row.m?.type === 'message'"
-              @nick-click="onMentionMenu"
+            v-if="previewBody(row.m)"
+            :text="row.m?.text"
+            :segments="textSegments(row.m)"
+            :self-color="selfColor"
+            :network-id="buffer?.networkId ?? null"
+            interactive-nicks
+            :blockquotes="row.m?.type === 'message'"
+            @nick-click="onMentionMenu"
+            @measured="repinAfterPreviewGrowth(true)"
+          /><RenderSegments
+            v-else-if="hasInlineText(row.m)"
+            :segments="textSegments(row.m)"
+            :self-color="selfColor"
+            :network-id="buffer?.networkId ?? null"
+            interactive-nicks
+            :blockquotes="row.m?.type === 'message'"
+            @nick-click="onMentionMenu"
+          />
+          <template v-else-if="row.m?.type === 'join'"
+            ><NickRef
+              :nick="row.m.nick ?? ''"
+              interactive
+              @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
+            />{{ joinAccountSuffix(row.m) }}{{ eventHostSuffix(row.m) }} joined</template
+          >
+          <template v-else-if="row.m?.type === 'part'"
+            ><NickRef
+              :nick="row.m.nick ?? ''"
+              interactive
+              @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
+            />{{ eventHostSuffix(row.m) }} left<template v-if="row.m.text">
+              (<LinkedText :text="row.m.text" />)</template
+            ></template
+          >
+          <template v-else-if="row.m?.type === 'quit'"
+            ><NickRef
+              :nick="row.m.nick ?? ''"
+              interactive
+              @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
+            />{{ eventHostSuffix(row.m) }} quit<template v-if="row.m.text">
+              (<LinkedText :text="row.m.text" />)</template
+            ></template
+          >
+          <template v-else-if="row.m?.type === 'chghost'"
+            ><NickRef
+              :nick="row.m.nick ?? ''"
+              interactive
+              @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
+            />{{ eventHostSuffix(row.m) }} changed host to {{ chghostMask(row.m) }}</template
+          >
+          <template v-else-if="row.m?.type === 'kick'"
+            ><NickRef
+              :nick="row.m.kicked ?? ''"
+              interactive
+              @click.stop.prevent="onNickMenu($event, row.m?.kicked)"
             />
-            <template v-else-if="row.m?.type === 'join'"
-              ><NickRef
-                :nick="row.m.nick ?? ''"
-                interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-              />{{ joinAccountSuffix(row.m) }}{{ eventHostSuffix(row.m) }} joined</template
-            >
-            <template v-else-if="row.m?.type === 'part'"
-              ><NickRef
-                :nick="row.m.nick ?? ''"
-                interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-              />{{ eventHostSuffix(row.m) }} left<template v-if="row.m.text">
-                (<LinkedText :text="row.m.text" />)</template
-              ></template
-            >
-            <template v-else-if="row.m?.type === 'quit'"
-              ><NickRef
-                :nick="row.m.nick ?? ''"
-                interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-              />{{ eventHostSuffix(row.m) }} quit<template v-if="row.m.text">
-                (<LinkedText :text="row.m.text" />)</template
-              ></template
-            >
-            <template v-else-if="row.m?.type === 'chghost'"
-              ><NickRef
-                :nick="row.m.nick ?? ''"
-                interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-              />{{ eventHostSuffix(row.m) }} changed host to {{ chghostMask(row.m) }}</template
-            >
-            <template v-else-if="row.m?.type === 'kick'"
-              ><NickRef
-                :nick="row.m.kicked ?? ''"
-                interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.kicked)"
-              />
-              kicked by
-              <NickRef
-                :nick="row.m.nick ?? ''"
-                interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-              /><template v-if="row.m.text">
-                (<LinkedText :text="row.m.text" />)</template
-              ></template
-            >
-            <template v-else-if="row.m?.type === 'invite'"
-              ><NickRef
-                :nick="row.m.nick ?? ''"
-                interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" />
-              invited
-              <NickRef
-                :nick="row.m.invited ?? ''"
-                interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.invited)"
-            /></template>
-            <template v-else-if="row.m?.type === 'nick'"
-              ><NickRef
-                :nick="row.m.nick ?? ''"
-                interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-              />
-              is now
-              <NickRef
-                :nick="row.m.newNick ?? ''"
-                interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.newNick, row.m)"
-              />{{ eventHostSuffix(row.m) }}</template
-            >
-            <template v-else-if="row.m?.type === 'mode'"
-              ><NickRef
-                :nick="row.m.nick ?? ''"
-                interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
-              /><template v-for="(seg, si) in describeMode(row.m.modes, row.m.text)" :key="si"
-                ><template v-if="seg.t === 'nick'"
-                  ><NickRef
-                    :nick="seg.nick"
-                    interactive
-                    @click.stop.prevent="onNickMenu($event, seg.nick)" /></template
-                ><template v-else>{{ seg.text }}</template></template
-              ></template
-            >
-            <template v-else-if="row.m?.type === 'topic'"
-              >topic set by
-              <NickRef
-                :nick="row.m.nick ?? ''"
-                interactive
-                @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /><template
-                v-if="row.m.text"
-                >: <LinkedText :text="row.m.text" /></template
-            ></template>
-            <template
-              v-else-if="
-                row.m?.type === 'motd' ||
-                row.m?.type === 'system' ||
-                row.m?.type === 'e2e' ||
-                row.m?.type === 'ctcp' ||
-                row.m?.type === 'dcc'
-              "
-              ><LinkedText :text="row.m.text ?? ''"
-            /></template>
-            <template v-else-if="row.m?.type === 'error'"
-              ><LinkedText :text="row.m.text ?? ''"
-            /></template>
-            <!-- Compact: every row keeps its time by its text, where the head keeps it by
-                 the nick — nothing sits at the right edge. After the chain's last branch
-                 (see the note below), so it starts a chain of its own. --><span
-              v-if="compactMode && !row.continuationTime"
-              class="time trailing"
-              >{{ time(row.m?.time) }}</span
-            >
-            <!-- ⚠ Attachments used to be mounted HERE, outside the chain, and the reason is
+            kicked by
+            <NickRef
+              :nick="row.m.nick ?? ''"
+              interactive
+              @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
+            /><template v-if="row.m.text"> (<LinkedText :text="row.m.text" />)</template></template
+          >
+          <template v-else-if="row.m?.type === 'invite'"
+            ><NickRef
+              :nick="row.m.nick ?? ''"
+              interactive
+              @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" />
+            invited
+            <NickRef
+              :nick="row.m.invited ?? ''"
+              interactive
+              @click.stop.prevent="onNickMenu($event, row.m?.invited)"
+          /></template>
+          <template v-else-if="row.m?.type === 'nick'"
+            ><NickRef
+              :nick="row.m.nick ?? ''"
+              interactive
+              @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
+            />
+            is now
+            <NickRef
+              :nick="row.m.newNick ?? ''"
+              interactive
+              @click.stop.prevent="onNickMenu($event, row.m?.newNick, row.m)"
+            />{{ eventHostSuffix(row.m) }}</template
+          >
+          <template v-else-if="row.m?.type === 'mode'"
+            ><NickRef
+              :nick="row.m.nick ?? ''"
+              interactive
+              @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)"
+            /><template v-for="(seg, si) in describeMode(row.m.modes, row.m.text)" :key="si"
+              ><template v-if="seg.t === 'nick'"
+                ><NickRef
+                  :nick="seg.nick"
+                  interactive
+                  @click.stop.prevent="onNickMenu($event, seg.nick)" /></template
+              ><template v-else>{{ seg.text }}</template></template
+            ></template
+          >
+          <template v-else-if="row.m?.type === 'topic'"
+            >topic set by
+            <NickRef
+              :nick="row.m.nick ?? ''"
+              interactive
+              @click.stop.prevent="onNickMenu($event, row.m?.nick, row.m)" /><template
+              v-if="row.m.text"
+              >: <LinkedText :text="row.m.text" /></template
+          ></template>
+          <template
+            v-else-if="
+              row.m?.type === 'motd' ||
+              row.m?.type === 'system' ||
+              row.m?.type === 'e2e' ||
+              row.m?.type === 'ctcp' ||
+              row.m?.type === 'dcc'
+            "
+            ><LinkedText :text="row.m.text ?? ''"
+          /></template>
+          <template v-else-if="row.m?.type === 'error'"
+            ><LinkedText :text="row.m.text ?? ''"
+          /></template>
+          <!-- Compact: an unheaded row keeps its time by its text, where a head keeps
+                 it by the caption — nothing sits at the right edge. After the chain's last
+                 branch (see the note below), so it starts a chain of its own. --><span
+            v-if="compactMode && !compactHead(row.m) && !row.continuationTime"
+            class="time trailing"
+            >{{ time(row.m?.time) }}</span
+          >
+          <!-- ⚠ Attachments used to be mounted HERE, outside the chain, and the reason is
                  worth keeping: a `v-if` sitting between RenderSegments and the first
                  `v-else-if` re-parents the ENTIRE event chain (join/part/quit/kick/…) onto
                  that element's condition instead of `hasInlineText`. The output stayed
@@ -360,15 +346,14 @@
                  every event row from an edit site giving no hint the two were connected.
                  They now render inside MessageBody, which IS the chain's first branch, so the
                  hazard is gone rather than avoided. -->
-            <!-- After the chain's LAST branch, so it starts a chain of its own and
+          <!-- After the chain's LAST branch, so it starts a chain of its own and
                  re-parents nothing (see the note above). --><ReactionRow
-              v-if="row.m && reactable(row.m)"
-              :message="row.m"
-              :interactive="row.m.type !== 'notice' && !row.m.e2e"
-              @measured="repinAfterPreviewGrowth(true)"
-            />
-          </span>
-        </template>
+            v-if="row.m && reactable(row.m)"
+            :message="row.m"
+            :interactive="row.m.type !== 'notice' && !row.m.e2e"
+            @measured="repinAfterPreviewGrowth(true)"
+          />
+        </span>
         <div
           v-if="hoverActions && eligibleForActions(row.m)"
           class="row-actions"
@@ -434,7 +419,7 @@ import {
 import { consolidateRows } from '../utils/consolidate.js';
 import { historyCountBy } from '../lib/historyPaging.js';
 import type { ConsolidationGroup, NickEntry, RenameEntry } from '../../../shared/consolidate.js';
-import { collapseDisplay } from '../utils/collapseDisplay.js';
+import { collapseDisplay, headedType } from '../utils/collapseDisplay.js';
 import { asEventMode, eventModeKey, isNoiseType } from '../../../shared/eventFilter.js';
 import { smartHidesMode } from '../../../shared/modes.js';
 import { describeMode } from '../../../shared/modeNarration.js';
@@ -797,6 +782,70 @@ function eligibleForActions(m: ChatMessage | undefined | null): boolean {
   return m.type === 'message' || m.type === 'action' || m.type === 'notice';
 }
 
+// The row types whose prefix is a nick (coloured as one): messages and notices.
+function nickRow(m: ChatMessage | undefined): boolean {
+  return m?.type === 'message' || m?.type === 'notice';
+}
+// The one head that is a person's name with everything that comes with it
+// (the NickRef, its glyph and menu, the author's tile): a plain message.
+function nickHead(m: ChatMessage | undefined): boolean {
+  return m?.type === 'message';
+}
+
+// The rows the compact layout gives a head line and folds into runs: see
+// headedType (collapseDisplay owns the run rule).
+function compactHead(m: ChatMessage | undefined): boolean {
+  return compactMode.value && headedType(m?.type);
+}
+
+// What a non-nick head is captioned: the prefix the standard layout prints
+// (`-nick-`, `E2E`, `CTCP`, `DCC`, the system line's network), except the
+// server buffer's own text, whose `--` is a column marker, not a name — the
+// network's name instead, as the apps caption it (a neutral "Server" until
+// the networks store can say it).
+function headCaption(m: ChatMessage | undefined): string {
+  if (m?.type === 'motd') {
+    const id = buffer.value?.networkId;
+    return (id != null ? networks.networkById(id)?.name : null) || 'Server';
+  }
+  return prefixText(m);
+}
+
+// A non-nick head's colour: the prefix's, except the server buffer's text,
+// whose caption is the network's name — in the network's hashed colour, as
+// the system buffer prints it (the standard layout's `--` stays muted).
+function headStyle(m: ChatMessage | undefined): CSSProperties | null {
+  if (m?.type === 'motd') {
+    const c = nicks.color(headCaption(m));
+    return c ? { color: c } : null;
+  }
+  return prefixStyle(m);
+}
+
+// Who a headed row is from, for folding a run and for its tile: the nick
+// where there is one, else the caption, so two networks' system lines never
+// share a head.
+function headAuthor(m: ChatMessage | undefined): string {
+  return nickRow(m) ? (m?.nick ?? '') : headCaption(m);
+}
+
+// The tile a head draws with avatars on: the author's, or a placeholder
+// glyph for a notice and for the network's own voice (see NickAvatar).
+function avatarMark(m: ChatMessage | undefined): 'notice' | 'server' | null {
+  if (nickHead(m)) return null;
+  return m?.type === 'notice' ? 'notice' : 'server';
+}
+
+// A tap on the author's tile opens their menu, as the nick does. A
+// placeholder tile is not a person: the tap falls through to the row, where
+// a phone (no hover bar) opens the message menu from any part of it.
+function onAvatarClick(e: MouseEvent, m: ChatMessage | undefined): void {
+  if (!nickHead(m)) return;
+  e.stopPropagation();
+  e.preventDefault();
+  onNickMenu(e, m?.nick, m);
+}
+
 function parseUserHost(userhost: string | null | undefined): {
   user: string | null;
   host: string | null;
@@ -1138,8 +1187,8 @@ const collapseTimestampsEnabled = computed(
 );
 
 // look.message.layout: auto / standard / compact. Compact swaps the 3-column
-// subgrid for a two-line stack (head: nick + time, body below) on
-// `type === 'message'` rows; other row types stay single-line. Auto picks
+// subgrid for a two-line stack (head: who + time, body below) on headed rows
+// (`headed`); actions and activity events stay single-line. Auto picks
 // compact on mobile-width viewports so phone users get the reflow by default.
 const layoutSetting = computed(() => settings.effective('look.message.layout') || 'auto');
 const compactMode = computed(() => {
@@ -1151,7 +1200,10 @@ const compactMode = computed(() => {
 // Compact mode forces author collapsing — the head is the only place the
 // nick appears, and without collapsing the buffer is wall-to-wall headers.
 // It ignores timestamp collapsing: a message's time lives on its head, so
-// every head shows one and continuation rows show none.
+// every head shows one and continuation rows show none. Every headed type
+// collapses there (#1180), in runs of its own: a notice's head carries the
+// nick as a message's does, where the standard layout's `-nick-` prefix is
+// the line's, and the server's own text folds under the network's name.
 const effectiveCollapseAuthors = computed(() => compactMode.value || collapseAuthorsEnabled.value);
 // Avatars (#607) live in the compact layout only: the standard grid has no
 // column for them. The setting is read here so the gutter class and the tile
@@ -1545,6 +1597,10 @@ const renderRows = computed((): RenderRow[] => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     collapseDisplay(final as any, {
       collapseAuthors: effectiveCollapseAuthors.value,
+      // Compact: every headed type folds into runs (#1180); the standard
+      // layout folds plain messages only.
+      collapseTypes: compactMode.value ? headedType : undefined,
+      authorOf: (m) => headAuthor(m as ChatMessage | undefined),
       authorWindowMs: collapseAuthorsWindowMs.value,
       collapseTimestamps: effectiveCollapseTimestamps.value,
       formatTime: (iso) => time(iso),
@@ -1670,7 +1726,7 @@ function joinAccountSuffix(m: ChatMessage | undefined): string {
 
 function prefixClass(m: ChatMessage | undefined) {
   return {
-    nick: m?.type === 'message' || m?.type === 'notice',
+    nick: nickRow(m),
     'action-marker': m?.type === 'action',
     italic: m?.type === 'action' && actionItalic.value,
     self: m?.self,
@@ -1685,7 +1741,7 @@ function prefixClass(m: ChatMessage | undefined) {
 }
 
 function prefixStyle(m: ChatMessage | undefined): CSSProperties | null {
-  if (m?.type === 'message' || m?.type === 'notice') {
+  if (m && nickRow(m)) {
     if (m.self) return { color: selfColor.value as string };
     const c = nicks.color(m.nick ?? '');
     return c ? { color: c } : null;
@@ -3031,7 +3087,7 @@ watch(
 }
 /* Avatars (#607): a gutter on the left of EVERY compact row — continuation
    rows and event rows too, so bodies stay on one edge — with the tile drawn
-   at the top of a run's first row. Absolute so the row's grid is untouched.
+   on a run's first row. Absolute so the row's grid is untouched.
    The size is in em (one font size everywhere), smaller on a phone where
    compact is the default and width is scarce. A hairline down the gutter's
    right edge makes it read as a panel beside the text, continuous through
@@ -3039,27 +3095,46 @@ watch(
    (background-attachment: local), at the row's own left padding plus the
    tile and a gap. */
 .message-list.compact.avatars {
-  --avatar-size: 2.9em;
+  --avatar-size: 2.7em;
   /* The same space on the tile's right as the list's own padding gives it on
      the left, so the tile sits centred in its panel. */
   --avatar-gutter: calc(var(--avatar-size) + var(--space-4));
   background-image: linear-gradient(var(--border), var(--border));
   background-size: 1px 100%;
   background-repeat: repeat-y;
-  background-position: calc(var(--space-4) + var(--avatar-gutter)) 0;
+  /* Snapped to the pixel grid: the tile is sized in em, so the gutter's edge
+     lands between device pixels at most font sizes (2.9em at 14px is 40.6px),
+     and a 1px line straddling two of them paints as two lighter half-lines —
+     visibly paler than the standard layout's separator in the same colour. */
+  background-position: round(calc(var(--space-4) + var(--avatar-gutter)), 1px) 0;
   background-attachment: local;
 }
 .message-list.compact.avatars .line {
   position: relative;
   padding-left: calc(var(--space-4) + var(--avatar-gutter) + var(--space-5));
 }
-/* A touch below the row's own top padding: the head line's text sits a
-   little way into its line box, and a tile flush with the padding reads as
-   floating above the nick. In em, so it follows the font. */
+/* The hairline again, on the row itself: a hovered, selected or highlighted
+   row paints its own background over the scroller's and would cut the line,
+   where the standard layout's separator (the body's pseudo-element) stays
+   through hover. The scroller's copy still spans the gaps between rows. */
+.message-list.compact.avatars .line::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: round(calc(var(--space-4) + var(--avatar-gutter)), 1px);
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+/* Centred on the run's first two lines — the head and the first body line,
+   the height of the row's background when the message is short — so the
+   tile sits in the middle of a hovered or highlighted row rather than
+   hanging from its top. Past the padding, each line is one `lh`. */
 .message-list.compact.avatars .line > .avatar {
   position: absolute;
   left: var(--space-4);
-  top: calc(var(--space-1) + 0.2em);
+  top: calc(var(--space-1) + (2lh - var(--avatar-size)) / 2);
 }
 /* With the body flush under the nick, weight is what tells the head line
    from the text — the same job the standard grid's column gap does. */

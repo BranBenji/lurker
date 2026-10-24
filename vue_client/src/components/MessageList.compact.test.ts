@@ -12,6 +12,7 @@ import MessageList from './MessageList.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useAvatarSetsStore } from '../stores/avatarSets.js';
 
 vi.mock('../composables/useSocket.js', () => ({
   socketSend: vi.fn<() => boolean>(() => true),
@@ -47,7 +48,11 @@ function mountCompact(opts: { keepSettings?: boolean } = {}) {
   networks.states = { 1: { nick: 'me', state: 'connected', peerPresence: {} } } as never;
   const b = useBuffersStore().ensure(1, '#chan', 9);
   // dave is a local op; the relayed `dave` below is someone else entirely.
-  b.members = [{ nick: 'dave', modes: ['o'], away: false }];
+  // bot holds op too, which its notice mark must not wear.
+  b.members = [
+    { nick: 'dave', modes: ['o'], away: false },
+    { nick: 'bot', modes: ['o'], away: false },
+  ];
   b.messages = [
     message(1, 'alice', 0),
     message(2, 'alice', 0, 30),
@@ -57,6 +62,22 @@ function mountCompact(opts: { keepSettings?: boolean } = {}) {
     { ...message(6, 'dave', 4), relayBot: 'bridge', relaySource: 'github' },
     // A local dave right after the bridged one, inside the author window.
     message(7, 'dave', 4, 20),
+    // A bot's run of notices (#1180), then it speaks, then notices again.
+    { ...message(8, 'bot', 5), type: 'notice' },
+    { ...message(9, 'bot', 5, 10), type: 'notice' },
+    message(10, 'bot', 5, 20),
+    { ...message(11, 'bot', 5, 30), type: 'notice' },
+    { ...message(12, 'bot', 5, 40), type: 'action' },
+    { ...message(13, 'bot', 5, 50), type: 'action' },
+    // A notice the user sent under a nick they no longer hold (me is `me`).
+    { ...message(14, 'oldme', 6), type: 'notice', self: true },
+    // The server's own notice: its "nick" is a hostname, nobody to look up.
+    { ...message(15, 'irc.example.net', 6, 10), type: 'notice' },
+    // The server buffer's own text (numerics, MOTD): no nick at all.
+    { ...message(16, '', 7), type: 'motd' },
+    { ...message(17, '', 7, 10), type: 'motd' },
+    { ...message(18, '', 7, 20), type: 'error' },
+    { ...message(19, '', 7, 30), type: 'motd' },
   ] as never;
   b.joined = true;
   b.hasMoreOlder = false;
@@ -151,5 +172,192 @@ describe('MessageList — compact head timestamp', () => {
     mountCompact();
     // bob's 12:02 matches alice's line above, which collapsing would blank.
     expect(row(4).headTime).toBeTruthy();
+  });
+});
+
+// Notices in the compact layout (#1180): a head of their own, `-nick-` and the
+// time, and a bot's consecutive notices under one head — never shared with
+// its messages, as the apps group them.
+describe('MessageList — compact notice runs', () => {
+  beforeEach(() => setActivePinia(createPinia()));
+  afterEach(() => {
+    wrapper?.unmount();
+    wrapper = null;
+  });
+
+  const line = (id: number) => wrapper!.find(`[data-msg-id="${id}"]`).element;
+  const head = (id: number) => line(id).querySelector(':scope > .head');
+
+  it('gives a notice the message head: -nick- and the time, no mode glyph', () => {
+    mountCompact();
+    const h = head(8);
+    expect(h).not.toBeNull();
+    expect(h!.querySelector('.prefix')?.textContent).toBe('-bot-');
+    expect(h!.querySelector('.time')?.textContent).toMatch(/\d\d:\d\d$/);
+    expect(h!.querySelector('.mode-glyph')).toBeNull();
+    // Plain text, as the standard layout prints the mark: no nick widget to
+    // resolve a display name or open a menu.
+    expect(h!.querySelector('.nick-ref')).toBeNull();
+    expect(line(8).querySelector(':scope > .body')?.textContent).toBe('line 8');
+    // Nothing of the standard layout's line-level prefix remains.
+    expect(line(8).querySelector(':scope > .prefix')).toBeNull();
+    expect(line(8).querySelector('.time.trailing')).toBeNull();
+  });
+
+  it('folds a second notice from the same nick under the first head', () => {
+    mountCompact();
+    expect(line(9).classList.contains('cont-author')).toBe(true);
+    expect(head(9)).toBeNull();
+    expect(row(9)).toEqual({ headTime: null, bodyTime: null });
+  });
+
+  it('starts a new run when the bot speaks, and again when it notices', () => {
+    mountCompact();
+    // The message head wears the op glyph the notice mark did not.
+    const spoke = head(10);
+    expect(spoke).not.toBeNull();
+    expect(spoke!.querySelector('.prefix')?.textContent).toBe('@bot');
+    expect(spoke!.querySelector('.mode-glyph')?.textContent).toBe('@');
+    expect(head(11)).not.toBeNull();
+    expect(head(11)!.querySelector('.prefix')?.textContent).toBe('-bot-');
+  });
+
+  it('colours the whole mark of a self notice in the self colour, under an old nick too', () => {
+    mountCompact();
+    const mark = head(14)!.querySelector('.prefix') as HTMLElement;
+    expect(mark.textContent).toBe('-oldme-');
+    expect(mark.style.color).toBe(useSettingsStore().effective('look.nick.self_color'));
+    expect(mark.querySelector('[style]')).toBeNull();
+  });
+
+  it('gives a notice head a placeholder tile: the colour and a megaphone, no face', () => {
+    useSettingsStore().values = {
+      'look.message.layout': 'compact',
+      'look.message.avatars': true,
+      'look.avatars.set': 'ealain',
+    } as never;
+    // Every bundled tile set, as if its manifest had loaded (no fetch here).
+    useAvatarSetsStore().builtinManifests = {
+      ealain: { count: 32, ext: 'webp' },
+      'plain-light': { count: 1, ext: 'webp' },
+      'plain-dark': { count: 1, ext: 'webp' },
+    };
+    mountCompact({ keepSettings: true });
+    expect(head(15)!.querySelector('.prefix')?.textContent).toBe('-irc.example.net-');
+    expect(head(15)!.querySelector('.nick-ref')).toBeNull();
+    const tile = line(15).querySelector(':scope > .avatar') as HTMLElement;
+    expect(tile.classList.contains('mark-notice')).toBe(true);
+    // Never the list's own `.notice` (its dividers' class): a child's root wears the
+    // parent's scoped rules, and that one centres, pads and re-homes the tile.
+    expect(tile.classList.contains('notice')).toBe(false);
+    expect(tile.classList.contains('interactive')).toBe(false);
+    expect(tile.querySelector('svg.mark')).not.toBeNull();
+    expect(tile.querySelector('img')).toBeNull();
+    expect(tile.style.background).not.toBe('');
+    // Only the run's first row: the folded notice reserves the gutter, no tile.
+    expect(line(9).querySelector(':scope > .avatar')).toBeNull();
+    // A message head in the same list draws its face from the set.
+    const face = line(10).querySelector(':scope > .avatar') as HTMLElement;
+    expect(face.classList.contains('mark-notice')).toBe(false);
+    expect(face.querySelector('img')).not.toBeNull();
+  });
+
+  // The server buffer's own text (#1180): the network's name over a run of
+  // it, as the apps caption it; an error stays a `!!` line of its own.
+  it('folds the server’s own text under one head captioned with the network', () => {
+    mountCompact();
+    const h = head(16)!;
+    expect(h.querySelector('.prefix')?.textContent).toBe('testnet');
+    expect(h.querySelector('.time')?.textContent).toMatch(/\d\d:\d\d$/);
+    expect(line(16).querySelector(':scope > .body')?.textContent).toBe('line 16');
+    expect(line(16).querySelector('.time.trailing')).toBeNull();
+    expect(line(17).classList.contains('cont-author')).toBe(true);
+    expect(head(17)).toBeNull();
+    expect(head(18)).toBeNull();
+    expect(line(18).querySelector(':scope > .prefix')?.textContent).toBe('!!');
+    expect(line(18).querySelector('.time.trailing')).not.toBeNull();
+    // The error broke the run: the next server line opens a new head.
+    expect(head(19)).not.toBeNull();
+  });
+
+  it('colours the server’s head and tile in the network’s colour, as the system buffer does', () => {
+    useSettingsStore().values = {
+      'look.message.layout': 'compact',
+      'look.message.avatars': true,
+      'look.avatars.set': 'ealain',
+    } as never;
+    useAvatarSetsStore().builtinManifests = {
+      ealain: { count: 32, ext: 'webp' },
+      'plain-light': { count: 1, ext: 'webp' },
+      'plain-dark': { count: 1, ext: 'webp' },
+    };
+    mountCompact({ keepSettings: true });
+    const tile = line(16).querySelector(':scope > .avatar') as HTMLElement;
+    expect(tile.classList.contains('mark-server')).toBe(true);
+    expect(tile.querySelector('svg.mark')).not.toBeNull();
+    const caption = head(16)!.querySelector('.prefix') as HTMLElement;
+    expect(caption.style.color).not.toBe('');
+    expect(tile.style.background).toContain(caption.style.color);
+    expect(tile.getAttribute('aria-label')).toBe('testnet');
+    expect(line(18).querySelector(':scope > .avatar')).toBeNull();
+    // A self notice under an old nick: the tile agrees with the mark beside
+    // it (the row's stored flag, not a guess from the current nick).
+    const mine = line(14).querySelector(':scope > .avatar') as HTMLElement;
+    expect(mine.style.background).toContain(
+      useSettingsStore().effective('look.nick.self_color') as string,
+    );
+  });
+
+  // A placeholder tile is not a person: a tap on it reaches the row, where a
+  // phone opens the message menu from any part of it. The author's tile
+  // keeps the tap for the nick menu.
+  it('lets a tap on a placeholder tile fall through to the row', () => {
+    useSettingsStore().values = {
+      'look.message.layout': 'compact',
+      'look.message.avatars': true,
+      'look.avatars.set': 'ealain',
+    } as never;
+    useAvatarSetsStore().builtinManifests = {
+      ealain: { count: 32, ext: 'webp' },
+      'plain-light': { count: 1, ext: 'webp' },
+      'plain-dark': { count: 1, ext: 'webp' },
+    };
+    mountCompact({ keepSettings: true });
+    const reached = (id: number) => {
+      const seen = vi.fn<() => void>();
+      line(id).addEventListener('click', seen);
+      line(id)
+        .querySelector(':scope > .avatar')!
+        .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      return seen.mock.calls.length > 0;
+    };
+    expect(reached(8)).toBe(true);
+    expect(reached(16)).toBe(true);
+    expect(reached(10)).toBe(false);
+  });
+
+  it('leaves actions as single lines that never fold', () => {
+    mountCompact();
+    for (const id of [12, 13]) {
+      expect(head(id)).toBeNull();
+      expect(line(id).classList.contains('cont-author')).toBe(false);
+      expect(line(id).querySelector(':scope > .prefix')?.textContent).toBe('*');
+      expect(line(id).querySelector('.time.trailing')).not.toBeNull();
+    }
+  });
+
+  it('keeps every notice on its own -nick- line in the standard layout', () => {
+    useSettingsStore().values = {
+      'look.message.layout': 'standard',
+      'look.message.collapse_authors': true,
+    } as never;
+    mountCompact({ keepSettings: true });
+    for (const id of [8, 9, 11]) {
+      expect(head(id)).toBeNull();
+      expect(line(id).classList.contains('cont-author')).toBe(false);
+      expect(line(id).querySelector(':scope > .prefix')?.textContent).toBe('-bot-');
+    }
+    // The toggle still groups plain messages there.
+    expect(line(2).classList.contains('cont-author')).toBe(true);
   });
 });
