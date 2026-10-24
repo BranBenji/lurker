@@ -256,13 +256,13 @@ describe('imagePipeline.avatar', () => {
       .toBuffer();
   }
 
-  it('crops a still to a 256 square, as WebP', async () => {
+  it('crops a still to a 512 square, as WebP', async () => {
     const out = await avatar(await staticPng(1200, 800), { quality: 80 });
     const meta = await sharp(out.buffer).metadata();
-    expect([meta.format, meta.width, meta.height]).toEqual(['webp', 256, 256]);
+    expect([meta.format, meta.width, meta.height]).toEqual(['webp', 512, 512]);
     expect([out.width, out.height, out.animated, out.mime]).toEqual([
-      256,
-      256,
+      512,
+      512,
       false,
       'image/webp',
     ]);
@@ -281,6 +281,13 @@ describe('imagePipeline.avatar', () => {
     expect([out.animated, out.mime]).toEqual([true, 'image/gif']);
   });
 
+  it("cuts an animated one to the decoder's 256, not a still's 512", async () => {
+    const out = await avatar(await animatedGifSized(400, 300), { quality: 80 });
+    const meta = await sharp(out.buffer, { animated: true }).metadata();
+    expect([meta.pages, meta.width, meta.pageHeight]).toEqual([3, 256, 256]);
+    expect([out.width, out.height, out.animated]).toEqual([256, 256, true]);
+  });
+
   it('rasterises an SVG to a full-size square', async () => {
     const svg = Buffer.from(
       '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">' +
@@ -288,7 +295,7 @@ describe('imagePipeline.avatar', () => {
     );
     const out = await avatar(svg, { quality: 80 });
     const meta = await sharp(out.buffer).metadata();
-    expect([meta.format, meta.width, meta.height]).toEqual(['webp', 256, 256]);
+    expect([meta.format, meta.width, meta.height]).toEqual(['webp', 512, 512]);
   });
 
   it('follows the jpeg escape hatch', async () => {
