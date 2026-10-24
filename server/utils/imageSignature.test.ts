@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 import sharp from 'sharp';
-import { imageSignatureOf, SIGNATURE_BYTES } from './imageSignature.js';
+import { imageSignatureOf, SIGNATURE_BYTES, webpCanvasSize } from './imageSignature.js';
 
 const raw = (channels: 3 | 4 = 3) =>
   sharp({ create: { width: 8, height: 8, channels, background: { r: 1, g: 2, b: 3 } } });
@@ -112,5 +112,42 @@ describe('imageSignatureOf', () => {
       'image/x-icon',
     );
     expect(imageSignatureOf(Buffer.from('BM', 'latin1'))).toBe('image/bmp');
+  });
+});
+
+describe('webpCanvasSize (lurker#1190)', () => {
+  const base = () =>
+    sharp({ create: { width: 300, height: 120, channels: 3, background: '#357' } });
+
+  it('reads a lossy, a lossless and an extended WebP', async () => {
+    expect(webpCanvasSize(await base().webp().toBuffer())).toEqual({ width: 300, height: 120 });
+    expect(webpCanvasSize(await base().webp({ lossless: true }).toBuffer())).toEqual({
+      width: 300,
+      height: 120,
+    });
+    const alpha = await sharp({
+      create: {
+        width: 300,
+        height: 120,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0.5 },
+      },
+    })
+      .webp()
+      .toBuffer();
+    expect(webpCanvasSize(alpha)).toEqual({ width: 300, height: 120 });
+  });
+
+  it('reads an animated WebP', async () => {
+    const raw = Buffer.alloc(40 * 30 * 3 * 4, 0x80);
+    const anim = await sharp(raw, { raw: { width: 40, height: 90, channels: 4, pageHeight: 30 } })
+      .webp()
+      .toBuffer();
+    expect(webpCanvasSize(anim)).toEqual({ width: 40, height: 30 });
+  });
+
+  it('is null for anything else', async () => {
+    expect(webpCanvasSize(await base().png().toBuffer())).toBeNull();
+    expect(webpCanvasSize(Buffer.from('RIFF\0\0\0\0WEBPnope'))).toBeNull();
   });
 });

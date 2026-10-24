@@ -188,7 +188,7 @@ describe("a peer's metadata", () => {
     }
   });
 
-  it('serves the avatar through the media proxy when previews are on', async () => {
+  it('serves the avatar through the avatar route when previews are on', async () => {
     process.env.LURKER_PREVIEWS_URL = 'http://decoder.invalid';
     const { conn, events } = connectDirect('proxyviewer');
     const peer = await rawClient(ircd.port, 'carol');
@@ -200,12 +200,12 @@ describe("a peer's metadata", () => {
       ircd.setMetadata('carol', 'avatar', 'https://example.org/carol/{size}.png');
       await until(() => userMeta(events, 'carol').length >= 1, 5000, 'avatar');
       const url = String((userMeta(events, 'carol').at(-1)!.values as Ev).avatarUrl);
-      expect(url).toMatch(/^\/api\/link-preview\/media\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+      expect(url).toMatch(/^\/api\/link-preview\/avatar\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
       // Opaque to the client, and never the origin.
       expect(url).not.toContain('example.org');
       // The token names the sized URL.
       const payload = Buffer.from(url.split('/').at(-1)!.split('.')[0], 'base64url').toString();
-      expect(payload).toBe('https://example.org/carol/128.png');
+      expect(payload).toBe('avatar:https://example.org/carol/256.png');
     } finally {
       peer.socket.destroy();
       conn.disconnect();

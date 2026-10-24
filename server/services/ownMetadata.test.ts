@@ -73,7 +73,8 @@ describe('saving', () => {
     try {
       conn.raw('METADATA * SET avatar :https://example.org/me/{size}.png');
       conn.raw('METADATA * SET display-name :Saver Person');
-      await until(() => ircd.metadata.get('saver')?.size === 2, 5000, 'server has both');
+      // Saved from the server's answer, which lands after the server stores it.
+      await until(() => Object.keys(saved(network)).length === 2, 5000, 'both saved');
       expect(saved(network)).toEqual({
         avatar: 'https://example.org/me/{size}.png',
         'display-name': 'Saver Person',

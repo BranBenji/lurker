@@ -12,9 +12,13 @@
 
 <template>
   <h3 id="avatars" class="subhead" data-setting-group="avatars">Avatars</h3>
-  <p class="section-desc">
+  <p v-if="config.linkPreviews" class="section-desc">
     A square in the nick's color with a tile from the active set, or the picture someone set through
     IRCv3 metadata where the network carries it. Also <code>/avatars</code> in any buffer.
+  </p>
+  <p v-else class="section-desc">
+    A square in the nick's color with a tile from the active set. Also <code>/avatars</code> in any
+    buffer.
   </p>
   <ul class="rows">
     <SettingsRow
@@ -90,6 +94,7 @@
 import { onMounted, ref } from 'vue';
 import { useAvatarSetsStore, type AvatarSetEntry } from '../../stores/avatarSets.js';
 import { useSettingsStore } from '../../stores/settings.js';
+import { useConfigStore } from '../../stores/config.js';
 import { useImeSafeInput } from '../../composables/useImeSafeInput.js';
 import { getOption } from '../../utils/settingsRegistry.js';
 import type { SettingValue } from '../../../../shared/settingsRegistry.js';
@@ -109,6 +114,9 @@ const SAMPLE_NICKS = ['alice', 'bob', 'carol', 'dave', 'erin', 'frank', 'grace',
 
 const avatarSets = useAvatarSetsStore();
 const settings = useSettingsStore();
+// A picture someone set is fetched only through the previews decoder; without
+// one, everyone gets a tile, so the description doesn't promise pictures.
+const config = useConfigStore();
 // The switch, rendered here beside what it switches on (its category is the
 // hidden `avatars`, so the registry pane leaves it to this section).
 const showAvatarsOption = getOption('look.message.avatars')!;

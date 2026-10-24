@@ -281,6 +281,13 @@ describe('imagePipeline.avatar', () => {
     expect([out.animated, out.mime]).toEqual([true, 'image/gif']);
   });
 
+  it("cuts an animated one to the decoder's 256, not a still's 512", async () => {
+    const out = await avatar(await animatedGifSized(400, 300), { quality: 80 });
+    const meta = await sharp(out.buffer, { animated: true }).metadata();
+    expect([meta.pages, meta.width, meta.pageHeight]).toEqual([3, 256, 256]);
+    expect([out.width, out.height, out.animated]).toEqual([256, 256, true]);
+  });
+
   it('rasterises an SVG to a full-size square', async () => {
     const svg = Buffer.from(
       '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">' +

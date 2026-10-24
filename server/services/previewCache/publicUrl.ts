@@ -38,11 +38,16 @@ import { publicDropperUrl } from './dropper.js';
  * of `toDescriptor`, which has no business failing because a cache lookup did.
  */
 export function publicByteUrl(imageUrl: string): string | null {
+  return publicObjectUrl(byteCacheKey(imageUrl));
+}
+
+/** The same, for an object under any key: a resized avatar's (lurker#1190) has no origin URL
+ *  of its own to hash. */
+export function publicObjectUrl(key: string): string | null {
   try {
     const cfg = cacheConfig();
     if (cfg.mode !== 's3' && cfg.mode !== 'dropper') return null;
 
-    const key = byteCacheKey(imageUrl);
     const entry = peekCached(key);
     if (!entry || entry.backend !== cfg.mode || expired(entry.createdAt)) return null;
     return cfg.mode === 's3' ? s3PublicUrl(cfg, key) : publicDropperUrl(cfg, key);

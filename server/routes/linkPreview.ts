@@ -1,11 +1,12 @@
 // Copyright (c) 2026 Brad Root
 // SPDX-License-Identifier: MPL-2.0
 
-// Three endpoints, all authenticated:
+// Four endpoints, all authenticated:
 //
-//   POST /api/link-preview/resolve       urls[] → descriptors[]
-//   GET  /api/link-preview/media/:token  → image bytes, streamed via the decoder
-//   GET  /api/link-preview/poster/:key   → a stored poster frame, from the byte cache
+//   POST /api/link-preview/resolve        urls[] → descriptors[]
+//   GET  /api/link-preview/media/:token   → image bytes, streamed via the decoder
+//   GET  /api/link-preview/poster/:key    → a stored poster frame, from the byte cache
+//   GET  /api/link-preview/avatar/:token  → a metadata avatar, resized by the decoder
 //
 // REST rather than WebSocket because these are reads, and Lurker's reads are
 // REST. The byte endpoints have to be URLs regardless — that's what an <img src> is.
@@ -23,17 +24,24 @@ import type { Request, Response } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { RequestThrottle } from '../middleware/rateLimit.js';
 import {
+  avatarCacheKey,
   byteCacheKey,
   beginStore,
   cacheEnabled,
   cacheable,
   lookup,
+  store,
   trackPendingStore,
 } from '../services/previewCache/index.js';
 import { resolvePreview, toDescriptor, MAX_URLS_PER_REQUEST } from '../services/linkPreview.js';
 import { proxyableContentType, MAX_IMAGE_PROXY_BYTES } from '../services/previewShared.js';
-import { decoderFetch } from '../services/previewClient.js';
-import { verifyProxyToken, verifyPosterToken } from '../services/mediaProxyToken.js';
+import { decoderAvatar, decoderFetch } from '../services/previewClient.js';
+import {
+  verifyAvatarToken,
+  verifyProxyToken,
+  verifyPosterToken,
+} from '../services/mediaProxyToken.js';
+import { imageSignatureOf, SIGNATURE_BYTES, webpCanvasSize } from '../utils/imageSignature.js';
 import { previewsEnabled } from '../utils/previews.js';
 import { SlotPool } from '../utils/slotPool.js';
 
@@ -169,11 +177,21 @@ router.get('/media/:token', async (req: Request, res: Response) => {
   // anyway — the token proves we approved this URL at some point; it says nothing
   // about where the name points NOW.)
   const raw = verifyProxyToken(String(req.params.token));
-  if (!raw) {
+  // ⚠ A URL, and only a URL. The poster and avatar tokens sign prefixed payloads with the
+  // same key; one replayed here must be refused by the cell, not left to the decoder.
+  if (!raw || !/^https?:\/\//i.test(raw)) {
     res.status(403).end();
     return;
   }
+  await relayImage(req, res, raw);
+});
 
+/**
+ * Relay an image's origin bytes through the decoder, from the byte cache when it's there —
+ * the media route's whole body, and the avatar route's fallback to a decoder that predates
+ * its endpoint. The caller has throttled and verified the token; this takes a pool slot.
+ */
+async function relayImage(req: Request, res: Response, raw: string): Promise<void> {
   // ⚠ The cache is consulted before the fetch, but NOT before the pool. An
   // earlier version returned a hit ahead of `mediaPool.acquire()` on the
   // reasoning that a hit does no outbound work — true of sockets, and inverted
@@ -234,9 +252,7 @@ router.get('/media/:token', async (req: Request, res: Response) => {
   if (cacheEnabled() && !isRange) {
     const hit = await lookup(cacheKey);
     if (hit) {
-      applyMediaHeaders(res, hit.contentType);
-      res.setHeader('Content-Length', String(hit.body.length));
-      res.status(200).end(hit.body);
+      sendCached(res, hit);
       return;
     }
   }
@@ -423,7 +439,7 @@ router.get('/media/:token', async (req: Request, res: Response) => {
       res.status(503).end();
     }
   }
-});
+}
 
 router.get('/poster/:token', async (req: Request, res: Response) => {
   if (!previewsEnabled()) {
@@ -478,14 +494,158 @@ router.get('/poster/:token', async (req: Request, res: Response) => {
       res.status(404).end();
       return;
     }
-    applyMediaHeaders(res, hit.contentType);
-    res.setHeader('Content-Length', String(hit.body.length));
-    res.status(200).end(hit.body);
+    sendCached(res, hit);
   } finally {
     // ⚠ `finally`, not a `close` listener as the media route uses: this response is
     // `end()`ed synchronously with a buffer already in hand, so the slot is done with when
     // the block is. A listener would hold it until the socket drained, for nothing.
     mediaPool.release();
+  }
+});
+
+/** An avatar from the decoder is a ≤256 px WebP, tens of KB, an animated one ≤512 KB. A
+ *  bigger body is a decoder we shouldn't believe. */
+const MAX_AVATAR_BYTES = 1024 * 1024;
+/** The decoder's square is at most 256 px a side. */
+const MAX_AVATAR_SIDE = 256;
+
+/**
+ * Avatar asks of the decoder in flight. Its own pool, not `mediaPool`: an ask holds its slot
+ * for the decoder's fetch and decode, up to its 40 s timeout, and a run of slow avatar origins
+ * must not leave every /media and /poster on the instance answering 503. Four, against the
+ * decoder's two: one cell keeps it busy without much of a queue there.
+ */
+const avatarPool = new SlotPool({ size: 4, maxQueued: 200, waitMs: 5_000 });
+
+/** What an avatar ask came to, shared by every viewer who asked meanwhile. */
+type AvatarOutcome =
+  | { kind: 'ok'; webp: Buffer }
+  | { kind: 'relay' }
+  | { kind: 'busy'; retryAfterS: number }
+  | { kind: 'none' };
+
+/**
+ * One ask per avatar at a time. A user who speaks in a busy channel is seen by every attached
+ * client at once, and each would otherwise fetch and decode the same image.
+ */
+const avatarAsks = new Map<string, Promise<AvatarOutcome>>();
+
+function askAvatar(key: string, raw: string): Promise<AvatarOutcome> {
+  let ask = avatarAsks.get(key);
+  if (!ask) {
+    ask = askDecoderForAvatar(key, raw).finally(() => avatarAsks.delete(key));
+    avatarAsks.set(key, ask);
+  }
+  return ask;
+}
+
+async function askDecoderForAvatar(key: string, raw: string): Promise<AvatarOutcome> {
+  if (!(await avatarPool.acquire())) return { kind: 'busy', retryAfterS: 5 };
+  try {
+    const got = await decoderAvatar(raw);
+    switch (got.status) {
+      case 'ok': {
+        // ⚠ The decoder's "WebP" is a claim until its magic bytes say so: it's the box we
+        // expect compromised first. Anything else is no avatar, and the client's tile shows.
+        // Its canvas too, read from the header: a full-size WebP is small when it's plain.
+        const body = got.webp;
+        const canvas = webpCanvasSize(body);
+        if (
+          body.length > MAX_AVATAR_BYTES ||
+          imageSignatureOf(body.subarray(0, SIGNATURE_BYTES)) !== 'image/webp' ||
+          !canvas ||
+          canvas.width > MAX_AVATAR_SIDE ||
+          canvas.height > MAX_AVATAR_SIDE
+        ) {
+          return { kind: 'none' };
+        }
+        // Kept when the origin permits it (its Cache-Control, forwarded), as a relay is.
+        // Not awaited: the readers have the bytes either way, and `store` checks them again
+        // and never throws; a failure stays a miss, and the next viewer asks again.
+        if (cacheable('image/webp', false, got.cacheControl)) {
+          const settle = trackPendingStore();
+          void store(key, body, 'image/webp')
+            .catch(() => false)
+            .finally(settle);
+        }
+        return { kind: 'ok', webp: body };
+      }
+      case 'unsupported':
+        // A decoder older than its /avatar: the origin's bytes, relayed as before lurker#1190.
+        return { kind: 'relay' };
+      case 'backoff':
+        return { kind: 'busy', retryAfterS: got.retryAfterS };
+      case 'down':
+        // The seam itself, transient by definition (a deploy, a restart), as on /media.
+        return { kind: 'busy', retryAfterS: 30 };
+      case 'none':
+        return { kind: 'none' };
+    }
+  } finally {
+    avatarPool.release();
+  }
+}
+
+/** A cached object, answered. Every byte answer from the cache goes out this way. */
+function sendCached(res: Response, hit: { body: Buffer; contentType: string }): void {
+  applyMediaHeaders(res, hit.contentType);
+  res.setHeader('Content-Length', String(hit.body.length));
+  res.status(200).end(hit.body);
+}
+
+router.get('/avatar/:token', async (req: Request, res: Response) => {
+  if (!previewsEnabled()) {
+    res.status(404).end();
+    return;
+  }
+  // The media routes' budget: an avatar is one more image the scroll renders.
+  const verdict = mediaThrottle.allow(String(req.user!.id));
+  if (!verdict.ok) {
+    res.set('Retry-After', String(verdict.retryAfter));
+    res.status(429).json({ error: 'too many media requests — slow down' });
+    return;
+  }
+  // Signed by this instance for this origin URL, as /media's token is (avatarProxy.ts).
+  const raw = verifyAvatarToken(String(req.params.token));
+  if (!raw) {
+    res.status(403).end();
+    return;
+  }
+  const key = avatarCacheKey(raw);
+
+  // A hit reads the whole object into RSS, so it takes a media slot like every other hit.
+  if (cacheEnabled()) {
+    if (!(await mediaPool.acquire())) {
+      res.set('Retry-After', '5');
+      res.status(503).end();
+      return;
+    }
+    try {
+      const hit = await lookup(key);
+      if (hit) {
+        sendCached(res, hit);
+        return;
+      }
+    } finally {
+      mediaPool.release();
+    }
+  }
+
+  const outcome = await askAvatar(key, raw);
+  switch (outcome.kind) {
+    case 'ok':
+      sendCached(res, { body: outcome.webp, contentType: 'image/webp' });
+      return;
+    case 'relay':
+      await relayImage(req, res, raw);
+      return;
+    case 'busy':
+      res.set('Retry-After', String(outcome.retryAfterS));
+      res.status(503).end();
+      return;
+    case 'none':
+      res.status(404).end();
+      return;
   }
 });
 

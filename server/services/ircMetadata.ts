@@ -28,8 +28,9 @@ export const METADATA_CAP = 'draft/metadata-2';
 export { METADATA_SUB_KEYS };
 
 // The avatar key may carry a `{size}` placeholder (IRCv3 registry); this is the
-// pixel size Lurker asks for. Every client renders it smaller than this.
-export const AVATAR_SIZE = 128;
+// pixel size Lurker asks for: what the previews decoder resizes an avatar to
+// (lurker#1190), so an origin that honours it is never enlarged.
+export const AVATAR_SIZE = 256;
 
 // A key Lurker doesn't show but a bouncer client asked for is kept so a SUB
 // can be answered from state, bounded by METADATA_EXTRA_VALUE_MAX_CHARS.

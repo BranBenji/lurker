@@ -54,13 +54,14 @@ export { objectPath };
 // import or the two modules form a cycle. Callers still see one surface.
 export {
   byteCacheKey,
+  avatarCacheKey,
   posterCacheKey,
   isPosterKey,
   cacheConfig,
   cacheEnabled,
   resetCacheConfigForTests,
 } from './config.js';
-export { publicByteUrl } from './publicUrl.js';
+export { publicByteUrl, publicObjectUrl } from './publicUrl.js';
 
 /**
  * Served from bytes we hold.

@@ -341,6 +341,20 @@ export function expired(createdAt: string): boolean {
  * ⚠ Canonicalised the way `urlHash` does — fragment stripped — so `#a` and `#b` of
  * one image share an object rather than being fetched and stored twice.
  */
+/** One key space's key for `url`: its version prefix, and the URL canonicalised the way
+ *  `urlHash` does — fragment stripped — so `#a` and `#b` of one image share an object. */
+function hashKey(version: string, url: string): string {
+  let key: string;
+  try {
+    const canonical = new URL(url);
+    canonical.hash = '';
+    key = canonical.toString();
+  } catch {
+    key = url.replace(/#[\s\S]*$/, '');
+  }
+  return crypto.createHash('sha256').update(`${version}|${key}`).digest('hex');
+}
+
 /**
  * Cache key for a STORED POSTER FRAME — bytes this instance decoded itself, which
  * therefore have NO origin URL to fall back to. Kept alongside `byteCacheKey` so the
@@ -355,27 +369,20 @@ export function isPosterKey(value: string): boolean {
 }
 
 export function posterCacheKey(url: string): string {
-  let key: string;
-  try {
-    const canonical = new URL(url);
-    canonical.hash = '';
-    key = canonical.toString();
-  } catch {
-    key = url.replace(/#[\s\S]*$/, '');
-  }
-  return crypto.createHash('sha256').update(`poster-v1|${key}`).digest('hex');
+  return hashKey('poster-v1', url);
+}
+
+/**
+ * Cache key for an AVATAR (lurker#1190): an origin image the decoder resized and cropped,
+ * so not the origin's bytes, and kept apart from `byteCacheKey` (which holds those) by its
+ * own version prefix. Derived from the origin URL so every viewer of one avatar shares it.
+ */
+export function avatarCacheKey(url: string): string {
+  return hashKey('avatar-v1', url);
 }
 
 export function byteCacheKey(url: string): string {
-  let key: string;
-  try {
-    const canonical = new URL(url);
-    canonical.hash = '';
-    key = canonical.toString();
-  } catch {
-    key = url.replace(/#[\s\S]*$/, '');
-  }
-  return crypto.createHash('sha256').update(`bytes-v1|${key}`).digest('hex');
+  return hashKey('bytes-v1', url);
 }
 
 /**

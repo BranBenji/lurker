@@ -111,3 +111,22 @@ export function verifyPosterToken(token: string): string | null {
   const key = payload.slice(POSTER_TOKEN_PREFIX.length);
   return isPosterKey(key) ? key : null;
 }
+
+/**
+ * An avatar capability (lurker#1190) signs `avatar:<origin url>`: the avatar route asks the
+ * decoder for that URL resized, and serves nothing it was not minted for. Prefixed so a media
+ * token (a bare URL) is refused here, and the media route refuses any payload that isn't an
+ * http(s) URL, so this one is refused there.
+ */
+const AVATAR_TOKEN_PREFIX = 'avatar:';
+
+export function mintAvatarToken(url: string): string {
+  return mintProxyToken(`${AVATAR_TOKEN_PREFIX}${url}`);
+}
+
+/** Recover an avatar's origin URL from a token, or null if unsigned or mis-prefixed. */
+export function verifyAvatarToken(token: string): string | null {
+  const payload = verifyProxyToken(token);
+  if (payload === null || !payload.startsWith(AVATAR_TOKEN_PREFIX)) return null;
+  return payload.slice(AVATAR_TOKEN_PREFIX.length) || null;
+}
