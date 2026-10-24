@@ -437,6 +437,78 @@ describe('SendPacer', () => {
     expect(sent).toHaveLength(5);
   }
 
+  describe('flood protection off (#1193)', () => {
+    let paced: boolean;
+    beforeEach(() => {
+      paced = true;
+      pacer.dispose();
+      pacer = new SendPacer({
+        send: (l) => sent.push(l),
+        ready: () => ready,
+        onDepth: (n) => depths.push(n),
+        paced: () => paced,
+      });
+    });
+
+    it('sends everything at once, in lane order, and charges nothing', () => {
+      paced = false;
+      for (let i = 0; i < 12; i++) pacer.write(`PRIVMSG #c :${i}`);
+      pacer.write(LONG);
+      pacer.write('JOIN #b', { priority: 'high' });
+      expect(sent).toHaveLength(14);
+      expect(sent.at(-1)).toBe('JOIN #b');
+      expect(pacer.pending).toBe(0);
+      // A thunk and a unit go the same way.
+      pacer.write(() => [{ text: 'NOTICE bob :built' }]);
+      pacer.unit(['PRIVMSG #c :1/2', 'PRIVMSG #c :2/2']);
+      expect(sent.slice(-3)).toEqual(['NOTICE bob :built', 'PRIVMSG #c :1/2', 'PRIVMSG #c :2/2']);
+    });
+
+    it('turned off mid-wait, a backlog goes now, not when its timer fires', () => {
+      fill();
+      pacer.write('PRIVMSG #c :waiting');
+      pacer.write('PRIVMSG #c :too');
+      expect(sent).toHaveLength(5);
+      paced = false;
+      pacer.repace();
+      expect(sent).toHaveLength(7);
+      vi.advanceTimersByTime(10_000);
+      expect(sent).toHaveLength(7);
+    });
+
+    it('still holds while holding() says so, and still drops with its socket', () => {
+      let hold = true;
+      pacer.dispose();
+      pacer = new SendPacer({
+        send: (l) => sent.push(l),
+        ready: () => ready,
+        holding: () => hold,
+        paced: () => false,
+      });
+      const dropped: string[] = [];
+      pacer.write('PRIVMSG #c :held', { onDropped: () => dropped.push('held') });
+      expect(sent).toHaveLength(0);
+      pacer.drop();
+      expect(dropped).toEqual(['held']);
+      hold = false;
+      pacer.write('PRIVMSG #c :now');
+      expect(sent).toEqual(['PRIVMSG #c :now']);
+    });
+
+    it('turned back on, the clock starts from nothing: what went unpaced is not charged', () => {
+      paced = false;
+      for (let i = 0; i < 20; i++) pacer.write(`PRIVMSG #c :${i}`);
+      expect(sent).toHaveLength(20);
+      paced = true;
+      pacer.repace();
+      for (let i = 0; i < 6; i++) pacer.write(`PRIVMSG #c :again ${i}`);
+      // Five fit under the fresh budget; the sixth waits its 2 s.
+      expect(sent).toHaveLength(25);
+      vi.advanceTimersByTime(2000);
+      expect(sent).toHaveLength(26);
+    });
+  });
+
   describe('holding', () => {
     it('keeps what waits waiting while holding() says so, though the connection is ready', () => {
       let holding = false;

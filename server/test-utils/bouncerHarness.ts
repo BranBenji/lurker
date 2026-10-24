@@ -152,6 +152,13 @@ export class FakeUpstream {
     this.client = client;
   }
 
+  // IrcConnection.networkEdited: ircManager.networkChanged hands every live
+  // connection the edited row (#1193). The real one applies flood protection;
+  // the fake keeps the row it mirrors in step.
+  networkEdited(network: Network): void {
+    if (this.network) this.network.flood_protection = network.flood_protection;
+  }
+
   raw(line: string): void {
     this.rawSent.push(line);
   }

@@ -38,6 +38,9 @@ export interface NetworkInput {
   connect_commands?: string;
   default_channel?: string;
   autoconnect?: boolean;
+  /** Pacing against the server's flood clock (#1193); `-noflood` turns it off
+   *  for a network that exempts the user. */
+  flood_protection?: boolean;
   /** Proxy (#303). Written as a URL here because that is how a human types one
    *  (`ALL_PROXY`, `curl -x`), and split into the stored parts by
    *  parseProxyUrl — the columns are parts so the form can offer
@@ -81,7 +84,16 @@ const VALUE_FLAGS = new Set([
   'channel',
   'proxy',
 ]);
-const BOOL_FLAGS = new Set(['tls', 'notls', 'auto', 'noauto', 'cert', 'noproxy']);
+const BOOL_FLAGS = new Set([
+  'tls',
+  'notls',
+  'auto',
+  'noauto',
+  'cert',
+  'noproxy',
+  'flood',
+  'noflood',
+]);
 
 function isKnownFlag(name: string): boolean {
   return VALUE_FLAGS.has(name) || BOOL_FLAGS.has(name);
@@ -199,6 +211,12 @@ function buildInput(flags: Flags): NetworkInput | { error: string } {
   }
   if (bools.has('auto')) input.autoconnect = true;
   if (bools.has('noauto')) input.autoconnect = false;
+
+  if (bools.has('flood') && bools.has('noflood')) {
+    return { error: 'cannot combine -flood and -noflood' };
+  }
+  if (bools.has('flood')) input.flood_protection = true;
+  if (bools.has('noflood')) input.flood_protection = false;
 
   return input;
 }

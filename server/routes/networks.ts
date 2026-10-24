@@ -179,6 +179,7 @@ function networkPayload(
     tls: !!network.tls,
     trusted_certificates: !!network.trusted_certificates,
     autoconnect: !!network.autoconnect,
+    flood_protection: !!network.flood_protection,
     has_password: !!server_password,
     has_sasl_password: !!sasl_password,
     // CertFP (#459). Neither PEM is in the payload: the key is a secret, and the
@@ -273,6 +274,7 @@ async function createAndConnectInner(req: Request, res: Response): Promise<void>
     proxy_port,
     proxy_username,
     proxy_password,
+    flood_protection,
   } = req.body || {};
   if (!name || !host || !nick) {
     res.status(400).json({ error: 'name, host, and nick are required' });
@@ -332,6 +334,7 @@ async function createAndConnectInner(req: Request, res: Response): Promise<void>
     proxy_port,
     proxy_username,
     proxy_password,
+    flood_protection,
   });
   if (!network) {
     res.status(500).json({ error: 'failed to create network' });

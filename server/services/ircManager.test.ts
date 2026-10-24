@@ -16,6 +16,7 @@ let systemLog: typeof import('./systemLog.js').default;
 let createUser: typeof import('../db/users.js').createUser;
 let setUserPaused: typeof import('../db/users.js').setUserPaused;
 let createNetwork: typeof import('../db/networks.js').createNetwork;
+let updateNetwork: typeof import('../db/networks.js').updateNetwork;
 let buffers: typeof import('../db/buffers.js');
 let insertDccTransfer: typeof import('../db/dccTransfers.js').insertDccTransfer;
 let updateDccTransferState: typeof import('../db/dccTransfers.js').updateDccTransferState;
@@ -27,7 +28,7 @@ beforeAll(async () => {
   connectScheduler = (await import('./connectScheduler.js')).default;
   systemLog = (await import('./systemLog.js')).default;
   ({ createUser, setUserPaused } = await import('../db/users.js'));
-  ({ createNetwork } = await import('../db/networks.js'));
+  ({ createNetwork, updateNetwork } = await import('../db/networks.js'));
   buffers = await import('../db/buffers.js');
   ({ insertDccTransfer, updateDccTransferState } = await import('../db/dccTransfers.js'));
 });
@@ -297,6 +298,18 @@ describe('ircManager deferrable connect (issue #236 throttle seam)', () => {
     if (!net) throw new Error('createNetwork returned undefined');
     return { user, net };
   }
+
+  it('networkChanged hands the edited row to the live connection (#1193)', () => {
+    const { user, net } = makeAutoconnectNetwork('edit-live');
+    const conn = ircManager.startNetwork(user.id, net.id, { deferrable: true });
+    expect(conn).not.toBeNull();
+    const edited = vi.spyOn(conn!, 'networkEdited');
+    updateNetwork(net.id, user.id, { flood_protection: false });
+    ircManager.networkChanged(user.id, net.id);
+    expect(edited).toHaveBeenCalledTimes(1);
+    expect(edited.mock.calls[0][0]).toMatchObject({ id: net.id, flood_protection: 0 });
+    connectScheduler.reset();
+  });
 
   it('deferrable startNetwork enqueues the connect instead of opening a socket synchronously', () => {
     const { user, net } = makeAutoconnectNetwork('defer-enqueue');

@@ -248,6 +248,36 @@ describe('parseNetworkCommand', () => {
     });
   });
 
+  describe('-flood / -noflood (#1193)', () => {
+    it('-noflood turns flood protection off, -flood back on', () => {
+      expect(parseNetworkCommand('modify Libera -noflood')).toMatchObject({
+        kind: 'modify',
+        input: { flood_protection: false },
+      });
+      expect(parseNetworkCommand('modify Libera -flood')).toMatchObject({
+        input: { flood_protection: true },
+      });
+      expect(parseNetworkCommand('add -host irc.example -nick n -noflood Own')).toMatchObject({
+        kind: 'add',
+        input: { flood_protection: false },
+      });
+    });
+
+    it('says nothing about it when neither flag is given', () => {
+      const cmd = parseNetworkCommand('modify Libera -nick n');
+      expect(cmd).toMatchObject({ kind: 'modify' });
+      if (cmd.kind !== 'modify') throw new Error('not a modify');
+      expect(cmd.input).not.toHaveProperty('flood_protection');
+    });
+
+    it('refuses both at once', () => {
+      expect(parseNetworkCommand('modify Libera -flood -noflood')).toEqual({
+        kind: 'error',
+        message: 'cannot combine -flood and -noflood',
+      });
+    });
+  });
+
   describe('-proxy / -noproxy (#303)', () => {
     it('splits a URL into the stored columns and enables the proxy', () => {
       // A URL is how a proxy is written everywhere else (ALL_PROXY, curl -x),

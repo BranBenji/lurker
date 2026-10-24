@@ -295,7 +295,11 @@ class IrcManager extends EventEmitter {
   // A network row was created, edited or deleted. The bouncer tells its
   // bouncer-networks-notify clients; call it once the row is written (or gone).
   networkChanged(userId: number, networkId: number): void {
-    if (!getNetwork(networkId, userId)) this.forgetConnectionError(userId, networkId);
+    const network = getNetwork(networkId, userId);
+    if (!network) this.forgetConnectionError(userId, networkId);
+    // Most of a network edit waits for the next connect (host, nick, the
+    // credentials); what can apply to the live connection does so here.
+    else this.getConnection(userId, networkId)?.networkEdited(network);
     this.emit('network-changed', { userId, networkId });
   }
 

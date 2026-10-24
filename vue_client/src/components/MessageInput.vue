@@ -2755,7 +2755,7 @@ const COMMANDS_LINES = [
   '  /network [list]        — manage networks (alias: /net); runs from the system buffer',
   '      add [-host <addr>] [-port <n>] [-tls|-notls] [-nick <n>] [-user <u>] [-realname <name>]',
   '          [-sasl_username <u>] [-sasl_password <p>] [-password <serverpass>]',
-  "          [-autosendcmd '<cmds>'] [-channel <#chan>] [-auto|-noauto] <name>",
+  "          [-autosendcmd '<cmds>'] [-channel <#chan>] [-auto|-noauto] [-flood|-noflood] <name>",
   '      modify <name> [-flags…]   ·   remove <name>   ·   move <name> <position>',
   '      connect <name>   ·   disconnect <name>   (Lurker folds irssi /server into these)',
   '  /dcc [list]            — DCC transfers: list, or accept/reject/cancel/download/delete <id>',

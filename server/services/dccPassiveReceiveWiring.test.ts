@@ -95,6 +95,7 @@ function makeConn(): IrcConnection {
       position: 0,
       casemapping: null,
       user_modes: null,
+      flood_protection: 1,
       created_at: new Date().toISOString(),
     },
     onEvent: () => {},

@@ -1392,6 +1392,10 @@ ensureColumn('networks', 'casemapping', 'TEXT');
 // replayed after every registration (#1181) the way irssi replays its
 // wanted_usermode. NULL until the user sets one.
 ensureColumn('networks', 'user_modes', 'TEXT');
+// Whether outbound lines are paced against the server's flood clock (#1193).
+// On for everyone; off for a network whose server exempts the user (an oper,
+// a bouncer that paces upstream itself), where waiting only slows them down.
+ensureColumn('networks', 'flood_protection', 'INTEGER NOT NULL DEFAULT 1');
 ensureColumn('users', 'password_hash', 'TEXT');
 ensureColumn('users', 'last_seen_at', 'TEXT');
 // Account access state, orthogonal to role. A paused account keeps all its data
