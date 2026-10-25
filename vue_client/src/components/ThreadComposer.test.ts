@@ -16,6 +16,7 @@ import type { ThreadMessage } from '../stores/threads.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { socketSendWithAck } from '../composables/useSocket.js';
+import { useUploadsStore, onInsertUrl } from '../stores/uploads.js';
 
 vi.mock('../composables/useSocket.js', () => ({
   socketSend: vi.fn<() => boolean>(() => true),
@@ -187,6 +188,69 @@ describe('ThreadComposer', () => {
     expect((btn.element as HTMLButtonElement).disabled).toBe(false);
     await btn.trigger('click');
     expect(sends()[0]).toMatchObject({ text: 'bob: by button', replyTo: 2 });
+  });
+
+  // A pasted file goes up and its URL lands in this reply, not in the
+  // channel's draft; the send button is a spinner meanwhile.
+  describe('a pasted file', () => {
+    function paste(ta: HTMLTextAreaElement, file: File): Event {
+      const ev = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, 'clipboardData', {
+        value: { items: [{ kind: 'file', getAsFile: () => file }] },
+      });
+      ta.dispatchEvent(ev);
+      return ev;
+    }
+    const png = () => new File(['x'], 'shot.png', { type: 'image/png' });
+
+    it('uploads it and puts the URL in the reply, not the channel draft', async () => {
+      seed();
+      const uploads = useUploadsStore();
+      let finish!: (r: { url: string }) => void;
+      const upload = vi
+        .spyOn(uploads, 'upload')
+        .mockImplementation(() => new Promise((r) => (finish = r)) as never);
+      const channelDraft = vi.fn<(url: string) => void>();
+      const unsub = onInsertUrl(channelDraft);
+      try {
+        const ta = await type('look');
+        ta.setSelectionRange(4, 4);
+        const ev = paste(ta, png());
+        expect(ev.defaultPrevented).toBe(true);
+        expect(upload).toHaveBeenCalledWith(expect.any(File), null, { insert: false });
+        await wrapper!.vm.$nextTick();
+        expect(wrapper!.find('.send-btn.uploading').exists()).toBe(true);
+        finish({ url: 'https://x.test/shot.png' });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(ta.value).toBe('look https://x.test/shot.png');
+        expect(channelDraft).not.toHaveBeenCalled();
+        expect(wrapper!.find('.send-btn.uploading').exists()).toBe(false);
+      } finally {
+        unsub();
+      }
+    });
+
+    it('says so when the upload fails', async () => {
+      seed();
+      vi.spyOn(useUploadsStore(), 'upload').mockRejectedValue(new Error('too big'));
+      const ta = await type('');
+      paste(ta, png());
+      await new Promise((r) => setTimeout(r, 0));
+      expect(useToastsStore().items.at(-1)).toMatchObject({
+        title: 'Upload failed',
+        body: 'too big',
+      });
+      expect(ta.value).toBe('');
+    });
+
+    it('leaves a paste alone when paste uploads are off', async () => {
+      seed();
+      useSettingsStore().values['uploads.paste.enabled'] = false;
+      const upload = vi.spyOn(useUploadsStore(), 'upload');
+      const ta = await type('');
+      expect(paste(ta, png()).defaultPrevented).toBe(false);
+      expect(upload).not.toHaveBeenCalled();
+    });
   });
 
   it('is disabled while the network cannot carry a reply tag', async () => {

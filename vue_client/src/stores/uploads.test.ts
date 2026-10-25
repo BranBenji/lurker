@@ -607,6 +607,24 @@ describe('uploads — favourites', () => {
   // returns — so an ungated button is one that silently does nothing. Which is
   // exactly what shipped on mobile: the uploads browser opens from the buffer-list
   // screen, where MessageInput is not mounted.
+  // The thread panel's composer takes the URL itself: a pasted file there must
+  // not also land in the channel's draft.
+  it('hands the URL to the caller alone with insert: false', async () => {
+    const uploads = useUploadsStore();
+    const heard = vi.fn<(url: string) => void>();
+    const unsub = onInsertUrl(heard);
+    apiMultipart.mockResolvedValue({ id: 40, url: 'https://x.test/t.webp', mime: 'image/webp' });
+    try {
+      const result = await uploads.upload(new Blob(['x']), null, { insert: false });
+      expect(result?.url).toBe('https://x.test/t.webp');
+      expect(heard).not.toHaveBeenCalled();
+      await uploads.upload(new Blob(['x']), null);
+      expect(heard).toHaveBeenCalledWith('https://x.test/t.webp');
+    } finally {
+      unsub();
+    }
+  });
+
   it('knows whether a composer is actually listening', () => {
     const uploads = useUploadsStore();
     expect(uploads.canInsert).toBe(false);
