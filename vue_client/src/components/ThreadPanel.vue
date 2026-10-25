@@ -6,8 +6,9 @@
 <!--
   The reply thread panel (#1225). On desktop it is a column bolted to the side
   of the chat: its rows are the chat grid's (subgrid), so its head sits level
-  with the topic bar, its lines with the message list, its status line with the
-  status bar and its composer with the main one. On mobile (`screen`) it is a
+  with the topic bar, and its lines and composer fill the rows of the message
+  list, status bar and main composer, the composer at the foot, level with the
+  main one at rest and growing up into the lines. On mobile (`screen`) it is a
   screen over the buffer, headed by the shell's bar.
 
   Two modes, by route (useThreadRoute):
@@ -16,9 +17,10 @@
              in order, always in the list's compact layout (head line over the
              body, avatars when they're on, the compact density tokens and
              timestamp formats): the panel is narrow like a phone, and the
-             three-column grid never fits it. No reply quotes: the thread's
-             order is the context, and the `nick: ` a reply opens with is
-             dropped as the list drops it. Lines have the message list's
+             three-column grid never fits it. Links unfurl as they do in the
+             list (inline media and previews, usePreviewBody's gate). No reply
+             quotes: the thread's order is the context, and the `nick: ` a
+             reply opens with is dropped as the list drops it. Lines have the message list's
              actions bar Reply and Quote.
     list   — the buffer's threads by last activity (ThreadList).
 
@@ -50,7 +52,8 @@
 
     <ThreadList v-if="mode === 'list' && bufferId != null" :buffer-id="bufferId" />
 
-    <template v-else>
+    <!-- One column for the lines and the composer: see .thread-body. -->
+    <div v-else class="thread-body">
       <div
         ref="scroller"
         class="lines"
@@ -109,11 +112,19 @@
                 :class="{ italic: row.line.type === 'action' && actionItalic }"
                 ><template v-if="row.line.type === 'action'"
                   ><NickRef :nick="String(row.line.nick ?? '')" />{{ ' ' }}</template
-                ><RenderSegments
+                ><MessageBody
+                  v-if="previewBody(row.line)"
+                  :text="row.text ?? row.line.text"
                   :segments="segments(row.line, row.text)"
                   :self-color="selfColor"
                   :network-id="view?.networkId ?? null"
-                  blockquotes /><ReactionRow
+                  :blockquotes="row.line.type === 'message'"
+                  @measured="followGrowth" /><RenderSegments
+                  v-else
+                  :segments="segments(row.line, row.text)"
+                  :self-color="selfColor"
+                  :network-id="view?.networkId ?? null"
+                  :blockquotes="row.line.type === 'message'" /><ReactionRow
                   v-if="view"
                   :message="{ ...row.line, networkId: view.networkId }"
                   :interactive="row.line.type !== 'notice' && !row.line.e2e"
@@ -145,11 +156,10 @@
         </template>
       </div>
       <!-- Keyed by thread: a half-typed reply never follows the panel to
-           another thread. On the grid it takes the status bar's row as well as
-           the composer's (nothing of the status bar applies here) and sits at
-           the bottom, level with the main input. -->
+           another thread. At rest it is the main input's height, so the two
+           composers' text sits level. -->
       <ThreadComposer :key="viewKey" ref="composerRef" />
-    </template>
+    </div>
     <!-- Inside the root on purpose: the shells place the panel by its root
          class through their scoped styles, which a fragment root would lose. -->
     <IgnoreModal
@@ -169,6 +179,7 @@ import { ListTreeIcon, XIcon } from '@lucide/vue';
 import NickRef from './NickRef.vue';
 import NickAvatar from './NickAvatar.vue';
 import RenderSegments from './RenderSegments.vue';
+import MessageBody from './MessageBody.vue';
 import ReactionRow from './ReactionRow.vue';
 import IgnoreModal from './IgnoreModal.vue';
 import ThreadList from './ThreadList.vue';
@@ -185,6 +196,8 @@ import { useViewport } from '../composables/useViewport.js';
 import { useReplyQuote } from '../composables/useReplyQuote.js';
 import { useThreadRoute, requestThreadNav } from '../composables/useThreadNav.js';
 import { useMessageActions } from '../composables/useMessageActions.js';
+import { usePreviewBody } from '../composables/usePreviewBody.js';
+import { previewRevision } from '../composables/useLinkPreview.js';
 import type {
   MessageActionKey,
   MessageAction,
@@ -301,6 +314,7 @@ const offOpen = onSocketOpen(() => {
 });
 
 onBeforeUnmount(() => {
+  scrollerObserver?.disconnect();
   offOpen();
   threads.close();
   threads.closeList();
@@ -489,9 +503,22 @@ function segments(m: ThreadMessage, text: string | undefined): RenderSegment[] {
 // ─── Scrolling and read state ────────────────────────────────────────────
 
 const atBottom = ref(true);
+// The scroller's height as last seen. A shrink (the composer growing, a
+// window resize) can fire a scroll event BEFORE the ResizeObserver's
+// callback, measured with the new height and the old scrollTop, which would
+// read as the reader having scrolled up and drop the pin the observer is
+// about to keep. Such a scroll changes nothing here (MessageList's guard).
+let lastClientHeight = 0;
 function onScroll(): void {
   const el = scroller.value;
   if (!el) return;
+  if (el.clientHeight !== lastClientHeight) {
+    lastClientHeight = el.clientHeight;
+    return;
+  }
+  // The reader moved: a focused reply's pin lets go (a re-pin's own scroll
+  // lands on the top it recorded).
+  if (focusPin && Math.abs(el.scrollTop - focusPin.top) > 1) focusPin = null;
   atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
 }
 
@@ -499,6 +526,47 @@ function scrollToBottom(): void {
   const el = scroller.value;
   if (el) el.scrollTop = el.scrollHeight;
 }
+
+// Inline media and link previews (MessageBody, the message list's gate): a
+// picture (`measured`) or a card (`previewRevision`) that lands after its line
+// grows it, and so does switching previews on, cards already cached. A reply
+// opened by name (`?focus=`) stays where it was put until the reader scrolls,
+// as the lines around it fill in (the scroller has overflow-anchor off, so the
+// browser won't), even when that put it at the end; otherwise a reader at the
+// end stays at the end.
+const { previewBody, previewsActive } = usePreviewBody();
+let focusPin: { id: number; top: number } | null = null;
+function followGrowth(): void {
+  const el = scroller.value;
+  if (focusPin && el) {
+    if (scrollToId(focusPin.id, false)) {
+      focusPin.top = el.scrollTop;
+      return;
+    }
+    focusPin = null;
+  }
+  if (atBottom.value) scrollToBottom();
+}
+watch([previewRevision, previewsActive], () => void nextTick(followGrowth));
+
+// The composer grows up into the lines (and a window resize shrinks them)
+// without moving scrollTop, which would hide the replies being answered: the
+// lines follow the growth as they follow a preview's, so a reader at the end
+// stays at the end, as in the message list.
+const scrollerObserver =
+  typeof ResizeObserver !== 'undefined'
+    ? new ResizeObserver(() => {
+        lastClientHeight = scroller.value?.clientHeight ?? 0;
+        followGrowth();
+      })
+    : null;
+watch(scroller, (el, old) => {
+  if (old) scrollerObserver?.unobserve(old);
+  if (el) {
+    lastClientHeight = el.clientHeight;
+    scrollerObserver?.observe(el);
+  }
+});
 
 function scrollToId(id: number, pulse: boolean): boolean {
   const el = scroller.value?.querySelector(`[data-msg-id="${id}"]`);
@@ -524,7 +592,12 @@ watch(
     if (loading !== false) return;
     await nextTick();
     const focusId = threadRoute.value?.mode === 'thread' ? threadRoute.value.focusId : null;
-    if (!focusId || !scrollToId(focusId, true)) scrollToBottom();
+    focusPin = null;
+    if (focusId && scrollToId(focusId, true)) {
+      focusPin = { id: focusId, top: scroller.value?.scrollTop ?? 0 };
+    } else {
+      scrollToBottom();
+    }
     atBottom.value = !focusId;
   },
   { immediate: true },
@@ -683,13 +756,24 @@ function onLineClick(e: MouseEvent, m: ThreadMessage): void {
 .thread-panel:not(.screen) > .thread-list {
   grid-row: span 3;
 }
-/* The lines take the status bar's row too (nothing of the status bar applies
-   here), so the avatar gutter's hairline runs down to the composer, which
-   keeps the main input's row; the rule above it is the status bar's. */
-.thread-panel:not(.screen) > .lines {
-  grid-row: span 2;
+/* The lines and the composer, one column over the lines, status and input
+   rows (nothing of the status bar applies here), so the avatar gutter's
+   hairline runs down to the composer. The composer is not on the input row:
+   that row is the main composer's alone, and a long reply grows up into the
+   lines instead of under the main composer. */
+.thread-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
 }
-.thread-panel > .thread-input {
+.thread-panel:not(.screen) > .thread-body {
+  grid-row: span 3;
+}
+.thread-panel.screen > .thread-body {
+  flex: 1;
+}
+.thread-body > .thread-input {
   border-top: 1px solid var(--border);
 }
 

@@ -212,21 +212,23 @@ export const useThreadsStore = defineStore('threads', {
     // wherever its root line is loaded — in the channel, or as the view's own
     // first line — that line's chip counts it. Someone ignored doesn't count
     // (the server's count leaves them out), nor a replay.
-    applyLive(event: ThreadMessage) {
+    // True when the reply went into the open panel, which draws it at once
+    // (and so wants its previews), whatever the channel's own list does.
+    applyLive(event: ThreadMessage): boolean {
       const root = event.replyTo?.root;
-      if (!root || event.id == null || typeof event.bufferId !== 'number') return;
+      if (!root || event.id == null || typeof event.bufferId !== 'number') return false;
       const v = this.view;
-      const inView = v && v.bufferId === event.bufferId && v.rootMsgid === root;
+      const inView = !!v && v.bufferId === event.bufferId && v.rootMsgid === root;
       if (inView) {
-        if (v.replies.some((r) => r.id === event.id)) return;
+        if (v.replies.some((r) => r.id === event.id)) return false;
         v.replies.push(event);
         if (v.replies.length > THREAD_MAX_REPLIES) {
           v.replies.splice(0, v.replies.length - THREAD_MAX_REPLIES);
           v.truncated = true;
         }
       }
-      if (event.fromIgnored) return;
-      this.countReply(event, root);
+      if (!event.fromIgnored) this.countReply(event, root);
+      return inView;
     },
 
     // A reconnect's gap-fill (a `backlog` in append mode) brings replies the

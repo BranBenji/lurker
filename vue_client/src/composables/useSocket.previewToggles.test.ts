@@ -45,6 +45,7 @@ import { useSocket, resetPreviewToggleWiring } from './useSocket.js';
 import { useConfigStore } from '../stores/config.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useBuffersStore } from '../stores/buffers.js';
+import { useThreadsStore } from '../stores/threads.js';
 
 /** A route component, standing in for DesktopChat / Settings. */
 const RouteView = defineComponent({
@@ -84,6 +85,31 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   resetPreviewToggleWiring();
+});
+
+// The thread panel (#1225) draws its lines from the `thread` payload, which
+// needn't be in any buffer's loaded slice: a flip on re-primes them too.
+describe('preview toggle re-prime and the thread panel', () => {
+  it("primes the open thread's lines", async () => {
+    const settings = seed();
+    useThreadsStore().view = {
+      bufferId: 9,
+      rootMsgid: 'm1',
+      networkId: 1,
+      target: '#chan',
+      root: { id: 2, type: 'message', text: 'root https://e.test/root.png', target: '#chan' },
+      replies: [{ id: 3, type: 'message', text: 'reply https://e.test/r.png', target: '#chan' }],
+    } as never;
+    const chat = mount(RouteView);
+    await nextTick();
+    primePreviews.mockClear();
+    settings.values = { ...settings.values, 'chat.inline_media.enabled': true };
+    await nextTick();
+    const primed = JSON.stringify(primePreviews.mock.calls);
+    expect(primed).toContain('https://e.test/root.png');
+    expect(primed).toContain('https://e.test/r.png');
+    chat.unmount();
+  });
 });
 
 describe('preview toggle re-prime survives a route change (#693)', () => {

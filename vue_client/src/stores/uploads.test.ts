@@ -602,6 +602,24 @@ describe('uploads — favourites', () => {
     expect(uploads.recent).toEqual([]);
   });
 
+  // The thread panel's composer takes the URL itself: a pasted file there must
+  // not also land in the channel's draft.
+  it('hands the URL to the caller alone with insert: false', async () => {
+    const uploads = useUploadsStore();
+    const heard = vi.fn<(url: string) => void>();
+    const unsub = onInsertUrl(heard);
+    apiMultipart.mockResolvedValue({ id: 40, url: 'https://x.test/t.webp', mime: 'image/webp' });
+    try {
+      const result = await uploads.upload(new Blob(['x']), null, { insert: false });
+      expect(result?.url).toBe('https://x.test/t.webp');
+      expect(heard).not.toHaveBeenCalled();
+      await uploads.upload(new Blob(['x']), null);
+      expect(heard).toHaveBeenCalledWith('https://x.test/t.webp');
+    } finally {
+      unsub();
+    }
+  });
+
   // Every "put this in my message" affordance hangs off this. An insert with
   // nobody subscribed is not an error — emitInsert iterates an empty set and
   // returns — so an ungated button is one that silently does nothing. Which is

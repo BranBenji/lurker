@@ -206,6 +206,27 @@ export function isUploadableType(mime: string, filename = ''): boolean {
   return false;
 }
 
+/**
+ * The first file a paste carries that we'd upload, or null. The same gate as a
+ * drop, from the same definition: pasting a video file from Finder used to
+ * silently do nothing. `kind === 'file'` keeps pasted rich text from being
+ * hijacked into an upload; the server has the final say on the type. Both
+ * composers paste through it.
+ *
+ * ⚠ The file is taken BEFORE the type gate, because the gate needs its name: a
+ * platform with no registered mime for `.md` reports an empty type, and the
+ * extension is then the only thing distinguishing a README from a stray binary
+ * (#788). `kind` is still checked first, so rich text never reaches getAsFile().
+ */
+export function pastedUploadFile(e: ClipboardEvent): File | null {
+  for (const item of e.clipboardData?.items ?? []) {
+    if (!item || item.kind !== 'file') continue;
+    const file = item.getAsFile();
+    if (file && isUploadableType(file.type, file.name)) return file;
+  }
+  return null;
+}
+
 /** A Lucide icon for an upload with no thumbnail, from its MIME. The recent-
  *  uploads browser used one generic page glyph for everything, so a PDF, a song and
  *  a video were indistinguishable. */

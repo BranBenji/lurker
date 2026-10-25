@@ -33,6 +33,7 @@ vi.mock('../composables/useSocket.js', () => ({
 import { useBuffersStore, bufferNeedsHydration, windowAroundAnchor } from './buffers.js';
 import { useSettingsStore } from './settings.js';
 import { socketSend } from '../composables/useSocket.js';
+import { setUnreadDividerShown, unreadDividerShown } from '../lib/unreadDivider.js';
 
 // The store always seeds the app-scoped system buffer (#355). These tests assert
 // on network-buffer counts (fork/removal semantics), so filter it out.
@@ -148,6 +149,78 @@ describe('applyReadState', () => {
 
     store.applyReadState(1, '#pinned', { lastReadId: 70, unread: 0, highlights: 0 });
     expect(buf.lastReadId).toBe(70);
+  });
+});
+
+// The divider follows the tail while the user reads, unless a boundary is on
+// screen to keep. A row past the boundary that the list hides (an ignored
+// sender's line) is no boundary: kept, the divider landed over the user's own
+// next line, with the ignored line invisible between them.
+const chanLine = (id: number, nick = 'alice') => ({
+  networkId: 1,
+  target: '#chan',
+  id,
+  type: 'message',
+  nick,
+  text: 'x',
+});
+describe('the unread divider on a live line', () => {
+  function readingWithTail() {
+    const store = useBuffersStore();
+    store.replaceBacklog(
+      1,
+      '#chan',
+      [chanLine(10), chanLine(11, 'troll')],
+      undefined,
+      undefined,
+      undefined,
+    );
+    h.activeKey = '1::#chan';
+    const buf = store.byKey('1::#chan')!;
+    buf.lastReadId = 11;
+    buf.dividerAfterId = 10; // entered before troll's line, which never counted
+    return { store, buf };
+  }
+  const ownLine = () => ({ ...chanLine(12, 'me'), self: true });
+  beforeEach(() => setUnreadDividerShown('1::#chan', null));
+
+  it('follows the tail when the list draws no divider', () => {
+    const { store, buf } = readingWithTail();
+    setUnreadDividerShown('1::#chan', false);
+    store.pushMessage(ownLine());
+    expect(buf.dividerAfterId).toBe(12);
+  });
+
+  it('keeps a boundary the list is drawing', () => {
+    const { store, buf } = readingWithTail();
+    setUnreadDividerShown('1::#chan', true);
+    store.pushMessage(ownLine());
+    expect(buf.dividerAfterId).toBe(10);
+  });
+
+  // No list has said (unmounted, or not yet drawn this visit): rows past the
+  // boundary keep it, as before.
+  it('keeps the boundary when no list has said', () => {
+    const { store, buf } = readingWithTail();
+    store.pushMessage(ownLine());
+    expect(buf.dividerAfterId).toBe(10);
+  });
+
+  it('ignores the list until the backlog has loaded', () => {
+    const { store, buf } = readingWithTail();
+    buf.unseeded = true;
+    setUnreadDividerShown('1::#chan', false);
+    store.pushMessage(ownLine());
+    expect(buf.dividerAfterId).toBe(10);
+  });
+
+  it('forgets what the list said about the last visit', () => {
+    const { store, buf } = readingWithTail();
+    setUnreadDividerShown('1::#chan', false);
+    h.activeKey = null;
+    buf.dividerAfterId = null;
+    store.activate(1, '#chan');
+    expect(unreadDividerShown('1::#chan')).toBeNull();
   });
 });
 
