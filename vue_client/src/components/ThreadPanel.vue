@@ -224,7 +224,7 @@ import type {
   MessageLike,
 } from '../composables/useMessageActions.js';
 import { onSocketOpen } from '../composables/useSocket.js';
-import { formatTimestamp } from '../utils/timestamp.js';
+import { formatDate, formatTimestamp } from '../utils/timestamp.js';
 import { parseUserHost } from '../utils/userhost.js';
 import { stripReplyAddress } from '../utils/replyText.js';
 import type { RenderSegment } from '../utils/nickColor.js';
@@ -278,13 +278,23 @@ const actionItalic = computed(() => !!settings.effective('look.action.italic'));
 const selfColor = computed<string | null>(
   () => (settings.effective('look.nick.self_color') as string | undefined) ?? null,
 );
-const tsFormat = computed(() => settings.effective('look.buffer.time_format') as string);
 
 // The message list's layout setting, read as a narrow surface reads it:
 // `auto` is compact here, as it is on a phone.
 const compact = computed(() => settings.effective('look.message.layout') !== 'standard');
 const showAvatars = computed(
   () => compact.value && settings.effective('look.message.avatars') === true,
+);
+// The list's formats for the layout in use: compact has its own timestamp
+// format, and a date prefix on lines from another day (empty = never).
+const tsFormat = computed(
+  () =>
+    settings.effective(
+      compact.value ? 'look.buffer.time_format_compact' : 'look.buffer.time_format',
+    ) as string,
+);
+const compactDateFormat = computed(() =>
+  compact.value ? String(settings.effective('look.buffer.date_format_compact') ?? '') : '',
 );
 const collapseWindowMs = computed(
   () =>
@@ -463,7 +473,12 @@ const rows = computed((): Row[] => {
 });
 
 function time(m: ThreadMessage): string {
-  return m.time ? formatTimestamp(m.time, tsFormat.value ?? '') : '';
+  if (!m.time) return '';
+  const t = formatTimestamp(m.time, tsFormat.value ?? '');
+  const dateFmt = compactDateFormat.value;
+  if (!t || !dateFmt) return t;
+  if (formatDate(m.time) === formatDate(new Date().toISOString())) return t;
+  return `${formatTimestamp(m.time, dateFmt)} ${t}`;
 }
 
 function fullTime(m: ThreadMessage): string | undefined {

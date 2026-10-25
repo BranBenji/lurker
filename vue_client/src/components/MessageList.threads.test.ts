@@ -128,7 +128,7 @@ describe('MessageList — reply threads', () => {
     expect(rowOf(w, root.id).find('.thread-chip').classes()).toContain('unread');
   });
 
-  it('on: a highlighted reply stays inline — it badges the channel, so it has a row', () => {
+  it('on: a highlighted reply is kept in its thread too', () => {
     const root = line('alice', 'anyone?', {
       msgid: 'm1',
       thread: { replies: 2, lastReplyTime: 't' },
@@ -141,11 +141,10 @@ describe('MessageList — reply threads', () => {
       replyToSelf: true,
       replyTo: { msgid: 'm1', root: 'm1', parent: null },
     });
-    const plain = line('dave', 'alice: me', { replyTo: { msgid: 'm1', root: 'm1', parent: null } });
-    const w = mountWith([root, mention, toMe, plain], { threads: true });
-    expect(rowOf(w, mention.id).exists()).toBe(true);
-    expect(rowOf(w, toMe.id).exists()).toBe(true);
-    expect(rowOf(w, plain.id).exists()).toBe(false);
+    const w = mountWith([root, mention, toMe], { threads: true });
+    expect(rowOf(w, mention.id).exists()).toBe(false);
+    expect(rowOf(w, toMe.id).exists()).toBe(false);
+    expect(rowOf(w, root.id).find('.thread-chip').exists()).toBe(true);
   });
 
   it('on: a DM keeps every reply and wears no chip', () => {
@@ -163,37 +162,22 @@ describe('MessageList — reply threads', () => {
     expect(w.find('.thread-chip').exists()).toBe(false);
   });
 
-  it('on: Reply in the channel opens the line’s thread, picking a reply already in one', async () => {
+  it('on: Reply in the channel opens the line’s thread with the composer wanted', async () => {
     const root = line('alice', 'anyone?', {
       msgid: 'm1',
       thread: { replies: 1, lastReplyTime: 't' },
     });
-    const hl = line('bob', 'me: ping', {
-      msgid: 'm2',
-      matched: true,
-      replyTo: { msgid: 'm1', root: 'm1', parent: null },
-    });
-    const w = mountWith([root, hl], { threads: true });
+    const w = mountWith([root], { threads: true });
     const nav = vi.spyOn(threadNav, 'requestThreadNav');
     const threads = useThreadsStore();
-    const replyOn = async (id: number) => {
-      const btn = rowOf(w, id)
-        .findAll('.row-action')
-        .find((b) => b.attributes('title')?.startsWith('Reply to '));
-      expect(btn).toBeTruthy();
-      await btn!.trigger('click');
-    };
-    // A plain line starts its own thread; the composer answers its first line.
-    await replyOn(root.id);
+    const btn = rowOf(w, root.id)
+      .findAll('.row-action')
+      .find((b) => b.attributes('title')?.startsWith('Reply to '));
+    expect(btn).toBeTruthy();
+    await btn!.trigger('click');
     expect(nav).toHaveBeenLastCalledWith({ kind: 'thread', bufferId: 9, rootMsgid: 'm1' });
     expect(threads.pending).toBeNull();
     expect(threads.wantComposer).toBe(true);
-    // A reply shown inline (a highlight) opens ITS thread with itself picked.
-    await replyOn(hl.id);
-    expect(nav).toHaveBeenLastCalledWith({ kind: 'thread', bufferId: 9, rootMsgid: 'm1' });
-    expect(threads.pending).toMatchObject({ messageId: hl.id, nick: 'bob' });
-    // Nothing went into the channel's composer.
-    expect(w.find('.message-list').exists()).toBe(true);
   });
 
   it('on: a jump onto a hidden reply opens its thread on that reply', async () => {

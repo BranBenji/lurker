@@ -109,12 +109,19 @@
         </template>
         <button
           v-if="threadsOn && isChannel"
-          class="icon"
-          title="Threads"
-          aria-label="Threads"
+          class="icon threads-btn"
+          :title="
+            threadHighlights > 0 ? `Threads — ${threadHighlights} with a new highlight` : 'Threads'
+          "
+          :aria-label="
+            threadHighlights > 0 ? `Threads — ${threadHighlights} with a new highlight` : 'Threads'
+          "
           @click="goThreads"
         >
           <MessagesSquareIcon />
+          <span v-if="threadHighlights > 0" class="hl-chip" aria-hidden="true">{{
+            threadHighlights
+          }}</span>
         </button>
         <button
           v-if="isChannel"
@@ -277,6 +284,7 @@ import MessageList from '../components/MessageList.vue';
 import MessageInput from '../components/MessageInput.vue';
 import MemberList from '../components/MemberList.vue';
 import ThreadPanel from '../components/ThreadPanel.vue';
+import { useThreadsStore } from '../stores/threads.js';
 import { navigateThread, onThreadNav, requestThreadNav } from '../composables/useThreadNav.js';
 import type { MobileSubScreen } from '../utils/mobileScreen.js';
 import StatusBar from '../components/StatusBar.vue';
@@ -430,6 +438,12 @@ const settings = useSettingsStore();
 const threadsOn = computed(() => settings.effective('chat.threads') === true);
 const offThreadNav = onThreadNav((nav) => navigateThread(router, nav));
 onBeforeUnmount(offThreadNav);
+
+// Threads here with a highlight the user hasn't seen: the badge on the button.
+const threadsStore = useThreadsStore();
+const threadHighlights = computed(() =>
+  threadsStore.highlightedThreadsFor((activeBuf.value as { id?: number } | null)?.id),
+);
 
 function goThreads() {
   const buf = activeBuf.value as { id?: number } | null;
@@ -702,7 +716,8 @@ useChatBootstrap({ onJump: onJumpToMessage });
    keeps its contrast against it. Mixed against --bg (not transparent) so the
    pill is opaque: a see-through wash let the back arrow ghost through where the
    two overlap at larger font sizes. Matches DesktopChat's rail chip. */
-.icon.back .hl-chip {
+.icon.back .hl-chip,
+.icon.threads-btn .hl-chip {
   padding: 0 var(--space-2);
   border-radius: var(--radius-pill);
   font-size: 0.85em;

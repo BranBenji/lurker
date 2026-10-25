@@ -6,14 +6,15 @@
 // jump that opens a hidden row's thread, and the "N new ↓" counter — so a row
 // the list won't draw is never counted or scrolled to.
 //
-// A reply that names its thread root lives in the panel — unless it is a
-// highlight (a rule match, or an answer to one of the user's lines): that
-// badges the channel, so it keeps a row to badge. A reply stored before roots
-// were tracked has no root and shows inline, with its quote. `threadsHere` is
-// the caller's "setting on, and this is a channel" (a DM keeps every line).
+// A reply that names its thread root lives in the panel, highlight or not: a
+// mention inside a thread still badges the channel (the server counts it) and
+// lights the Threads button in the header, which is where it is read. A reply
+// stored before roots were tracked has no root and shows inline, with its
+// quote. `threadsHere` is the caller's "setting on, and this is a channel" (a
+// DM keeps every line).
 export function hiddenAsThreadReply(
-  m: { replyTo?: { root?: string } | null; matched?: unknown; replyToSelf?: unknown },
+  m: { replyTo?: { root?: string } | null },
   threadsHere: boolean,
 ): boolean {
-  return threadsHere && !!m.replyTo?.root && !m.matched && !m.replyToSelf;
+  return threadsHere && !!m.replyTo?.root;
 }

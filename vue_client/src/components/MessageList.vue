@@ -1423,13 +1423,11 @@ const renderRows = computed((): RenderRow[] => {
         }) || replyToSelf;
     }
 
-    // Reply threads (#1225): a reply lives in its thread panel, not here —
-    // unless it's a highlight, which badges the channel and so must have a
-    // row to badge. Only a row that names its root — one stored before roots
-    // were tracked still shows inline, with its quote. A hidden row stays in
-    // the store for jumps and bookmarks; the scroll watcher opens its thread
-    // when one lands on it.
-    if (hiddenAsThreadReply(m, threadsHere.value) && !rowHighlight) continue;
+    // Reply threads (#1225): a reply lives in its thread panel, not here. Only
+    // a row that names its root — one stored before roots were tracked still
+    // shows inline, with its quote. A hidden row stays in the store for jumps
+    // and bookmarks; the scroll watcher opens its thread when one lands on it.
+    if (hiddenAsThreadReply(m, threadsHere.value)) continue;
 
     // Parsed once and reused by the smart filter and the presence dividers
     // below — this is a string parse on every surviving row, so it should

@@ -12,9 +12,11 @@ describe('hiddenAsThreadReply', () => {
     expect(hiddenAsThreadReply(reply, false)).toBe(false);
   });
 
-  it('keeps a highlight inline: it badges the channel, so it needs a row', () => {
-    expect(hiddenAsThreadReply({ ...reply, matched: true }, true)).toBe(false);
-    expect(hiddenAsThreadReply({ ...reply, replyToSelf: true }, true)).toBe(false);
+  it('hides a highlight too: the Threads button and the badge carry it', () => {
+    const mention = { ...reply, matched: true } as { replyTo: { root: string } };
+    const toMe = { ...reply, replyToSelf: true } as { replyTo: { root: string } };
+    expect(hiddenAsThreadReply(mention, true)).toBe(true);
+    expect(hiddenAsThreadReply(toMe, true)).toBe(true);
   });
 
   it('keeps a reply stored before roots were tracked, and a plain line', () => {

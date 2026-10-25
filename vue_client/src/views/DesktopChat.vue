@@ -221,13 +221,16 @@
             <button
               v-if="threadsOn"
               type="button"
-              class="link"
+              class="link threads-btn"
               :class="{ 'is-active': !!threadRoute }"
-              title="Threads"
-              aria-label="Threads"
+              :title="threadsTitle"
+              :aria-label="threadsTitle"
               @click="toggleThreads"
             >
               <MessagesSquareIcon />
+              <span v-if="threadHighlights > 0" class="hl-chip" aria-hidden="true">{{
+                threadHighlights
+              }}</span>
             </button>
             <button
               class="link"
@@ -351,6 +354,7 @@ import MessageList from '../components/MessageList.vue';
 import MessageInput from '../components/MessageInput.vue';
 import MemberList from '../components/MemberList.vue';
 import ThreadPanel from '../components/ThreadPanel.vue';
+import { useThreadsStore } from '../stores/threads.js';
 import {
   navigateThread,
   onThreadNav,
@@ -624,6 +628,18 @@ const threadsOn = computed(() => settings.effective('chat.threads') === true);
 const offThreadNav = onThreadNav((nav) => navigateThread(router, nav));
 onBeforeUnmount(offThreadNav);
 
+// Threads here with a highlight the user hasn't seen (threads-changed): the
+// channel's list hides the reply, so the button carries the badge.
+const threadsStore = useThreadsStore();
+const threadHighlights = computed(() =>
+  threadsStore.highlightedThreadsFor((activeBuf.value as { id?: number } | null)?.id),
+);
+const threadsTitle = computed(() =>
+  threadHighlights.value > 0
+    ? `Threads — ${threadHighlights.value} with a new highlight`
+    : 'Threads',
+);
+
 function toggleThreads() {
   const buf = activeBuf.value as { id?: number } | null;
   if (buf?.id == null) return;
@@ -896,6 +912,22 @@ useChatBootstrap({ onJump: onJumpToMessage });
 }
 .link.is-active {
   color: var(--fg);
+}
+/* The Threads button's badge (#1225): the rail toggle's chip, anchored to the
+   button's corner. */
+.link.threads-btn {
+  position: relative;
+}
+.link.threads-btn .hl-chip {
+  position: absolute;
+  top: -0.4em;
+  right: -0.6em;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: 0.75em;
+  line-height: 1.5;
+  color: var(--buffer-highlight);
+  background: color-mix(in srgb, var(--buffer-highlight) 24%, var(--bg));
 }
 .link:hover {
   color: var(--fg);

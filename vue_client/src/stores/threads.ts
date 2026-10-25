@@ -115,6 +115,16 @@ export const useThreadsStore = defineStore('threads', {
       return (bufferId: number, rootMsgid: string): FollowedThread | null =>
         this.followedByKey.get(threadKey(bufferId, rootMsgid)) ?? null;
     },
+    // Threads in a buffer with a highlight the user hasn't seen: what lights
+    // the Threads button in the header, since the channel's list hides the
+    // reply itself.
+    highlightedThreadsFor:
+      (state) =>
+      (bufferId: number | null | undefined): number =>
+        bufferId == null
+          ? 0
+          : state.followed.filter((t) => t.bufferId === bufferId && t.unread > 0 && t.highlighted)
+              .length,
     // The server's unread count for a thread; 0 when it isn't followed.
     unreadFor() {
       return (bufferId: number, rootMsgid: string): number =>

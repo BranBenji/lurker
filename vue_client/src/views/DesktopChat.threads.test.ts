@@ -14,6 +14,7 @@ import DesktopChat from './DesktopChat.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useThreadsStore } from '../stores/threads.js';
 
 vi.mock('../composables/useSocket.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../composables/useSocket.js')>();
@@ -113,5 +114,39 @@ describe('DesktopChat — thread panel', () => {
     expect(w.find('.message-list').exists()).toBe(true);
     expect(w.find('.message-list [data-msg-id="1"]').exists()).toBe(true);
     expect(w.find('.members').exists()).toBe(true);
+  });
+
+  it('badges the Threads button while a thread here holds an unread highlight', async () => {
+    const w = await mountAt('/buffer/9');
+    const btn = w.find('.threads-btn');
+    expect(btn.exists()).toBe(true);
+    expect(btn.find('.hl-chip').exists()).toBe(false);
+    useThreadsStore().applyFollowed([
+      {
+        networkId: 1,
+        bufferId: 9,
+        target: '#chan',
+        rootMsgid: 'm1',
+        root: null,
+        unread: 2,
+        highlighted: true,
+        lastReplyId: 5,
+        lastReplyTime: 't',
+      },
+      {
+        networkId: 1,
+        bufferId: 9,
+        target: '#chan',
+        rootMsgid: 'm2',
+        root: null,
+        unread: 1,
+        highlighted: false,
+        lastReplyId: 6,
+        lastReplyTime: 't',
+      },
+    ]);
+    await w.vm.$nextTick();
+    expect(btn.find('.hl-chip').text()).toBe('1');
+    expect(btn.attributes('title')).toContain('1 with a new highlight');
   });
 });
