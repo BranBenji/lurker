@@ -49,7 +49,10 @@ import {
   maxIdForBuffer,
   maxMessageId,
   typeCountsForUnread,
+  listThread,
+  listBufferThreads,
 } from '../db/messages.js';
+import { listFollowedThreads, markThreadRead } from '../db/threadFollows.js';
 import {
   listReadStateForUser,
   getReadState,
@@ -676,9 +679,13 @@ function computeUnreadFor(
   // The server pseudo-buffer applies a notability filter (#470): routine
   // Lurker-generated connection-status notices don't mark it unread, but errors,
   // inbound notices, and closed-buffer mirrors do. Channels/DMs count normally.
+  // With reply threads on, a thread reply counts here only as a highlight
+  // (#1225, THREADS_HIDDEN_SQL): the channel hides it, its thread counts it.
   const unread = target.startsWith(':server:')
     ? countServerBufferUnread(nid, target, lastReadId)
-    : countNewer(nid, target, lastReadId);
+    : countNewer(nid, target, lastReadId, undefined, {
+        threadsHidden: effectiveSetting(userId, 'chat.threads') === true,
+      });
   // A DM is inherently a mention of you, so — like the system buffer — every
   // unread line counts as a highlight. This lights the buffer-list row up in
   // the highlight color and shows the ● badge, surfacing unread DMs above
@@ -798,6 +805,21 @@ export function* eachUserBufferTarget(userId: number): Generator<UserBufferTarge
         }
       }
     }
+  }
+}
+
+// Every buffer's read-state again, for a change that moves the counts without
+// moving a pointer (the reply-threads setting, #1225). One frame per buffer,
+// the shape the live path sends.
+function rebroadcastAllReadState(userId: number): void {
+  for (const { networkId, target, bufferId } of eachUserBufferTarget(userId)) {
+    broadcastReadState(
+      userId,
+      networkId,
+      target,
+      getReadState(userId, networkId, target),
+      bufferId,
+    );
   }
 }
 
@@ -1341,6 +1363,13 @@ function dropFavorite(userId: number, networkId: number, target: string): void {
 // networkId and the parallel-array shape was pins-only back-compat anyway.
 export function favoritesChangedFrame(userId: number): WsPayload {
   return { kind: 'favorites-changed', favorites: listFavoritesForUser(userId) };
+}
+
+// The user's followed reply threads (#1225), whole — one frame shape for the
+// connect seed and every change after it (a thread followed, a reply in one,
+// read), like favorites-changed. The server does the counting so tabs agree.
+export function threadsChangedFrame(userId: number): WsPayload {
+  return { kind: 'threads-changed', threads: listFollowedThreads(userId) };
 }
 
 // Resolve a verb's optional id-form buffer address (docs/CLIENT_PROTOCOL §6):
@@ -2410,7 +2439,12 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         ensureBufferExists(eventUserId, decorated.networkId, target);
       }
     }
+    // A reply changed the user's followed threads (ircConnection.persist) —
+    // a server-side fact for the frame below, not part of the row.
+    const threadsChanged = !!(decorated as { threadsChanged?: boolean }).threadsChanged;
+    delete (decorated as { threadsChanged?: boolean }).threadsChanged;
     fanOut(eventUserId, { ...decorated, kind: 'irc' });
+    if (threadsChanged) fanOut(eventUserId, threadsChangedFrame(eventUserId));
     maybePush(eventUserId, decorated);
     // A friend coming online is a presence transition, not a message, so it
     // bypasses maybePush (no `notify`); push it on its own path.
@@ -2512,6 +2546,12 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     const touchedAway =
       changes && ('away.auto.enabled' in changes || 'away.auto.delay_seconds' in changes);
     if (touchedAway) rescheduleAutoAway(userId);
+    // Reply threads on or off changes what every channel's unread counts
+    // (#1225, computeUnreadFor): recount them all, as a reconnect would.
+    const touchedThreads =
+      (changes && 'chat.threads' in changes) ||
+      (Array.isArray(resets) && resets.includes('chat.threads'));
+    if (touchedThreads) rebroadcastAllReadState(userId);
   });
 
   highlightRulesService.on('change', ({ userId }) => {
@@ -2824,6 +2864,8 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     // handler covers connect and every favorite/unfavorite/reorder after it.
     // User-level (favorites span networks), one frame per snapshot.
     send(ws, favoritesChangedFrame(userId));
+    // Followed reply threads, the same way: one frame covers connect and after.
+    send(ws, threadsChangedFrame(userId));
     const readState = listReadStateForUser(userId);
     const clearedState = listClearedStateForUser(userId);
     // Walk the shared enumerator ONCE per snapshot and reuse it for both the live
@@ -3828,6 +3870,66 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         if (ids.length === 0) break;
         const found = reactionsForMessages(userId, ids);
         send(ws, { kind: 'reactions-sync', messageIds: ids, reactions: Object.fromEntries(found) });
+        break;
+      }
+      case 'thread': {
+        // A reply thread whole, for the thread panel (#1225): its first line
+        // and every reply, decorated like a history page. Answered to this
+        // socket only; `token` is echoed so a client can drop a superseded
+        // answer. A request that can't be resolved is answered empty, so the
+        // panel never waits on nothing.
+        const addr = verbBuffer(userId, msg);
+        const rootMsgid = typeof msg.rootMsgid === 'string' ? msg.rootMsgid : '';
+        if (!addr || addr.networkId == null || !rootMsgid) {
+          send(ws, {
+            kind: 'thread',
+            bufferId: typeof msg.bufferId === 'number' ? msg.bufferId : null,
+            rootMsgid: rootMsgid || null,
+            token: msg.token ?? null,
+            root: null,
+            replies: [],
+            truncated: false,
+          });
+          break;
+        }
+        const notifyAlways = bufferNotifyAlways(userId, addr.networkId, addr.target);
+        const thread = listThread(addr.bufferId, rootMsgid);
+        send(ws, {
+          kind: 'thread',
+          networkId: addr.networkId,
+          target: addr.target,
+          bufferId: addr.bufferId,
+          rootMsgid,
+          token: msg.token ?? null,
+          root: thread.root ? decorateMessage(userId, thread.root, notifyAlways) : null,
+          replies: thread.replies.map((e) => decorateMessage(userId, e, notifyAlways)),
+          truncated: thread.truncated,
+        });
+        break;
+      }
+      case 'threads': {
+        // The buffer's threads by last activity, for the panel's list (#1225).
+        const addr = verbBuffer(userId, msg);
+        if (!addr || addr.networkId == null) break;
+        send(ws, {
+          kind: 'threads',
+          networkId: addr.networkId,
+          target: addr.target,
+          bufferId: addr.bufferId,
+          token: msg.token ?? null,
+          threads: listBufferThreads(addr.bufferId),
+        });
+        break;
+      }
+      case 'thread-read': {
+        // The panel showed replies up to `messageId`. Only a followed thread
+        // has a pointer; the new list reaches every tab.
+        const addr = verbBuffer(userId, msg);
+        const messageId = Number(msg.messageId);
+        if (!addr || typeof msg.rootMsgid !== 'string' || !Number.isInteger(messageId)) break;
+        if (markThreadRead(userId, addr.bufferId, msg.rootMsgid, messageId)) {
+          fanOut(userId, threadsChangedFrame(userId));
+        }
         break;
       }
       case 'set-bookmark': {

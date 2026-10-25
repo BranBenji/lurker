@@ -747,6 +747,25 @@ function migrate() {
     -- The feed's partial index is idx_message_reactions_to_self_standing, below:
     -- it needs removed_at, which a table created here doesn't have yet.
 
+    -- Reply threads the user is part of (#1225, db/threadFollows.ts): a row
+    -- appears when they post in a thread, are highlighted in one, or someone
+    -- answers in a thread they started. The thread is its root msgid in the
+    -- buffer (messages.reply_root_msgid), not a row id, because the root may
+    -- be a line we never held. read_id is the newest reply the user has seen
+    -- in the thread panel — the thread's own unread, since sitting in the
+    -- channel reads the channel's pointer past replies the channel hides.
+    CREATE TABLE IF NOT EXISTS thread_follows (
+      user_id INTEGER NOT NULL,
+      buffer_id INTEGER NOT NULL,
+      root_msgid TEXT NOT NULL,
+      read_id INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      PRIMARY KEY (user_id, buffer_id, root_msgid),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      FOREIGN KEY (buffer_id) REFERENCES buffers(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_thread_follows_buffer ON thread_follows(buffer_id);
+
     -- Saved theme presets: per-user snapshots of the \`themed\` settings-registry
     -- keys (shared/settingsRegistry.ts), stored as one JSON object per theme.
     -- The built-in Dark/Light themes are code (shared/themePresets.ts), never
@@ -1534,8 +1553,8 @@ ensureColumn('messages', 'reply_to_self', 'INTEGER NOT NULL DEFAULT 0');
 // (its parent's root, or — when the parent has none, or isn't one we hold —
 // the parent's msgid). The line that started the thread stores nothing; it's
 // found by its own msgid. So a whole thread is its root row (idx_messages_msgid)
-// plus every row naming it here, and reply_msgid on each links the tree. Kept
-// for a threaded "forum" view of a channel; nothing reads it for display yet.
+// plus every row naming it here, and reply_msgid on each links the tree. Read
+// by the thread panel (listThread in db/messages.ts, db/threadFollows.ts).
 ensureColumn('messages', 'reply_root_msgid', 'TEXT');
 // A thread's replies in one range: (buffer, root). Partial — replies only.
 db.exec(`CREATE INDEX IF NOT EXISTS idx_messages_reply_root

@@ -45,6 +45,17 @@ export interface QuotedLine extends ReplyParent {
 export interface ReplyContext {
   msgid: string;
   parent: ReplyParent | null;
+  // The msgid at the top of the reply's thread (#1225): the parent's own root,
+  // or the parent itself when it has none. What a thread opens on. Absent only
+  // on a row stored before roots were tracked.
+  root?: string;
+}
+
+// Replies in the thread a line started, for the chip under it (#1225):
+// how many, and when the newest arrived. Only on a line with replies.
+export interface ThreadStats {
+  replies: number;
+  lastReplyTime: string;
 }
 
 // The msgid a line replies to, from its tags. `+reply` is the ratified name;
