@@ -824,8 +824,9 @@ useChatBootstrap({ onJump: onJumpToMessage });
   --members-w: 0px;
 }
 /* The thread panel (#1225): a fourth column bolted to the side, every row of
-   the grid, so its head is level with the topic bar and its composer with the
-   main one. Zero-width (and unmounted) when no thread is up. */
+   the grid, so its head is level with the topic bar and its composer, at rest,
+   with the main one (it keeps out of the input row, which is the main
+   composer's alone). Zero-width (and unmounted) when no thread is up. */
 .chat.thread-open {
   --thread-w: min(380px, 40vw);
 }

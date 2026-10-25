@@ -6,8 +6,9 @@
 <!--
   The reply thread panel (#1225). On desktop it is a column bolted to the side
   of the chat: its rows are the chat grid's (subgrid), so its head sits level
-  with the topic bar, its lines with the message list, its status line with the
-  status bar and its composer with the main one. On mobile (`screen`) it is a
+  with the topic bar, and its lines and composer fill the rows of the message
+  list, status bar and main composer, the composer at the foot, level with the
+  main one at rest and growing up into the lines. On mobile (`screen`) it is a
   screen over the buffer, headed by the shell's bar.
 
   Two modes, by route (useThreadRoute):
@@ -50,7 +51,11 @@
 
     <ThreadList v-if="mode === 'list' && bufferId != null" :buffer-id="bufferId" />
 
-    <template v-else>
+    <!-- The lines and the composer share one column, so the composer grows
+         up into the panel's own space. On the grid that column spans the
+         lines, status and input rows; were the composer on the input row
+         itself, a long reply would grow that row under the main composer too. -->
+    <div v-else class="thread-body">
       <div
         ref="scroller"
         class="lines"
@@ -145,11 +150,10 @@
         </template>
       </div>
       <!-- Keyed by thread: a half-typed reply never follows the panel to
-           another thread. On the grid it takes the status bar's row as well as
-           the composer's (nothing of the status bar applies here) and sits at
-           the bottom, level with the main input. -->
+           another thread. At rest it is the main input's height, so the two
+           composers' text sits level. -->
       <ThreadComposer :key="viewKey" ref="composerRef" />
-    </template>
+    </div>
     <!-- Inside the root on purpose: the shells place the panel by its root
          class through their scoped styles, which a fragment root would lose. -->
     <IgnoreModal
@@ -683,13 +687,23 @@ function onLineClick(e: MouseEvent, m: ThreadMessage): void {
 .thread-panel:not(.screen) > .thread-list {
   grid-row: span 3;
 }
-/* The lines take the status bar's row too (nothing of the status bar applies
-   here), so the avatar gutter's hairline runs down to the composer, which
-   keeps the main input's row; the rule above it is the status bar's. */
-.thread-panel:not(.screen) > .lines {
-  grid-row: span 2;
+/* The lines and the composer, one column over the lines, status and input
+   rows (nothing of the status bar applies here), so the avatar gutter's
+   hairline runs down to the composer. The composer is not on the input row:
+   that row is the main composer's alone, and a long reply grows up into the
+   lines instead of under the main composer. */
+.thread-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
 }
-.thread-panel > .thread-input {
+.thread-panel:not(.screen) > .thread-body {
+  grid-row: span 3;
+}
+.thread-panel.screen > .thread-body {
+  flex: 1;
+}
+.thread-body > .thread-input {
   border-top: 1px solid var(--border);
 }
 
