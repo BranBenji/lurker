@@ -239,4 +239,38 @@ describe('reply threads over the socket', () => {
       { rootMsgid: 'q', unread: 0 },
     ]);
   });
+
+  it('`mark-all-read` takes every followed thread to its newest reply too', async () => {
+    const { insertMessage } = await import('../db/messages.js');
+    const { followThread } = await import('../db/threadFollows.js');
+    // A second thread the user is in, with a reply they haven't seen.
+    insertMessage({
+      networkId,
+      target: CHANNEL,
+      time: new Date().toISOString(),
+      type: 'message',
+      nick: 'alice',
+      text: 'second question',
+      msgid: 's',
+    });
+    insertMessage({
+      networkId,
+      target: CHANNEL,
+      time: new Date().toISOString(),
+      type: 'message',
+      nick: 'bob',
+      text: 'second answer',
+      msgid: 's1',
+      replyMsgid: 's',
+      replyRootMsgid: 's',
+    });
+    followThread(userId, bufferId, 's', 0);
+    const all = await session({ type: 'mark-all-read' }, 'threads-changed');
+    const threads = all.after.find((f) => f.kind === 'threads-changed')?.threads as Array<{
+      rootMsgid: string;
+      unread: number;
+    }>;
+    expect(threads.find((t) => t.rootMsgid === 's')?.unread).toBe(0);
+    expect(threads.every((t) => t.unread === 0)).toBe(true);
+  });
 });

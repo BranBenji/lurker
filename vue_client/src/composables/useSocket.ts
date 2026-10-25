@@ -934,7 +934,18 @@ function handleMessage(raw: string): void {
     useBookmarksStore().noteFromEvents(payload.events, payload.networkId);
     useReactionsStore().noteFromEvents(payload.events, payload.networkId);
     primeEventPreviews(payload.events, payload.networkId, payload.target);
+    // A gap-fill's replies count on their loaded first lines (stores/threads,
+    // #1225): the newest row held BEFORE the fill is the line between a replay
+    // and a reply the live path never saw.
+    const held =
+      payload.mode === 'append' && payload.networkId != null
+        ? useBuffersStore().findByTarget(payload.networkId, payload.target)
+        : null;
+    const heldMax = Number(held?.messages.at(-1)?.id ?? 0);
     applyBacklog(payload);
+    if (held && Array.isArray(payload.events)) {
+      useThreadsStore().noteGapFill(payload.events, heldMax);
+    }
     return;
   }
   if (payload.kind === 'history') {

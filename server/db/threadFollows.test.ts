@@ -217,6 +217,20 @@ describe('noteThreadReply', () => {
   });
 });
 
+describe('markAllThreadsRead', () => {
+  it('takes every follow to its newest reply, forward only, and says whether any moved', () => {
+    const a = thread(1);
+    const b = thread(1);
+    tf.followThreadIfAbsent(userId, a.bufferId, a.root, 0);
+    tf.followThreadIfAbsent(userId, b.bufferId, b.root, b.replyId);
+    expect(tf.markAllThreadsRead(userId)).toBe(true);
+    const list = tf.listFollowedThreads(userId, NOW);
+    expect(list.find((t) => t.rootMsgid === a.root)?.unread).toBe(0);
+    expect(list.find((t) => t.rootMsgid === b.root)?.unread).toBe(0);
+    expect(tf.markAllThreadsRead(userId)).toBe(false);
+  });
+});
+
 describe('markThreadRead', () => {
   it('never moves the pointer back', () => {
     const t = thread(1);

@@ -52,7 +52,7 @@ import {
   listThread,
   listBufferThreads,
 } from '../db/messages.js';
-import { listFollowedThreads, markThreadRead } from '../db/threadFollows.js';
+import { listFollowedThreads, markAllThreadsRead, markThreadRead } from '../db/threadFollows.js';
 import {
   listReadStateForUser,
   getReadState,
@@ -2415,6 +2415,9 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         // bufferId, so without a re-publish they'd render a ghost entry for
         // the absorbed id until the next favorites mutation or reconnect.
         fanOut(eventUserId, favoritesChangedFrame(eventUserId));
+        // Same for the absorbed row's thread follows (#1225): they ride to the
+        // survivor's id, and clients key them by bufferId.
+        scheduleThreadsChanged(eventUserId);
         if (ev.draftChanged) {
           const draft = getDraftForBuffer(eventUserId, ev.bufferId);
           fanOut(eventUserId, {
@@ -2574,7 +2577,12 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     const touchedThreads =
       (changes && 'chat.threads' in changes) ||
       (Array.isArray(resets) && resets.includes('chat.threads'));
-    if (touchedThreads) rebroadcastAllReadState(userId);
+    if (touchedThreads) {
+      rebroadcastAllReadState(userId);
+      // And the followed list: with the setting off nothing publishes a follow's
+      // moving count, so turning it on serves the counts as they stand.
+      scheduleThreadsChanged(userId);
+    }
   });
 
   highlightRulesService.on('change', ({ userId }) => {
@@ -3560,6 +3568,9 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
             broadcastReadState(userId, networkId, target, after);
           }
         }
+        // The reply threads the user is in have pointers of their own (#1225):
+        // "all" takes those to their newest reply too.
+        if (markAllThreadsRead(userId)) scheduleThreadsChanged(userId);
         break;
       }
       case 'input-history-add': {

@@ -117,6 +117,27 @@ export function markThreadRead(
   return readStmt.run(messageId, userId, bufferId, rootMsgid, messageId).changes > 0;
 }
 
+// "Mark all read" means the threads too: every follow's pointer goes to its
+// thread's newest reply. Only forward, and only rows that move, so the caller
+// can tell whether there is a new list to send.
+const readAllStmt = db.prepare(`
+  UPDATE thread_follows SET read_id = (
+    SELECT max(m.id) FROM messages m INDEXED BY idx_messages_reply_root
+     WHERE m.buffer_id = thread_follows.buffer_id
+       AND m.reply_root_msgid = thread_follows.root_msgid
+  )
+  WHERE user_id = ? AND read_id < COALESCE((
+    SELECT max(m.id) FROM messages m INDEXED BY idx_messages_reply_root
+     WHERE m.buffer_id = thread_follows.buffer_id
+       AND m.reply_root_msgid = thread_follows.root_msgid
+  ), 0)
+`);
+
+/** Every followed thread read through its newest reply. True when any moved. */
+export function markAllThreadsRead(userId: number): boolean {
+  return readAllStmt.run(userId).changes > 0;
+}
+
 const followsStmt = db.prepare(`
   SELECT f.buffer_id AS bufferId, f.root_msgid AS rootMsgid, f.read_id AS readId,
          b.network_id AS networkId, b.target AS target

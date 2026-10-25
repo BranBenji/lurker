@@ -139,6 +139,54 @@ describe('threads store', () => {
     expect(threads.wantComposer).toBe(true);
   });
 
+  it('a refresh that comes back empty leaves no held reply behind', () => {
+    seed();
+    const threads = useThreadsStore();
+    threads.open(9, 'root');
+    threads.applyThread({
+      bufferId: 9,
+      rootMsgid: 'root',
+      token: threads.view!.token,
+      root: null,
+      replies: [line(2, { replyTo: { msgid: 'root', root: 'root', parent: null } })],
+    });
+    // Re-opened (a reconnect): the held reply predates the request, so an
+    // empty answer (retention took the thread) replaces it. A reply that
+    // lands while the request is out stays.
+    threads.open(9, 'root');
+    threads.applyLive(line(3, { replyTo: { msgid: 'root', root: 'root', parent: null } }));
+    threads.applyThread({
+      bufferId: 9,
+      rootMsgid: 'root',
+      token: threads.view!.token,
+      root: null,
+      replies: [],
+    });
+    expect(threads.view?.replies.map((r) => r.id)).toEqual([3]);
+  });
+
+  it('a reconnect’s gap-fill counts on the loaded first line, replays and fresh roots aside', () => {
+    const root = line(1, { msgid: 'root', thread: { replies: 1, lastReplyTime: 'old' } });
+    const other = line(5, { msgid: 'other' });
+    seed([root, other]);
+    const threads = useThreadsStore();
+    const reply = (id: number, to: string) =>
+      line(id, { replyTo: { msgid: to, root: to, parent: null } });
+    threads.noteGapFill(
+      [
+        reply(2, 'root'), // held already (a replay): not counted
+        reply(6, 'root'), // new: counted
+        line(7, { msgid: 'fresh', thread: { replies: 1, lastReplyTime: 't' } }),
+        reply(8, 'fresh'), // its first line is in the frame with its count: not counted again
+        reply(9, 'other'),
+      ],
+      5,
+    );
+    const inChannel = useBuffersStore().byId(9)!.messages as ThreadMessage[];
+    expect(inChannel[0].thread?.replies).toBe(2);
+    expect(inChannel[1].thread?.replies).toBe(1);
+  });
+
   it('a reply to another thread leaves the open one alone', () => {
     seed([line(1, { msgid: 'root' }), line(5, { msgid: 'other' })]);
     const threads = useThreadsStore();
@@ -184,8 +232,14 @@ describe('threads store', () => {
     // Nobody else yet: the first line.
     threads.view!.replies = [reply(4, { nick: 'me', self: true })];
     expect(threads.replyTarget()).toMatchObject({ messageId: 1, nick: 'alice' });
-    // Neither held: the oldest reply we do hold.
+    // Never someone ignored, as a fallback either.
+    threads.view!.root = line(1, { msgid: 'root', nick: 'troll', fromIgnored: true });
+    expect(threads.replyTarget()).toMatchObject({ messageId: 4, nick: 'me' });
+    threads.view!.replies = [reply(5, { nick: 'troll', fromIgnored: true })];
+    expect(threads.replyTarget()).toBeNull();
+    // The first line not held: the oldest reply we do hold.
     threads.view!.root = null;
+    threads.view!.replies = [reply(4, { nick: 'me', self: true })];
     expect(threads.replyTarget()).toMatchObject({ messageId: 4, nick: 'me' });
     threads.view!.replies = [];
     expect(threads.replyTarget()).toBeNull();

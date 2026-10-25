@@ -534,7 +534,9 @@ watch(
 // message list does. The pin is read after the tick: a load that centred a
 // focused reply has just cleared it.
 watch(
-  () => view.value?.replies.length,
+  // The tail's id, not the length: at the cap an arrival evicts the oldest
+  // and the length stands still.
+  () => view.value?.replies.at(-1)?.id,
   async () => {
     await nextTick();
     if (!atBottom.value) return;

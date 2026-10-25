@@ -54,6 +54,10 @@ export interface ThreadView {
   loading: boolean;
   truncated: boolean;
   token: number;
+  // The newest reply held when the `thread` request went out: what the
+  // answer must be newer than for a held reply to count as a live arrival
+  // the answer missed (applyThread).
+  sinceId: number;
 }
 
 export interface ThreadList {
@@ -143,6 +147,7 @@ export const useThreadsStore = defineStore('threads', {
         loading: !same,
         truncated: same ? this.view!.truncated : false,
         token,
+        sinceId: same ? (this.view!.replies.at(-1)?.id ?? 0) : 0,
       };
       socketSend({ type: 'thread', bufferId, rootMsgid, token });
     },
@@ -164,11 +169,15 @@ export const useThreadsStore = defineStore('threads', {
       if (!v || v.bufferId !== frame.bufferId || v.rootMsgid !== frame.rootMsgid) return;
       if (frame.token != null && frame.token !== v.token) return;
       v.root = frame.root ?? null;
-      // Live replies that landed between the request and this answer stay.
+      // Live replies that landed between the request and this answer stay:
+      // newer than anything held when the request went out AND than anything
+      // the answer carries. What was held before the request is the answer's
+      // to replace — a refresh after retention took the thread comes back
+      // empty, and must leave nothing behind.
       const replies = Array.isArray(frame.replies) ? frame.replies : [];
       const ids = new Set(replies.map((r) => r.id));
-      const newest = replies.at(-1)?.id ?? 0;
-      const late = v.replies.filter((r) => !ids.has(r.id) && r.id > newest);
+      const floor = Math.max(replies.at(-1)?.id ?? 0, v.sinceId);
+      const late = v.replies.filter((r) => !ids.has(r.id) && r.id > floor);
       v.replies = [...replies, ...late];
       v.truncated = !!frame.truncated;
       v.loading = false;
@@ -217,6 +226,28 @@ export const useThreadsStore = defineStore('threads', {
         }
       }
       if (event.fromIgnored) return;
+      this.countReply(event, root);
+    },
+
+    // A reconnect's gap-fill (a `backlog` in append mode) brings replies the
+    // live path never saw: count them on their loaded first lines as a live one
+    // is counted. Only rows newer than what the buffer held (`heldMax`) — a
+    // replay is already counted — and not when the first line itself is in the
+    // frame, since it arrives with its count fresh from the server. The open
+    // panel refetches on its own when the socket comes back.
+    noteGapFill(events: ThreadMessage[], heldMax: number) {
+      const fresh = new Set(events.map((e) => e.msgid).filter(Boolean));
+      for (const e of events) {
+        const root = e.replyTo?.root;
+        if (!root || e.id == null || e.id <= heldMax || e.fromIgnored || fresh.has(root)) continue;
+        this.countReply(e, root);
+      }
+    },
+
+    // One more reply in `root`'s thread, wherever that line is loaded: in the
+    // channel, as the panel's own first line, and in the list if it's up.
+    countReply(event: ThreadMessage, root: string) {
+      if (typeof event.bufferId !== 'number') return;
       const bump = (line: ThreadMessage | undefined) => {
         if (!line) return;
         line.thread = {
@@ -224,7 +255,8 @@ export const useThreadsStore = defineStore('threads', {
           lastReplyTime: String(event.time ?? line.thread?.lastReplyTime ?? ''),
         };
       };
-      if (inView && v.root) bump(v.root);
+      const v = this.view;
+      if (v && v.bufferId === event.bufferId && v.rootMsgid === root) bump(v.root ?? undefined);
       // The line carrying that msgid is the root by definition.
       const buf = useBuffersStore().byId(event.bufferId);
       bump(buf?.messages.find((m) => m.msgid === root) as ThreadMessage | undefined);
@@ -284,8 +316,8 @@ export const useThreadsStore = defineStore('threads', {
       const v = this.view;
       if (!v) return null;
       const usable = (m: ThreadMessage | null | undefined): m is ThreadMessage =>
-        !!m && !!m.msgid && !m.e2e;
-      const theirs = v.replies.filter((r) => !r.self && !r.fromIgnored && usable(r));
+        !!m && !!m.msgid && !m.e2e && !m.fromIgnored;
+      const theirs = v.replies.filter((r) => !r.self && usable(r));
       const line = theirs.at(-1) ?? (usable(v.root) ? v.root : null) ?? v.replies.find(usable);
       if (!line) return null;
       return {
