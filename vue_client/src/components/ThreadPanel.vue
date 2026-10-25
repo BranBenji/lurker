@@ -491,9 +491,19 @@ function segments(m: ThreadMessage, text: string | undefined): RenderSegment[] {
 // ─── Scrolling and read state ────────────────────────────────────────────
 
 const atBottom = ref(true);
+// The scroller's height as last seen. A shrink (the composer growing, a
+// window resize) can fire a scroll event BEFORE the ResizeObserver's
+// callback, measured with the new height and the old scrollTop, which would
+// read as the reader having scrolled up and drop the pin the observer is
+// about to keep. Such a scroll changes nothing here (MessageList's guard).
+let lastClientHeight = 0;
 function onScroll(): void {
   const el = scroller.value;
   if (!el) return;
+  if (el.clientHeight !== lastClientHeight) {
+    lastClientHeight = el.clientHeight;
+    return;
+  }
   atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
 }
 
@@ -508,12 +518,16 @@ function scrollToBottom(): void {
 const scrollerObserver =
   typeof ResizeObserver !== 'undefined'
     ? new ResizeObserver(() => {
+        lastClientHeight = scroller.value?.clientHeight ?? 0;
         if (atBottom.value) scrollToBottom();
       })
     : null;
 watch(scroller, (el, old) => {
   if (old) scrollerObserver?.unobserve(old);
-  if (el) scrollerObserver?.observe(el);
+  if (el) {
+    lastClientHeight = el.clientHeight;
+    scrollerObserver?.observe(el);
+  }
 });
 
 function scrollToId(id: number, pulse: boolean): boolean {

@@ -242,7 +242,10 @@ describe('ThreadPanel', () => {
       Object.defineProperty(el, 'clientHeight', { configurable: true, value: 300 });
       el.scrollTop = 600;
       await w.find('.lines').trigger('scroll');
+      // The shrink's own scroll event can come first, measured with the new
+      // height and the old scrollTop: it mustn't drop the pin.
       Object.defineProperty(el, 'clientHeight', { configurable: true, value: 200 });
+      await w.find('.lines').trigger('scroll');
       fire!();
       expect(el.scrollTop).toBe(900);
 
