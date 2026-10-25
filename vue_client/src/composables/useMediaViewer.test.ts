@@ -14,15 +14,12 @@ beforeEach(() => useMediaViewer().close());
 describe('ownDecodeUrl — the viewer never shares the inline image’s decode', () => {
   // Safari 27 lays a second <img> on an already-drawn URL out at the SMALL decode's size
   // (lurker#1163). A different URL is a different resource, and that is the whole fix.
-  it('gives a proxy path a query of its own', () => {
+  it('gives a minted src a query of its own', () => {
     expect(ownDecodeUrl('/api/link-preview/media/tok.sig')).toBe(
       '/api/link-preview/media/tok.sig?view=full',
     );
-  });
-
-  it('extends a query that is already there rather than starting a second one', () => {
-    expect(ownDecodeUrl('https://cdn.example.test/previews/abc?x=1')).toBe(
-      'https://cdn.example.test/previews/abc?x=1&view=full',
+    expect(ownDecodeUrl('https://cdn.example.test/previews/abc')).toBe(
+      'https://cdn.example.test/previews/abc?view=full',
     );
   });
 });

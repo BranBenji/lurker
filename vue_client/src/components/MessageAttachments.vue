@@ -157,7 +157,7 @@ function openAt(item: LinkPreview): void {
   const at = gallery.indexOf(item);
   if (at === -1) return;
   viewer.openGallery(
-    gallery.map((p) => ({ url: p.src ? ownDecodeUrl(p.src) : p.url, shareUrl: p.url })),
+    gallery.map((p) => ({ url: p.src != null ? ownDecodeUrl(p.src) : p.url, shareUrl: p.url })),
     at,
   );
 }

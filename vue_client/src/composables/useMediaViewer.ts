@@ -62,11 +62,15 @@ const index = ref(0);
  * A distinct URL is a distinct resource with its own decode, which is all the viewer needs.
  * The query is ignored by the media route (Express matches the path; pinned in
  * linkPreview.media.test.ts) and by an S3-style CDN serving the byte cache, and `immutable`
- * keeps the second fetch to one per image per day. ⚠ Only for OUR minted `src`, never an
- * origin URL — a stranger's query may be a signature.
+ * keeps the second fetch to one per image per day — paid on every engine, not only the one
+ * with the defect, because an image the reader has clicked to see is the cheapest thing this
+ * relay ever moves. ⚠ Only for OUR minted `src`, never an origin URL — a stranger's query may
+ * be a signature. A minted `src` is a bare path or a bare CDN object URL (`toDescriptor`),
+ * never a query or a fragment, so a plain `?` is the whole of it; a `&`/fragment branch here
+ * would be guessing at shapes that cannot arrive.
  */
 export function ownDecodeUrl(src: string): string {
-  return `${src}${src.includes('?') ? '&' : '?'}view=full`;
+  return `${src}?view=full`;
 }
 
 export function useMediaViewer() {
