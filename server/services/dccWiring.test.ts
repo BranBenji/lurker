@@ -36,6 +36,8 @@ import { crc32Hex, crc32Update } from './dcc.js';
 import { setDccStorageLimit } from '../db/dccStorageLimits.js';
 import { forgetDccFile } from '../db/dccFiles.js';
 import { IrcConnection } from './ircConnection.js';
+import ignoreRulesService from './ignoreRulesService.js';
+import { getState as getBufferState } from '../db/buffers.js';
 import { stubCtcpRequest } from '../test-utils/ctcpStub.js';
 import { startTlsPeer } from '../test-utils/dccTlsPeer.js';
 
@@ -275,6 +277,158 @@ describe('inbound DCC SEND — disabled (gate closed)', () => {
     } finally {
       setUserCapability(1, CAPABILITY_DCC_CHAT, false);
     }
+  });
+});
+
+// Someone whose DMs the user hides can't offer them anything (irssi drops DCC
+// requests from an ignored nick): no row, no status line, and so no DM opened
+// by it. The request is judged as the DM it would have been, so a rule scoped
+// to a channel never covers it, and an answer to something we started — or a
+// bot's SEND for a pack the user asked for — still goes through.
+describe('inbound DCC from an ignored nick', () => {
+  function ignore(mask: string, levels: string[], channels: string[] | null = null): void {
+    const added = ignoreRulesService.add(1, 1, {
+      mask,
+      channels,
+      pattern: null,
+      patternKind: 'substr',
+      levels,
+      isExcept: false,
+      expiresAt: null,
+    });
+    if (!added.ok) throw new Error(added.error);
+  }
+  afterEach(() => {
+    for (const rule of ignoreRulesService.list(1, 1)) ignoreRulesService.removeById(1, 1, rule.id);
+  });
+  const offer = (conn: IrcConnection, nick: string) =>
+    conn.client.emit('ctcp request', {
+      nick,
+      ident: 'u',
+      hostname: 'example.host',
+      type: 'DCC',
+      message: 'DCC SEND f.bin 16843009 50612 1024',
+    });
+
+  it('drops the offer without a row, a line or a DM', () => {
+    enableDcc();
+    ignore('grima!*@*', ['ALL']);
+    const { conn, ctcpLines } = harness();
+    offer(conn, 'grima');
+    expect(listDccTransfers(1)).toHaveLength(0);
+    expect(ctcpLines()).toEqual([]);
+    expect(getBufferState(1, 1, 'grima')).toBeUndefined();
+    offer(conn, 'eomer');
+    expect(listDccTransfers(1).map((r) => r.peer_nick)).toEqual(['eomer']);
+  });
+
+  it('drops it silently where DCC is off, too', () => {
+    ignore('grima!*@*', ['ALL']);
+    const { conn, ctcpLines } = harness();
+    offer(conn, 'grima');
+    expect(ctcpLines()).toEqual([]);
+  });
+
+  it('drops it for a rule that hides only their DMs', () => {
+    enableDcc();
+    ignore('grima!*@*', ['MSGS']);
+    const { conn } = harness();
+    offer(conn, 'grima');
+    expect(listDccTransfers(1)).toHaveLength(0);
+  });
+
+  it('lets it through for a rule on their channel lines, or scoped to a channel', () => {
+    enableDcc();
+    ignore('grima!*@*', ['PUBLIC']);
+    ignore('eomer!*@*', ['ALL'], ['#lotr']);
+    const { conn } = harness();
+    offer(conn, 'grima');
+    offer(conn, 'eomer');
+    expect(
+      listDccTransfers(1)
+        .map((r) => r.peer_nick)
+        .sort(),
+    ).toEqual(['eomer', 'grima']);
+  });
+
+  // Ignored with a pack still in its queue: the SEND answers the request the
+  // user armed, so the download goes ahead.
+  it("still takes a bot's SEND for a pack the user asked for", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-dcc-ignore-xdcc-'));
+    process.env.LURKER_DCC_DIR = tmpDir;
+    process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1';
+    enableDcc();
+    const payload = makePayload(8_000);
+    const sender = await startSender(payload);
+    activeSender = sender;
+    const { conn } = harness();
+    conn.client.say = vi.fn<(target: string, text: string) => void>();
+    conn.say('bot', 'xdcc send #1');
+    ignore('bot!*@*', ['ALL']);
+    conn.client.emit('ctcp request', {
+      nick: 'bot',
+      ident: 'u',
+      hostname: 'example.host',
+      type: 'DCC',
+      message: `DCC SEND pack.bin 2130706433 ${sender.port} ${payload.length}`,
+    });
+    await waitFor(() => listDccTransfers(1)[0]?.state === 'completed', 5000);
+    expect(fs.readFileSync(listDccTransfers(1)[0].destination_path as string).equals(payload)).toBe(
+      true,
+    );
+  });
+
+  // Ignored mid-transfer: the ACCEPT answers the RESUME we sent, so it isn't an
+  // offer, and the transfer the user started finishes.
+  it('still takes the answer to a resume we asked for', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lurker-dcc-ignore-resume-'));
+    process.env.LURKER_DCC_DIR = tmpDir;
+    process.env.LURKER_DCC_ALLOW_PRIVATE_HOSTS = '1';
+    enableDcc();
+    const full = makePayload(20_000);
+    const have = 5_000;
+    const userDir = path.join(tmpDir, 'dcc-wire-alice');
+    fs.mkdirSync(userDir, { recursive: true });
+    const partialPath = path.join(userDir, 'ep.mkv');
+    fs.writeFileSync(partialPath, full.subarray(0, have));
+    const priorId = insertDccTransfer(1, {
+      network_id: 1,
+      peer_nick: 'bot',
+      filename: 'ep.mkv',
+      advertised_size: full.length,
+      state: 'requested',
+    });
+    markDccReceiving(priorId, {
+      filename: 'ep.mkv',
+      advertised_size: full.length,
+      destination_path: partialPath,
+      received_bytes: have,
+    });
+    updateDccTransferState(priorId, 'failed', 'interrupted');
+    const sender = await startSender(full.subarray(have));
+    activeSender = sender;
+    const { conn } = harness();
+    conn.client.say = vi.fn<(target: string, text: string) => void>();
+    const resumeReq = vi.fn<(target: string, type: string, ...p: string[]) => void>();
+    stubCtcpRequest(conn, resumeReq);
+    conn.say('bot', 'xdcc send #1');
+    conn.client.emit('ctcp request', {
+      nick: 'bot',
+      type: 'DCC',
+      message: `DCC SEND ep.mkv 2130706433 ${sender.port} ${full.length}`,
+    });
+    expect(resumeReq).toHaveBeenCalledWith('bot', 'DCC', `RESUME ep.mkv ${sender.port} ${have}`);
+
+    ignore('bot!*@*', ['ALL']);
+    conn.client.emit('ctcp request', {
+      nick: 'bot',
+      ident: 'u',
+      hostname: 'example.host',
+      type: 'DCC',
+      message: `DCC ACCEPT ep.mkv ${sender.port} ${have}`,
+    });
+    await waitFor(() => listDccTransfers(1)[0]?.state === 'completed', 5000);
+    expect(fs.readFileSync(partialPath).equals(full)).toBe(true);
   });
 });
 
