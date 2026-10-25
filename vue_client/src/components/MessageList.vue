@@ -1641,14 +1641,19 @@ const renderRows = computed((): RenderRow[] => {
 // Tell the buffers store whether the unread divider is on screen
 // (lib/unreadDivider): a live line keeps a boundary only when it is, and one
 // past the read pointer can be hidden here (an ignored sender, a thread reply,
-// a filtered join) with nothing visible under it.
+// a filtered join) with nothing visible under it. Unmounted, the list says
+// nothing, and the store goes back to its own rule.
+const drawsUnreadDivider = computed(() => renderRows.value.some((r) => r.divider === 'unread'));
 watch(
-  () => [networks.activeKey, renderRows.value.some((r) => r.divider === 'unread')] as const,
+  () => [networks.activeKey, drawsUnreadDivider.value] as const,
   ([key, on]) => {
     if (key) setUnreadDividerShown(key, on);
   },
   { immediate: true },
 );
+onBeforeUnmount(() => {
+  if (networks.activeKey) setUnreadDividerShown(networks.activeKey, null);
+});
 
 // The origin-network name for a system-buffer line (#355), or null when the
 // line is network-agnostic. Preferred source is the stable id, resolved to the

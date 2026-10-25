@@ -7,7 +7,7 @@ import { useToastsStore } from './toasts.js';
 import { socketSend } from '../composables/useSocket.js';
 import { seenEventCursor } from '../lib/seenEventCursor.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
-import { unreadDividerShown } from '../lib/unreadDivider.js';
+import { setUnreadDividerShown, unreadDividerShown } from '../lib/unreadDivider.js';
 import { historyCountBy } from '../lib/historyPaging.js';
 import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
 
@@ -695,16 +695,20 @@ export const useBuffersStore = defineStore('buffers', {
           // While the user is sitting in this buffer, keep the divider
           // tracking the bottom UNLESS there's already an unread boundary
           // visible (i.e. they entered with unread and may not have caught
-          // up). No row past it, or none the list shows (an ignored sender's
-          // line, a filtered join: lib/unreadDivider), is "no boundary
-          // currently shown" — in that case a fresh arrival shouldn't
-          // materialize one, over the user's own line or anyone's.
-          if (
-            buf.dividerAfterId != null &&
-            (buf.dividerAfterId >= prevMaxId ||
-              !unreadDividerShown(bufferKey(buf.networkId, buf.target)))
-          ) {
-            buf.dividerAfterId = event.id;
+          // up). No row past it is "no boundary currently shown" — in that
+          // case a fresh arrival shouldn't materialize one. Nor is a boundary
+          // the list draws nothing under (an ignored sender's line, a filtered
+          // join: lib/unreadDivider), or it lands over the next visible line,
+          // the user's own included. The list's word counts only once it has
+          // given one this visit, and not before the backlog has loaded: a
+          // shell holding one stray hidden line hasn't the rows yet that the
+          // boundary is for.
+          if (buf.dividerAfterId != null) {
+            const listSays = buf.unseeded
+              ? null
+              : unreadDividerShown(bufferKey(buf.networkId, buf.target));
+            const noBoundary = listSays === null ? buf.dividerAfterId >= prevMaxId : !listSays;
+            if (noBoundary) buf.dividerAfterId = event.id;
           }
           // Keep the server's lastReadId synced live. Sending on each live
           // message (rather than only on switch-away) means a tab close,
@@ -1641,7 +1645,11 @@ export const useBuffersStore = defineStore('buffers', {
       // Snapshot the divider from the CURRENT lastReadId before we advance
       // it below. The divider stays pinned to this snapshot for the
       // duration of the visit (cleared on switch-away).
-      if (buf.dividerAfterId == null) buf.dividerAfterId = buf.lastReadId || 0;
+      if (buf.dividerAfterId == null) {
+        buf.dividerAfterId = buf.lastReadId || 0;
+        // A new visit: what the list said about the last one doesn't hold.
+        setUnreadDividerShown(newKey, null);
+      }
       buf.unread = 0;
       buf.highlighted = 0;
       buf.highlightsCapped = false;

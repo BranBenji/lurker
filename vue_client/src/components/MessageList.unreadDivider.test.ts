@@ -14,6 +14,7 @@ import MessageList from './MessageList.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useIgnoresStore } from '../stores/ignores.js';
+import { setUnreadDividerShown, unreadDividerShown } from '../lib/unreadDivider.js';
 
 vi.mock('../composables/useSocket.js', () => ({
   socketSend: vi.fn<() => boolean>(() => true),
@@ -36,7 +37,7 @@ const line = (id: number, nick: string) => ({
   self: nick === 'me',
 });
 
-// Read through alice's line; grim's came in after, then the user opened the
+// Read through alice's line; grima's came in after, then the user opened the
 // channel (the divider snapshots the pointer, then it advances).
 function enter() {
   const networks = useNetworksStore();
@@ -71,7 +72,10 @@ function ignoreGrima() {
 }
 
 describe('MessageList — the unread divider over hidden lines', () => {
-  beforeEach(() => setActivePinia(createPinia()));
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    setUnreadDividerShown('1::#chan', null);
+  });
   afterEach(() => {
     wrapper?.unmount();
     wrapper = null;
@@ -94,8 +98,18 @@ describe('MessageList — the unread divider over hidden lines', () => {
     expect(w.find('.unread-divider').exists()).toBe(true);
     buffers.pushMessage(line(12, 'me') as never);
     await w.vm.$nextTick();
-    // Still above grima's line, not moved down to the user's.
+    // Still there, above grima's line, not moved down to the user's.
     const html = w.html();
+    expect(html.indexOf('unread-divider')).toBeGreaterThanOrEqual(0);
     expect(html.indexOf('unread-divider')).toBeLessThan(html.indexOf('data-msg-id="11"'));
+  });
+
+  it('says nothing once unmounted', async () => {
+    const { w } = enter();
+    await w.vm.$nextTick();
+    expect(unreadDividerShown('1::#chan')).toBe(true);
+    w.unmount();
+    wrapper = null;
+    expect(unreadDividerShown('1::#chan')).toBeNull();
   });
 });
