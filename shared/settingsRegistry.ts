@@ -1978,8 +1978,9 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
     type: 'bool',
     default: false,
     description:
-      'An avatar beside each author in the compact layout. The standard layout has no room ' +
-      'for one.',
+      'An avatar beside each author in the compact layout. Uses placeholders selected below if ' +
+      "the user does not have an avatar or avatars aren't supported by the server. Only displays " +
+      'in Compact message layouts.',
   },
   {
     key: 'look.avatars.set',
