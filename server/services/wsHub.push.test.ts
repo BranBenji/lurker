@@ -183,11 +183,12 @@ async function payload(): Promise<Record<string, unknown>> {
   return deliverMock.mock.calls[0][1] as Record<string, unknown>;
 }
 
-// Resolve on the socket's next inbound frame, or reject on error/timeout.
-// Every exit path detaches both listeners and clears the timer — a `once` that
-// never fires stays attached, so resolving via 'message' would otherwise strand
-// the 'error' handler (and a timeout would strand both).
-function nextMessage(ws: WebSocket, what: string): Promise<void> {
+// Resolve on the socket's next inbound frame — or, given `kind`, the next frame
+// of that kind — or reject on error/timeout. Every exit path detaches both
+// listeners and clears the timer — a `once` that never fires stays attached, so
+// resolving via 'message' would otherwise strand the 'error' handler (and a
+// timeout would strand both).
+function nextMessage(ws: WebSocket, what: string, kind?: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout>;
     function finish(err?: Error) {
@@ -197,7 +198,10 @@ function nextMessage(ws: WebSocket, what: string): Promise<void> {
       if (err) reject(err);
       else resolve();
     }
-    const onMessage = () => finish();
+    const onMessage = (data: unknown) => {
+      if (kind && (JSON.parse(String(data)) as { kind?: string }).kind !== kind) return;
+      finish();
+    };
     const onError = (err: Error) => finish(err);
     timer = setTimeout(() => finish(new Error(`timed out waiting for ${what}`)), 5000);
     ws.on('message', onMessage);
@@ -218,7 +222,11 @@ function nextMessage(ws: WebSocket, what: string): Promise<void> {
 // Instead, follow presence with a verb that DOES reply. The socket processes
 // inbound frames in order, so the snapshot coming back proves the presence frame
 // ahead of it was already handled — an ordering guarantee rather than a timing
-// guess, and it can't be outrun by a slow machine.
+// guess, and it can't be outrun by a slow machine. The barrier waits for that
+// `snapshot` frame by kind: the connect burst is more than one frame (a
+// `backlog` per buffer, then `backlog-complete`), and when "the next frame"
+// was the barrier, the rest of that burst answered it before presence had
+// landed — this test failed about half its runs once earlier tests seeded DMs.
 //
 // Returns a closer the test must call, or the socket leaks into the next test's
 // socketsByUser and silently suppresses push. That's also why the failure path
@@ -238,7 +246,7 @@ async function connectWithPresence(visible: boolean): Promise<() => Promise<void
     await nextMessage(ws, 'the connect snapshot');
     ws.send(JSON.stringify({ type: 'presence', visible }));
     ws.send(JSON.stringify({ type: 'snapshot' }));
-    await nextMessage(ws, 'the snapshot barrier after presence');
+    await nextMessage(ws, 'the snapshot barrier after presence', 'snapshot');
   } catch (err) {
     await close();
     throw err;
