@@ -33,6 +33,7 @@ vi.mock('../composables/useSocket.js', () => ({
 import { useBuffersStore, bufferNeedsHydration, windowAroundAnchor } from './buffers.js';
 import { useSettingsStore } from './settings.js';
 import { socketSend } from '../composables/useSocket.js';
+import { setUnreadDividerShown } from '../lib/unreadDivider.js';
 
 // The store always seeds the app-scoped system buffer (#355). These tests assert
 // on network-buffer counts (fork/removal semantics), so filter it out.
@@ -148,6 +149,51 @@ describe('applyReadState', () => {
 
     store.applyReadState(1, '#pinned', { lastReadId: 70, unread: 0, highlights: 0 });
     expect(buf.lastReadId).toBe(70);
+  });
+});
+
+// The divider follows the tail while the user reads, unless a boundary is on
+// screen to keep. A row past the boundary that the list hides (an ignored
+// sender's line) is no boundary: kept, the divider landed over the user's own
+// next line, with the ignored line invisible between them.
+describe('the unread divider on a live line', () => {
+  const line = (id: number, nick = 'alice') => ({
+    networkId: 1,
+    target: '#chan',
+    id,
+    type: 'message',
+    nick,
+    text: 'x',
+  });
+  function readingWithHiddenTail() {
+    const store = useBuffersStore();
+    store.replaceBacklog(
+      1,
+      '#chan',
+      [line(10), line(11, 'troll')],
+      undefined,
+      undefined,
+      undefined,
+    );
+    h.activeKey = '1::#chan';
+    const buf = store.byKey('1::#chan')!;
+    buf.lastReadId = 11;
+    buf.dividerAfterId = 10; // entered before troll's line, which never counted
+    return { store, buf };
+  }
+  beforeEach(() => setUnreadDividerShown('1::#chan', false));
+
+  it('follows the tail when the list shows no divider', () => {
+    const { store, buf } = readingWithHiddenTail();
+    store.pushMessage({ ...line(12, 'me'), self: true });
+    expect(buf.dividerAfterId).toBe(12);
+  });
+
+  it('keeps a boundary the list is showing', () => {
+    const { store, buf } = readingWithHiddenTail();
+    setUnreadDividerShown('1::#chan', true);
+    store.pushMessage({ ...line(12, 'me'), self: true });
+    expect(buf.dividerAfterId).toBe(10);
   });
 });
 

@@ -7,6 +7,7 @@ import { useToastsStore } from './toasts.js';
 import { socketSend } from '../composables/useSocket.js';
 import { seenEventCursor } from '../lib/seenEventCursor.js';
 import { SYSTEM_KEY } from '../lib/virtualBuffers.js';
+import { unreadDividerShown } from '../lib/unreadDivider.js';
 import { historyCountBy } from '../lib/historyPaging.js';
 import { isChannelTarget, isDccChatTarget } from '../../../shared/channels.js';
 
@@ -694,9 +695,15 @@ export const useBuffersStore = defineStore('buffers', {
           // While the user is sitting in this buffer, keep the divider
           // tracking the bottom UNLESS there's already an unread boundary
           // visible (i.e. they entered with unread and may not have caught
-          // up). `dividerAfterId >= prevMaxId` is "no boundary currently
-          // shown" — in that case a fresh arrival shouldn't materialize one.
-          if (buf.dividerAfterId != null && buf.dividerAfterId >= prevMaxId) {
+          // up). No row past it, or none the list shows (an ignored sender's
+          // line, a filtered join: lib/unreadDivider), is "no boundary
+          // currently shown" — in that case a fresh arrival shouldn't
+          // materialize one, over the user's own line or anyone's.
+          if (
+            buf.dividerAfterId != null &&
+            (buf.dividerAfterId >= prevMaxId ||
+              !unreadDividerShown(bufferKey(buf.networkId, buf.target)))
+          ) {
             buf.dividerAfterId = event.id;
           }
           // Keep the server's lastReadId synced live. Sending on each live

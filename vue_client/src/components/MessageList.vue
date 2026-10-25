@@ -473,6 +473,7 @@ import ReactionRow from './ReactionRow.vue';
 import type { ReplyContext, ReplyParent } from '../../../shared/replies.js';
 import { useRepliesStore } from '../stores/replies.js';
 import { emitJumpIntent } from '../composables/useJumpIntent.js';
+import { setUnreadDividerShown } from '../lib/unreadDivider.js';
 import { CopyIcon, IdCardIcon, MessageSquareReplyIcon, SatelliteDishIcon } from '@lucide/vue';
 
 // Extended BufferMessage fields accessed in the template and script
@@ -1636,6 +1637,18 @@ const renderRows = computed((): RenderRow[] => {
   }
   return final;
 });
+
+// Tell the buffers store whether the unread divider is on screen
+// (lib/unreadDivider): a live line keeps a boundary only when it is, and one
+// past the read pointer can be hidden here (an ignored sender, a thread reply,
+// a filtered join) with nothing visible under it.
+watch(
+  () => [networks.activeKey, renderRows.value.some((r) => r.divider === 'unread')] as const,
+  ([key, on]) => {
+    if (key) setUnreadDividerShown(key, on);
+  },
+  { immediate: true },
+);
 
 // The origin-network name for a system-buffer line (#355), or null when the
 // line is network-agnostic. Preferred source is the stable id, resolved to the
