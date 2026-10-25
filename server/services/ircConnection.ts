@@ -7615,6 +7615,22 @@ export class IrcConnection {
     // minute vanished with no trace on either side, which is exactly how it
     // presented in QA.
     const dcc = type === 'DCC' ? parseDcc(args) : null;
+    // Someone whose DMs the user hides can't offer them anything: no offer row,
+    // no line in their DM (which would open one), no toast. irssi drops DCC
+    // requests from an ignored nick the same way (ignore_check at MSGLEVEL_DCC).
+    // Unsolicited only — an answer to something we started, or a bot's SEND
+    // for a pack the user asked it for, is something the user asked for.
+    if (
+      dcc &&
+      this.dccSenderIgnored(nick, event) &&
+      !this.answersOurDcc(nick, dcc) &&
+      !(
+        dcc.kind === 'send' &&
+        findArmedRequest(this.network.user_id, this.network.id, nick) !== undefined
+      )
+    ) {
+      return;
+    }
     if (dcc && this.dccRequestAllowed(nick, dcc)) {
       // Say why, rather than letting it fall through to the generic
       // "requested CTCP DCC (no reply)". Only reached when DCC is otherwise
@@ -8421,6 +8437,29 @@ export class IrcConnection {
           dccReceiveEnabledForUser(userId) ||
           dccSendEnabledForUser(userId)
         );
+    }
+  }
+
+  // Whether an ignore hides this sender's DCC request. Judged as the DM it
+  // would have been (the request's own text, in their DM), the way a reaction
+  // or a caller-ID knock is: a rule that hides their DMs covers it, and one
+  // scoped to a channel never does.
+  private dccSenderIgnored(nick: string, event: Record<string, unknown>): boolean {
+    try {
+      return evaluateIgnores(
+        ignoreRulesService.getCompiled(this.network.user_id, this.network.id),
+        {
+          nick,
+          userhost: buildUserhost(event),
+          target: nick,
+          text: String(event.message ?? ''),
+          type: 'message',
+          isDm: true,
+        },
+      ).hide;
+    } catch (e) {
+      console.warn('[dcc] ignore check failed:', (e as Error)?.message || e);
+      return false;
     }
   }
 
