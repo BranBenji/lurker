@@ -613,6 +613,14 @@ export const EXPORT_TABLES = Object.freeze({
   // removed_at, and would restore every one as a reaction standing again — and
   // a bump would refuse the whole archive to it. What stays behind is only the
   // unreacts in bouncer history from before the move.
+  thread_follows: {
+    mode: 'skip',
+    reason:
+      'a read pointer into messages per reply thread (#1225); a data-only restore has no ' +
+      'messages to point into, and a follow comes back the moment the user posts or is ' +
+      'highlighted in the thread again',
+  },
+
   message_reactions: {
     mode: 'export',
     scope: 'via_network',

@@ -18,6 +18,7 @@ import { useFavoritesStore } from '../stores/favorites.js';
 import { useNetworkPresetsStore } from '../stores/networkPresets.js';
 import { useSheepStore } from '../stores/sheep.js';
 import { useAvatarSetsStore } from '../stores/avatarSets.js';
+import { useThreadsStore } from '../stores/threads.js';
 import { resetSocket } from './useSocket.js';
 import { resetPresence } from './usePresence.js';
 import { resetScrollState } from './useScrollState.js';
@@ -63,6 +64,9 @@ export function resetSession(): void {
   // Uploaded avatar sets are the account's too; the bundled set's manifest
   // isn't, but refetching it is one cached request.
   useAvatarSetsStore().$reset();
+  // The followed reply threads (root excerpts included) and any open panel are
+  // the account's (#1225).
+  useThreadsStore().$reset();
   resetPresence();
   resetScrollState();
   // Closing the first-run flow unmounts it, which is what drops the half-filled

@@ -45,6 +45,48 @@ export interface QuotedLine extends ReplyParent {
 export interface ReplyContext {
   msgid: string;
   parent: ReplyParent | null;
+  // The msgid at the top of the reply's thread (#1225): the parent's own root,
+  // or the parent itself when it has none. What a thread opens on. Absent only
+  // on a row stored before roots were tracked.
+  root?: string;
+}
+
+// Replies in the thread a line started, for the chip under it (#1225):
+// how many, and when the newest arrived. Only on a line with replies.
+export interface ThreadStats {
+  replies: number;
+  lastReplyTime: string;
+}
+
+// Most replies one `thread` read ships, and most a client holds live: past it
+// the NEWEST replies stay and `truncated` says so.
+export const THREAD_MAX_REPLIES = 1000;
+
+// A thread the user is in, as `threads-changed` lists it: with its own unread
+// count, kept by the server (thread_follows).
+export interface FollowedThread {
+  networkId: number;
+  bufferId: number;
+  target: string;
+  rootMsgid: string;
+  // The line that started it, excerpted like a reply's quote; null when the
+  // server doesn't hold it (or it's from someone ignored).
+  root: Omit<ReplyParent, 'self'> | null;
+  // Replies from others the user hasn't seen in the thread, and whether any
+  // of them is a highlight.
+  unread: number;
+  highlighted: boolean;
+  lastReplyId: number;
+  lastReplyTime: string;
+}
+
+// One of a buffer's threads, as the `threads` verb lists them.
+export interface BufferThread {
+  rootMsgid: string;
+  root: ReplyParent | null;
+  replies: number;
+  lastReplyId: number;
+  lastReplyTime: string;
 }
 
 // The msgid a line replies to, from its tags. `+reply` is the ratified name;

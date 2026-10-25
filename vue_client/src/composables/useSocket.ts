@@ -30,6 +30,7 @@ import { useRelayBotsStore } from '../stores/relayBots.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useBookmarksStore } from '../stores/bookmarks.js';
 import { useReactionsStore } from '../stores/reactions.js';
+import { useThreadsStore } from '../stores/threads.js';
 import { useDataExportStore } from '../stores/dataExport.js';
 import { useDccStore } from '../stores/dcc.js';
 import { useUploadsStore } from '../stores/uploads.js';
@@ -272,6 +273,9 @@ function applyEvent(event: any): boolean {
       // them here.
       const { news, shown } = take();
       if (!news) break;
+      // A reply joins its thread wherever that's on screen, and its first line's
+      // chip counts it (stores/threads, #1225).
+      if (event.replyTo?.root) useThreadsStore().applyLive(event);
       // A live message is the one case where growth is expected and harmless: it lands at the
       // bottom, where the list's existing stick-to-bottom logic follows it down. Only for a row
       // that went in — a detached buffer draws it when it reattaches, and primes it then.
@@ -294,6 +298,7 @@ function applyEvent(event: any): boolean {
     }
     case 'notice':
       if (!take().news) break;
+      if (event.replyTo?.root) useThreadsStore().applyLive(event);
       notifyForEvent(event);
       break;
     // For events that carry an id AND mutate buffer state (member list,
@@ -929,7 +934,18 @@ function handleMessage(raw: string): void {
     useBookmarksStore().noteFromEvents(payload.events, payload.networkId);
     useReactionsStore().noteFromEvents(payload.events, payload.networkId);
     primeEventPreviews(payload.events, payload.networkId, payload.target);
+    // A gap-fill's replies count on their loaded first lines (stores/threads,
+    // #1225): the newest row held BEFORE the fill is the line between a replay
+    // and a reply the live path never saw.
+    const held =
+      payload.mode === 'append' && payload.networkId != null
+        ? useBuffersStore().findByTarget(payload.networkId, payload.target)
+        : null;
+    const heldMax = Number(held?.messages.at(-1)?.id ?? 0);
     applyBacklog(payload);
+    if (held && Array.isArray(payload.events)) {
+      useThreadsStore().noteGapFill(payload.events, heldMax);
+    }
     return;
   }
   if (payload.kind === 'history') {
@@ -1224,6 +1240,29 @@ function handleMessage(raw: string): void {
   }
   if (payload.kind === 'reactions-sync') {
     useReactionsStore().applySync(payload);
+    return;
+  }
+  if (payload.kind === 'thread') {
+    // The thread panel's whole slice (stores/threads.ts, #1225). Decorated like
+    // a history page, so its rows seed what a page's would.
+    const rows = [
+      ...(payload.root ? [payload.root] : []),
+      ...(Array.isArray(payload.replies) ? payload.replies : []),
+    ];
+    if (payload.networkId != null) {
+      useBookmarksStore().noteFromEvents(rows, payload.networkId);
+      useReactionsStore().noteFromEvents(rows, payload.networkId);
+      primeEventPreviews(rows, payload.networkId, payload.target);
+    }
+    useThreadsStore().applyThread(payload);
+    return;
+  }
+  if (payload.kind === 'threads') {
+    useThreadsStore().applyList(payload);
+    return;
+  }
+  if (payload.kind === 'threads-changed') {
+    useThreadsStore().applyFollowed(payload.threads);
     return;
   }
   if (payload.kind === 'bookmark-updated') {

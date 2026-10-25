@@ -10,6 +10,7 @@
       'sidebar-collapsed': !showChannels,
       'members-collapsed': !showMembers,
       'system-active': isSystemBuffer,
+      'thread-open': !!threadRoute,
     }"
     @click="onChatClick"
   >
@@ -215,6 +216,22 @@
             </button>
           </template>
           <template v-else-if="isChannel">
+            <!-- Reply threads (#1225): the channel's threads, in the column
+                 beside the chat while one is up. -->
+            <button
+              v-if="threadsOn"
+              type="button"
+              class="link threads-btn"
+              :class="{ 'is-active': !!threadRoute }"
+              :title="threadsTitle"
+              :aria-label="threadsTitle"
+              @click="toggleThreads"
+            >
+              <MessagesSquareIcon />
+              <span v-if="threadHighlights > 0" class="hl-chip" aria-hidden="true">{{
+                threadHighlights
+              }}</span>
+            </button>
             <button
               class="link"
               :title="showMembers ? 'Hide members' : 'Show members'"
@@ -237,6 +254,8 @@
 
     <MessageList ref="messageListRef" :pending-scroll-id="pendingScrollId" />
     <MemberList v-if="showMembers && hasNicklist" />
+    <!-- The thread panel (#1225): a column of its own, on the grid's rows. -->
+    <ThreadPanel v-if="threadRoute" />
     <StatusBar />
     <MessageInput v-if="hasInput" ref="messageInputRef" />
 
@@ -334,6 +353,14 @@ import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
 import MessageInput from '../components/MessageInput.vue';
 import MemberList from '../components/MemberList.vue';
+import ThreadPanel from '../components/ThreadPanel.vue';
+import { useThreadsStore } from '../stores/threads.js';
+import {
+  navigateThread,
+  onThreadNav,
+  requestThreadNav,
+  useThreadRoute,
+} from '../composables/useThreadNav.js';
 import StatusBar from '../components/StatusBar.vue';
 import NetworkForm from '../components/NetworkForm.vue';
 import HighlightsModal from '../components/HighlightsModal.vue';
@@ -377,6 +404,7 @@ import {
   FileUpIcon,
   HashIcon,
   IdCardIcon,
+  MessagesSquareIcon,
   PlugIcon,
   PlusIcon,
   SearchIcon,
@@ -592,12 +620,42 @@ const memberCount = computed(() => {
   return (activeBuf.value as Buffer | null)?.members?.length ?? null;
 });
 
+// ─── Reply threads (#1225) ──────────────────────────────────────────────────
+// The panel is a route (useThreadNav): chips, the slash command and jumps into
+// a hidden reply ask for one, and this shell navigates.
+const threadRoute = useThreadRoute();
+const threadsOn = computed(() => settings.effective('chat.threads') === true);
+const offThreadNav = onThreadNav((nav) => navigateThread(router, nav));
+onBeforeUnmount(offThreadNav);
+
+// Threads here with a highlight the user hasn't seen (threads-changed): the
+// channel's list hides the reply, so the button carries the badge.
+const threadsStore = useThreadsStore();
+const threadHighlights = computed(() =>
+  threadsStore.highlightedThreadsFor((activeBuf.value as { id?: number } | null)?.id),
+);
+const threadsTitle = computed(() =>
+  threadHighlights.value > 0
+    ? `Threads — ${threadHighlights.value} with a new highlight`
+    : 'Threads',
+);
+
+function toggleThreads() {
+  const buf = activeBuf.value as { id?: number } | null;
+  if (buf?.id == null) return;
+  requestThreadNav(
+    threadRoute.value ? { kind: 'close', bufferId: buf.id } : { kind: 'list', bufferId: buf.id },
+  );
+}
+
 // Per-channel nicklist visibility. A channel the user has explicitly toggled
 // carries an override (true = collapsed); otherwise the global
 // look.layout.show_member_list default applies. DMs and server buffers have no
 // member list at all, so the toggle and panel are hidden for them entirely.
+// While a thread panel is up it yields the room (#1225): nothing is written,
+// so it is back the moment the panel closes.
 const showMembers = computed(() => {
-  if (!isChannel.value || !active.value) return false;
+  if (!isChannel.value || !active.value || threadRoute.value) return false;
   const { networkId, target } = active.value;
   const override = nicklistCollapse.override(networkId, target);
   if (override !== undefined) return !override;
@@ -607,6 +665,7 @@ const showMembers = computed(() => {
 function toggleChannels() {
   settings.setValue('look.layout.show_channel_list', !showChannels.value);
 }
+
 function toggleMembers() {
   if (!isChannel.value || !active.value) return;
   const { networkId, target } = active.value;
@@ -733,7 +792,8 @@ useChatBootstrap({ onJump: onJumpToMessage });
   --sidebar-w: 220px;
   --members-w: 180px;
   display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr var(--members-w);
+  --thread-w: 0px;
+  grid-template-columns: var(--sidebar-w) 1fr var(--members-w) var(--thread-w);
   /* The 1px row owns the topic/messages divider as its own grid track,
      outside the scroll container. Putting the line inside .message-list
      (border-top, inset box-shadow) lets row backgrounds and hover states
@@ -742,11 +802,11 @@ useChatBootstrap({ onJump: onJumpToMessage });
      and nothing can paint on top of it. */
   grid-template-rows: auto auto 1fr auto auto;
   grid-template-areas:
-    'sidebar topic    topic'
-    'sidebar divider  divider'
-    'sidebar messages members'
-    'sidebar status   status'
-    'sidebar input    input';
+    'sidebar topic    topic   thread'
+    'sidebar divider  divider thread'
+    'sidebar messages members thread'
+    'sidebar status   status  thread'
+    'sidebar input    input   thread';
   /* Height sized to the dynamic viewport. iOS scrolls the page
      naturally when the keyboard opens; the input row at the bottom
      stays visible above the keyboard, and the upper portion (sidebar,
@@ -762,6 +822,12 @@ useChatBootstrap({ onJump: onJumpToMessage });
    topic bar on the right, so there's nothing to leave behind. */
 .chat.members-collapsed {
   --members-w: 0px;
+}
+/* The thread panel (#1225): a fourth column bolted to the side, every row of
+   the grid, so its head is level with the topic bar and its composer with the
+   main one. Zero-width (and unmounted) when no thread is up. */
+.chat.thread-open {
+  --thread-w: min(380px, 40vw);
 }
 /* System console has no member list — collapse the rail so the log pane
    spans the full content width instead of leaving an empty column. */
@@ -843,6 +909,25 @@ useChatBootstrap({ onJump: onJumpToMessage });
   cursor: pointer;
   font: inherit;
   text-decoration: none;
+}
+.link.is-active {
+  color: var(--fg);
+}
+/* The Threads button's badge (#1225): the rail toggle's chip, anchored to the
+   button's corner. */
+.link.threads-btn {
+  position: relative;
+}
+.link.threads-btn .hl-chip {
+  position: absolute;
+  top: -0.4em;
+  right: -0.6em;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+  font-size: 0.75em;
+  line-height: 1.5;
+  color: var(--buffer-highlight);
+  background: color-mix(in srgb, var(--buffer-highlight) 24%, var(--bg));
 }
 .link:hover {
   color: var(--fg);
@@ -962,21 +1047,30 @@ button.topic-text:focus-visible {
   outline-offset: 2px;
 }
 
-/* These selectors target the root elements of the imported components.
-   Vue 3 scoped CSS attaches the parent's data-v attribute to a child
-   component's root element, so .message-list / .members / .input here
-   match the rendered roots of MessageList / MemberList / MessageInput. */
-.message-list {
+/* These selectors place the root elements of the imported components. Through
+   :deep(), so they match on THIS component's attribute on `.chat`, not on the
+   child's root carrying it: Vue gives a child's root the parent's scoped
+   attribute only when the child has a single root, and MessageList's template
+   has a second conditional root (its ignore modal), so a bare `.message-list`
+   here never matched. The list still landed in the right cell for years because
+   grid auto-placement fills the first empty cell, which in a three-column grid
+   was `messages` — until the thread column (#1225) added an empty, zero-width
+   cell ahead of it and the list vanished into that. */
+.chat > :deep(.message-list) {
   grid-area: messages;
 }
-.members {
+.chat > :deep(.members) {
   grid-area: members;
   border-left: 1px solid var(--border);
 }
-.status-bar {
+.chat > :deep(.thread-panel) {
+  grid-area: thread;
+  border-left: 1px solid var(--border);
+}
+.chat > :deep(.status-bar) {
   grid-area: status;
 }
-.input {
+.chat > :deep(.input) {
   grid-area: input;
 }
 

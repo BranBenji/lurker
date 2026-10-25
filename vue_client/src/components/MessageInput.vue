@@ -194,6 +194,7 @@ import { useConfigStore } from '../stores/config.js';
 import { bufferKey, useBuffersStore } from '../stores/buffers.js';
 import { useReactionsStore } from '../stores/reactions.js';
 import { useRepliesStore } from '../stores/replies.js';
+import { requestThreadNav } from '../composables/useThreadNav.js';
 import type { PendingReply } from '../stores/replies.js';
 import {
   NOT_NICK_CHAR,
@@ -2713,6 +2714,7 @@ const COMMANDS_LINES = [
   '  /part [#chan] [reason] — leave channel (keeps buffer; aliases: /leave, /p)',
   '  /close                 — close current buffer (parts if joined)',
   '  /clear [off]           — hide buffer up to now (off = undo, show again)',
+  '  /threads               — the reply threads in this buffer (alias: /thread)',
   '  /retention [n|off|default] — per-buffer history cap (no arg = show current)',
   '  /away [-all|-one] [msg] — set away (no msg clears)',
   '  /back [-all|-one]      — clear away',
@@ -4251,6 +4253,20 @@ function handleCommand(line: string, networkId: number | null, target: string): 
       // Close the current buffer. For channels this also PARTs; for DMs it
       // just hides the buffer. Server pseudo-buffers can't be closed.
       return sendOrToast({ type: 'close-buffer', networkId, target }, line);
+    case 'threads':
+    case 'thread': {
+      // Reply threads (#1225): the panel's list for this buffer. A route, so
+      // the shell navigates (useThreadNav). The list works with the setting
+      // off too (the replies then also show inline); the button that opens it
+      // is only offered with it on.
+      const buf = buffers.byKey(bufferKey(networkId, target)) as { id?: number } | null;
+      if (buf?.id == null) {
+        localInfo(networkId, target, '/threads: this buffer has no threads to list.');
+        return true;
+      }
+      requestThreadNav({ kind: 'list', bufferId: buf.id });
+      return true;
+    }
     case 'clear': {
       // /clear            — hide everything currently in the buffer up to now;
       //                     a "cleared at …" divider and an undo affordance

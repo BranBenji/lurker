@@ -32,6 +32,7 @@ let listSpeakers: typeof import('./messages.js').listSpeakers;
 let listBufferTargets: typeof import('./messages.js').listBufferTargets;
 let loadHistoryWindow: typeof import('./messages.js').loadHistoryWindow;
 let listActiveTargetsInWindow: typeof import('./messages.js').listActiveTargetsInWindow;
+let listBufferThreads: typeof import('./messages.js').listBufferThreads;
 let demoteLegacyServerStatusNotices: typeof import('./index.js').demoteLegacyServerStatusNotices;
 let db: typeof import('./index.js').default;
 
@@ -57,6 +58,7 @@ beforeAll(async () => {
     listBufferTargets,
     loadHistoryWindow,
     listActiveTargetsInWindow,
+    listBufferThreads,
   } = await import('./messages.js'));
 });
 
@@ -1339,6 +1341,97 @@ describe('messages.msgid (#450)', () => {
       msgid: '',
     });
     expect(listMessages(net!.id, '#m')[0]).not.toHaveProperty('msgid');
+  });
+});
+
+describe('reply threads (#1225)', () => {
+  function rig(name: string) {
+    const user = createUser(name);
+    const net = createNetwork(user.id, {
+      name: 'n',
+      host: 'h',
+      port: 6697,
+      tls: true,
+      nick: 'me',
+    })!;
+    let t = Date.parse('2026-10-24T10:00:00Z');
+    const put = (fields: Record<string, unknown>) =>
+      insertMessage({
+        networkId: net.id,
+        target: '#th',
+        time: new Date((t += 60_000)).toISOString(),
+        type: 'message',
+        nick: 'alice',
+        text: 'x',
+        self: false,
+        ...fields,
+      });
+    return { net, put };
+  }
+
+  it('with threads hidden, a thread reply counts toward unread only as a highlight', () => {
+    const { net, put } = rig('thr-unread');
+    put({ msgid: 'root' });
+    put({ nick: 'bob', replyMsgid: 'root', replyRootMsgid: 'root' });
+    put({ nick: 'bob', replyMsgid: 'root', replyRootMsgid: 'root', matchedRuleId: 1 });
+    put({ nick: 'bob', replyMsgid: 'root', replyRootMsgid: 'root', replyToSelf: true });
+    put({ nick: 'dave', text: 'plain' });
+    // Off: every line counts, as always.
+    expect(countNewer(net.id, '#th', 0)).toBe(5);
+    // On: the root, the two highlighted replies and the plain line; not bob's
+    // plain reply, which only its thread counts.
+    expect(countNewer(net.id, '#th', 0, undefined, { threadsHidden: true })).toBe(4);
+    // The highlight count never exceeds it.
+    expect(countHighlightsNewer(net.id, '#th', 0)).toBe(2);
+  });
+
+  it('a line that started a thread carries its count and newest reply time; others nothing', () => {
+    const { net, put } = rig('thr-stats');
+    put({ msgid: 'root' });
+    put({ nick: 'bob', msgid: 'r1', replyMsgid: 'root', replyRootMsgid: 'root' });
+    const last = put({ nick: 'carol', replyMsgid: 'r1', replyRootMsgid: 'root' });
+    put({ nick: 'troll', replyMsgid: 'root', replyRootMsgid: 'root', fromIgnored: true });
+    put({ nick: 'dave', text: 'plain' });
+    const rows = listMessages(net.id, '#th');
+    const byId = (id: number) => rows.find((m) => m.id === id)!;
+    expect(rows[0].thread).toEqual({
+      replies: 2,
+      lastReplyTime: byId(Number(last.id)).time,
+    });
+    expect(rows[1]).not.toHaveProperty('thread');
+    expect(rows[1].replyTo).toMatchObject({ msgid: 'root', root: 'root' });
+    expect(rows[4]).not.toHaveProperty('thread');
+  });
+
+  it('listBufferThreads groups a buffer’s replies by thread, newest activity first', () => {
+    const { put } = rig('thr-list');
+    const a = put({ msgid: 'a', text: 'first thread' });
+    put({ msgid: 'b', text: 'second thread' });
+    put({ nick: 'bob', replyMsgid: 'a', replyRootMsgid: 'a' });
+    const lastB = put({ nick: 'bob', replyMsgid: 'b', replyRootMsgid: 'b' });
+    const lastA = put({ nick: 'carol', replyMsgid: 'a', replyRootMsgid: 'a' });
+    put({ nick: 'troll', replyMsgid: 'lost', replyRootMsgid: 'lost', fromIgnored: true });
+    const threads = listBufferThreads(a.bufferId);
+    expect(threads).toEqual([
+      {
+        rootMsgid: 'a',
+        root: expect.objectContaining({ id: Number(a.id), text: 'first thread', self: false }),
+        replies: 2,
+        lastReplyId: Number(lastA.id),
+        lastReplyTime: expect.any(String),
+      },
+      {
+        rootMsgid: 'b',
+        root: expect.objectContaining({ text: 'second thread' }),
+        replies: 1,
+        lastReplyId: Number(lastB.id),
+        lastReplyTime: expect.any(String),
+      },
+    ]);
+    // A root we don't hold still lists its thread.
+    put({ nick: 'bob', replyMsgid: 'gone', replyRootMsgid: 'gone' });
+    expect(listBufferThreads(a.bufferId)[0]).toMatchObject({ rootMsgid: 'gone', root: null });
+    expect(listBufferThreads(a.bufferId, 1)).toHaveLength(1);
   });
 });
 

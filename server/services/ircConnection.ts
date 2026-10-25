@@ -61,6 +61,7 @@ import { resolveBufferIdByNetwork } from '../db/bufferResolve.js';
 import { addReaction, findReactionParent, removeReaction } from '../db/reactions.js';
 import { isValidReactionValue } from '../../shared/reactions.js';
 import { REPLY_LINE_TYPES, replyMsgidFromTags } from '../../shared/replies.js';
+import { noteThreadReply } from '../db/threadFollows.js';
 import type { ReplyContext } from '../../shared/replies.js';
 import { evaluateIgnores } from '../../shared/ignoreMatch.js';
 import * as chanlistDb from '../db/chanlist.js';
@@ -79,7 +80,12 @@ import type { RestoreSlot } from './restoreGate.js';
 import { envInt as reconnectEnvInt } from '../utils/envInt.js';
 import { decideStamp } from './insertDecisions.js';
 import * as systemLog from './systemLog.js';
-import { changedSettings, effectiveSetting, effectiveSettings } from './settingsService.js';
+import {
+  cachedSetting,
+  changedSettings,
+  effectiveSetting,
+  effectiveSettings,
+} from './settingsService.js';
 import { APP_NAME, APP_VERSION } from '../utils/userAgent.js';
 import { findUserById } from '../db/users.js';
 import { isNodeMode } from '../utils/edition.js';
@@ -1653,10 +1659,10 @@ export class IrcConnection {
         const bufferId = resolveBufferIdByNetwork(this.network.id, event.target as string);
         const parent =
           bufferId === undefined ? null : findReplyParent(this.network.id, bufferId, replyMsgid);
-        replyTo = { msgid: replyMsgid, parent };
         replyToSelf = !!parent?.self && !event.self;
-        // The top of its thread, for a threaded view (see db/index.ts).
+        // The top of its thread, for the thread panel (see db/index.ts).
         replyRootMsgid = replyRootFor(this.network.id, bufferId, replyMsgid);
+        replyTo = { msgid: replyMsgid, parent, root: replyRootMsgid };
       }
       let matchedRuleId: number | null = null;
       let fromIgnored = false;
@@ -1713,6 +1719,29 @@ export class IrcConnection {
       if (replyTo) enriched.replyTo = replyTo;
       if (replyToSelf) enriched.replyToSelf = true;
       enriched.fromIgnored = fromIgnored;
+      // A reply can put its thread on the user's followed list (they posted,
+      // or were highlighted, or it's their thread), or change one already on
+      // it — flag it so wsHub sends every client the new list (#1225). Someone
+      // ignored never does. Only while the user keeps replies in threads, and
+      // only in a channel: with the setting off nothing reads a follow, and a
+      // pointer nothing moves would sit unread for as long as the lines last.
+      if (
+        replyRootMsgid &&
+        !fromIgnored &&
+        !isDmTargetName(event.target as string) &&
+        cachedSetting(this.network.user_id, 'chat.threads') === true
+      ) {
+        try {
+          const changed = noteThreadReply(this.network.user_id, bufferId, replyRootMsgid, {
+            id: Number(id),
+            self: !!event.self,
+            highlighted: matchedRuleId != null || replyToSelf,
+          });
+          if (changed) enriched.threadsChanged = true;
+        } catch (e) {
+          console.warn('[threads] follow-on-insert failed:', (e as Error)?.message || e);
+        }
+      }
     }
 
     this.onEvent(enriched);

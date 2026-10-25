@@ -5,14 +5,19 @@
 // Kept free of Vue/store deps — like utils/navHistory — so the edge cases below
 // are unit-testable without standing up the whole shell.
 
-export type MobileScreen = 'list' | 'buffer' | 'members';
+export type MobileScreen = 'list' | 'buffer' | 'members' | 'thread' | 'threads';
+
+// The screen a buffer's sub-route names: its member list, one reply thread,
+// or its thread list (#1225). Null for the buffer itself.
+export type MobileSubScreen = 'members' | 'thread' | 'threads' | null;
 
 /**
  * `/` → list, `/buffer/<id>` → buffer, `/buffer/<id>/members` → members,
+ * `/buffer/<id>/thread/<root>` → thread, `/buffer/<id>/threads` → threads,
  * `/system` → buffer (the app-scoped console).
  *
- * `isMembers` is the route NAME test (`buffer-members`), not a path-suffix
- * sniff — the three screens are three route records.
+ * `sub` is the route NAME test (`buffer-members` and the thread routes), not a
+ * path-suffix sniff — the screens are route records.
  *
  * This is DERIVED, never assigned. The shell used to keep it in a ref nudged
  * from four places, which is what let the screen and the URL disagree: the list
@@ -28,7 +33,7 @@ export type MobileScreen = 'list' | 'buffer' | 'members';
  */
 export function screenForRoute(
   id: unknown,
-  isMembers: boolean,
+  sub: MobileSubScreen,
   hasActiveBuffer: boolean,
   isSystem = false,
   activeLacksId = false,
@@ -46,5 +51,5 @@ export function screenForRoute(
   // pushes the real route and this stops applying.
   if (activeLacksId) return 'buffer';
   if (!id || !hasActiveBuffer) return 'list';
-  return isMembers ? 'members' : 'buffer';
+  return sub ?? 'buffer';
 }

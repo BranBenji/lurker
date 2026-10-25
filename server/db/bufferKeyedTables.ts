@@ -123,6 +123,12 @@ export const BUFFER_SCOPED_TABLES: readonly BufferScopedTable[] = [
     note: 'per-buffer retention line-cap override; born buffer_id-keyed',
   },
   {
+    table: 'thread_follows',
+    status: 'buffer_id',
+    scope: ['user_id'],
+    note: 'reply threads the user is in, with a read pointer each (#1225); born buffer_id-keyed',
+  },
+  {
     table: 'e2e_incoming_sessions',
     status: 'wire-context',
     targetColumn: 'channel',

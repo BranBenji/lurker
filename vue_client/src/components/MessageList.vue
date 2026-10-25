@@ -352,6 +352,14 @@
             :message="row.m"
             :interactive="row.m.type !== 'notice' && !row.m.e2e"
             @measured="repinAfterPreviewGrowth(true)"
+          /><!-- The thread this line started (#1225), with reply threads on: its
+                 replies are kept out of the list above, and this is the way in.
+                 --><ThreadChip
+            v-if="threadsHere && row.m?.thread && row.m.msgid"
+            :count="row.m.thread.replies"
+            :last-reply-time="row.m.thread.lastReplyTime"
+            :unread="threads.unreadFor(buffer?.id ?? -1, row.m.msgid)"
+            @open="openThreadAt(row.m)"
           />
         </span>
         <div
@@ -409,6 +417,12 @@ import {
 } from '../composables/useScrollState.js';
 import type { RenderSegment } from '../utils/nickColor.js';
 import ReplyQuote from './ReplyQuote.vue';
+import ThreadChip from './ThreadChip.vue';
+import { useThreadsStore } from '../stores/threads.js';
+import { requestThreadNav } from '../composables/useThreadNav.js';
+import { hiddenAsThreadReply } from '../lib/threadHide.js';
+import { parseUserHost } from '../utils/userhost.js';
+import type { ThreadStats } from '../../../shared/replies.js';
 import {
   formatTimestamp,
   formatDuration,
@@ -508,6 +522,11 @@ interface ChatMessage {
   // IRCv3 reply (#993): the line this one answers, as the server resolved it by
   // msgid within the buffer — see shared/replies.ts.
   replyTo?: ReplyContext;
+  // The thread this line started (#1225): how many replies, and when the
+  // newest came. Kept live by stores/threads.applyLive. A thread is named by
+  // its first line's msgid.
+  thread?: ThreadStats;
+  msgid?: string;
   [key: string]: unknown;
 }
 
@@ -580,6 +599,13 @@ const actionItalic = computed(() => !!settings.effective('look.action.italic'));
 // on a message opens the action menu instead (onMessageRowClick). Always off on
 // touch via the CSS reveal media query, where tap opens the menu regardless.
 const hoverActions = computed(() => !!settings.effective('look.message.hover_actions'));
+// Reply threads (#1225): in a channel with the setting on, replies stay out of
+// this list and open in the thread panel; a line that started one wears a
+// ThreadChip. A DM keeps every line.
+const threads = useThreadsStore();
+const threadsHere = computed(
+  () => settings.effective('chat.threads') === true && buffer.value?.kind === 'channel',
+);
 // The message whose action menu is open — set when a tap (touch) or, with the
 // hover bar toggled off, a click (desktop) opens it (onMessageRowClick). Gives
 // the row a `selected` background so users with no hover can see which message
@@ -846,20 +872,6 @@ function onAvatarClick(e: MouseEvent, m: ChatMessage | undefined): void {
   onNickMenu(e, m?.nick, m);
 }
 
-function parseUserHost(userhost: string | null | undefined): {
-  user: string | null;
-  host: string | null;
-} {
-  if (!userhost) return { user: null, host: null };
-  // Format is nick!user@host; tolerate missing pieces.
-  const bang = userhost.indexOf('!');
-  if (bang < 0) return { user: null, host: null };
-  const rest = userhost.slice(bang + 1);
-  const at = rest.indexOf('@');
-  if (at < 0) return { user: null, host: null };
-  return { user: rest.slice(0, at) || null, host: rest.slice(at + 1) || null };
-}
-
 // One stable context for every row — the handlers read `buffer.value` at call
 // time, so there's no need to rebuild it per message (the bar re-evaluates for
 // up to 500 rows on each render). `run()` is handed this on click.
@@ -869,6 +881,16 @@ const actionContext: MessageContext = {
   },
   onReply: (msg) => {
     if (!msg.nick) return;
+    // Reply threads on (#1225): the answer belongs in the thread, so Reply
+    // opens it with the caret in its composer — a line already in a thread
+    // (one stored before roots were tracked, shown inline) opens that thread,
+    // any other line starts its own. Only a line a reply tag can name; the
+    // rest keep the channel's Reply.
+    if (threadsHere.value && replyable(msg) && msg.msgid && buffer.value?.id != null) {
+      const root = (msg as ChatMessage).replyTo?.root;
+      threads.replyFromChannel(buffer.value.id, root ?? String(msg.msgid));
+      return;
+    }
     // A line with a msgid gets a real reply (#993): pending in the status bar,
     // sent with the next line. Either way the composer addresses them — that's
     // what a client without replies sees, and the reply line hides it for us.
@@ -1402,6 +1424,12 @@ const renderRows = computed((): RenderRow[] => {
         }) || replyToSelf;
     }
 
+    // Reply threads (#1225): a reply lives in its thread panel, not here. Only
+    // a row that names its root — one stored before roots were tracked still
+    // shows inline, with its quote. A hidden row stays in the store for jumps
+    // and bookmarks; the scroll watcher opens its thread when one lands on it.
+    if (hiddenAsThreadReply(m, threadsHere.value)) continue;
+
     // Parsed once and reused by the smart filter and the presence dividers
     // below — this is a string parse on every surviving row, so it should
     // happen exactly once.
@@ -1793,6 +1821,31 @@ function textSegments(m: ChatMessage | undefined): RenderSegment[] {
   return segments.value;
 }
 
+// The `╰─ N replies` under a line that started a thread (#1225).
+function openThreadAt(m: ChatMessage | undefined): void {
+  const buf = buffer.value;
+  if (!m?.msgid || !buf || buf.id == null) return;
+  requestThreadNav({ kind: 'thread', bufferId: buf.id, rootMsgid: String(m.msgid) });
+}
+
+// A jump landing on a reply this list hides (reply threads on): open its
+// thread on that reply instead of scrolling to a row that isn't drawn. Asked
+// only once the row has failed to appear, so a reply shown inline (a
+// highlight) is simply scrolled to. False when the id is unknown here.
+function openHiddenReply(id: number | string): boolean {
+  const buf = buffer.value;
+  if (!threadsHere.value || !buf || buf.id == null) return false;
+  const m = messages.value.find((x) => x.id === Number(id)) as ChatMessage | undefined;
+  if (!m || !hiddenAsThreadReply(m, true)) return false;
+  requestThreadNav({
+    kind: 'thread',
+    bufferId: buf.id,
+    rootMsgid: String(m.replyTo!.root),
+    focusId: Number(id),
+  });
+  return true;
+}
+
 function onReplyContextClick(parent: ReplyParent | null | undefined): void {
   const buf = buffer.value;
   if (!parent || !buf || buf.networkId == null) return;
@@ -2044,7 +2097,9 @@ function maybeBumpNewBelow() {
       type: tail.type,
       isDm: !isChannelTarget(tail.target) && !tail.target.startsWith(':server:'),
     });
-  if (!tailIgnored && tail?.id != null) bumpNewBelow();
+  // Nor a reply the list keeps in its thread (#1225): nothing new is below.
+  const tailThreaded = !!tail && hiddenAsThreadReply(tail, threadsHere.value);
+  if (!tailIgnored && !tailThreaded && tail?.id != null) bumpNewBelow();
 }
 
 // Re-pin the viewport so the row with `anchorId` keeps its on-screen position
@@ -2648,6 +2703,9 @@ watch(
       if (!el) return;
       const target = el.querySelector(`[data-msg-id="${id}"]`);
       if (!target) {
+        // The slice may have landed since: a reply hidden by threads has no
+        // row to find, and never will.
+        if (openHiddenReply(id)) return;
         if (attempts++ < SCROLL_RETRY_FRAMES) requestAnimationFrame(tryScroll);
         return;
       }
