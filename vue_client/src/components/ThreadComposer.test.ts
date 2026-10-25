@@ -247,6 +247,59 @@ describe('ThreadComposer', () => {
       expect(useToastsStore().items.at(-1)).toMatchObject({ title: 'Uploaded' });
     });
 
+    // A slow upload finishing into a composer the user went on using.
+    describe('finishing while the user is busy', () => {
+      let finish!: (r: { url: string }) => void;
+      const settle = () => new Promise((r) => setTimeout(r, 0));
+      beforeEach(() => {
+        seed();
+        vi.spyOn(useUploadsStore(), 'upload').mockImplementation(
+          () => new Promise((r) => (finish = r)) as never,
+        );
+      });
+
+      it('waits for an IME composition to end', async () => {
+        const ta = await type('look');
+        paste(ta, png());
+        ta.dispatchEvent(new Event('compositionstart'));
+        finish({ url: 'https://x.test/shot.png' });
+        await settle();
+        expect(ta.value).toBe('look');
+        ta.dispatchEvent(new Event('compositionend'));
+        await settle();
+        expect(ta.value).toBe('look https://x.test/shot.png');
+      });
+
+      it('ends a Tab cycle, so the next Tab keeps the URL', async () => {
+        const ta = await type('al');
+        await wrapper!.find('textarea').trigger('keydown', { key: 'Tab' });
+        expect(ta.value).toBe('alice: ');
+        paste(ta, png());
+        finish({ url: 'https://x.test/shot.png' });
+        await settle();
+        expect(ta.value).toBe('alice: https://x.test/shot.png');
+        await wrapper!.find('textarea').trigger('keydown', { key: 'Tab' });
+        expect(ta.value).toBe('alice: https://x.test/shot.png');
+      });
+
+      it('leaves focus where the user moved it', async () => {
+        const elsewhere = document.createElement('input');
+        document.body.append(elsewhere);
+        try {
+          const ta = await type('look');
+          ta.focus();
+          paste(ta, png());
+          elsewhere.focus();
+          finish({ url: 'https://x.test/shot.png' });
+          await settle();
+          expect(ta.value).toBe('look https://x.test/shot.png');
+          expect(document.activeElement).toBe(elsewhere);
+        } finally {
+          elsewhere.remove();
+        }
+      });
+    });
+
     it('says so when the upload fails', async () => {
       seed();
       vi.spyOn(useUploadsStore(), 'upload').mockRejectedValue(new Error('too big'));

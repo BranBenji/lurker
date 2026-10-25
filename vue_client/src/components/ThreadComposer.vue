@@ -37,6 +37,8 @@
       @keydown="onKeydown"
       @input="onInput"
       @paste="onPaste"
+      @compositionstart="onCompositionStart"
+      @compositionend="onCompositionEnd"
     />
     <span
       v-if="uploading"
@@ -261,7 +263,30 @@ async function onPaste(e: ClipboardEvent): Promise<void> {
   }
 }
 
+// Mid-composition (an IME, an Android keyboard's word), v-model holds the DOM
+// back and then copies it over the model at compositionend, which would drop
+// the URL: it waits for the composition to end. A Tab cycle ends with it, as
+// any edit ends one. The caret moves only if the reader is still here — they
+// may have gone to the channel's composer while the file went up.
+let composing = false;
+let urlAfterComposition: string | null = null;
+function onCompositionStart(): void {
+  composing = true;
+}
+function onCompositionEnd(): void {
+  composing = false;
+  const url = urlAfterComposition;
+  urlAfterComposition = null;
+  // After v-model has taken the composed text.
+  if (url) void nextTick(() => insertUrl(url));
+}
+
 function insertUrl(url: string): void {
+  if (composing) {
+    urlAfterComposition = url;
+    return;
+  }
+  cycle = null;
   const el = inputEl.value;
   const current = text.value;
   const next = insertWithPadding(
@@ -273,8 +298,7 @@ function insertUrl(url: string): void {
   text.value = next.text;
   void nextTick(() => {
     if (!el) return;
-    el.focus();
-    el.setSelectionRange(next.caret, next.caret);
+    if (document.activeElement === el) el.setSelectionRange(next.caret, next.caret);
     autosize();
   });
 }
