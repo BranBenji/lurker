@@ -1015,25 +1015,30 @@ button.topic-text:focus-visible {
   outline-offset: 2px;
 }
 
-/* These selectors target the root elements of the imported components.
-   Vue 3 scoped CSS attaches the parent's data-v attribute to a child
-   component's root element, so .message-list / .members / .input here
-   match the rendered roots of MessageList / MemberList / MessageInput. */
-.message-list {
+/* These selectors place the root elements of the imported components. Through
+   :deep(), so they match on THIS component's attribute on `.chat`, not on the
+   child's root carrying it: Vue gives a child's root the parent's scoped
+   attribute only when the child has a single root, and MessageList's template
+   has a second conditional root (its ignore modal), so a bare `.message-list`
+   here never matched. The list still landed in the right cell for years because
+   grid auto-placement fills the first empty cell, which in a three-column grid
+   was `messages` — until the thread column (#1225) added an empty, zero-width
+   cell ahead of it and the list vanished into that. */
+.chat > :deep(.message-list) {
   grid-area: messages;
 }
-.members {
+.chat > :deep(.members) {
   grid-area: members;
   border-left: 1px solid var(--border);
 }
-.thread-panel {
+.chat > :deep(.thread-panel) {
   grid-area: thread;
   border-left: 1px solid var(--border);
 }
-.status-bar {
+.chat > :deep(.status-bar) {
   grid-area: status;
 }
-.input {
+.chat > :deep(.input) {
   grid-area: input;
 }
 
