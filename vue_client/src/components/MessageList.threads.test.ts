@@ -176,7 +176,6 @@ describe('MessageList — reply threads', () => {
     expect(btn).toBeTruthy();
     await btn!.trigger('click');
     expect(nav).toHaveBeenLastCalledWith({ kind: 'thread', bufferId: 9, rootMsgid: 'm1' });
-    expect(threads.pending).toBeNull();
     expect(threads.wantComposer).toBe(true);
   });
 

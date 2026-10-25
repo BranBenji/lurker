@@ -148,22 +148,9 @@
           </div>
         </template>
       </div>
-      <!-- Level with the status bar. Quiet until a line is picked with Reply;
-           the paperclip sits at the right as the main status bar's does. -->
+      <!-- Level with the status bar; the paperclip sits at the right as the
+           main status bar's does. -->
       <div class="panel-status">
-        <template v-if="pending">
-          <span class="label">Replying to</span>
-          <NickRef :nick="pending.nick" />
-          <button
-            type="button"
-            class="link clear"
-            title="Reply to the thread instead"
-            aria-label="Reply to the thread instead"
-            @click="threads.setPending(null)"
-          >
-            <XIcon />
-          </button>
-        </template>
         <span class="spacer"></span>
         <button
           type="button"
@@ -269,7 +256,6 @@ const viewKey = computed(() =>
   view.value ? threadKey(view.value.bufferId, view.value.rootMsgid) : 'none',
 );
 const buffer = computed(() => (view.value ? buffers.byId(view.value.bufferId) : null));
-const pending = computed(() => threads.pending);
 
 const hoverActions = computed(
   () => canHover.value && !!settings.effective('look.message.hover_actions'),
@@ -444,11 +430,16 @@ const rows = computed((): Row[] => {
     if (r.replyTo) {
       const shown = replyQuote.shownReply(r.replyTo, r, v.networkId, v.target);
       text = shown.text;
-      // Answering the first line is the thread's default; only another parent
-      // gets a quote. The first line is on screen above, so the address naming
-      // its author is redundant here even when the quote's lookup had nothing.
-      if (r.replyTo.msgid !== v.rootMsgid) quote = shown.parent;
-      else if (v.root?.nick && r.type === 'message') {
+      // A quote only where it tells the reader something: an answer to the
+      // first line, or to the line just above, reads as the conversation it is
+      // (a send from here answers the newest reply, so that is most of them).
+      // Elsewhere the quote shows which earlier line is meant. The first line
+      // is on screen above, so the address naming its author is redundant here
+      // even when the quote's lookup had nothing.
+      const toRoot = r.replyTo.msgid === v.rootMsgid;
+      const toPrev = !!prev?.msgid && r.replyTo.msgid === prev.msgid;
+      if (!toRoot && !toPrev) quote = shown.parent;
+      else if (toRoot && v.root?.nick && r.type === 'message') {
         text = stripReplyAddress(text, String(v.root.nick));
       }
     }
@@ -507,7 +498,6 @@ function lineClass(row: Row) {
     self: !!m?.self,
     highlight: !!row.highlight,
     cont: !!row.cont,
-    replying: !!m && pending.value?.messageId === m.id,
   };
 }
 
@@ -620,9 +610,12 @@ watch(
 
 // ─── Actions ─────────────────────────────────────────────────────────────
 
-// Quote isn't offered here: every send from the panel already carries a reply
-// tag, and a quote line would take it (the two are exclusive, #1119).
-const EXCLUDED: readonly MessageActionKey[] = ['quote'];
+// Neither Reply nor Quote is offered here. A send from the panel answers the
+// newest reply from someone else (threads.replyTarget), so the thread reads as
+// a conversation in clients without threads; picking lines would undo that.
+// Quote would ride a send that already carries a reply tag (the two are
+// exclusive, #1119).
+const EXCLUDED: readonly MessageActionKey[] = ['reply', 'quote'];
 const ACTION_OPTS: MessageActionOptions = { exclude: EXCLUDED };
 
 function eligible(m: ThreadMessage): boolean {
@@ -633,25 +626,11 @@ function asLike(m: ThreadMessage): MessageLike {
   return { ...m, networkId: view.value?.networkId } as unknown as MessageLike;
 }
 
-// Reply in the panel picks the line the composer answers (marked here, named
-// in the status line). The composer adds the `nick: ` at send.
-function startReply(m: ThreadMessage): void {
-  if (!m.msgid || !m.nick) return;
-  threads.setPending({
-    messageId: m.id,
-    nick: String(m.nick),
-    type: m.type,
-    text: String(m.text ?? ''),
-    self: !!m.self,
-  });
-  composerRef.value?.focus();
-}
-
 const actionContext: MessageContext = {
   get networkId() {
     return view.value?.networkId ?? 0;
   },
-  onReply: (msg: MessageLike) => startReply(msg as ThreadMessage),
+  onReply: () => {},
   onQuote: () => {},
   onIgnore: (msg: MessageLike) => {
     const { user, host } = parseUserHost(msg.userhost);
@@ -912,12 +891,6 @@ function onLineClick(e: MouseEvent, m: ThreadMessage): void {
 }
 .t-line.highlight {
   background: color-mix(in srgb, var(--warn) 12%, transparent);
-}
-/* The line the composer is answering: the accent bar the active buffer row
-   wears, over the hover shade. */
-.t-line.replying {
-  background: var(--bg-soft);
-  box-shadow: inset 2px 0 var(--accent);
 }
 .t-line.scroll-target {
   animation: thread-scroll-target 1.5s ease-out;

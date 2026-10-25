@@ -57,7 +57,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, ref } from 'vue';
 import { CircleArrowUpIcon } from '@lucide/vue';
 import { threadKey, useThreadsStore } from '../stores/threads.js';
 import { useUploadsStore } from '../stores/uploads.js';
@@ -84,7 +84,6 @@ const fileInputEl = ref<HTMLInputElement | null>(null);
 const text = ref('');
 
 const view = computed(() => threads.view);
-const pending = computed(() => threads.pending);
 // The buffer by id, never the view's copy of its name: a DM's peer can change
 // nick while the panel is up, and the send must follow the buffer.
 const buffer = computed(() => (view.value ? buffers.byId(view.value.bufferId) : null));
@@ -148,11 +147,6 @@ function insertUrlAtCaret(url: string): void {
 defineExpose({ focus, attach });
 
 onMounted(() => autosize());
-
-// Picking a line to answer brings the caret here.
-watch(pending, (p) => {
-  if (p) void nextTick(focus);
-});
 
 // Anything typed (or pasted) ends a Tab cycle: the word under the caret is
 // the user's again.
@@ -234,11 +228,6 @@ function onKeydown(e: KeyboardEvent): void {
     return;
   }
   cycle = null;
-  if (e.key === 'Escape' && pending.value) {
-    e.preventDefault();
-    threads.setPending(null);
-    return;
-  }
   // Safari fires the Enter that confirms an IME candidate with isComposing
   // false; isImeKey reads the keyCode it leaves behind (useImeSafeInput).
   if (e.key === 'Enter' && !e.shiftKey && !isImeKey(e)) {
@@ -304,7 +293,6 @@ async function submit(): Promise<void> {
     return;
   }
   text.value = '';
-  threads.setPending(null);
   await nextTick();
   autosize();
   const result = await sent;

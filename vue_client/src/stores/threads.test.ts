@@ -123,22 +123,19 @@ describe('threads store', () => {
     expect(threads.view?.truncated).toBe(true);
   });
 
-  it('replyFromChannel asks for the thread and keeps the pick through the open', () => {
+  it('replyFromChannel asks for the thread and wants the composer', () => {
     seed();
     const threads = useThreadsStore();
     const nav = vi.spyOn(threadNav, 'requestThreadNav');
-    threads.replyFromChannel(9, 'root', { id: 7, nick: 'bob', type: 'message', text: 'x' });
+    threads.replyFromChannel(9, 'root');
     expect(nav).toHaveBeenCalledWith({ kind: 'thread', bufferId: 9, rootMsgid: 'root' });
     expect(threads.wantComposer).toBe(true);
-    // The shell navigates, the panel opens the thread: the pick is still there.
+    // Already on that thread: no navigation, just the caret.
     threads.open(9, 'root');
-    expect(threads.pending).toMatchObject({ messageId: 7, nick: 'bob' });
-    // Already on that thread: no navigation, just the pick and the caret.
     nav.mockClear();
     threads.wantComposer = false;
-    threads.replyFromChannel(9, 'root', null);
+    threads.replyFromChannel(9, 'root');
     expect(nav).not.toHaveBeenCalled();
-    expect(threads.pending).toBeNull();
     expect(threads.wantComposer).toBe(true);
   });
 
@@ -159,30 +156,39 @@ describe('threads store', () => {
     expect(other.thread?.replies).toBe(1);
   });
 
-  it('replyTarget is the picked line, else the first line, else the oldest reply held', () => {
+  it('replyTarget is the newest reply from someone else, else the first line, else the oldest held', () => {
     seed();
     const threads = useThreadsStore();
     threads.open(9, 'root');
+    const reply = (id: number, over: Record<string, unknown>) =>
+      line(id, {
+        msgid: `r${id}`,
+        replyTo: { msgid: 'root', root: 'root', parent: null },
+        ...over,
+      });
     threads.applyThread({
       bufferId: 9,
       rootMsgid: 'root',
       token: threads.view!.token,
-      root: null,
+      root: line(1, { msgid: 'root', nick: 'alice' }),
       replies: [
-        line(2, {
-          msgid: 'r2',
-          nick: 'bob',
-          replyTo: { msgid: 'root', root: 'root', parent: null },
-        }),
-        line(3, { msgid: 'r3', replyTo: { msgid: 'r2', root: 'root', parent: null } }),
+        reply(2, { nick: 'bob' }),
+        reply(3, { nick: 'carol' }),
+        reply(4, { nick: 'me', self: true }),
+        reply(5, { nick: 'troll', fromIgnored: true }),
+        reply(6, { nick: 'dave', msgid: undefined }),
       ],
     });
-    expect(threads.replyTarget()).toMatchObject({ messageId: 2, nick: 'bob' });
-    threads.setPending({ messageId: 3, nick: 'alice', type: 'message', text: 'x', self: false });
-    expect(threads.replyTarget()).toMatchObject({ messageId: 3 });
-    // Opening another thread drops the pick.
-    threads.open(9, 'elsewhere');
-    expect(threads.pending).toBeNull();
+    // Not our own, not someone ignored, and a line a reply tag can name.
+    expect(threads.replyTarget()).toMatchObject({ messageId: 3, nick: 'carol' });
+    // Nobody else yet: the first line.
+    threads.view!.replies = [reply(4, { nick: 'me', self: true })];
+    expect(threads.replyTarget()).toMatchObject({ messageId: 1, nick: 'alice' });
+    // Neither held: the oldest reply we do hold.
+    threads.view!.root = null;
+    expect(threads.replyTarget()).toMatchObject({ messageId: 4, nick: 'me' });
+    threads.view!.replies = [];
+    expect(threads.replyTarget()).toBeNull();
   });
 
   it('markViewRead moves the pointer of a followed thread with something unread, once', () => {

@@ -72,9 +72,8 @@ export interface ThreadList {
   token: number;
 }
 
-// The line the panel's composer answers next: picked with Reply on a line in
-// the panel; null means the thread's first line.
-export interface ThreadPendingReply {
+// The line a send from the panel answers (replyTarget).
+export interface ThreadReplyTarget {
   messageId: number;
   nick: string;
   type: string;
@@ -98,7 +97,6 @@ export const useThreadsStore = defineStore('threads', {
     followed: [] as FollowedThread[],
     view: null as ThreadView | null,
     list: null as ThreadList | null,
-    pending: null as ThreadPendingReply | null,
     // Set by a Reply in the channel (replyFromChannel): the panel puts the
     // caret in its composer once the thread is up, then clears this.
     wantComposer: false,
@@ -138,14 +136,12 @@ export const useThreadsStore = defineStore('threads', {
 
     // Open the panel on (bufferId, rootMsgid): ask for the thread whole.
     // Re-opening the one already loaded keeps what's there and refreshes it
-    // underneath. The pending reply is the thread's: a new thread drops it.
+    // underneath.
     open(bufferId: number, rootMsgid: string) {
       const buf = useBuffersStore().byId(bufferId);
       if (!buf || buf.networkId == null) return;
       const token = nextToken++;
       const same = this.view?.bufferId === bufferId && this.view.rootMsgid === rootMsgid;
-      // A pick made for THIS thread before it opened (replyFromChannel) stays.
-      if (!same && !this.wantComposer) this.pending = null;
       this.view = {
         networkId: Number(buf.networkId),
         target: buf.target,
@@ -162,7 +158,6 @@ export const useThreadsStore = defineStore('threads', {
 
     close() {
       this.view = null;
-      this.pending = null;
     },
 
     // The `thread` answer. Dropped unless it answers the request on screen.
@@ -279,52 +274,29 @@ export const useThreadsStore = defineStore('threads', {
       });
     },
 
-    // Reply on a line in the panel: the next send answers it instead of the
-    // first line. Null returns to the first line.
-    setPending(reply: ThreadPendingReply | null) {
-      this.pending = reply;
-    },
-
     // Reply on a channel line with threads on: open its thread with the caret
-    // in the panel's composer. `line` is the line to answer when it isn't the
-    // thread's first line (a reply already in the thread); null answers the
-    // first line. The pick survives the panel opening because open() keeps it
-    // while wantComposer is set.
-    replyFromChannel(
-      bufferId: number,
-      rootMsgid: string,
-      line: {
-        id?: number | null;
-        nick?: string;
-        type?: string;
-        text?: string;
-        self?: boolean;
-      } | null,
-    ) {
+    // in the panel's composer.
+    replyFromChannel(bufferId: number, rootMsgid: string) {
       const same = this.view?.bufferId === bufferId && this.view.rootMsgid === rootMsgid;
-      this.pending =
-        line && line.id != null && line.nick
-          ? {
-              messageId: Number(line.id),
-              nick: line.nick,
-              type: line.type ?? 'message',
-              text: line.text ?? '',
-              self: !!line.self,
-            }
-          : null;
       this.wantComposer = true;
       if (same) return;
       requestThreadNav({ kind: 'thread', bufferId, rootMsgid });
     },
 
-    // What a send from the panel answers: the picked line, else the thread's
-    // first line, else — when we don't hold it — the oldest reply we do.
-    replyTarget(): ThreadPendingReply | null {
-      if (this.pending) return this.pending;
+    // What a send from the panel answers: the newest reply from someone else,
+    // so that in a client without threads the thread reads as the conversation
+    // it is (each line quoting, and addressing, the one it answers) rather than
+    // every line quoting the first; else the first line; else — when we don't
+    // hold it — the oldest reply we do. A line a reply tag can't name (no
+    // msgid, encrypted) is skipped; someone ignored is never answered.
+    replyTarget(): ThreadReplyTarget | null {
       const v = this.view;
       if (!v) return null;
-      const line = v.root ?? v.replies[0];
-      if (!line || !line.msgid || line.e2e) return null;
+      const usable = (m: ThreadMessage | null | undefined): m is ThreadMessage =>
+        !!m && !!m.msgid && !m.e2e;
+      const theirs = v.replies.filter((r) => !r.self && !r.fromIgnored && usable(r));
+      const line = theirs.at(-1) ?? (usable(v.root) ? v.root : null) ?? v.replies.find(usable);
+      if (!line) return null;
       return {
         messageId: line.id,
         nick: String(line.nick ?? ''),

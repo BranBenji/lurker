@@ -128,13 +128,13 @@ describe('ThreadPanel', () => {
     expect(rows[0].classes()).toContain('root');
     expect(rows[0].text()).toContain('anyone around?');
     expect(w.find('.rule').text()).toBe('2 replies');
-    // The address the thread makes redundant is dropped; a reply to the first
-    // line has no quote, a reply to another reply quotes it.
+    // The address the thread makes redundant is dropped; neither a reply to the
+    // first line nor one to the line just above carries a quote (the quote test
+    // below covers an answer to an earlier line).
     expect(rows[1].text()).toContain('here');
     expect(rows[1].text()).not.toContain('alice: here');
     expect(rows[1].find('.reply-quote').exists()).toBe(false);
-    expect(rows[2].find('.reply-quote').exists()).toBe(true);
-    expect(rows[2].find('.reply-quote').text()).toContain('<bob>');
+    expect(rows[2].find('.reply-quote').exists()).toBe(false);
 
     // A live reply lands at the end.
     threads.applyLive(
@@ -145,7 +145,7 @@ describe('ThreadPanel', () => {
     expect(w.find('.rule').text()).toBe('3 replies');
   });
 
-  it('says so when the first line is gone, and Reply on a line steers the composer', async () => {
+  it('says so when the first line is gone, and offers neither Reply nor Quote on a line', async () => {
     seed();
     const w = await mountAt('/buffer/9/thread/m1');
     const threads = useThreadsStore();
@@ -158,20 +158,54 @@ describe('ThreadPanel', () => {
     });
     await w.vm.$nextTick();
     expect(w.find('.t-line.missing').text()).toContain('original message unavailable');
-    // Quiet until a line is picked; the paperclip is there as in the status bar.
+    // The status row holds only the paperclip, as the main status bar does.
     expect(w.find('.panel-status').text()).toBe('');
     expect(w.find('.panel-status .tool-btn').exists()).toBe(true);
+    // A send from here answers the newest reply from someone else; picking a
+    // line would undo that, and Quote would ride a send that carries a reply
+    // tag. The rest of the bar is there.
+    const titles = w.findAll('.row-action').map((b) => b.attributes('title') ?? '');
+    expect(titles.some((t) => t.startsWith('Reply to'))).toBe(false);
+    expect(titles.some((t) => t.startsWith('Quote'))).toBe(false);
+    expect(titles).toContain('Copy text');
+  });
 
-    const reply = w.findAll('.row-action').find((b) => b.attributes('title') === 'Reply to bob');
-    expect(reply).toBeTruthy();
-    await reply!.trigger('click');
-    expect(threads.pending).toMatchObject({ messageId: 2, nick: 'bob' });
-    expect(w.find('[data-msg-id="2"]').classes()).toContain('replying');
-    expect(w.find('.panel-status').text()).toContain('bob');
-    // Quote isn't offered: a send from here already carries a reply tag.
-    expect(w.findAll('.row-action').some((b) => b.attributes('title')?.startsWith('Quote'))).toBe(
-      false,
-    );
+  it('quotes only an answer to an earlier line, not to the first or the one just above', async () => {
+    seed();
+    const w = await mountAt('/buffer/9/thread/m1');
+    const threads = useThreadsStore();
+    const reply = (id: number, nick: string, to: string, text: string) =>
+      line(id, {
+        nick,
+        text,
+        replyTo: {
+          msgid: to,
+          root: 'm1',
+          parent: {
+            id: Number(to.slice(1)),
+            nick: 'x',
+            type: 'message',
+            text,
+            userhost: null,
+            self: false,
+          },
+        },
+      });
+    threads.applyThread({
+      bufferId: 9,
+      rootMsgid: 'm1',
+      token: threads.view!.token,
+      root: line(1),
+      replies: [
+        reply(2, 'bob', 'm1', 'to the first line'),
+        reply(3, 'carol', 'm2', 'to the one just above'),
+        reply(4, 'dave', 'm2', 'back to an earlier one'),
+      ],
+    });
+    await w.vm.$nextTick();
+    expect(w.find('[data-msg-id="2"] .reply-quote').exists()).toBe(false);
+    expect(w.find('[data-msg-id="3"] .reply-quote').exists()).toBe(false);
+    expect(w.find('[data-msg-id="4"] .reply-quote').exists()).toBe(true);
   });
 
   it('rows follow the message layout: compact by default here, standard on request', async () => {

@@ -83,28 +83,28 @@ describe('ThreadComposer', () => {
     wrapper = null;
   });
 
-  it('Enter sends a reply to the first line, addressed to its author', async () => {
+  it('Enter answers the newest reply from someone else, addressed to them', async () => {
     seed();
     const ta = await type('me too');
     await wrapper!.find('textarea').trigger('keydown', { key: 'Enter' });
     expect(sends()).toEqual([
-      { type: 'send', networkId: 1, target: '#chan', text: 'alice: me too', replyTo: 1 },
+      { type: 'send', networkId: 1, target: '#chan', text: 'bob: me too', replyTo: 2 },
     ]);
     await wrapper!.vm.$nextTick();
     expect(ta.value).toBe('');
   });
 
-  it('a picked line is answered instead, and the pick clears on send', async () => {
+  it('with nobody else in it yet, answers the first line', async () => {
     const threads = seed();
-    threads.setPending({ messageId: 2, nick: 'bob', type: 'message', text: 'x', self: false });
-    await type('indeed');
+    threads.view!.replies = [];
+    await type('anyone?');
     await wrapper!.find('textarea').trigger('keydown', { key: 'Enter' });
-    expect(sends()[0]).toMatchObject({ text: 'bob: indeed', replyTo: 2 });
-    expect(threads.pending).toBeNull();
+    expect(sends()[0]).toMatchObject({ text: 'alice: anyone?', replyTo: 1 });
   });
 
   it('no address on your own line or in a DM', async () => {
-    seed('#chan', line(1, { nick: 'me', self: true }));
+    const threads = seed('#chan', line(1, { nick: 'me', self: true }));
+    threads.view!.replies = [];
     await type('to clarify');
     await wrapper!.find('textarea').trigger('keydown', { key: 'Enter' });
     expect(sends()[0]).toMatchObject({ text: 'to clarify', replyTo: 1 });
@@ -114,7 +114,7 @@ describe('ThreadComposer', () => {
     seed('alice');
     await type('in a dm');
     await wrapper!.find('textarea').trigger('keydown', { key: 'Enter' });
-    expect(sends()[0]).toMatchObject({ target: 'alice', text: 'in a dm', replyTo: 1 });
+    expect(sends()[0]).toMatchObject({ target: 'alice', text: 'in a dm', replyTo: 2 });
   });
 
   it('refuses a /command with a toast; // escapes one slash', async () => {
@@ -125,7 +125,7 @@ describe('ThreadComposer', () => {
     expect(useToastsStore().items.at(-1)?.title).toMatch(/Commands/);
     await wrapper!.find('textarea').setValue('//literal');
     await wrapper!.find('textarea').trigger('keydown', { key: 'Enter' });
-    expect(sends()[0]).toMatchObject({ text: 'alice: /literal' });
+    expect(sends()[0]).toMatchObject({ text: 'bob: /literal' });
   });
 
   it('Tab completes a nick from the members, cycling on repeat', async () => {
@@ -187,7 +187,7 @@ describe('ThreadComposer', () => {
     await wrapper!.find('textarea').setValue('by button');
     expect((btn.element as HTMLButtonElement).disabled).toBe(false);
     await btn.trigger('click');
-    expect(sends()[0]).toMatchObject({ text: 'alice: by button', replyTo: 1 });
+    expect(sends()[0]).toMatchObject({ text: 'bob: by button', replyTo: 2 });
   });
 
   it('a file picked through attach lands as a URL in this composer, not the channel’s', async () => {
