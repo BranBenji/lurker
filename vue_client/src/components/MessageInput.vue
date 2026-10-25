@@ -231,7 +231,13 @@ import { parseIgnoreArgs } from '../../../shared/parseIgnore.js';
 import { parseHighlightArgs } from '../../../shared/parseHighlight.js';
 import { highlightRuleDetailParts } from '../utils/highlightFormat.js';
 import { joinMeta } from '../utils/metaLine.js';
-import { ACCEPTED_FILE_TYPES, CAMERA_CAPTURE_TYPES, isUploadableType } from '../utils/uploaders.js';
+import {
+  ACCEPTED_FILE_TYPES,
+  CAMERA_CAPTURE_TYPES,
+  isUploadableType,
+  pastedUploadFile,
+} from '../utils/uploaders.js';
+import { insertWithPadding } from '../utils/insertAtCaret.js';
 import { useWhoisStore } from '../stores/whois.js';
 import { useChanlistStore } from '../stores/chanlist.js';
 import { useChannelListModal } from '../composables/useChannelListModal.js';
@@ -2169,22 +2175,20 @@ function insertUrlAtCaret(url: string): void {
     text.value = current ? `${current} ${url}` : url;
     return;
   }
-  const start = el.selectionStart ?? current.length;
-  const end = el.selectionEnd ?? current.length;
-  const before = current.slice(0, start);
-  const after = current.slice(end);
-  const padLeft = before.length > 0 && !/\s$/.test(before) ? ' ' : '';
-  const padRight = after.length > 0 && !/^\s/.test(after) ? ' ' : '';
-  const inserted = `${padLeft}${url}${padRight}`;
+  const next = insertWithPadding(
+    current,
+    el.selectionStart ?? current.length,
+    el.selectionEnd ?? current.length,
+    url,
+  );
   cycling = true;
-  text.value = `${before}${inserted}${after}`;
+  text.value = next.text;
   cycling = false;
   queueMicrotask(() => {
     const e2 = inputEl.value;
     if (!e2) return;
-    const caret = before.length + inserted.length;
     e2.focus();
-    e2.setSelectionRange(caret, caret);
+    e2.setSelectionRange(next.caret, next.caret);
   });
 }
 
@@ -2210,36 +2214,15 @@ onMounted(() => {
   });
 });
 
-function blobFromClipboardItem(item: DataTransferItem): File | null {
-  // Same gate as drop, from the same definition — pasting a video file from Finder
-  // used to silently do nothing. `kind === 'file'` keeps pasted rich text from being
-  // hijacked into an upload; the server has the final say on the type.
-  //
-  // ⚠ The file is taken BEFORE the type gate, because the gate needs its name: a
-  // platform with no registered mime for `.md` reports an empty type, and the
-  // extension is then the only thing distinguishing a README from a stray binary
-  // (#788). `kind` is still checked first, so rich text never reaches getAsFile().
-  if (!item || item.kind !== 'file') return null;
-  const file = item.getAsFile();
-  if (!file || !isUploadableType(file.type, file.name)) return null;
-  return file;
-}
-
 function onPaste(e: ClipboardEvent): void {
   if (!sendable.value) return;
   if (settings.effective('uploads.paste.enabled') === false) return;
-  const items = e.clipboardData?.items;
-  if (!items) return;
-  for (const item of items) {
-    const file = blobFromClipboardItem(item);
-    if (file) {
-      e.preventDefault();
-      uploads.upload(file).catch(() => {
-        /* failure visible via status bar */
-      });
-      return;
-    }
-  }
+  const file = pastedUploadFile(e);
+  if (!file) return;
+  e.preventDefault();
+  uploads.upload(file).catch(() => {
+    /* failure visible via status bar */
+  });
 }
 
 function onPickFile() {

@@ -9,9 +9,11 @@
   window. Every line sent from here is a reply in the thread, to the newest
   reply from someone else (threads.replyTarget). Plain on purpose — Enter
   sends, Tab completes nicks from the channel's members with the completion
-  suffix the channel uses. No uploads, emoji picker, drafts or slash commands:
-  the channel's composer has those, and a /command typed here is refused
-  rather than sent as text.
+  suffix the channel uses. A pasted file uploads, and its URL lands here, not
+  in the channel's draft; with no status row in the panel, the send button
+  turns into a spinner while it goes up, and a failure is a toast. No upload
+  button, emoji picker, drafts or slash commands: the channel's composer has
+  those, and a /command typed here is refused rather than sent as text.
 
   One line per send: a send the network would split into several PRIVMSGs
   carries its reply tag on the first only, and the rest would land in the
@@ -34,8 +36,21 @@
       :aria-label="placeholder"
       @keydown="onKeydown"
       @input="onInput"
+      @paste="onPaste"
+      @compositionstart="onCompositionStart"
+      @compositionend="onCompositionEnd"
     />
+    <span
+      v-if="uploading"
+      class="send-btn uploading"
+      role="status"
+      :title="uploadLabel"
+      :aria-label="uploadLabel"
+    >
+      <LoaderCircleIcon class="icon-spin" />
+    </span>
     <button
+      v-else
       type="button"
       class="send-btn"
       :disabled="!canSend || !text.trim()"
@@ -50,13 +65,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue';
-import { CircleArrowUpIcon } from '@lucide/vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
+import { CircleArrowUpIcon, LoaderCircleIcon } from '@lucide/vue';
 import { threadKey, useThreadsStore } from '../stores/threads.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useToastsStore } from '../stores/toasts.js';
+import { useUploadsStore } from '../stores/uploads.js';
+import { pastedUploadFile } from '../utils/uploaders.js';
+import { insertWithPadding } from '../utils/insertAtCaret.js';
 import { socketSendWithAck } from '../composables/useSocket.js';
 import { privateTarget, replyTagsGoOut } from '../composables/useMessageActions.js';
 import { isImeKey } from '../composables/useImeSafeInput.js';
@@ -68,6 +86,7 @@ const buffers = useBuffersStore();
 const networks = useNetworksStore();
 const settings = useSettingsStore();
 const toasts = useToastsStore();
+const uploads = useUploadsStore();
 
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 const text = ref('');
@@ -197,6 +216,103 @@ function onKeydown(e: KeyboardEvent): void {
   }
 }
 
+// ─── A pasted file ────────────────────────────────────────────────────────
+
+// Ours, not the store's `current`: the channel's composer may have one going.
+const uploading = ref(false);
+let unmounted = false;
+onBeforeUnmount(() => {
+  unmounted = true;
+});
+const uploadLabel = computed(() => {
+  const pct = uploads.current?.progress;
+  return pct != null && pct < 100 ? `Uploading ${pct}%` : 'Uploading…';
+});
+
+// The channel composer's gate (uploads.paste.enabled), upload and URL
+// spacing. The URL comes back to this composer alone (`insert: false`).
+async function onPaste(e: ClipboardEvent): Promise<void> {
+  if (!canSend.value || settings.effective('uploads.paste.enabled') === false) return;
+  const file = pastedUploadFile(e);
+  if (!file) return;
+  e.preventDefault();
+  if (uploads.current) {
+    toasts.push({
+      title: 'Already uploading',
+      body: 'One file goes up at a time. Paste it again once that one is done.',
+      kind: 'warn',
+      ttlMs: 5000,
+    });
+    return;
+  }
+  uploading.value = true;
+  try {
+    const result = await uploads.upload(file, null, { insert: false });
+    if (!result?.url) return;
+    // Gone in the meantime (another thread, the panel closed): the reply it
+    // was for went with it, as a half-typed one does, but say where the file is.
+    if (unmounted) {
+      toasts.push({
+        title: 'Uploaded',
+        body: 'The thread closed before it finished, so it’s in your uploads, not a reply.',
+        kind: 'info',
+        ttlMs: 6000,
+      });
+      return;
+    }
+    insertUrl(result.url);
+  } catch (err) {
+    toasts.push({
+      title: 'Upload failed',
+      body: (err as Error)?.message || 'The file didn’t upload.',
+      kind: 'error',
+      ttlMs: 6000,
+    });
+  } finally {
+    uploading.value = false;
+  }
+}
+
+// Mid-composition (an IME, an Android keyboard's word), v-model holds the DOM
+// back and then copies it over the model at compositionend, which would drop
+// the URL: it waits for the composition to end. A Tab cycle ends with it, as
+// any edit ends one. The caret moves only if the reader is still here — they
+// may have gone to the channel's composer while the file went up.
+let composing = false;
+let urlAfterComposition: string | null = null;
+function onCompositionStart(): void {
+  composing = true;
+}
+function onCompositionEnd(): void {
+  composing = false;
+  const url = urlAfterComposition;
+  urlAfterComposition = null;
+  // After v-model has taken the composed text.
+  if (url) void nextTick(() => insertUrl(url));
+}
+
+function insertUrl(url: string): void {
+  if (composing) {
+    urlAfterComposition = url;
+    return;
+  }
+  cycle = null;
+  const el = inputEl.value;
+  const current = text.value;
+  const next = insertWithPadding(
+    current,
+    el?.selectionStart ?? current.length,
+    el?.selectionEnd ?? current.length,
+    url,
+  );
+  text.value = next.text;
+  void nextTick(() => {
+    if (!el) return;
+    if (document.activeElement === el) el.setSelectionRange(next.caret, next.caret);
+    autosize();
+  });
+}
+
 // ─── Sending ──────────────────────────────────────────────────────────────
 
 async function submit(): Promise<void> {
@@ -205,6 +321,9 @@ async function submit(): Promise<void> {
   const raw = text.value;
   const body = raw.trim();
   if (!v || !buf || !body || !canSend.value) return;
+  // Its file is still going up: Enter waits for the URL rather than sending
+  // the words without it.
+  if (uploading.value) return;
   // A /command would go out as a line in the thread (`/msg bob password`
   // included). The channel's composer runs commands; this one doesn't.
   if (body.startsWith('/') && !body.startsWith('//')) {
@@ -313,7 +432,11 @@ textarea::placeholder {
   line-height: 1.4;
   align-self: flex-end;
 }
-.send-btn:hover:not(:disabled) {
+.send-btn.uploading {
+  color: var(--fg-muted);
+  cursor: default;
+}
+button.send-btn:hover:not(:disabled) {
   color: var(--fg);
 }
 .send-btn:disabled {

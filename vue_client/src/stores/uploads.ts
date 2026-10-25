@@ -217,7 +217,11 @@ export const useUploadsStore = defineStore('uploads', {
     async upload(
       file: File | Blob,
       filename: string | null = null,
-      { avatar = false }: { avatar?: boolean } = {},
+      // `insert: false` hands the URL back to the caller alone rather than to
+      // every composer listening (onInsertUrl): the thread panel's composer
+      // puts it in its own reply, not in the channel's draft. An avatar is
+      // never inserted.
+      { avatar = false, insert = !avatar }: { avatar?: boolean; insert?: boolean } = {},
     ) {
       if (this.current) return; // Single concurrent upload — keeps the status bar coherent.
       const token = makeClientId();
@@ -260,7 +264,7 @@ export const useUploadsStore = defineStore('uploads', {
                 onSent: () => onProgress(100),
               })
             : await apiMultipart('/api/uploads', fd, { onProgress });
-        if (!avatar) emitInsert(result.url);
+        if (insert) emitInsert(result.url);
         // Prepend the new row optimistically without a refetch. Prefer a remote
         // thumbnail URL the server returned (node edition stores thumbs on the
         // CDN); otherwise, for images, fall back to the local BLOB-serving route

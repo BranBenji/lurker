@@ -16,6 +16,7 @@ import type { ThreadMessage } from '../stores/threads.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { socketSendWithAck } from '../composables/useSocket.js';
+import { useUploadsStore, onInsertUrl } from '../stores/uploads.js';
 
 vi.mock('../composables/useSocket.js', () => ({
   socketSend: vi.fn<() => boolean>(() => true),
@@ -187,6 +188,139 @@ describe('ThreadComposer', () => {
     expect((btn.element as HTMLButtonElement).disabled).toBe(false);
     await btn.trigger('click');
     expect(sends()[0]).toMatchObject({ text: 'bob: by button', replyTo: 2 });
+  });
+
+  // A pasted file goes up and its URL lands in this reply, not in the
+  // channel's draft; the send button is a spinner meanwhile.
+  describe('a pasted file', () => {
+    function paste(ta: HTMLTextAreaElement, file: File): Event {
+      const ev = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(ev, 'clipboardData', {
+        value: { items: [{ kind: 'file', getAsFile: () => file }] },
+      });
+      ta.dispatchEvent(ev);
+      return ev;
+    }
+    const png = () => new File(['x'], 'shot.png', { type: 'image/png' });
+
+    it('uploads it and puts the URL in the reply, not the channel draft', async () => {
+      seed();
+      const uploads = useUploadsStore();
+      let finish!: (r: { url: string }) => void;
+      const upload = vi
+        .spyOn(uploads, 'upload')
+        .mockImplementation(() => new Promise((r) => (finish = r)) as never);
+      const channelDraft = vi.fn<(url: string) => void>();
+      const unsub = onInsertUrl(channelDraft);
+      try {
+        const ta = await type('look');
+        ta.setSelectionRange(4, 4);
+        const ev = paste(ta, png());
+        expect(ev.defaultPrevented).toBe(true);
+        expect(upload).toHaveBeenCalledWith(expect.any(File), null, { insert: false });
+        await wrapper!.vm.$nextTick();
+        expect(wrapper!.find('.send-btn.uploading').exists()).toBe(true);
+        finish({ url: 'https://x.test/shot.png' });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(ta.value).toBe('look https://x.test/shot.png');
+        expect(channelDraft).not.toHaveBeenCalled();
+        expect(wrapper!.find('.send-btn.uploading').exists()).toBe(false);
+      } finally {
+        unsub();
+      }
+    });
+
+    it('holds Enter until the file is up, and says where it went if the composer closes', async () => {
+      seed();
+      let finish!: (r: { url: string }) => void;
+      vi.spyOn(useUploadsStore(), 'upload').mockImplementation(
+        () => new Promise((r) => (finish = r)) as never,
+      );
+      const ta = await type('look');
+      paste(ta, png());
+      await wrapper!.find('textarea').trigger('keydown', { key: 'Enter' });
+      expect(sends()).toEqual([]);
+      wrapper!.unmount();
+      wrapper = null;
+      finish({ url: 'https://x.test/shot.png' });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(useToastsStore().items.at(-1)).toMatchObject({ title: 'Uploaded' });
+    });
+
+    // A slow upload finishing into a composer the user went on using.
+    describe('finishing while the user is busy', () => {
+      let finish!: (r: { url: string }) => void;
+      const settle = () => new Promise((r) => setTimeout(r, 0));
+      beforeEach(() => {
+        seed();
+        vi.spyOn(useUploadsStore(), 'upload').mockImplementation(
+          () => new Promise((r) => (finish = r)) as never,
+        );
+      });
+
+      it('waits for an IME composition to end', async () => {
+        const ta = await type('look');
+        paste(ta, png());
+        ta.dispatchEvent(new Event('compositionstart'));
+        finish({ url: 'https://x.test/shot.png' });
+        await settle();
+        expect(ta.value).toBe('look');
+        ta.dispatchEvent(new Event('compositionend'));
+        await settle();
+        expect(ta.value).toBe('look https://x.test/shot.png');
+      });
+
+      it('ends a Tab cycle, so the next Tab keeps the URL', async () => {
+        const ta = await type('al');
+        await wrapper!.find('textarea').trigger('keydown', { key: 'Tab' });
+        expect(ta.value).toBe('alice: ');
+        paste(ta, png());
+        finish({ url: 'https://x.test/shot.png' });
+        await settle();
+        expect(ta.value).toBe('alice: https://x.test/shot.png');
+        await wrapper!.find('textarea').trigger('keydown', { key: 'Tab' });
+        expect(ta.value).toBe('alice: https://x.test/shot.png');
+      });
+
+      it('leaves focus where the user moved it', async () => {
+        const elsewhere = document.createElement('input');
+        document.body.append(elsewhere);
+        try {
+          const ta = await type('look');
+          ta.focus();
+          paste(ta, png());
+          elsewhere.focus();
+          finish({ url: 'https://x.test/shot.png' });
+          await settle();
+          expect(ta.value).toBe('look https://x.test/shot.png');
+          expect(document.activeElement).toBe(elsewhere);
+        } finally {
+          elsewhere.remove();
+        }
+      });
+    });
+
+    it('says so when the upload fails', async () => {
+      seed();
+      vi.spyOn(useUploadsStore(), 'upload').mockRejectedValue(new Error('too big'));
+      const ta = await type('');
+      paste(ta, png());
+      await new Promise((r) => setTimeout(r, 0));
+      expect(useToastsStore().items.at(-1)).toMatchObject({
+        title: 'Upload failed',
+        body: 'too big',
+      });
+      expect(ta.value).toBe('');
+    });
+
+    it('leaves a paste alone when paste uploads are off', async () => {
+      seed();
+      useSettingsStore().values['uploads.paste.enabled'] = false;
+      const upload = vi.spyOn(useUploadsStore(), 'upload');
+      const ta = await type('');
+      expect(paste(ta, png()).defaultPrevented).toBe(false);
+      expect(upload).not.toHaveBeenCalled();
+    });
   });
 
   it('is disabled while the network cannot carry a reply tag', async () => {
