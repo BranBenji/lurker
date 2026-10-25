@@ -259,15 +259,26 @@ describe('ThreadPanel', () => {
         line(4, {
           nick: 'dave',
           matched: true,
+          matchedRuleId: 1,
+          replyTo: { msgid: 'm1', root: 'm1', parent: null },
+        }),
+        // An answer to you, opening with your nick: the shape of a thread, not
+        // a highlight here (the server's stamps still badge the channel).
+        line(5, {
+          nick: 'erin',
+          text: 'me: right back at you',
+          matched: true,
+          replyToSelf: true,
           replyTo: { msgid: 'm1', root: 'm1', parent: null },
         }),
       ],
     });
     await w.vm.$nextTick();
-    expect(w.find('.rule').text()).toBe('2 replies');
+    expect(w.find('.rule').text()).toBe('3 replies');
     expect(w.find('[data-msg-id="3"]').text()).toContain('(ignored)');
-    // The stamp tints until the rules are loaded; then the rules decide.
+    // A rule match tints (the stamp, until the rules are loaded).
     expect(w.find('[data-msg-id="4"]').classes()).toContain('highlight');
+    expect(w.find('[data-msg-id="5"]').classes()).not.toContain('highlight');
   });
 
   it('the list route asks for the buffer’s threads and opens one on click', async () => {

@@ -351,61 +351,63 @@ function verdictFor(m: ThreadMessage): { hide: boolean; nohilight: boolean } {
   return { hide: verdict.hide, nohilight: verdict.nohilight };
 }
 
-function highlightFor(m: ThreadMessage, nohilight: boolean): boolean {
+// Tinted by what the line SHOWS. In a thread, answering you and opening with
+// your nick are the shape of the conversation, not news — so the reply-to-you
+// stamp doesn't tint here, and the rules are run on the text with the address
+// dropped (`shown`). A mention in the body of a reply still does. The server's
+// stamps are untouched: the channel badge and the Threads button read those.
+function highlightFor(m: ThreadMessage, nohilight: boolean, shown: string): boolean {
   const v = view.value;
   if (!v || m.self || nohilight) return false;
-  const replyToSelf = !!m.replyToSelf;
-  if (!highlights.loaded) return !!m.matched || replyToSelf;
-  return (
-    highlights.evaluate(v.networkId, {
-      nick: m.nick,
-      userhost: (m.userhost as string | null | undefined) ?? null,
-      target: v.target,
-      text: String(m.text ?? ''),
-      type: m.type,
-      self: !!m.self,
-    }) || replyToSelf
-  );
+  if (!highlights.loaded) return (m as { matchedRuleId?: unknown }).matchedRuleId != null;
+  return highlights.evaluate(v.networkId, {
+    nick: m.nick,
+    userhost: (m.userhost as string | null | undefined) ?? null,
+    target: v.target,
+    text: shown,
+    type: m.type,
+    self: !!m.self,
+  });
 }
 
 const rows = computed((): Row[] => {
   const v = view.value;
   if (!v) return [];
   const out: Row[] = [];
-  const judged = (m: ThreadMessage) => {
+  // The text a reply shows: no quote here — the thread's order is the context
+  // — but the `nick: ` it opens with is dropped as the list drops it
+  // (useReplyQuote); an answer to the first line drops its author's even when
+  // the quote's lookup had nothing, since that line is on screen above.
+  const shownText = (r: ThreadMessage): string => {
+    let text = String(r.text ?? '');
+    if (!r.replyTo) return text;
+    text = replyQuote.shownReply(r.replyTo, r, v.networkId, v.target).text;
+    if (r.replyTo.msgid === v.rootMsgid && v.root?.nick && r.type === 'message') {
+      text = stripReplyAddress(text, String(v.root.nick));
+    }
+    return text;
+  };
+  const judged = (m: ThreadMessage, text: string) => {
     const { hide, nohilight } = verdictFor(m);
-    return { hidden: hide, highlight: highlightFor(m, nohilight) };
+    return { hidden: hide, highlight: highlightFor(m, nohilight, text) };
   };
   if (v.root) {
-    out.push({
-      key: 'root',
-      line: v.root,
-      text: String(v.root.text ?? ''),
-      root: true,
-      ...judged(v.root),
-    });
+    const text = String(v.root.text ?? '');
+    out.push({ key: 'root', line: v.root, text, root: true, ...judged(v.root, text) });
   } else {
     out.push({ key: 'root', missing: true, root: true });
   }
-  const replies = v.replies.map((r) => ({ r, ...judged(r) }));
+  const replies = v.replies.map((r) => {
+    const text = shownText(r);
+    return { r, text, ...judged(r, text) };
+  });
   const n = replies.filter((x) => !x.hidden).length;
   out.push({
     key: 'rule',
     rule: n === 0 ? 'no replies yet' : `${n} ${n === 1 ? 'reply' : 'replies'}`,
   });
   let prev: ThreadMessage | null = null;
-  for (const { r, hidden, highlight } of replies) {
-    let text = String(r.text ?? '');
-    if (r.replyTo) {
-      // No quote here — the thread's order is the context — but the `nick: `
-      // a reply opens with is dropped as the list drops it (useReplyQuote);
-      // an answer to the first line drops its author's even when the quote's
-      // lookup had nothing, since that line is on screen above.
-      text = replyQuote.shownReply(r.replyTo, r, v.networkId, v.target).text;
-      if (r.replyTo.msgid === v.rootMsgid && v.root?.nick && r.type === 'message') {
-        text = stripReplyAddress(text, String(v.root.nick));
-      }
-    }
+  for (const { r, text, hidden, highlight } of replies) {
     // A speaker's run shares one head, as the compact list does (its window);
     // a hidden line starts a new run.
     const deltaMs = Date.parse(r.time ?? '') - Date.parse(prev?.time ?? '');
@@ -684,11 +686,11 @@ function onLineClick(e: MouseEvent, m: ThreadMessage): void {
 .thread-panel:not(.screen) > .thread-list {
   grid-row: span 3;
 }
-/* The composer takes the status bar's row too, and sits at its bottom so it
-   lines up with the main input; the rule above it is the status bar's. */
-.thread-panel:not(.screen) > .thread-input {
+/* The lines take the status bar's row too (nothing of the status bar applies
+   here), so the avatar gutter's hairline runs down to the composer, which
+   keeps the main input's row; the rule above it is the status bar's. */
+.thread-panel:not(.screen) > .lines {
   grid-row: span 2;
-  align-self: end;
 }
 .thread-panel > .thread-input {
   border-top: 1px solid var(--border);
