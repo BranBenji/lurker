@@ -63,7 +63,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { CircleArrowUpIcon, LoaderCircleIcon } from '@lucide/vue';
 import { threadKey, useThreadsStore } from '../stores/threads.js';
 import { useBuffersStore } from '../stores/buffers.js';
@@ -71,7 +71,7 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { useUploadsStore } from '../stores/uploads.js';
-import { uploadableClipboardFile } from '../utils/uploaders.js';
+import { pastedUploadFile } from '../utils/uploaders.js';
 import { insertWithPadding } from '../utils/insertAtCaret.js';
 import { socketSendWithAck } from '../composables/useSocket.js';
 import { privateTarget, replyTagsGoOut } from '../composables/useMessageActions.js';
@@ -208,6 +208,10 @@ function onKeydown(e: KeyboardEvent): void {
 
 // Ours, not the store's `current`: the channel's composer may have one going.
 const uploading = ref(false);
+let unmounted = false;
+onBeforeUnmount(() => {
+  unmounted = true;
+});
 const uploadLabel = computed(() => {
   const pct = uploads.current?.progress;
   return pct != null && pct < 100 ? `Uploading ${pct}%` : 'Uploading…';
@@ -217,9 +221,7 @@ const uploadLabel = computed(() => {
 // spacing. The URL comes back to this composer alone (`insert: false`).
 async function onPaste(e: ClipboardEvent): Promise<void> {
   if (!canSend.value || settings.effective('uploads.paste.enabled') === false) return;
-  const file = [...(e.clipboardData?.items ?? [])]
-    .map(uploadableClipboardFile)
-    .find((f) => f !== null);
+  const file = pastedUploadFile(e);
   if (!file) return;
   e.preventDefault();
   if (uploads.current) {
@@ -234,7 +236,19 @@ async function onPaste(e: ClipboardEvent): Promise<void> {
   uploading.value = true;
   try {
     const result = await uploads.upload(file, null, { insert: false });
-    if (result?.url) insertUrl(result.url);
+    if (!result?.url) return;
+    // Gone in the meantime (another thread, the panel closed): the reply it
+    // was for went with it, as a half-typed one does, but say where the file is.
+    if (unmounted) {
+      toasts.push({
+        title: 'Uploaded',
+        body: 'The thread closed before it finished, so it’s in your uploads, not a reply.',
+        kind: 'info',
+        ttlMs: 6000,
+      });
+      return;
+    }
+    insertUrl(result.url);
   } catch (err) {
     toasts.push({
       title: 'Upload failed',
@@ -273,6 +287,9 @@ async function submit(): Promise<void> {
   const raw = text.value;
   const body = raw.trim();
   if (!v || !buf || !body || !canSend.value) return;
+  // Its file is still going up: Enter waits for the URL rather than sending
+  // the words without it.
+  if (uploading.value) return;
   // A /command would go out as a line in the thread (`/msg bob password`
   // included). The channel's composer runs commands; this one doesn't.
   if (body.startsWith('/') && !body.startsWith('//')) {
@@ -382,7 +399,7 @@ textarea::placeholder {
   color: var(--fg-muted);
   cursor: default;
 }
-.send-btn:hover:not(:disabled) {
+button.send-btn:hover:not(:disabled) {
   color: var(--fg);
 }
 .send-btn:disabled {

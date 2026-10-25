@@ -602,11 +602,6 @@ describe('uploads — favourites', () => {
     expect(uploads.recent).toEqual([]);
   });
 
-  // Every "put this in my message" affordance hangs off this. An insert with
-  // nobody subscribed is not an error — emitInsert iterates an empty set and
-  // returns — so an ungated button is one that silently does nothing. Which is
-  // exactly what shipped on mobile: the uploads browser opens from the buffer-list
-  // screen, where MessageInput is not mounted.
   // The thread panel's composer takes the URL itself: a pasted file there must
   // not also land in the channel's draft.
   it('hands the URL to the caller alone with insert: false', async () => {
@@ -625,6 +620,11 @@ describe('uploads — favourites', () => {
     }
   });
 
+  // Every "put this in my message" affordance hangs off this. An insert with
+  // nobody subscribed is not an error — emitInsert iterates an empty set and
+  // returns — so an ungated button is one that silently does nothing. Which is
+  // exactly what shipped on mobile: the uploads browser opens from the buffer-list
+  // screen, where MessageInput is not mounted.
   it('knows whether a composer is actually listening', () => {
     const uploads = useUploadsStore();
     expect(uploads.canInsert).toBe(false);

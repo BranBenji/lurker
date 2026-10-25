@@ -235,7 +235,7 @@ import {
   ACCEPTED_FILE_TYPES,
   CAMERA_CAPTURE_TYPES,
   isUploadableType,
-  uploadableClipboardFile,
+  pastedUploadFile,
 } from '../utils/uploaders.js';
 import { insertWithPadding } from '../utils/insertAtCaret.js';
 import { useWhoisStore } from '../stores/whois.js';
@@ -2217,18 +2217,12 @@ onMounted(() => {
 function onPaste(e: ClipboardEvent): void {
   if (!sendable.value) return;
   if (settings.effective('uploads.paste.enabled') === false) return;
-  const items = e.clipboardData?.items;
-  if (!items) return;
-  for (const item of items) {
-    const file = uploadableClipboardFile(item);
-    if (file) {
-      e.preventDefault();
-      uploads.upload(file).catch(() => {
-        /* failure visible via status bar */
-      });
-      return;
-    }
-  }
+  const file = pastedUploadFile(e);
+  if (!file) return;
+  e.preventDefault();
+  uploads.upload(file).catch(() => {
+    /* failure visible via status bar */
+  });
 }
 
 function onPickFile() {

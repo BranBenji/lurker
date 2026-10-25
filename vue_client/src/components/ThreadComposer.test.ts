@@ -230,6 +230,23 @@ describe('ThreadComposer', () => {
       }
     });
 
+    it('holds Enter until the file is up, and says where it went if the composer closes', async () => {
+      seed();
+      let finish!: (r: { url: string }) => void;
+      vi.spyOn(useUploadsStore(), 'upload').mockImplementation(
+        () => new Promise((r) => (finish = r)) as never,
+      );
+      const ta = await type('look');
+      paste(ta, png());
+      await wrapper!.find('textarea').trigger('keydown', { key: 'Enter' });
+      expect(sends()).toEqual([]);
+      wrapper!.unmount();
+      wrapper = null;
+      finish({ url: 'https://x.test/shot.png' });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(useToastsStore().items.at(-1)).toMatchObject({ title: 'Uploaded' });
+    });
+
     it('says so when the upload fails', async () => {
       seed();
       vi.spyOn(useUploadsStore(), 'upload').mockRejectedValue(new Error('too big'));
