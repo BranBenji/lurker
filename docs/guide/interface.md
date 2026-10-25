@@ -23,7 +23,7 @@ A tour of the Lurker window and how messages are organized.
   yours or anyone's, is drawn as a block quote: faded, with a bar where the `> `
   was.
 - **Reply threads** (Settings › Chat, experimental, off by default). With it on,
-  replies leave the channel: a line that was replied to shows `╰─ 3 replies | 4m`
+  replies leave the channel: a line that was replied to shows `╰─ 3 replies 4m`
   under it, and that opens the thread beside the channel (over it, on a phone)
   with its own composer. A reply in a thread badges the channel only when it
   mentions you or answers one of your lines, and the Threads button in the

@@ -20,17 +20,13 @@
     @click.stop="emit('open')"
   >
     <span class="arm" aria-hidden="true">╰─</span>{{ count }} {{ count === 1 ? 'reply' : 'replies'
-    }}<template v-if="when"
-      ><span class="sep">{{ ` ${META_SEPARATOR} ` }}</span
-      ><span class="when">{{ when }}</span></template
-    >
+    }}<span v-if="when" class="when">{{ when }}</span>
   </button>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
 import { formatRelative } from '../utils/timestamp.js';
-import { META_SEPARATOR } from '../utils/metaLine.js';
 
 const props = withDefaults(
   defineProps<{
@@ -70,12 +66,10 @@ const when = computed(() => (props.lastReplyTime ? formatRelative(props.lastRepl
 .arm {
   margin-right: 1ch;
 }
-/* The separator as MetaLine draws it: in the border colour, so the facts
-   stand out from what divides them. */
-.sep {
-  color: var(--border);
-}
+/* The time sits beside the count with a gap and nothing else, as the compact
+   head sets its time beside the nick. */
 .when {
   color: var(--fg-muted);
+  margin-left: 0.75ch;
 }
 </style>

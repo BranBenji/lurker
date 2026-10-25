@@ -36,11 +36,9 @@
         >
         <span v-else class="root missing">original message unavailable</span>
         <span class="meta"
-          >{{ t.replies }} {{ t.replies === 1 ? 'reply' : 'replies' }} ·
-          {{ formatRelative(t.lastReplyTime)
-          }}<template v-if="unreadFor(t.rootMsgid) > 0">
-            · {{ unreadFor(t.rootMsgid) }} new</template
-          ></span
+          ><span>{{ t.replies }} {{ t.replies === 1 ? 'reply' : 'replies' }}</span
+          ><span class="when">{{ formatRelative(t.lastReplyTime) }}</span
+          ><span v-if="unreadFor(t.rootMsgid) > 0">{{ unreadFor(t.rootMsgid) }} new</span></span
         >
       </li>
     </ul>
@@ -130,7 +128,11 @@ ul {
   color: var(--fg-muted);
   font-style: italic;
 }
+/* Facts side by side with a gap and no separator, as the compact head sets
+   its time beside the nick. */
 .meta {
+  display: flex;
+  gap: 0.75ch;
   color: var(--fg-muted);
 }
 .row.unread .meta {
