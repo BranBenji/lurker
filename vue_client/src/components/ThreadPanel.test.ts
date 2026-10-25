@@ -158,7 +158,9 @@ describe('ThreadPanel', () => {
     });
     await w.vm.$nextTick();
     expect(w.find('.t-line.missing').text()).toContain('original message unavailable');
-    expect(w.find('.panel-status').text()).toBe('Replying in thread');
+    // Quiet until a line is picked; the paperclip is there as in the status bar.
+    expect(w.find('.panel-status').text()).toBe('');
+    expect(w.find('.panel-status .tool-btn').exists()).toBe(true);
 
     const reply = w.findAll('.row-action').find((b) => b.attributes('title') === 'Reply to bob');
     expect(reply).toBeTruthy();

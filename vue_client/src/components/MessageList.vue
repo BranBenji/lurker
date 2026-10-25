@@ -420,6 +420,7 @@ import ReplyQuote from './ReplyQuote.vue';
 import ThreadChip from './ThreadChip.vue';
 import { useThreadsStore } from '../stores/threads.js';
 import { requestThreadNav } from '../composables/useThreadNav.js';
+import { hiddenAsThreadReply } from '../lib/threadHide.js';
 import { parseUserHost } from '../utils/userhost.js';
 import type { ThreadStats } from '../../../shared/replies.js';
 import {
@@ -1419,9 +1420,7 @@ const renderRows = computed((): RenderRow[] => {
     // were tracked still shows inline, with its quote. A hidden row stays in
     // the store for jumps and bookmarks; the scroll watcher opens its thread
     // when one lands on it.
-    if (threadsHere.value && m.replyTo?.root && !rowHighlight && !m.matched && !replyToSelf) {
-      continue;
-    }
+    if (hiddenAsThreadReply(m, threadsHere.value) && !rowHighlight) continue;
 
     // Parsed once and reused by the smart filter and the presence dividers
     // below — this is a string parse on every surviving row, so it should
@@ -1829,9 +1828,13 @@ function openHiddenReply(id: number | string): boolean {
   const buf = buffer.value;
   if (!threadsHere.value || !buf || buf.id == null) return false;
   const m = messages.value.find((x) => x.id === Number(id)) as ChatMessage | undefined;
-  const root = m?.replyTo?.root;
-  if (!root || m?.matched || m?.replyToSelf) return false;
-  requestThreadNav({ kind: 'thread', bufferId: buf.id, rootMsgid: root, focusId: Number(id) });
+  if (!m || !hiddenAsThreadReply(m, true)) return false;
+  requestThreadNav({
+    kind: 'thread',
+    bufferId: buf.id,
+    rootMsgid: String(m.replyTo!.root),
+    focusId: Number(id),
+  });
   return true;
 }
 
@@ -2086,7 +2089,9 @@ function maybeBumpNewBelow() {
       type: tail.type,
       isDm: !isChannelTarget(tail.target) && !tail.target.startsWith(':server:'),
     });
-  if (!tailIgnored && tail?.id != null) bumpNewBelow();
+  // Nor a reply the list keeps in its thread (#1225): nothing new is below.
+  const tailThreaded = !!tail && hiddenAsThreadReply(tail, threadsHere.value);
+  if (!tailIgnored && !tailThreaded && tail?.id != null) bumpNewBelow();
 }
 
 // Re-pin the viewport so the row with `anchorId` keeps its on-screen position

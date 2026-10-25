@@ -148,7 +148,8 @@
           </div>
         </template>
       </div>
-      <!-- Level with the status bar: what the next send answers. -->
+      <!-- Level with the status bar. Quiet until a line is picked with Reply;
+           the paperclip sits at the right as the main status bar's does. -->
       <div class="panel-status">
         <template v-if="pending">
           <span class="label">Replying to</span>
@@ -163,7 +164,17 @@
             <XIcon />
           </button>
         </template>
-        <span v-else class="label">Replying in thread</span>
+        <span class="spacer"></span>
+        <button
+          type="button"
+          class="tool-btn"
+          title="attach a file"
+          aria-label="attach a file"
+          @mousedown.prevent
+          @click="composerRef?.attach()"
+        >
+          <PaperclipIcon />
+        </button>
       </div>
       <!-- Keyed by thread: a half-typed reply never follows the panel to
            another thread. -->
@@ -184,7 +195,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
-import { ListTreeIcon, XIcon } from '@lucide/vue';
+import { ListTreeIcon, PaperclipIcon, XIcon } from '@lucide/vue';
 import NickRef from './NickRef.vue';
 import NickAvatar from './NickAvatar.vue';
 import RenderSegments from './RenderSegments.vue';
@@ -242,7 +253,7 @@ const threadRoute = useThreadRoute();
 const messageActions = useMessageActions();
 
 const scroller = ref<HTMLElement | null>(null);
-const composerRef = ref<{ focus: () => void } | null>(null);
+const composerRef = ref<{ focus: () => void; attach: () => void } | null>(null);
 const ignoreTarget = ref<{
   nick: string;
   user: string | null;
@@ -829,13 +840,30 @@ function onLineClick(e: MouseEvent, m: ThreadMessage): void {
   grid-area: body;
   padding-left: 0;
 }
-/* Avatars (#607): the tile in a gutter on the left, as the list draws it. */
+/* Avatars (#607): the tile in a gutter on the left, as the list draws it,
+   with the gutter's hairline on the scroller and again on each row (a hovered
+   or highlighted row paints over the scroller's). */
 .lines.compact.avatars {
   --avatar-size: min(2.7em, 2lh);
   --avatar-gutter: calc(var(--avatar-size) + var(--space-4));
+  background-image: linear-gradient(var(--border), var(--border));
+  background-size: 1px 100%;
+  background-repeat: repeat-y;
+  background-position: round(calc(var(--space-4) + var(--avatar-gutter)), 1px) 0;
+  background-attachment: local;
 }
 .lines.compact.avatars .t-line {
   padding-left: calc(var(--space-4) + var(--avatar-gutter) + var(--space-5));
+}
+.lines.compact.avatars .t-line::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: round(calc(var(--space-4) + var(--avatar-gutter)), 1px);
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
 }
 .lines.compact.avatars .t-line > .avatar {
   position: absolute;
@@ -918,11 +946,26 @@ function onLineClick(e: MouseEvent, m: ThreadMessage): void {
   background: none;
   border: none;
   padding: 0;
-  margin-left: auto;
   cursor: pointer;
   color: var(--fg-muted);
 }
 .panel-status .clear:hover {
+  color: var(--fg);
+}
+.panel-status .spacer {
+  flex: 1;
+}
+.panel-status .tool-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0 var(--space-1);
+  line-height: 1.4;
+  display: inline-flex;
+  align-items: center;
+}
+.panel-status .tool-btn:hover {
   color: var(--fg);
 }
 

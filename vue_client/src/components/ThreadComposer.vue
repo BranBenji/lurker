@@ -35,12 +35,33 @@
       @keydown="onKeydown"
       @input="onInput"
     />
+    <button
+      type="button"
+      class="send-btn"
+      :disabled="!canSend || !text.trim()"
+      title="send reply"
+      aria-label="send reply"
+      @mousedown.prevent
+      @click="submit"
+    >
+      <CircleArrowUpIcon />
+    </button>
+    <input
+      ref="fileInputEl"
+      type="file"
+      :accept="ACCEPTED_FILE_TYPES"
+      class="file-hidden"
+      @change="onFileSelected"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { CircleArrowUpIcon } from '@lucide/vue';
 import { threadKey, useThreadsStore } from '../stores/threads.js';
+import { useUploadsStore } from '../stores/uploads.js';
+import { ACCEPTED_FILE_TYPES } from '../utils/uploaders.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNetworksStore } from '../stores/networks.js';
 import { useSettingsStore } from '../stores/settings.js';
@@ -56,8 +77,10 @@ const buffers = useBuffersStore();
 const networks = useNetworksStore();
 const settings = useSettingsStore();
 const toasts = useToastsStore();
+const uploads = useUploadsStore();
 
 const inputEl = ref<HTMLTextAreaElement | null>(null);
+const fileInputEl = ref<HTMLInputElement | null>(null);
 const text = ref('');
 
 const view = computed(() => threads.view);
@@ -84,7 +107,45 @@ function focus(): void {
   inputEl.value?.focus();
 }
 
-defineExpose({ focus });
+// The panel's paperclip (its status line, where the main composer's lives):
+// pick a file, upload it through the shared store, and put the URL here — not
+// in the channel's composer, which is what the store's insert bus reaches.
+function attach(): void {
+  if (!canSend.value) return;
+  fileInputEl.value?.click();
+}
+
+function onFileSelected(e: Event): void {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file || !canSend.value) return;
+  uploads
+    .upload(file, file.name, { insert: false })
+    .then((result) => {
+      if (result?.url) insertUrlAtCaret(result.url);
+    })
+    .catch(() => {});
+}
+
+function insertUrlAtCaret(url: string): void {
+  const el = inputEl.value;
+  const cur = text.value;
+  const at = el?.selectionStart ?? cur.length;
+  const before = cur.slice(0, at);
+  const after = cur.slice(at);
+  const lead = before && !/\s$/.test(before) ? ' ' : '';
+  const trail = after && !/^\s/.test(after) ? ' ' : '';
+  text.value = `${before}${lead}${url}${trail}${after}`;
+  const pos = before.length + lead.length + url.length + trail.length;
+  void nextTick(() => {
+    el?.setSelectionRange(pos, pos);
+    autosize();
+    focus();
+  });
+}
+
+defineExpose({ focus, attach });
 
 onMounted(() => autosize());
 
@@ -290,5 +351,25 @@ textarea:disabled {
 }
 textarea::placeholder {
   color: var(--fg-muted);
+}
+.send-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0 var(--space-1);
+  line-height: 1.4;
+  align-self: flex-end;
+}
+.send-btn:hover:not(:disabled) {
+  color: var(--fg);
+}
+.send-btn:disabled {
+  opacity: 0.4;
+  color: var(--fg-muted);
+  cursor: default;
+}
+.file-hidden {
+  display: none;
 }
 </style>

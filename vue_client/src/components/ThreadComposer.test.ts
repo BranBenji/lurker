@@ -15,6 +15,7 @@ import { useThreadsStore } from '../stores/threads.js';
 import type { ThreadMessage } from '../stores/threads.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useUploadsStore } from '../stores/uploads.js';
 import { socketSendWithAck } from '../composables/useSocket.js';
 
 vi.mock('../composables/useSocket.js', () => ({
@@ -176,6 +177,33 @@ describe('ThreadComposer', () => {
     await type('still you?');
     await wrapper!.find('textarea').trigger('keydown', { key: 'Enter' });
     expect(sends()[0]).toMatchObject({ target: 'alice_', text: 'still you?' });
+  });
+
+  it('the Send button sends what Enter would, and is dead on an empty draft', async () => {
+    seed();
+    await type('');
+    const btn = wrapper!.find('.send-btn');
+    expect((btn.element as HTMLButtonElement).disabled).toBe(true);
+    await wrapper!.find('textarea').setValue('by button');
+    expect((btn.element as HTMLButtonElement).disabled).toBe(false);
+    await btn.trigger('click');
+    expect(sends()[0]).toMatchObject({ text: 'alice: by button', replyTo: 1 });
+  });
+
+  it('a file picked through attach lands as a URL in this composer, not the channel’s', async () => {
+    seed();
+    const ta = await type('see');
+    const uploads = useUploadsStore();
+    const upload = vi
+      .spyOn(uploads, 'upload')
+      .mockResolvedValue({ url: 'https://x/u/1.png' } as never);
+    const file = new File(['x'], 'pic.png', { type: 'image/png' });
+    const input = wrapper!.find('input[type="file"]');
+    Object.defineProperty(input.element, 'files', { value: [file] });
+    await input.trigger('change');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(upload).toHaveBeenCalledWith(file, 'pic.png', { insert: false });
+    expect(ta.value).toBe('see https://x/u/1.png');
   });
 
   it('is disabled while the network cannot carry a reply tag', async () => {

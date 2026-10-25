@@ -616,22 +616,6 @@ const memberCount = computed(() => {
   return (activeBuf.value as Buffer | null)?.members?.length ?? null;
 });
 
-// Per-channel nicklist visibility. A channel the user has explicitly toggled
-// carries an override (true = collapsed); otherwise the global
-// look.layout.show_member_list default applies. DMs and server buffers have no
-// member list at all, so the toggle and panel are hidden for them entirely.
-const showMembers = computed(() => {
-  if (!isChannel.value || !active.value) return false;
-  const { networkId, target } = active.value;
-  const override = nicklistCollapse.override(networkId, target);
-  if (override !== undefined) return !override;
-  return settings.effective('look.layout.show_member_list');
-});
-
-function toggleChannels() {
-  settings.setValue('look.layout.show_channel_list', !showChannels.value);
-}
-
 // ─── Reply threads (#1225) ──────────────────────────────────────────────────
 // The panel is a route (useThreadNav): chips, the slash command and jumps into
 // a hidden reply ask for one, and this shell navigates.
@@ -647,6 +631,25 @@ function toggleThreads() {
     threadRoute.value ? { kind: 'close', bufferId: buf.id } : { kind: 'list', bufferId: buf.id },
   );
 }
+
+// Per-channel nicklist visibility. A channel the user has explicitly toggled
+// carries an override (true = collapsed); otherwise the global
+// look.layout.show_member_list default applies. DMs and server buffers have no
+// member list at all, so the toggle and panel are hidden for them entirely.
+// While a thread panel is up it yields the room (#1225): nothing is written,
+// so it is back the moment the panel closes.
+const showMembers = computed(() => {
+  if (!isChannel.value || !active.value || threadRoute.value) return false;
+  const { networkId, target } = active.value;
+  const override = nicklistCollapse.override(networkId, target);
+  if (override !== undefined) return !override;
+  return settings.effective('look.layout.show_member_list');
+});
+
+function toggleChannels() {
+  settings.setValue('look.layout.show_channel_list', !showChannels.value);
+}
+
 function toggleMembers() {
   if (!isChannel.value || !active.value) return;
   const { networkId, target } = active.value;
