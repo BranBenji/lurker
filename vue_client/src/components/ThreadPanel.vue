@@ -41,7 +41,6 @@
           <ListTreeIcon />
         </button>
         <span class="panel-title">{{ mode === 'list' ? 'Threads' : 'Thread' }}</span>
-        <span v-if="buffer" class="panel-where">{{ buffer.target }}</span>
         <button type="button" class="link close" title="Close" aria-label="Close" @click="close">
           <XIcon />
         </button>
@@ -670,12 +669,6 @@ function onLineClick(e: MouseEvent, m: ThreadMessage): void {
 }
 .panel-title {
   color: var(--accent);
-}
-.panel-where {
-  color: var(--fg-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
 }
 .panel-divider {
   background: var(--border);
