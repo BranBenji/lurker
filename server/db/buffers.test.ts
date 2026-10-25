@@ -92,6 +92,36 @@ describe('ensureExists (the NOTICE path)', () => {
   });
 });
 
+// An ignored sender's first DM line (#ignore): the insert mints the row closed
+// and never surfaced, so wsHub's closed-row gate drops it instead of the line
+// opening a DM in the sidebar. Only a DM's first line: a channel, a row that
+// already exists and anyone not ignored mint as ever.
+describe('resolveOrMintForInsert for an ignored sender', () => {
+  let resolveOrMintForInsert: typeof import('./bufferResolve.js').resolveOrMintForInsert;
+  beforeAll(async () => {
+    ({ resolveOrMintForInsert } = await import('./bufferResolve.js'));
+  });
+  const stateOf = (target: string) => buffers.getBuffer(user.id, net!.id, target);
+
+  it('mints their first DM line closed, with no closed_at', () => {
+    resolveOrMintForInsert(net!.id, 'Mallory', true);
+    expect(stateOf('mallory')).toMatchObject({ state: 'closed', closedAt: null });
+  });
+
+  it('leaves a DM that already exists as it is', () => {
+    buffers.ensureOpen(user.id, net!.id, 'Eve');
+    resolveOrMintForInsert(net!.id, 'Eve', true);
+    expect(stateOf('eve')?.state).toBe('open');
+  });
+
+  it('mints a channel and anyone not ignored open', () => {
+    resolveOrMintForInsert(net!.id, '#stray', true);
+    resolveOrMintForInsert(net!.id, 'Trent', false);
+    expect(stateOf('#stray')?.state).toBe('open');
+    expect(stateOf('trent')?.state).toBe('open');
+  });
+});
+
 describe('close / reopen / isClosed', () => {
   it('folds case on every path', () => {
     buffers.ensureOpen(user.id, net!.id, '#Mixed');

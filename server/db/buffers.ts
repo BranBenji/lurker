@@ -443,13 +443,16 @@ export const ensureOpen = db.transaction(
 
 /** Insert-if-absent that NEVER reopens — the NOTICE path. A notice may mint a
  *  buffer for a first-contact nick (same as the old derived-existence model)
- *  but must not resurrect one the user closed. */
+ *  but must not resurrect one the user closed. `unsurfaced` mints the row
+ *  'closed' with NULL closed_at (seedAutojoinChannel's "never surfaced" shape)
+ *  rather than open: an ignored sender's first DM line, which mustn't put the
+ *  DM in the sidebar. */
 export const ensureExists = db.transaction(
   (
     userId: number,
     networkId: number | null,
     target: string,
-    opts: { kind?: BufferKind } = {},
+    opts: { kind?: BufferKind; unsurfaced?: boolean } = {},
   ): { record: BufferRecord; created: boolean } => {
     const sentinel = ensureSentinel(userId, networkId, target);
     if (sentinel) return { record: sentinel.record, created: sentinel.created };
@@ -462,7 +465,7 @@ export const ensureExists = db.transaction(
       target,
       targetFolded: folded,
       kind: opts.kind ?? kindForTarget(target),
-      state: 'open',
+      state: opts.unsurfaced ? 'closed' : 'open',
       autojoin: 0,
       key: null,
     });

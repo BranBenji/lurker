@@ -241,7 +241,7 @@ export function insertMessage(row: MessageInput): {
 } {
   // Resolved (or defensively minted) BEFORE the insert: a row that went in
   // with buffer_id NULL would be invisible to every id-keyed read forever.
-  const bufferId = resolveOrMintForInsert(row.networkId, row.target);
+  const bufferId = resolveOrMintForInsert(row.networkId, row.target, !!row.fromIgnored);
   if (bufferId === undefined) {
     // Only reachable for a networkId that doesn't exist — the network FK
     // would reject the insert anyway; fail with a clearer message.

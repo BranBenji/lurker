@@ -790,3 +790,54 @@ describe('presence', () => {
     }
   });
 });
+
+// An ignored sender's first line to a nick with no DM yet: the insert mints the
+// row closed, and the live filter's closed-row gate drops the line, so no client
+// ever hears of the buffer. Driven over a real socket because the drop is the
+// absence of a frame; a line from someone else proves the socket was listening.
+describe('an ignored sender cannot open a DM', () => {
+  it('drops their first DM line without surfacing the buffer', async () => {
+    ignoreRulesService.add(userId, networkId, {
+      mask: 'grima!*@*',
+      channels: null,
+      pattern: null,
+      patternKind: 'substr',
+      levels: ['ALL'],
+      isExcept: false,
+      expiresAt: null,
+    });
+    const { token } = createSession(userId);
+    const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${token}` } });
+    const frames: Array<Record<string, unknown>> = [];
+    ws.on('message', (data) => frames.push(JSON.parse(String(data)) as Record<string, unknown>));
+    try {
+      await nextMessage(ws, 'the connect snapshot');
+      const firstLine = (nick: string) => {
+        const { id } = insertMessage({
+          networkId,
+          target: nick,
+          time: new Date().toISOString(),
+          type: 'message',
+          nick,
+          text: 'hi',
+          self: false,
+          fromIgnored: nick === 'grima',
+        });
+        emitDm({ target: nick, nick, userhost: `${nick}!${nick}@example.host`, id: Number(id) });
+      };
+      firstLine('grima');
+      firstLine('eomer');
+      await expect
+        .poll(() => frames.some((f) => f.kind === 'irc' && f.target === 'eomer'))
+        .toBe(true);
+      expect(frames.filter((f) => f.target === 'grima')).toEqual([]);
+      expect(buffers.getState(userId, networkId, 'grima')).toBe('closed');
+      expect(buffers.getState(userId, networkId, 'eomer')).toBe('open');
+    } finally {
+      await new Promise<void>((resolve) => {
+        ws.on('close', () => resolve());
+        ws.close();
+      });
+    }
+  });
+});
