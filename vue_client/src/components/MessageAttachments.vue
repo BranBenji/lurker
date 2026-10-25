@@ -50,7 +50,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { useMediaViewer } from '../composables/useMediaViewer.js';
+import { ownDecodeUrl, useMediaViewer } from '../composables/useMediaViewer.js';
 import type { LinkPreview } from '../composables/useLinkPreview.js';
 import MessageAttachment from './MessageAttachment.vue';
 
@@ -136,6 +136,10 @@ const stacked = computed(() => {
  * displayed fine inline but was blocked as mixed content once the lightbox loaded it directly.
  * `shareUrl` carries the ORIGIN address alongside, so "copy link" hands over something another
  * person can actually open.
+ *
+ * ⚠ ...and `src` goes in under a query of its own, because the inline `<img>` has ALREADY drawn
+ * these bytes small, and Safari 27 hands a second `<img>` on the same URL the small decode's
+ * size (lurker#1163). See `ownDecodeUrl`.
  */
 function openAt(item: LinkPreview): void {
   // ⚠ Video and audio open on the ORIGIN url — the exact inverse of the image rule below, and
@@ -153,7 +157,7 @@ function openAt(item: LinkPreview): void {
   const at = gallery.indexOf(item);
   if (at === -1) return;
   viewer.openGallery(
-    gallery.map((p) => ({ url: p.src ?? p.url, shareUrl: p.url })),
+    gallery.map((p) => ({ url: p.src ? ownDecodeUrl(p.src) : p.url, shareUrl: p.url })),
     at,
   );
 }

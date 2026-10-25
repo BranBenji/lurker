@@ -46,6 +46,29 @@ const isOpen = ref(false);
 const items = ref<GalleryItem[]>([]);
 const index = ref(0);
 
+/**
+ * The viewer's own URL for bytes the message list has already drawn small.
+ *
+ * ⚠⚠ Safari 27 opens a large image at the size of its inline thumbnail (lurker#1163): a box
+ * matching the inline one pixel for pixel, until some indeterminate number of open/close
+ * cycles later it comes up full size. WebKit decodes an image over 5 megapixels SUBSAMPLED
+ * when it is drawn far below its size — a 3640x1920 Retina screenshot drawn in the 455x240
+ * inline box is decoded at 1/8, which is 455x240 exactly — and a second `<img>` on the same
+ * URL shares that one decoded resource. Trunk WebKit reads the natural size from the
+ * unsubsampled frame (it regressed once before, WebKit bug 277495); the geometry in the report
+ * says the shipping build is handing the lightbox the subsampled frame's size. Fancybox 6 has
+ * the same report against Safari 27 (fancyapps/ui#866), and the fix there is the fix here.
+ *
+ * A distinct URL is a distinct resource with its own decode, which is all the viewer needs.
+ * The query is ignored by the media route (Express matches the path; pinned in
+ * linkPreview.media.test.ts) and by an S3-style CDN serving the byte cache, and `immutable`
+ * keeps the second fetch to one per image per day. ⚠ Only for OUR minted `src`, never an
+ * origin URL — a stranger's query may be a signature.
+ */
+export function ownDecodeUrl(src: string): string {
+  return `${src}${src.includes('?') ? '&' : '?'}view=full`;
+}
+
 export function useMediaViewer() {
   const current = computed<GalleryItem | null>(() => items.value[index.value] ?? null);
   // The many call sites that only ever wanted "the image being viewed" keep working.
