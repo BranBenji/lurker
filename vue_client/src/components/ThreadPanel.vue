@@ -13,12 +13,13 @@
   Two modes, by route (useThreadRoute):
 
     thread — the line that started it, a rule with the count, then every reply
-             in order. Rows follow the message layout setting: the standard
-             three-column grid, or the compact head-and-body layout (with
-             avatars when they're on); `auto` is compact here, since the panel
-             is narrow like a phone. A reply to something other than the first
-             line shows the usual quote. Lines have the message list's actions;
-             Reply here picks the line the panel's composer answers.
+             in order, always in the list's compact layout (head line over the
+             body, avatars when they're on, the compact density tokens and
+             timestamp formats): the panel is narrow like a phone, and the
+             three-column grid never fits it. No reply quotes: the thread's
+             order is the context, and the `nick: ` a reply opens with is
+             dropped as the list drops it. Lines have the message list's
+             actions bar Reply and Quote.
     list   — the buffer's threads by last activity (ThreadList).
 
   With the thread on screen, replies the user hasn't seen are read as they are
@@ -54,7 +55,7 @@
       <div
         ref="scroller"
         class="lines"
-        :class="{ compact, standard: !compact, avatars: showAvatars }"
+        :class="{ compact: true, avatars: showAvatars }"
         @scroll.passive="onScroll"
       >
         <div
@@ -78,7 +79,7 @@
               :data-msg-id="row.line.id"
               @click="onLineClick($event, row.line)"
             >
-              <template v-if="compact && row.line.type === 'message'">
+              <template v-if="row.line.type === 'message'">
                 <NickAvatar
                   v-if="showAvatars && !row.cont"
                   class="avatar"
@@ -107,11 +108,7 @@
                 v-else
                 class="t-body"
                 :class="{ italic: row.line.type === 'action' && actionItalic }"
-                ><ReplyQuote
-                  v-if="row.quote !== undefined"
-                  :parent="row.quote"
-                  :network-id="view?.networkId ?? null"
-                  @jump="scrollToParent" /><template v-if="row.line.type === 'action'"
+                ><template v-if="row.line.type === 'action'"
                   ><NickRef :nick="String(row.line.nick ?? '')" />{{ ' ' }}</template
                 ><RenderSegments
                   :segments="segments(row.line, row.text)"
@@ -174,7 +171,6 @@ import NickRef from './NickRef.vue';
 import NickAvatar from './NickAvatar.vue';
 import RenderSegments from './RenderSegments.vue';
 import ReactionRow from './ReactionRow.vue';
-import ReplyQuote from './ReplyQuote.vue';
 import IgnoreModal from './IgnoreModal.vue';
 import ThreadList from './ThreadList.vue';
 import ThreadComposer from './ThreadComposer.vue';
@@ -202,7 +198,6 @@ import { formatDate, formatTimestamp } from '../utils/timestamp.js';
 import { parseUserHost } from '../utils/userhost.js';
 import { stripReplyAddress } from '../utils/replyText.js';
 import type { RenderSegment } from '../utils/nickColor.js';
-import type { QuotedLine, ReplyParent } from '../../../shared/replies.js';
 import { REPLY_LINE_TYPES } from '../../../shared/replies.js';
 
 const props = withDefaults(
@@ -252,22 +247,13 @@ const selfColor = computed<string | null>(
   () => (settings.effective('look.nick.self_color') as string | undefined) ?? null,
 );
 
-// The message list's layout setting, read as a narrow surface reads it:
-// `auto` is compact here, as it is on a phone.
-const compact = computed(() => settings.effective('look.message.layout') !== 'standard');
-const showAvatars = computed(
-  () => compact.value && settings.effective('look.message.avatars') === true,
-);
-// The list's formats for the layout in use: compact has its own timestamp
-// format, and a date prefix on lines from another day (empty = never).
-const tsFormat = computed(
-  () =>
-    settings.effective(
-      compact.value ? 'look.buffer.time_format_compact' : 'look.buffer.time_format',
-    ) as string,
-);
+// Always the list's compact layout here (the panel is narrow like a phone), so
+// its settings apply: avatars, and the compact timestamp format with a date
+// prefix on lines from another day (empty = never).
+const showAvatars = computed(() => settings.effective('look.message.avatars') === true);
+const tsFormat = computed(() => settings.effective('look.buffer.time_format_compact') as string);
 const compactDateFormat = computed(() =>
-  compact.value ? String(settings.effective('look.buffer.date_format_compact') ?? '') : '',
+  String(settings.effective('look.buffer.date_format_compact') ?? ''),
 );
 const collapseWindowMs = computed(
   () =>
@@ -334,11 +320,8 @@ function showList(): void {
 interface Row {
   key: string;
   line?: ThreadMessage;
-  // The line's text as shown: without the `nick: ` its quote makes redundant.
+  // The line's text as shown: without the `nick: ` a reply opens with.
   text?: string;
-  // Set (even to null) when the line answers something other than the first
-  // line: the quote to draw above it. Undefined: no quote.
-  quote?: QuotedLine | null;
   root?: boolean;
   missing?: boolean;
   rule?: string;
@@ -413,38 +396,29 @@ const rows = computed((): Row[] => {
   let prev: ThreadMessage | null = null;
   for (const { r, hidden, highlight } of replies) {
     let text = String(r.text ?? '');
-    let quote: QuotedLine | null | undefined;
     if (r.replyTo) {
-      const shown = replyQuote.shownReply(r.replyTo, r, v.networkId, v.target);
-      text = shown.text;
-      // A quote only where it tells the reader something: an answer to the
-      // first line, or to the line just above, reads as the conversation it is
-      // (a send from here answers the newest reply, so that is most of them).
-      // Elsewhere the quote shows which earlier line is meant. The first line
-      // is on screen above, so the address naming its author is redundant here
-      // even when the quote's lookup had nothing.
-      const toRoot = r.replyTo.msgid === v.rootMsgid;
-      const toPrev = !!prev?.msgid && r.replyTo.msgid === prev.msgid;
-      if (!toRoot && !toPrev) quote = shown.parent;
-      else if (toRoot && v.root?.nick && r.type === 'message') {
+      // No quote here — the thread's order is the context — but the `nick: `
+      // a reply opens with is dropped as the list drops it (useReplyQuote);
+      // an answer to the first line drops its author's even when the quote's
+      // lookup had nothing, since that line is on screen above.
+      text = replyQuote.shownReply(r.replyTo, r, v.networkId, v.target).text;
+      if (r.replyTo.msgid === v.rootMsgid && v.root?.nick && r.type === 'message') {
         text = stripReplyAddress(text, String(v.root.nick));
       }
     }
-    // Compact collapses a speaker's run under one head, as the list does
-    // (its window); a quote or a hidden line starts a new run.
+    // A speaker's run shares one head, as the compact list does (its window);
+    // a hidden line starts a new run.
     const deltaMs = Date.parse(r.time ?? '') - Date.parse(prev?.time ?? '');
     const cont =
-      compact.value &&
       !!prev &&
       !hidden &&
-      quote === undefined &&
       r.type === 'message' &&
       prev.type === 'message' &&
       !!prev.self === !!r.self &&
       String(prev.nick ?? '').toLowerCase() === String(r.nick ?? '').toLowerCase() &&
       deltaMs >= 0 &&
       deltaMs <= collapseWindowMs.value;
-    out.push({ key: String(r.id), line: r, text, quote, hidden, highlight, cont });
+    out.push({ key: String(r.id), line: r, text, hidden, highlight, cont });
     prev = hidden ? null : r;
   }
   return out;
@@ -532,11 +506,6 @@ function scrollToId(id: number, pulse: boolean): boolean {
     setTimeout(() => el.classList.remove('scroll-target'), 1500);
   }
   return true;
-}
-
-// The quote above a reply: its parent is in this thread, so bring it into view.
-function scrollToParent(parent: ReplyParent): void {
-  scrollToId(parent.id, true);
 }
 
 // Loaded: the newest replies, or the reply the route names (`?focus=`) — also
@@ -752,41 +721,9 @@ function onLineClick(e: MouseEvent, m: ThreadMessage): void {
   border-top: 1px solid var(--border);
 }
 
-/* ── Standard: the list's three columns, time | nick | body. The nick column
-   is capped rather than floored: the panel is narrow. ── */
-.lines.standard {
-  display: grid;
-  grid-template-columns: max-content minmax(0, max-content) minmax(0, 1fr);
-  grid-auto-rows: min-content;
-  align-content: start;
-}
-.lines.standard > .notice,
-.lines.standard > .rule,
-.lines.standard > .t-line.missing {
-  grid-column: 1 / -1;
-}
-.lines.standard .t-line {
-  display: grid;
-  grid-column: 1 / -1;
-  grid-template-columns: subgrid;
-  align-items: baseline;
-  position: relative;
-  padding-inline: var(--space-4);
-}
-.lines.standard .prefix {
-  justify-self: end;
-  white-space: nowrap;
-  padding-right: 1ch;
-  max-width: 14ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.lines.standard .t-body {
-  padding-left: 1ch;
-}
-
-/* ── Compact: a head line (nick, time) over the body; a speaker's run shares
-   one head. Density is the user's (#1186): the three tokens useTheme writes. ── */
+/* ── The list's compact layout: a head line (nick, time) over the body; a
+   speaker's run shares one head. Density is the user's (#1186): the three
+   tokens useTheme writes. ── */
 .lines.compact {
   line-height: var(--compact-line-height, 1.55);
 }

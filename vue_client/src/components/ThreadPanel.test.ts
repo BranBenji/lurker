@@ -171,7 +171,7 @@ describe('ThreadPanel', () => {
     expect(titles).toContain('Copy text');
   });
 
-  it('quotes only an answer to an earlier line, not to the first or the one just above', async () => {
+  it('draws no reply quotes, even for an answer to an earlier line', async () => {
     seed();
     const w = await mountAt('/buffer/9/thread/m1');
     const threads = useThreadsStore();
@@ -204,12 +204,12 @@ describe('ThreadPanel', () => {
       ],
     });
     await w.vm.$nextTick();
-    expect(w.find('[data-msg-id="2"] .reply-quote').exists()).toBe(false);
-    expect(w.find('[data-msg-id="3"] .reply-quote').exists()).toBe(false);
-    expect(w.find('[data-msg-id="4"] .reply-quote').exists()).toBe(true);
+    // No quotes anywhere: the thread's order is the context.
+    expect(w.findAll('.reply-quote')).toHaveLength(0);
+    expect(w.find('[data-msg-id="4"]').text()).toContain('back to an earlier one');
   });
 
-  it('rows follow the message layout: compact by default here, standard on request', async () => {
+  it('rows are always the compact layout, whatever the list setting says', async () => {
     seed();
     const w = await mountAt('/buffer/9/thread/m1');
     const threads = useThreadsStore();
@@ -226,19 +226,18 @@ describe('ThreadPanel', () => {
       ],
     });
     await w.vm.$nextTick();
-    // `auto` (the default) is compact in the panel: a head per speaker run.
+    // Compact: a head per speaker run.
     expect(w.find('.lines').classes()).toContain('compact');
     expect(w.find('[data-msg-id="2"] .head').exists()).toBe(true);
     expect(w.find('[data-msg-id="3"] .head').exists()).toBe(false);
     expect(w.find('[data-msg-id="3"]').classes()).toContain('cont');
     expect(w.find('[data-msg-id="4"] .head').exists()).toBe(true);
 
+    // The list's standard layout never fits the panel: still compact.
     useSettingsStore().values['look.message.layout'] = 'standard';
     await w.vm.$nextTick();
-    expect(w.find('.lines').classes()).toContain('standard');
-    expect(w.find('[data-msg-id="3"] .head').exists()).toBe(false);
-    expect(w.find('[data-msg-id="3"] .prefix').text()).toBe('bob');
-    expect(w.find('[data-msg-id="3"]').classes()).not.toContain('cont');
+    expect(w.find('.lines').classes()).toContain('compact');
+    expect(w.find('[data-msg-id="3"]').classes()).toContain('cont');
   });
 
   it('counts and tints by today’s rules: an ignored sender’s reply is out of the count', async () => {
