@@ -131,4 +131,13 @@ describe('ReactionRow', () => {
     await wrapper.find('.chip.add').trigger('click');
     expect(useReactionsStore().picker).toMatchObject({ open: true, messageId: 10, networkId: NET });
   });
+
+  // Like every other chip, and like the message bar, which drops React there.
+  it('turns the + chip off while the network is down', async () => {
+    const wrapper = withReactions([r('alice', '👍')], false);
+    const add = wrapper.find('.chip.add');
+    expect(add.attributes('disabled')).toBeDefined();
+    await add.trigger('click');
+    expect(useReactionsStore().picker.open).toBe(false);
+  });
 });
