@@ -165,16 +165,15 @@ function onChipClick(g: { value: string }) {
 .chip.mine:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 25%, transparent);
 }
-/* The add chip is a placeholder, not a reaction, so its heart is faded toward
+/* The add chip is a placeholder, not a reaction, so its icon is faded toward
    the background — further than main.css's `::placeholder` (55%), which still
    read as a reaction next to real ones. Mixing toward --bg keeps it dim in both
-   themes, and its outline with it. It comes up to full strength on hover. */
+   themes. Its outline is a reaction's, so it sits in the row as one of them.
+   It comes up to full strength on hover. */
 .chip.add {
   color: color-mix(in srgb, var(--fg-muted) 35%, var(--bg));
-  border-color: color-mix(in srgb, var(--border) 35%, var(--bg));
 }
 .chip.add:hover {
   color: var(--fg);
-  border-color: var(--border);
 }
 </style>
