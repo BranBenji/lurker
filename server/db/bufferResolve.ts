@@ -130,8 +130,8 @@ const networkOwnerStmt = db.prepare(`SELECT user_id FROM networks WHERE id = ?`)
  * so kindForTarget's channel/dm split never claims it.
  *
  * A DM whose first line is from an ignored sender (`fromIgnored`) is minted
- * closed and never surfaced, so the filter's closed-row gate drops it the way
- * it drops their line to a DM the user closed. Otherwise anyone ignored could
+ * closed, so the filter's closed-row gate drops it the way it drops their line
+ * to a DM the user closed. Otherwise anyone ignored could
  * put a DM in the sidebar just by sending to a nick they hadn't before.
  */
 export function resolveOrMintForInsert(
@@ -145,9 +145,9 @@ export function resolveOrMintForInsert(
   const owner = networkOwnerStmt.get(networkId) as { user_id: number } | undefined;
   if (!owner) return undefined;
   const kind: BufferKind | undefined = target.startsWith(':') ? 'server' : undefined;
-  const unsurfaced = fromIgnored && !kind && kindForTarget(target) === 'dm';
+  const closed = fromIgnored && !kind && kindForTarget(target) === 'dm';
   return ensureExists(owner.user_id, networkId, target, {
     ...(kind ? { kind } : {}),
-    ...(unsurfaced ? { unsurfaced } : {}),
+    ...(closed ? { closed } : {}),
   }).record.id;
 }

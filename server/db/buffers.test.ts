@@ -92,9 +92,9 @@ describe('ensureExists (the NOTICE path)', () => {
   });
 });
 
-// An ignored sender's first DM line (#ignore): the insert mints the row closed
-// and never surfaced, so wsHub's closed-row gate drops it instead of the line
-// opening a DM in the sidebar. Only a DM's first line: a channel, a row that
+// An ignored sender's first DM line: the insert mints the row closed, so
+// wsHub's closed-row gate drops it instead of the line opening a DM in the
+// sidebar. closed_at is stamped, so closed-buffer GC can age the row out. Only a DM's first line: a channel, a row that
 // already exists and anyone not ignored mint as ever.
 describe('resolveOrMintForInsert for an ignored sender', () => {
   let resolveOrMintForInsert: typeof import('./bufferResolve.js').resolveOrMintForInsert;
@@ -103,9 +103,10 @@ describe('resolveOrMintForInsert for an ignored sender', () => {
   });
   const stateOf = (target: string) => buffers.getBuffer(user.id, net!.id, target);
 
-  it('mints their first DM line closed, with no closed_at', () => {
+  it('mints their first DM line closed, with closed_at stamped', () => {
     resolveOrMintForInsert(net!.id, 'Mallory', true);
-    expect(stateOf('mallory')).toMatchObject({ state: 'closed', closedAt: null });
+    expect(stateOf('mallory')?.state).toBe('closed');
+    expect(stateOf('mallory')?.closedAt).not.toBeNull();
   });
 
   it('leaves a DM that already exists as it is', () => {
