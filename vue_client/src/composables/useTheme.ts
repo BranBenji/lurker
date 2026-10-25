@@ -89,6 +89,21 @@ export function useTheme(): void {
       macSmoothing ? 'subpixel-antialiased' : 'auto',
     );
     root.style.setProperty('--font-smoothing-moz', 'auto');
+    // Compact-layout density (#1186): the same three numbers the phone apps
+    // read, in the registry's units (px, percent, characters), turned into
+    // the lengths MessageList's compact rules consume.
+    root.style.setProperty(
+      '--compact-group-gap',
+      `${settings.effective('look.message.compact.group_gap')}px`,
+    );
+    root.style.setProperty(
+      '--compact-line-height',
+      String(Number(settings.effective('look.message.compact.line_height')) / 100),
+    );
+    root.style.setProperty(
+      '--compact-indent',
+      `${settings.effective('look.message.compact.indent')}ch`,
+    );
     root.style.colorScheme = computedColorScheme(String(settings.effective('look.color.bg')));
   });
 }

@@ -528,6 +528,61 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
       'the compact message layout.',
   },
 
+  // ─── Compact layout density (#1186) ──────────────────────────────────
+  // Themed like the fonts: how tight the rows sit is part of a look. The
+  // phone apps, where compact is the default, are meant to read the same
+  // three values (a Mobile: follow-up), so the units are ones a native
+  // renderer applies without CSS: pixels, a percentage, and characters. The
+  // ceilings are layout sanity for a phone's width, not policy. None of
+  // these touch the standard layout.
+  {
+    key: 'look.message.compact.group_gap',
+    label: 'Compact group gap (px)',
+    category: 'appearance',
+    group: 'messages',
+    themed: true,
+    type: 'int',
+    min: 0,
+    max: 48,
+    default: 10,
+    description:
+      'Vertical space in pixels between message groups in the compact ' +
+      'layout: before each head line, action, notice, event or divider. ' +
+      'Rows within a run stay flush. 0 packs the buffer like a terminal.',
+  },
+  {
+    key: 'look.message.compact.line_height',
+    label: 'Compact line height (%)',
+    category: 'appearance',
+    group: 'messages',
+    themed: true,
+    type: 'int',
+    min: 100,
+    max: 250,
+    default: 155,
+    description:
+      'Line height of message text in the compact layout, as a percentage ' +
+      'of the font size. 100 sets the lines solid; 155 is the default ' +
+      'everywhere else in the UI.',
+  },
+  {
+    key: 'look.message.compact.indent',
+    label: 'Compact body indent (chars)',
+    category: 'appearance',
+    group: 'messages',
+    themed: true,
+    type: 'int',
+    min: 0,
+    max: 8,
+    default: 1,
+    // Greyed out while avatars are on: the gutter is the indent then.
+    dependsOn: [{ key: 'look.message.avatars', in: [false] }],
+    description:
+      'How many characters the text of a message sits in from the nick ' +
+      'above it in the compact layout. 0 puts the text flush under the ' +
+      'nick. Ignored while avatars are on: the avatar gutter is the indent.',
+  },
+
   // ─── Member-list mode prefixes ────────────────────────────────────────
   {
     key: 'look.color.member.owner',

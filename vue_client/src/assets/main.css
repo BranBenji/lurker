@@ -34,6 +34,11 @@
   --mono: 'Input Mono', 'Input', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --font-size: 14px;
   --font-weight: 400;
+  /* Compact-layout density (#1186): rewritten live by useTheme from
+     look.message.compact.*; these are the registry defaults. */
+  --compact-group-gap: 10px;
+  --compact-line-height: 1.55;
+  --compact-indent: 1ch;
 
   /* ----------------------------------------------------------------------
      Internal design tokens.

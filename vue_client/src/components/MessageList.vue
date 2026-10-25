@@ -3001,6 +3001,10 @@ watch(
 .message-list.compact {
   /* Single content column — the 3-col subgrid alignment goes away. */
   grid-template-columns: minmax(0, 1fr);
+  /* Density is the user's (#1186): useTheme writes these three from
+     look.message.compact.* — the line height here, the group gap and the
+     body indent below. */
+  line-height: var(--compact-line-height);
 }
 .message-list.compact .line {
   /* Per-row grid: head spans every column above the body row; body row
@@ -3023,8 +3027,8 @@ watch(
      visual cluster (message head, action, notice, system event,
      consolidation summary). Transparent (not padding) so adjacent hover
      backgrounds don't touch across the gap. Adjacent siblings collapse
-     vertical margins, so back-to-back clusters get one 10px gap, not 20px. */
-  margin-top: var(--space-5);
+     vertical margins, so back-to-back clusters get one gap, not two. */
+  margin-top: var(--compact-group-gap);
 }
 /* Continuation message rows render only body + time — no head, no cluster
    start — and should sit tight under the previous line. */
@@ -3035,7 +3039,7 @@ watch(
    so give them the same top gap as .line in compact mode, and the same side
    padding. */
 .message-list.compact > .notice {
-  margin-top: var(--space-5);
+  margin-top: var(--compact-group-gap);
   padding-inline: var(--space-4);
 }
 .message-list.compact .line > .head {
@@ -3070,6 +3074,16 @@ watch(
   grid-area: body;
   padding-left: 0;
 }
+/* A message row has no line-level prefix, so its body sits in the second
+   track behind an empty first one, and the grid's column gap would indent it
+   by three quarters of a character. Span both tracks instead and indent by
+   the setting (#1186): 0 puts the text flush under the nick. Event rows keep
+   their prefix and its gap. */
+.message-list.compact .line > .head ~ .body,
+.message-list.compact .line.cont-author > .body {
+  grid-column: 1 / 3;
+  padding-left: var(--compact-indent);
+}
 .message-list.compact .line > .time {
   /* The right-edge time track goes unused: an event row's time follows its
      text instead (.time.trailing), and a head's follows the nick. */
@@ -3095,7 +3109,10 @@ watch(
    (background-attachment: local), at the row's own left padding plus the
    tile and a gap. */
 .message-list.compact.avatars {
-  --avatar-size: 2.7em;
+  /* Capped at two lines so a tight compact line height (#1186) shrinks the
+     tile rather than letting it outgrow the head and first body line it is
+     centred on; `lh` here is the list's own line height. */
+  --avatar-size: min(2.7em, 2lh);
   /* The same space on the tile's right as the list's own padding gives it on
      the left, so the tile sits centred in its panel. */
   --avatar-gutter: calc(var(--avatar-size) + var(--space-4));
@@ -3130,7 +3147,8 @@ watch(
 /* Centred on the run's first two lines — the head and the first body line,
    the height of the row's background when the message is short — so the
    tile sits in the middle of a hovered or highlighted row rather than
-   hanging from its top. Past the padding, each line is one `lh`. */
+   hanging from its top. Past the padding, each line is one `lh`, and the
+   tile is never taller than two. */
 .message-list.compact.avatars .line > .avatar {
   position: absolute;
   left: var(--space-4);
@@ -3141,18 +3159,16 @@ watch(
 .message-list.compact.avatars .line > .head .prefix {
   font-weight: 600;
 }
-/* A message row has no line-level prefix, so its body sits in the second
-   track behind an empty first one — and the grid's column gap between them
-   indents it by a character. Beside the gutter's hairline that reads as a
-   stray margin: let the body span both tracks so it starts at the edge.
-   Event rows keep their prefix and its gap. */
+/* Beside the gutter's hairline any body indent reads as a stray margin, so
+   the gutter is the indent here and the setting does not apply: the body
+   starts at the edge. */
 .message-list.compact.avatars .line > .head ~ .body,
 .message-list.compact.avatars .line.cont-author > .body {
-  grid-column: 1 / 3;
+  padding-left: 0;
 }
 @media (max-width: 768px) {
   .message-list.compact.avatars {
-    --avatar-size: 2.25em;
+    --avatar-size: min(2.25em, 2lh);
   }
 }
 
