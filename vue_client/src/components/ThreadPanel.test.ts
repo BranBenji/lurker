@@ -158,9 +158,9 @@ describe('ThreadPanel', () => {
     });
     await w.vm.$nextTick();
     expect(w.find('.t-line.missing').text()).toContain('original message unavailable');
-    // The status row holds only the paperclip, as the main status bar does.
-    expect(w.find('.panel-status').text()).toBe('');
-    expect(w.find('.panel-status .tool-btn').exists()).toBe(true);
+    // No status row of its own: the paperclip leads the composer's row.
+    expect(w.find('.panel-status').exists()).toBe(false);
+    expect(w.find('.thread-input .attach-btn').exists()).toBe(true);
     // A send from here answers the newest reply from someone else; picking a
     // line would undo that, and Quote would ride a send that carries a reply
     // tag. The rest of the bar is there.

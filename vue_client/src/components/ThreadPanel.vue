@@ -148,23 +148,10 @@
           </div>
         </template>
       </div>
-      <!-- Level with the status bar; the paperclip sits at the right as the
-           main status bar's does. -->
-      <div class="panel-status">
-        <span class="spacer"></span>
-        <button
-          type="button"
-          class="tool-btn"
-          title="attach a file"
-          aria-label="attach a file"
-          @mousedown.prevent
-          @click="composerRef?.attach()"
-        >
-          <PaperclipIcon />
-        </button>
-      </div>
       <!-- Keyed by thread: a half-typed reply never follows the panel to
-           another thread. -->
+           another thread. On the grid it takes the status bar's row as well as
+           the composer's (nothing of the status bar applies here) and sits at
+           the bottom, level with the main input. -->
       <ThreadComposer :key="viewKey" ref="composerRef" />
     </template>
     <!-- Inside the root on purpose: the shells place the panel by its root
@@ -182,7 +169,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
-import { ListTreeIcon, PaperclipIcon, XIcon } from '@lucide/vue';
+import { ListTreeIcon, XIcon } from '@lucide/vue';
 import NickRef from './NickRef.vue';
 import NickAvatar from './NickAvatar.vue';
 import RenderSegments from './RenderSegments.vue';
@@ -240,7 +227,7 @@ const threadRoute = useThreadRoute();
 const messageActions = useMessageActions();
 
 const scroller = ref<HTMLElement | null>(null);
-const composerRef = ref<{ focus: () => void; attach: () => void } | null>(null);
+const composerRef = ref<{ focus: () => void } | null>(null);
 const ignoreTarget = ref<{
   nick: string;
   user: string | null;
@@ -728,6 +715,15 @@ function onLineClick(e: MouseEvent, m: ThreadMessage): void {
 .thread-panel:not(.screen) > .thread-list {
   grid-row: span 3;
 }
+/* The composer takes the status bar's row too, and sits at its bottom so it
+   lines up with the main input; the rule above it is the status bar's. */
+.thread-panel:not(.screen) > .thread-input {
+  grid-row: span 2;
+  align-self: end;
+}
+.thread-panel > .thread-input {
+  border-top: 1px solid var(--border);
+}
 
 .lines {
   flex: 1;
@@ -927,47 +923,6 @@ function onLineClick(e: MouseEvent, m: ThreadMessage): void {
 }
 .t-line.missing {
   padding: var(--space-1) var(--space-4);
-}
-
-/* The status bar's row. */
-.panel-status {
-  display: flex;
-  align-items: center;
-  gap: 1ch;
-  padding: 1ch var(--space-6) 0;
-  border-top: 1px solid var(--border);
-  color: var(--fg-muted);
-  line-height: 1.4;
-  min-height: 1lh;
-  flex: 0 0 auto;
-}
-.panel-status .clear {
-  display: inline-flex;
-  align-items: center;
-  background: none;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  color: var(--fg-muted);
-}
-.panel-status .clear:hover {
-  color: var(--fg);
-}
-.panel-status .spacer {
-  flex: 1;
-}
-.panel-status .tool-btn {
-  background: none;
-  border: none;
-  color: var(--accent);
-  cursor: pointer;
-  padding: 0 var(--space-1);
-  line-height: 1.4;
-  display: inline-flex;
-  align-items: center;
-}
-.panel-status .tool-btn:hover {
-  color: var(--fg);
 }
 
 /* The message list's hover bar. */

@@ -25,6 +25,19 @@
 
 <template>
   <div class="thread-input">
+    <!-- The paperclip leads the row, as in the mock-up: the main composer keeps
+         its in the status bar, which the panel doesn't have. -->
+    <button
+      type="button"
+      class="attach-btn"
+      :disabled="!canSend"
+      title="attach a file"
+      aria-label="attach a file"
+      @mousedown.prevent
+      @click="attach"
+    >
+      <PaperclipIcon />
+    </button>
     <textarea
       ref="inputEl"
       v-model="text"
@@ -58,7 +71,7 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue';
-import { CircleArrowUpIcon } from '@lucide/vue';
+import { CircleArrowUpIcon, PaperclipIcon } from '@lucide/vue';
 import { threadKey, useThreadsStore } from '../stores/threads.js';
 import { useUploadsStore } from '../stores/uploads.js';
 import { ACCEPTED_FILE_TYPES } from '../utils/uploaders.js';
@@ -340,7 +353,8 @@ textarea:disabled {
 textarea::placeholder {
   color: var(--fg-muted);
 }
-.send-btn {
+.send-btn,
+.attach-btn {
   background: none;
   border: none;
   color: var(--accent);
@@ -349,10 +363,12 @@ textarea::placeholder {
   line-height: 1.4;
   align-self: flex-end;
 }
-.send-btn:hover:not(:disabled) {
+.send-btn:hover:not(:disabled),
+.attach-btn:hover:not(:disabled) {
   color: var(--fg);
 }
-.send-btn:disabled {
+.send-btn:disabled,
+.attach-btn:disabled {
   opacity: 0.4;
   color: var(--fg-muted);
   cursor: default;
