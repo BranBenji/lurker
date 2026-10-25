@@ -1174,18 +1174,19 @@ export const REGISTRY: readonly SettingOption[] = Object.freeze([
   },
   {
     key: 'chat.threads',
-    label: 'Reply threads',
+    label: 'Reply threads (experimental)',
     category: 'chat',
     group: 'composing',
     type: 'bool',
     default: false,
     description:
-      'Keep replies out of the channel and read them in a thread panel (Slack ' +
-      'style). A line that was replied to shows how many replies it has; click ' +
-      'that to open the thread beside the channel, with its own composer. A ' +
-      'reply in a thread counts toward the channel’s unread badge only when ' +
-      'it mentions you or answers one of your lines; the thread itself keeps its ' +
-      'own unread. Off (the default) shows every reply in the channel.',
+      'Experimental. Keep replies out of the channel and read them in a thread ' +
+      'panel (Slack style). A line that was replied to shows how many replies it ' +
+      'has; click that to open the thread beside the channel, with its own ' +
+      'composer. A reply in a thread counts toward the channel’s unread badge ' +
+      'only when it mentions you or answers one of your lines; the Threads ' +
+      'button in the header shows how many threads hold one. Off (the default) ' +
+      'shows every reply in the channel.',
   },
   {
     key: 'chat.keep_position_on_send',
