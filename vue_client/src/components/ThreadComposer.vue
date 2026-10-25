@@ -106,7 +106,17 @@ function onInput(): void {
   autosize();
 }
 
+// The main composer's sizing: `field-sizing: content` where the browser has
+// it (one layout pass, no transient 'auto' height — which, in the panel's
+// column, briefly grew the lines above and cut their scroll position), and
+// this measure-and-set only where it doesn't (Firefox).
+const supportsFieldSizing =
+  typeof CSS !== 'undefined' &&
+  typeof CSS.supports === 'function' &&
+  CSS.supports('field-sizing', 'content');
+
 function autosize(): void {
+  if (supportsFieldSizing) return;
   const el = inputEl.value;
   if (!el) return;
   el.style.height = 'auto';
@@ -280,7 +290,10 @@ textarea {
   line-height: 1.4;
   resize: none;
   overflow-y: auto;
+  /* Up to six lines, then it scrolls (the JS fallback caps the same). */
+  field-sizing: content;
   min-height: 1.4em;
+  max-height: calc(1.4em * 6);
 }
 textarea:focus {
   outline: none;

@@ -51,10 +51,7 @@
 
     <ThreadList v-if="mode === 'list' && bufferId != null" :buffer-id="bufferId" />
 
-    <!-- The lines and the composer share one column, so the composer grows
-         up into the panel's own space. On the grid that column spans the
-         lines, status and input rows; were the composer on the input row
-         itself, a long reply would grow that row under the main composer too. -->
+    <!-- One column for the lines and the composer: see .thread-body. -->
     <div v-else class="thread-body">
       <div
         ref="scroller"
@@ -305,6 +302,7 @@ const offOpen = onSocketOpen(() => {
 });
 
 onBeforeUnmount(() => {
+  scrollerObserver?.disconnect();
   offOpen();
   threads.close();
   threads.closeList();
@@ -504,6 +502,20 @@ function scrollToBottom(): void {
   if (el) el.scrollTop = el.scrollHeight;
 }
 
+// The composer grows up into the lines (and a window resize shrinks them)
+// without moving scrollTop, which would hide the replies being answered: a
+// reader at the end stays at the end, as in the message list.
+const scrollerObserver =
+  typeof ResizeObserver !== 'undefined'
+    ? new ResizeObserver(() => {
+        if (atBottom.value) scrollToBottom();
+      })
+    : null;
+watch(scroller, (el, old) => {
+  if (old) scrollerObserver?.unobserve(old);
+  if (el) scrollerObserver?.observe(el);
+});
+
 function scrollToId(id: number, pulse: boolean): boolean {
   const el = scroller.value?.querySelector(`[data-msg-id="${id}"]`);
   if (!(el instanceof HTMLElement)) return false;
@@ -696,6 +708,7 @@ function onLineClick(e: MouseEvent, m: ThreadMessage): void {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
 }
 .thread-panel:not(.screen) > .thread-body {
   grid-row: span 3;

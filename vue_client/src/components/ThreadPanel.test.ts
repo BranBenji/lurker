@@ -209,6 +209,52 @@ describe('ThreadPanel', () => {
     expect(w.find('[data-msg-id="4"]').text()).toContain('back to an earlier one');
   });
 
+  // The composer grows up into the lines without moving scrollTop: a reader
+  // at the end is kept there, one scrolled up is left where they are.
+  it('keeps a reader at the end when the lines shrink', async () => {
+    let fire: (() => void) | null = null;
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(cb: () => void) {
+          fire = cb;
+        }
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    try {
+      seed();
+      const w = await mountAt('/buffer/9/thread/m1');
+      const threads = useThreadsStore();
+      threads.applyThread({
+        bufferId: 9,
+        rootMsgid: 'm1',
+        token: threads.view!.token,
+        root: line(1),
+        replies: [line(2, { replyTo: { msgid: 'm1', root: 'm1', parent: null } })],
+      });
+      // Past the load's own scroll to the end, which runs a tick later.
+      await new Promise((r) => setTimeout(r, 0));
+      const el = w.find('.lines').element as HTMLElement;
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 900 });
+      Object.defineProperty(el, 'clientHeight', { configurable: true, value: 300 });
+      el.scrollTop = 600;
+      await w.find('.lines').trigger('scroll');
+      Object.defineProperty(el, 'clientHeight', { configurable: true, value: 200 });
+      fire!();
+      expect(el.scrollTop).toBe(900);
+
+      el.scrollTop = 100;
+      await w.find('.lines').trigger('scroll');
+      fire!();
+      expect(el.scrollTop).toBe(100);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('rows are always the compact layout, whatever the list setting says', async () => {
     seed();
     const w = await mountAt('/buffer/9/thread/m1');
