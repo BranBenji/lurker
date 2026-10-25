@@ -51,7 +51,7 @@ export function usePreviewBody() {
     );
   }
 
-  return { previewBody };
+  return { previewBody, previewsActive };
 }
 
 /** Cheap pre-filter: no scheme, no possible attachment. Skips the regex for most rows. */

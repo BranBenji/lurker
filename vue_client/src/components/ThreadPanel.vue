@@ -517,22 +517,25 @@ function scrollToBottom(): void {
 
 // Inline media and link previews (MessageBody, the message list's gate): a
 // picture (`measured`) or a card (`previewRevision`) that lands after its line
-// grows it. A reader at the end stays at the end; a reply opened by name
-// (`?focus=`) stays where it was put until the reader scrolls, as the lines
-// above it fill in (the scroller has overflow-anchor off, so the browser won't).
-const { previewBody } = usePreviewBody();
+// grows it, and so does switching previews on, cards already cached. A reply
+// opened by name (`?focus=`) stays where it was put until the reader scrolls,
+// as the lines around it fill in (the scroller has overflow-anchor off, so the
+// browser won't), even when that put it at the end; otherwise a reader at the
+// end stays at the end.
+const { previewBody, previewsActive } = usePreviewBody();
 let focusPin: { id: number; top: number } | null = null;
 function followGrowth(): void {
-  if (atBottom.value) {
-    scrollToBottom();
-    return;
-  }
   const el = scroller.value;
-  if (!focusPin || !el) return;
-  if (scrollToId(focusPin.id, false)) focusPin.top = el.scrollTop;
-  else focusPin = null;
+  if (focusPin && el) {
+    if (scrollToId(focusPin.id, false)) {
+      focusPin.top = el.scrollTop;
+      return;
+    }
+    focusPin = null;
+  }
+  if (atBottom.value) scrollToBottom();
 }
-watch(previewRevision, () => void nextTick(followGrowth));
+watch([previewRevision, previewsActive], () => void nextTick(followGrowth));
 
 function scrollToId(id: number, pulse: boolean): boolean {
   const el = scroller.value?.querySelector(`[data-msg-id="${id}"]`);

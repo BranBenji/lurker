@@ -284,6 +284,56 @@ describe('ThreadPanel', () => {
       expect(el.scrollTop).toBe(1200);
     });
 
+    it('follows when previews are switched on, cards already cached', async () => {
+      useConfigStore().features = { linkPreviews: true, bouncer: false, dcc: false };
+      const { w, el } = await open('/buffer/9/thread/m1');
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 900 });
+      el.scrollTop = 600;
+      await w.find('.lines').trigger('scroll');
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 1200 });
+      useSettingsStore().values['chat.link_previews.enabled'] = true;
+      await new Promise((r) => setTimeout(r, 0));
+      expect(el.scrollTop).toBe(1200);
+    });
+
+    // Opened on a reply near the end: centring it lands at the bottom, and the
+    // scroll event that comes of it (after the load) reads as "at the end". The
+    // pin, not the tail, decides where growth below it leaves the reader.
+    it('keeps a focused reply over the tail even when it sits at the end', async () => {
+      const into = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(function (
+        this: HTMLElement,
+      ) {
+        const sc = this.closest('.lines') as HTMLElement | null;
+        if (sc) sc.scrollTop = 600;
+      });
+      try {
+        seed();
+        const w = await mountAt('/buffer/9/thread/m1?focus=3');
+        const el = w.find('.lines').element as HTMLElement;
+        Object.defineProperty(el, 'clientHeight', { configurable: true, value: 300 });
+        Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 900 });
+        const threads = useThreadsStore();
+        threads.applyThread({
+          bufferId: 9,
+          rootMsgid: 'm1',
+          token: threads.view!.token,
+          root: line(1),
+          replies: [2, 3].map((id) =>
+            line(id, { replyTo: { msgid: 'm1', root: 'm1', parent: null } }),
+          ),
+        });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(el.scrollTop).toBe(600);
+        await w.find('.lines').trigger('scroll'); // centring's own scroll, at the end
+        into.mockClear();
+        await grow(el, 1200);
+        expect(into).toHaveBeenCalledTimes(1);
+        expect(el.scrollTop).toBe(600);
+      } finally {
+        into.mockRestore();
+      }
+    });
+
     it('holds a focused reply in place until the reader scrolls', async () => {
       const into = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {});
       try {
