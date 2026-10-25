@@ -18,14 +18,22 @@ import { countsTowardPage } from '../../shared/eventFilter.js';
 import type { PageUnit } from '../../shared/eventFilter.js';
 import type { ModeChange } from '../../shared/modes.js';
 import type { MessageReaction } from '../../shared/reactions.js';
-import { REPLY_EXCERPT_MAX, REPLY_LINE_TYPES_SQL } from '../../shared/replies.js';
+import {
+  REPLY_EXCERPT_MAX,
+  REPLY_LINE_TYPES_SQL,
+  THREAD_MAX_REPLIES,
+} from '../../shared/replies.js';
 import type {
+  BufferThread,
   DraftReply,
   DraftReplyRef,
   ReplyContext,
   ReplyParent,
   ThreadStats,
 } from '../../shared/replies.js';
+
+export { THREAD_MAX_REPLIES };
+export type { BufferThread };
 
 // Buffer identity is buffers.id as of schema 17: every predicate in this file
 // filters on `buffer_id`, and `target` is written at insert as an observation
@@ -865,12 +873,11 @@ export function listMessagesAround(
 
 // ─── Reply threads (#1225) ──────────────────────────────────────────────────
 
-// Most replies one `thread` read ships. A thread is read whole — the panel
-// shows it top to bottom — so this only bounds the frame: past it the NEWEST
-// replies ship (what's being said now, and what the read pointer waits on)
-// and `truncated` says so. Far beyond any conversation; a bridge that replies
-// to everything can still get there.
-export const THREAD_MAX_REPLIES = 1000;
+// A thread is read whole — the panel shows it top to bottom — so
+// THREAD_MAX_REPLIES (shared/replies.ts) only bounds the frame: past it the
+// NEWEST replies ship (what's being said now, and what the read pointer waits
+// on) and `truncated` says so. Far beyond any conversation; a bridge that
+// replies to everything can still get there.
 
 // Most threads one `threads` read lists for a buffer, newest activity first.
 export const THREADS_LIST_MAX = 50;
@@ -912,16 +919,6 @@ export function listThread(
     replies: rows.map(rowToEvent).toReversed(),
     truncated,
   };
-}
-
-export interface BufferThread {
-  rootMsgid: string;
-  // The line that started it, excerpted like a reply's quote; null when we
-  // don't hold it (or it's from someone ignored).
-  root: ReplyParent | null;
-  replies: number;
-  lastReplyId: number;
-  lastReplyTime: string;
 }
 
 // One pass over the buffer's replies, grouped by thread. The partial index

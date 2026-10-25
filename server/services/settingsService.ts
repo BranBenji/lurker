@@ -42,6 +42,28 @@ export function effectiveSettings(
   return out;
 }
 
+// One setting, read once per user and kept until their settings change: for
+// paths that ask per event (the IRC insert path, a connect snapshot's
+// per-buffer unread counts) where effectiveSetting's table read per call adds
+// up. Cleared by the service's own writes below; a write made behind the
+// service (an import replaces user_settings directly) is covered by the hub
+// clearing it at every snapshot (forgetCachedSettings).
+const cached = new Map<number, Map<string, SettingValue | undefined>>();
+
+export function cachedSetting(userId: number, key: string): SettingValue | undefined {
+  let mine = cached.get(userId);
+  if (!mine) {
+    mine = new Map();
+    cached.set(userId, mine);
+  }
+  if (!mine.has(key)) mine.set(key, effectiveSetting(userId, key));
+  return mine.get(key);
+}
+
+export function forgetCachedSettings(userId: number): void {
+  cached.delete(userId);
+}
+
 function valuesEqual(a: SettingValue, b: SettingValue): boolean {
   if (a === b) return true;
   if (Array.isArray(a) && Array.isArray(b)) {
@@ -115,6 +137,7 @@ class SettingsService extends EventEmitter {
       }
     }
     if (Object.keys(validated).length > 0 || deleted.size > 0) {
+      forgetCachedSettings(userId);
       const eventChanges: Record<string, SettingValue> = { ...validated };
       for (const key of deleted) eventChanges[key] = getOption(key)!.default;
       this.emit('event', { userId, changes: eventChanges, resets: [...deleted] });
@@ -129,6 +152,7 @@ class SettingsService extends EventEmitter {
     const opt = getOption(key);
     if (!opt) return { ok: false, error: `unknown setting: ${key}` };
     deleteUserSetting(userId, key);
+    forgetCachedSettings(userId);
     this.emit('event', { userId, changes: { [key]: opt.default }, resets: [key] });
     return { ok: true, values: getUserSettings(userId) };
   }

@@ -58,6 +58,37 @@ export interface ThreadStats {
   lastReplyTime: string;
 }
 
+// Most replies one `thread` read ships, and most a client holds live: past it
+// the NEWEST replies stay and `truncated` says so.
+export const THREAD_MAX_REPLIES = 1000;
+
+// A thread the user is in, as `threads-changed` lists it: with its own unread
+// count, kept by the server (thread_follows).
+export interface FollowedThread {
+  networkId: number;
+  bufferId: number;
+  target: string;
+  rootMsgid: string;
+  // The line that started it, excerpted like a reply's quote; null when the
+  // server doesn't hold it (or it's from someone ignored).
+  root: Omit<ReplyParent, 'self'> | null;
+  // Replies from others the user hasn't seen in the thread, and whether any
+  // of them is a highlight.
+  unread: number;
+  highlighted: boolean;
+  lastReplyId: number;
+  lastReplyTime: string;
+}
+
+// One of a buffer's threads, as the `threads` verb lists them.
+export interface BufferThread {
+  rootMsgid: string;
+  root: ReplyParent | null;
+  replies: number;
+  lastReplyId: number;
+  lastReplyTime: string;
+}
+
 // The msgid a line replies to, from its tags. `+reply` is the ratified name;
 // `+draft/reply` is what older clients still send.
 export function replyMsgidFromTags(tags: Record<string, string> | undefined): string | undefined {

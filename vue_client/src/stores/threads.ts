@@ -6,7 +6,18 @@ import { socketSend } from '../composables/useSocket.js';
 import { requestThreadNav } from '../composables/useThreadNav.js';
 import { useBuffersStore } from './buffers.js';
 import type { BufferMessage } from './buffers.js';
-import type { ReplyContext, ReplyParent, ThreadStats } from '../../../shared/replies.js';
+import { THREAD_MAX_REPLIES } from '../../../shared/replies.js';
+import type {
+  BufferThread,
+  FollowedThread,
+  ReplyContext,
+  ThreadStats,
+} from '../../../shared/replies.js';
+
+// The wire shapes, from shared/replies.ts so the server and this store can't
+// drift; re-exported for the components and tests that read them here.
+export { THREAD_MAX_REPLIES };
+export type { BufferThread, FollowedThread };
 
 // Reply threads (#1225): a thread is the line that started it plus every reply
 // naming it as root (`replyTo.root`), in one buffer. With `chat.threads` on,
@@ -21,18 +32,6 @@ import type { ReplyContext, ReplyParent, ThreadStats } from '../../../shared/rep
 //     when the panel opens, then kept current from the live `irc` frames whose
 //     root is its root.
 //   - `list` is the buffer's threads for the panel's list mode (`threads`).
-
-export interface FollowedThread {
-  networkId: number;
-  bufferId: number;
-  target: string;
-  rootMsgid: string;
-  root: Omit<ReplyParent, 'self'> | null;
-  unread: number;
-  highlighted: boolean;
-  lastReplyId: number;
-  lastReplyTime: string;
-}
 
 // A line as the panel holds it: a buffer row with the fields it reads spelled out.
 export interface ThreadMessage extends BufferMessage {
@@ -57,14 +56,6 @@ export interface ThreadView {
   token: number;
 }
 
-export interface BufferThread {
-  rootMsgid: string;
-  root: ReplyParent | null;
-  replies: number;
-  lastReplyId: number;
-  lastReplyTime: string;
-}
-
 export interface ThreadList {
   bufferId: number;
   threads: BufferThread[];
@@ -82,11 +73,6 @@ export interface ThreadReplyTarget {
 }
 
 let nextToken = 1;
-
-// Most replies the panel holds live (#1225): the `thread` read ships the
-// newest THREAD_MAX_REPLIES, and live replies past that drop the oldest, so a
-// panel left open under a bridge stays this size. The server's cap is the same.
-export const THREAD_MAX_REPLIES = 1000;
 
 export function threadKey(bufferId: number, rootMsgid: string): string {
   return `${bufferId}|${rootMsgid}`;
@@ -136,10 +122,15 @@ export const useThreadsStore = defineStore('threads', {
 
     // Open the panel on (bufferId, rootMsgid): ask for the thread whole.
     // Re-opening the one already loaded keeps what's there and refreshes it
-    // underneath.
+    // underneath. A buffer not yet in the store (a cold deep link) can't be
+    // asked about; whatever thread was up goes, so nothing acts on it under
+    // the new route — the panel asks again once the buffer lands.
     open(bufferId: number, rootMsgid: string) {
       const buf = useBuffersStore().byId(bufferId);
-      if (!buf || buf.networkId == null) return;
+      if (!buf || buf.networkId == null) {
+        this.view = null;
+        return;
+      }
       const token = nextToken++;
       const same = this.view?.bufferId === bufferId && this.view.rootMsgid === rootMsgid;
       this.view = {

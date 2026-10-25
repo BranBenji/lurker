@@ -16,29 +16,15 @@
 import db from './index.js';
 import { HIGHLIGHTED_SQL } from './messages.js';
 import { REPLY_EXCERPT_MAX, REPLY_LINE_TYPES_SQL } from '../../shared/replies.js';
-import type { ReplyParent } from '../../shared/replies.js';
+import type { FollowedThread } from '../../shared/replies.js';
+
+export type { FollowedThread };
 
 // A followed thread drops out of the list once it has been quiet this long
 // with nothing unread in it, so the walk below stays the size of the user's
 // live conversations, not everything they ever spoke in. Posting or being
 // highlighted there again follows it anew.
 export const THREAD_QUIET_DAYS = 7;
-
-export interface FollowedThread {
-  networkId: number;
-  bufferId: number;
-  target: string;
-  rootMsgid: string;
-  // The line that started it, excerpted like a reply's quote; null when we
-  // don't hold it (or it's from someone ignored).
-  root: Omit<ReplyParent, 'self'> | null;
-  // Replies from others the user hasn't seen in the thread, and whether any
-  // of them is a highlight.
-  unread: number;
-  highlighted: boolean;
-  lastReplyId: number;
-  lastReplyTime: string;
-}
 
 // Our own post reads the thread through itself: we were there. The pointer
 // only ever moves forward.

@@ -80,7 +80,12 @@ import type { RestoreSlot } from './restoreGate.js';
 import { envInt as reconnectEnvInt } from '../utils/envInt.js';
 import { decideStamp } from './insertDecisions.js';
 import * as systemLog from './systemLog.js';
-import { changedSettings, effectiveSetting, effectiveSettings } from './settingsService.js';
+import {
+  cachedSetting,
+  changedSettings,
+  effectiveSetting,
+  effectiveSettings,
+} from './settingsService.js';
 import { APP_NAME, APP_VERSION } from '../utils/userAgent.js';
 import { findUserById } from '../db/users.js';
 import { isNodeMode } from '../utils/edition.js';
@@ -1724,7 +1729,7 @@ export class IrcConnection {
         replyRootMsgid &&
         !fromIgnored &&
         !isDmTargetName(event.target as string) &&
-        effectiveSetting(this.network.user_id, 'chat.threads') === true
+        cachedSetting(this.network.user_id, 'chat.threads') === true
       ) {
         try {
           const changed = noteThreadReply(this.network.user_id, bufferId, replyRootMsgid, {

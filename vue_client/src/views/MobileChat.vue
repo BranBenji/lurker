@@ -699,6 +699,10 @@ useChatBootstrap({ onJump: onJumpToMessage });
   margin-left: -4px;
   gap: var(--space-2);
 }
+/* The Threads button carries the same chip (#1225): the same gap. */
+.icon.threads-btn {
+  gap: var(--space-2);
+}
 /* Highlight total for the buffer list this button returns to. Colored text on a
    tint of the same var rather than a solid fill: --buffer-highlight is
    user-themeable (look.color.buffer.highlight), so a fixed label color could

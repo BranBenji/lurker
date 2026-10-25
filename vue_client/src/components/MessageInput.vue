@@ -4256,8 +4256,9 @@ function handleCommand(line: string, networkId: number | null, target: string): 
     case 'threads':
     case 'thread': {
       // Reply threads (#1225): the panel's list for this buffer. A route, so
-      // the shell navigates (useThreadNav); the panel says so when the setting
-      // that keeps replies out of the channel is off — the list still works.
+      // the shell navigates (useThreadNav). The list works with the setting
+      // off too (the replies then also show inline); the button that opens it
+      // is only offered with it on.
       const buf = buffers.byKey(bufferKey(networkId, target)) as { id?: number } | null;
       if (buf?.id == null) {
         localInfo(networkId, target, '/threads: this buffer has no threads to list.');

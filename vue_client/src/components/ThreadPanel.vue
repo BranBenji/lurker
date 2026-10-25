@@ -269,14 +269,16 @@ watch(
   () => {
     const r = threadRoute.value;
     if (!r) return null;
-    const ready = buffers.byId(r.bufferId) != null;
+    // Ready once the buffer is in the store with its network: a cold deep
+    // link routes before either lands.
+    const ready = buffers.byId(r.bufferId)?.networkId != null;
     return r.mode === 'list'
       ? `list|${r.bufferId}|${ready}`
       : `${r.bufferId}|${r.rootMsgid}|${ready}`;
   },
   () => {
     const r = threadRoute.value;
-    if (!r || !buffers.byId(r.bufferId)) return;
+    if (!r || buffers.byId(r.bufferId)?.networkId == null) return;
     // One mode at a time: the other's state goes, so a thread left behind
     // isn't read as replies land while the list is up.
     if (r.mode === 'list') {

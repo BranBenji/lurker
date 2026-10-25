@@ -19,7 +19,7 @@ import ircManager, { resolveAwayScope } from './ircManager.js';
 import type { IrcConnection } from './ircConnection.js';
 import { e2eManager } from './e2e/manager.js';
 import { MAX_IMPORT_BYTES } from './e2e/portable.js';
-import settingsService from './settingsService.js';
+import settingsService, { cachedSetting, forgetCachedSettings } from './settingsService.js';
 import themesService from './themesService.js';
 import avatarSetsService from './avatarSetsService.js';
 import highlightRulesService from './highlightRulesService.js';
@@ -398,19 +398,12 @@ function effectiveSetting(userId: number, key: string): unknown {
 }
 
 // Whether the user keeps replies in threads (`chat.threads`, #1225) — read by
-// computeUnreadFor, which runs once per buffer on a connect snapshot, so the
-// answer is kept per user rather than re-read from the settings table each
-// time. Dropped on the user's next settings change (the handler below) and at
-// every snapshot, so a value written behind the service's back (an import)
-// lasts at most until the next connect.
-const threadsHiddenByUser = new Map<number, boolean>();
+// computeUnreadFor, which runs once per buffer on a connect snapshot, so it
+// comes from the settings service's per-user cache (cleared on their next
+// settings change, and at every snapshot for a value written behind the
+// service's back, such as an import).
 function threadsHiddenFor(userId: number): boolean {
-  let hidden = threadsHiddenByUser.get(userId);
-  if (hidden === undefined) {
-    hidden = effectiveSetting(userId, 'chat.threads') === true;
-    threadsHiddenByUser.set(userId, hidden);
-  }
-  return hidden;
+  return cachedSetting(userId, 'chat.threads') === true;
 }
 
 // HH:MM (24h) into minutes-past-midnight, or null on a malformed value. The
@@ -1387,6 +1380,19 @@ export function favoritesChangedFrame(userId: number): WsPayload {
 // read), like favorites-changed. The server does the counting so tabs agree.
 export function threadsChangedFrame(userId: number): WsPayload {
   return { kind: 'threads-changed', threads: listFollowedThreads(userId) };
+}
+
+// The list is rebuilt (a few reads per follow) and fanned out whole, so a burst
+// of replies — a bridge answering in a thread the user is in — sends it once
+// per event-loop turn, not once per line.
+const threadsChangedPending = new Set<number>();
+function scheduleThreadsChanged(userId: number): void {
+  if (threadsChangedPending.has(userId)) return;
+  threadsChangedPending.add(userId);
+  setImmediate(() => {
+    threadsChangedPending.delete(userId);
+    fanOut(userId, threadsChangedFrame(userId));
+  });
 }
 
 // Resolve a verb's optional id-form buffer address (docs/CLIENT_PROTOCOL §6):
@@ -2461,7 +2467,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     const threadsChanged = !!(decorated as { threadsChanged?: boolean }).threadsChanged;
     delete (decorated as { threadsChanged?: boolean }).threadsChanged;
     fanOut(eventUserId, { ...decorated, kind: 'irc' });
-    if (threadsChanged) fanOut(eventUserId, threadsChangedFrame(eventUserId));
+    if (threadsChanged) scheduleThreadsChanged(eventUserId);
     maybePush(eventUserId, decorated);
     // A friend coming online is a presence transition, not a message, so it
     // bypasses maybePush (no `notify`); push it on its own path.
@@ -2539,7 +2545,6 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   });
 
   settingsService.on('event', ({ userId, changes, resets }) => {
-    threadsHiddenByUser.delete(userId);
     // #627: the raw setting isn't the effective cap — it still has to clear the
     // transport ceiling and any operator-baked policy cap. The user's OWN change
     // already has a delivery path right here, so recompute rather than leaving
@@ -2813,7 +2818,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     userId: number,
     freshNetworkId: number | null = null,
   ): SnapshotBreakdown {
-    threadsHiddenByUser.delete(userId);
+    forgetCachedSettings(userId);
     const tNetworks = Date.now();
     const networks = ircManager.snapshotForUser(userId);
     const networksMs = Date.now() - tNetworks;
@@ -3947,7 +3952,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         const messageId = Number(msg.messageId);
         if (!addr || typeof msg.rootMsgid !== 'string' || !Number.isInteger(messageId)) break;
         if (markThreadRead(userId, addr.bufferId, msg.rootMsgid, messageId)) {
-          fanOut(userId, threadsChangedFrame(userId));
+          scheduleThreadsChanged(userId);
         }
         break;
       }

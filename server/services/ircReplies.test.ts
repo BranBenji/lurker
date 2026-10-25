@@ -16,7 +16,7 @@ import { createNetwork } from '../db/networks.js';
 import type { Network } from '../db/networks.js';
 import { countHighlightsNewer, listMessages, listThread, searchMessages } from '../db/messages.js';
 import { listFollowedThreads, markThreadRead } from '../db/threadFollows.js';
-import { deleteUserSetting, setUserSetting } from '../db/settings.js';
+import settingsService from './settingsService.js';
 import type { MessageEvent } from '../db/messages.js';
 import { IrcConnection } from './ircConnection.js';
 
@@ -318,8 +318,9 @@ describe('thread roots', () => {
 
 describe('threads (#1225)', () => {
   // Following happens only while the user keeps replies in threads.
-  beforeAll(() => setUserSetting(userId, 'chat.threads', true));
-  afterAll(() => deleteUserSetting(userId, 'chat.threads'));
+  // Through the service, as a toggle is, so its per-user cache follows.
+  beforeAll(() => settingsService.update(userId, { 'chat.threads': true }));
+  afterAll(() => settingsService.reset(userId, 'chat.threads'));
 
   // The rig's user follows threads across every test here; one buffer's worth.
   function followed(rig: Rig, target: string) {
@@ -440,12 +441,12 @@ describe('threads (#1225)', () => {
   it('follows nothing with the setting off, or in a DM', async () => {
     const rig = await connect('thr8', ['#th8']);
     try {
-      deleteUserSetting(userId, 'chat.threads');
+      settingsService.reset(userId, 'chat.threads');
       const mine = await weSay(rig, '#th8', 'while off');
       await peerSays(rig, 'bob', '#th8', 'thr8: still a reply', [`+draft/reply=${mine.msgid}`]);
       expect(followed(rig, '#th8')).toEqual([]);
       expect(liveByText(rig, 'thr8: still a reply')).not.toHaveProperty('threadsChanged');
-      setUserSetting(userId, 'chat.threads', true);
+      settingsService.update(userId, { 'chat.threads': true });
       // A DM reply that would follow in a channel (it names us) follows nothing:
       // threads are a channel feature. The root still rides the wire there.
       await peerSays(rig, 'bob', 'thr8', 'thr8: a dm reply', ['+draft/reply=dm-root']);
