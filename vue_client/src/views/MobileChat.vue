@@ -166,8 +166,9 @@
     </section>
 
     <!-- Screen: a reply thread, or the buffer's thread list (#1225). This bar
-         heads it (the panel draws none on a screen); Back is the buffer, as on
-         the members screen, and a thread offers the list. -->
+         heads it (the panel draws none on a screen). Back pops history, so a
+         thread opened from the list returns to the list and one opened from a
+         chip returns to the buffer; with no history, the buffer. -->
     <section v-else-if="screen === 'thread' || screen === 'threads'" class="screen thread-screen">
       <header class="bar">
         <button class="icon back" title="Back" @click="goBufferFromMembers">
@@ -176,16 +177,6 @@
         <span class="title"
           >{{ bufferLabel }} — {{ screen === 'thread' ? 'thread' : 'threads' }}</span
         >
-        <span class="spacer"></span>
-        <button
-          v-if="screen === 'thread'"
-          class="icon"
-          title="All threads here"
-          aria-label="All threads here"
-          @click="goThreads"
-        >
-          <ListTreeIcon />
-        </button>
       </header>
       <ThreadPanel screen />
     </section>
@@ -328,7 +319,6 @@ import {
   BookmarkIcon,
   EllipsisVerticalIcon,
   HashIcon,
-  ListTreeIcon,
   MessagesSquareIcon,
   PlusIcon,
   SearchIcon,
