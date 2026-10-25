@@ -1404,7 +1404,7 @@ describe('reply threads (#1225)', () => {
   });
 
   it('listBufferThreads groups a buffer’s replies by thread, newest activity first', () => {
-    const { net, put } = rig('thr-list');
+    const { put } = rig('thr-list');
     const a = put({ msgid: 'a', text: 'first thread' });
     put({ msgid: 'b', text: 'second thread' });
     put({ nick: 'bob', replyMsgid: 'a', replyRootMsgid: 'a' });

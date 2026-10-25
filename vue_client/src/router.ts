@@ -31,7 +31,8 @@ const routes: RouteRecordRaw[] = [
   // would leak channel and DM names into browser history, PWA recents and
   // Referer. `/buffer/:id/members` is the mobile member list (#200) — its own
   // entry, so the platform back gesture walks members → buffer → list one step
-  // at a time.
+  // at a time. `/buffer/:id/thread/:root` and `/buffer/:id/threads` (#1225)
+  // are a reply thread and the buffer's thread list, the same way.
   //
   // THREE RECORDS, not one record with aliases. An alias must declare the same
   // params as the record it aliases, so aliasing `/buffer/:id` onto `/` is
@@ -55,6 +56,22 @@ const routes: RouteRecordRaw[] = [
   {
     path: '/buffer/:id/members',
     name: 'buffer-members',
+    component: chatShell,
+    meta: { requiresAuth: true },
+  },
+  // A reply thread in the buffer (#1225): `:root` is the msgid of the line
+  // that started it — a thread is named by that, not a row id, because we may
+  // not hold the line. The buffer stays the active one, as for members; the
+  // shell puts the thread panel up (useThreadRoute).
+  {
+    path: '/buffer/:id/thread/:root',
+    name: 'buffer-thread',
+    component: chatShell,
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/buffer/:id/threads',
+    name: 'buffer-threads',
     component: chatShell,
     meta: { requiresAuth: true },
   },

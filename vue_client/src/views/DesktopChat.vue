@@ -10,6 +10,7 @@
       'sidebar-collapsed': !showChannels,
       'members-collapsed': !showMembers,
       'system-active': isSystemBuffer,
+      'thread-open': !!threadRoute,
     }"
     @click="onChatClick"
   >
@@ -186,6 +187,17 @@
           </template>
           <template v-else-if="isDmHeader">
             <button
+              v-if="threadsOn"
+              type="button"
+              class="link"
+              :class="{ 'is-active': !!threadRoute }"
+              title="Threads"
+              aria-label="Threads"
+              @click="toggleThreads"
+            >
+              <MessagesSquareIcon />
+            </button>
+            <button
               type="button"
               class="link"
               title="View profile"
@@ -215,6 +227,19 @@
             </button>
           </template>
           <template v-else-if="isChannel">
+            <!-- Reply threads (#1225): the buffer's threads, in the panel that
+                 takes the member column while it's up. -->
+            <button
+              v-if="threadsOn"
+              type="button"
+              class="link"
+              :class="{ 'is-active': !!threadRoute }"
+              title="Threads"
+              aria-label="Threads"
+              @click="toggleThreads"
+            >
+              <MessagesSquareIcon />
+            </button>
             <button
               class="link"
               :title="showMembers ? 'Hide members' : 'Show members'"
@@ -236,7 +261,10 @@
     <div class="topic-divider"></div>
 
     <MessageList ref="messageListRef" :pending-scroll-id="pendingScrollId" />
-    <MemberList v-if="showMembers && hasNicklist" />
+    <!-- The thread panel (#1225) takes the member column while a thread route
+         is up; the member list comes back when it closes. -->
+    <ThreadPanel v-if="threadRoute" />
+    <MemberList v-else-if="showMembers && hasNicklist" />
     <StatusBar />
     <MessageInput v-if="hasInput" ref="messageInputRef" />
 
@@ -334,6 +362,13 @@ import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
 import MessageInput from '../components/MessageInput.vue';
 import MemberList from '../components/MemberList.vue';
+import ThreadPanel from '../components/ThreadPanel.vue';
+import {
+  navigateThread,
+  onThreadNav,
+  requestThreadNav,
+  useThreadRoute,
+} from '../composables/useThreadNav.js';
 import StatusBar from '../components/StatusBar.vue';
 import NetworkForm from '../components/NetworkForm.vue';
 import HighlightsModal from '../components/HighlightsModal.vue';
@@ -377,6 +412,7 @@ import {
   FileUpIcon,
   HashIcon,
   IdCardIcon,
+  MessagesSquareIcon,
   PlugIcon,
   PlusIcon,
   SearchIcon,
@@ -607,6 +643,22 @@ const showMembers = computed(() => {
 function toggleChannels() {
   settings.setValue('look.layout.show_channel_list', !showChannels.value);
 }
+
+// ─── Reply threads (#1225) ──────────────────────────────────────────────────
+// The panel is a route (useThreadNav): chips, the slash command and jumps into
+// a hidden reply ask for one, and this shell navigates.
+const threadRoute = useThreadRoute();
+const threadsOn = computed(() => settings.effective('chat.threads') === true);
+const offThreadNav = onThreadNav((nav) => navigateThread(router, nav));
+onBeforeUnmount(offThreadNav);
+
+function toggleThreads() {
+  const buf = activeBuf.value as { id?: number } | null;
+  if (buf?.id == null) return;
+  requestThreadNav(
+    threadRoute.value ? { kind: 'close', bufferId: buf.id } : { kind: 'list', bufferId: buf.id },
+  );
+}
 function toggleMembers() {
   if (!isChannel.value || !active.value) return;
   const { networkId, target } = active.value;
@@ -763,6 +815,12 @@ useChatBootstrap({ onJump: onJumpToMessage });
 .chat.members-collapsed {
   --members-w: 0px;
 }
+/* The thread panel (#1225) borrows the member column and needs more room than
+   a nicklist; after the collapse rules so it wins where there was no nicklist
+   (a DM, a hidden member list). */
+.chat.thread-open {
+  --members-w: min(360px, 40vw);
+}
 /* System console has no member list — collapse the rail so the log pane
    spans the full content width instead of leaving an empty column. */
 .chat.system-active {
@@ -843,6 +901,9 @@ useChatBootstrap({ onJump: onJumpToMessage });
   cursor: pointer;
   font: inherit;
   text-decoration: none;
+}
+.link.is-active {
+  color: var(--fg);
 }
 .link:hover {
   color: var(--fg);
@@ -969,7 +1030,8 @@ button.topic-text:focus-visible {
 .message-list {
   grid-area: messages;
 }
-.members {
+.members,
+.thread-panel {
   grid-area: members;
   border-left: 1px solid var(--border);
 }

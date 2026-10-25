@@ -108,6 +108,15 @@
           </button>
         </template>
         <button
+          v-if="threadsOn && active && !isServerBuffer"
+          class="icon"
+          title="Threads"
+          aria-label="Threads"
+          @click="goThreads"
+        >
+          <MessagesSquareIcon />
+        </button>
+        <button
           v-if="isChannel"
           class="icon"
           title="Members"
@@ -147,6 +156,23 @@
         <span class="title">{{ bufferLabel }} — members</span>
       </header>
       <MemberList />
+    </section>
+
+    <!-- Screen: a reply thread, or the buffer's thread list (#1225). The panel
+         carries its own header (title, list, close) and composer; Back is the
+         buffer, as on the members screen. -->
+    <section
+      v-else-if="screen === 'thread' || screen === 'threads'"
+      class="screen thread-screen"
+      :class="{ 'keyboard-open': keyboardOpen }"
+    >
+      <header class="bar">
+        <button class="icon back" title="Back" @click="goBufferFromMembers">
+          <ArrowLeftIcon />
+        </button>
+        <span class="title">{{ bufferLabel }}</span>
+      </header>
+      <ThreadPanel />
     </section>
 
     <NetworkForm
@@ -229,6 +255,7 @@ import { useRoute, useRouter } from 'vue-router';
 import type { Network } from '../stores/networks.js';
 import type { BufferLike } from '../composables/useBufferActions.js';
 import { useNetworksStore } from '../stores/networks.js';
+import { useSettingsStore } from '../stores/settings.js';
 import { useSocket } from '../composables/useSocket.js';
 import { useChatBootstrap } from '../composables/useChatBootstrap.js';
 import { pushBuffer } from '../composables/useBufferRoute.js';
@@ -241,6 +268,9 @@ import BufferList from '../components/BufferList.vue';
 import MessageList from '../components/MessageList.vue';
 import MessageInput from '../components/MessageInput.vue';
 import MemberList from '../components/MemberList.vue';
+import ThreadPanel from '../components/ThreadPanel.vue';
+import { navigateThread, onThreadNav, requestThreadNav } from '../composables/useThreadNav.js';
+import type { MobileSubScreen } from '../utils/mobileScreen.js';
 import StatusBar from '../components/StatusBar.vue';
 import NetworkForm from '../components/NetworkForm.vue';
 import HighlightsModal from '../components/HighlightsModal.vue';
@@ -282,6 +312,7 @@ import {
   BookmarkIcon,
   EllipsisVerticalIcon,
   HashIcon,
+  MessagesSquareIcon,
   PlusIcon,
   SearchIcon,
   SettingsIcon,
@@ -366,15 +397,35 @@ const activeLacksId = computed(() => {
   return !!buf && buf.networkId != null && buf.id == null;
 });
 
+// Which of the buffer's sub-screens the route names (#200, #1225).
+const subScreen = computed((): MobileSubScreen => {
+  if (route.name === 'buffer-members') return 'members';
+  if (route.name === 'buffer-thread') return 'thread';
+  if (route.name === 'buffer-threads') return 'threads';
+  return null;
+});
 const screen = computed(() =>
   screenForRoute(
     route.params.id,
-    route.name === 'buffer-members',
+    subScreen.value,
     !!activeKey.value,
     route.name === 'system',
     activeLacksId.value,
   ),
 );
+
+// Reply threads (#1225): the panel is a screen here, and a route like the
+// members screen, so Back walks thread → buffer → list. Chips and the slash
+// command ask (useThreadNav); this shell navigates.
+const settings = useSettingsStore();
+const threadsOn = computed(() => settings.effective('chat.threads') === true);
+const offThreadNav = onThreadNav((nav) => navigateThread(router, nav));
+onBeforeUnmount(offThreadNav);
+
+function goThreads() {
+  const buf = activeBuf.value as { id?: number } | null;
+  if (buf?.id != null) requestThreadNav({ kind: 'list', bufferId: buf.id });
+}
 const showBookmarks = ref(false);
 const channelModal = useChannelModal();
 // Its open state is module-level: leaving the chat view (a logout, say) must
@@ -458,7 +509,7 @@ function closeNetworkForm() {
 // this route already names — and navigating for THAT bounced the user to the
 // chat screen before the members screen ever rendered.
 watch(activeKey, () => {
-  if (route.name !== 'buffer-members') return;
+  if (subScreen.value == null) return;
   const buf = activeBuf.value as { id?: number } | null;
   if (shouldLeaveMembers(buf?.id, route.params.id)) openActiveBuffer();
 });
@@ -711,6 +762,11 @@ useChatBootstrap({ onJump: onJumpToMessage });
 
 /* Member list takes the rest of the height on its own screen. */
 .members-screen :deep(.members) {
+  flex: 1;
+  min-height: 0;
+}
+/* The thread panel likewise; its composer sits at the bottom of the screen. */
+.thread-screen :deep(.thread-panel) {
   flex: 1;
   min-height: 0;
 }
