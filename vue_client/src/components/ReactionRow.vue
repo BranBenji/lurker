@@ -36,6 +36,7 @@
       v-if="interactive"
       type="button"
       class="chip add"
+      :disabled="!canAdd"
       title="React / see who reacted"
       aria-label="React / see who reacted"
       @click.stop="reactions.openPicker(message)"
@@ -48,7 +49,7 @@
 <script setup lang="ts">
 import { computed, nextTick, watch } from 'vue';
 import { useReactionsStore } from '../stores/reactions.js';
-import { useNetworksStore } from '../stores/networks.js';
+import { tagSupport, useNetworksStore } from '../stores/networks.js';
 import { FaceSlightlySmilingPlusIcon } from '@lucide/vue';
 
 const props = withDefaults(
@@ -92,6 +93,16 @@ function chipWorks(g: { value: string }): boolean {
   if (!props.interactive || props.message.id == null) return false;
   return reactions.canToggle(props.message.id, g.value, props.message.networkId);
 }
+
+// The add chip opens the picker to react, so it's off where a new reaction
+// can't go out — a down network, like every other chip, and the message bar's
+// React action, which isn't offered there at all.
+const canAdd = computed(
+  () =>
+    props.interactive &&
+    props.message.id != null &&
+    tagSupport(networks.states[props.message.networkId]).react,
+);
 
 function chipTitle(g: { value: string; nicks: string[]; mine: boolean }): string {
   const who = `${g.nicks.join(', ')} reacted ${g.value}`;
@@ -165,16 +176,18 @@ function onChipClick(g: { value: string }) {
 .chip.mine:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent) 25%, transparent);
 }
-/* The add chip is a placeholder, not a reaction, so its heart is faded toward
+/* The add chip is a placeholder, not a reaction, so its icon is faded toward
    the background — further than main.css's `::placeholder` (55%), which still
    read as a reaction next to real ones. Mixing toward --bg keeps it dim in both
-   themes, and its outline with it. It comes up to full strength on hover. */
+   themes. Its outline is a reaction's, so it sits in the row as one of them.
+   It comes up to full strength on hover, except where it's off. The extra pixel
+   below that centres an emoji pushes an icon above centre, so its padding is
+   even. */
 .chip.add {
   color: color-mix(in srgb, var(--fg-muted) 35%, var(--bg));
-  border-color: color-mix(in srgb, var(--border) 35%, var(--bg));
+  padding-bottom: var(--space-2);
 }
-.chip.add:hover {
+.chip.add:hover:not(:disabled) {
   color: var(--fg);
-  border-color: var(--border);
 }
 </style>
