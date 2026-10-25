@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import db from './index.js';
-import { foldTargetFor, ensureServerBuffer, ensureExists } from './buffers.js';
+import { foldTargetFor, ensureServerBuffer, ensureExists, kindForTarget } from './buffers.js';
 import type { BufferKind, BufferState } from './buffers.js';
 
 // Name → buffer_id resolution, in one place.
@@ -128,13 +128,26 @@ const networkOwnerStmt = db.prepare(`SELECT user_id FROM networks WHERE id = ?`)
  * Sentinels route to their open mint; a stray ':'-prefixed non-sentinel
  * target (an imported ':server:<foreignId>' string) is minted 'server'-kinded
  * so kindForTarget's channel/dm split never claims it.
+ *
+ * A DM whose first line is from an ignored sender (`fromIgnored`) is minted
+ * closed, so the filter's closed-row gate drops it the way it drops their line
+ * to a DM the user closed. Otherwise anyone ignored could
+ * put a DM in the sidebar just by sending to a nick they hadn't before.
  */
-export function resolveOrMintForInsert(networkId: number, target: string): number | undefined {
+export function resolveOrMintForInsert(
+  networkId: number,
+  target: string,
+  fromIgnored = false,
+): number | undefined {
   const found = resolveBufferIdByNetwork(networkId, target);
   if (found !== undefined) return found;
   if (target === `:server:${networkId}`) return ensureServerBuffer(networkId)?.id;
   const owner = networkOwnerStmt.get(networkId) as { user_id: number } | undefined;
   if (!owner) return undefined;
   const kind: BufferKind | undefined = target.startsWith(':') ? 'server' : undefined;
-  return ensureExists(owner.user_id, networkId, target, kind ? { kind } : {}).record.id;
+  const closed = fromIgnored && !kind && kindForTarget(target) === 'dm';
+  return ensureExists(owner.user_id, networkId, target, {
+    ...(kind ? { kind } : {}),
+    ...(closed ? { closed } : {}),
+  }).record.id;
 }

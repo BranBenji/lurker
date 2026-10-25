@@ -443,13 +443,16 @@ export const ensureOpen = db.transaction(
 
 /** Insert-if-absent that NEVER reopens — the NOTICE path. A notice may mint a
  *  buffer for a first-contact nick (same as the old derived-existence model)
- *  but must not resurrect one the user closed. */
+ *  but must not resurrect one the user closed. `closed` mints the row closed,
+ *  as if the user had closed it on arrival: an ignored sender's first DM line,
+ *  which mustn't put the DM in the sidebar. closed_at is stamped, so
+ *  closed-buffer GC ages it out like any other closed DM. */
 export const ensureExists = db.transaction(
   (
     userId: number,
     networkId: number | null,
     target: string,
-    opts: { kind?: BufferKind } = {},
+    opts: { kind?: BufferKind; closed?: boolean } = {},
   ): { record: BufferRecord; created: boolean } => {
     const sentinel = ensureSentinel(userId, networkId, target);
     if (sentinel) return { record: sentinel.record, created: sentinel.created };
@@ -466,6 +469,7 @@ export const ensureExists = db.transaction(
       autojoin: 0,
       key: null,
     });
+    if (opts.closed) closeStmt.run(userId, networkId, folded);
     return {
       record: toRecord(getStmt.get(userId, networkId, folded) as BufferRow),
       created: true,

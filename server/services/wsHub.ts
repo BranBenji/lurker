@@ -2445,7 +2445,9 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         // ignored user can force the buffer back into the sidebar simply by
         // sending — a soft harassment vector the client-side render filter
         // doesn't close, since the reopen happens server-side. A self-join has no
-        // sender to ignore — it's our own action — so it skips this gate.
+        // sender to ignore — it's our own action — so it skips this gate. Their
+        // first line to a DM with no row lands here too: the insert mints that
+        // row closed (resolveOrMintForInsert), so first contact can't open one.
         const senderIgnored = reopens && !selfJoin && senderHidden(eventUserId, decorated);
         if (!reopens || senderIgnored) return;
         reopenBufferRow(eventUserId, decorated.networkId, target);
