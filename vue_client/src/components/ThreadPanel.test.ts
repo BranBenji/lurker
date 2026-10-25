@@ -14,6 +14,7 @@ import ThreadPanel from './ThreadPanel.vue';
 import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useThreadsStore } from '../stores/threads.js';
+import { useSettingsStore } from '../stores/settings.js';
 import type { ThreadMessage } from '../stores/threads.js';
 import { socketSend } from '../composables/useSocket.js';
 import * as threadNav from '../composables/useThreadNav.js';
@@ -157,18 +158,80 @@ describe('ThreadPanel', () => {
     });
     await w.vm.$nextTick();
     expect(w.find('.t-line.missing').text()).toContain('original message unavailable');
-    expect(w.find('.thread-composer .replying').text()).toBe('Replying in thread');
+    expect(w.find('.panel-status').text()).toBe('Replying in thread');
 
     const reply = w.findAll('.row-action').find((b) => b.attributes('title') === 'Reply to bob');
     expect(reply).toBeTruthy();
     await reply!.trigger('click');
     expect(threads.pending).toMatchObject({ messageId: 2, nick: 'bob' });
     expect(w.find('[data-msg-id="2"]').classes()).toContain('replying');
-    expect(w.find('.thread-composer .replying').text()).toContain('bob');
+    expect(w.find('.panel-status').text()).toContain('bob');
     // Quote isn't offered: a send from here already carries a reply tag.
     expect(w.findAll('.row-action').some((b) => b.attributes('title')?.startsWith('Quote'))).toBe(
       false,
     );
+  });
+
+  it('rows follow the message layout: compact by default here, standard on request', async () => {
+    seed();
+    const w = await mountAt('/buffer/9/thread/m1');
+    const threads = useThreadsStore();
+    const at = (min: number) => new Date(Date.UTC(2026, 9, 24, 12, min)).toISOString();
+    threads.applyThread({
+      bufferId: 9,
+      rootMsgid: 'm1',
+      token: threads.view!.token,
+      root: line(1, { time: at(0) }),
+      replies: [
+        line(2, { nick: 'bob', time: at(1), replyTo: { msgid: 'm1', root: 'm1', parent: null } }),
+        line(3, { nick: 'bob', time: at(2), replyTo: { msgid: 'm1', root: 'm1', parent: null } }),
+        line(4, { nick: 'carol', time: at(3), replyTo: { msgid: 'm1', root: 'm1', parent: null } }),
+      ],
+    });
+    await w.vm.$nextTick();
+    // `auto` (the default) is compact in the panel: a head per speaker run.
+    expect(w.find('.lines').classes()).toContain('compact');
+    expect(w.find('[data-msg-id="2"] .head').exists()).toBe(true);
+    expect(w.find('[data-msg-id="3"] .head').exists()).toBe(false);
+    expect(w.find('[data-msg-id="3"]').classes()).toContain('cont');
+    expect(w.find('[data-msg-id="4"] .head').exists()).toBe(true);
+
+    useSettingsStore().values['look.message.layout'] = 'standard';
+    await w.vm.$nextTick();
+    expect(w.find('.lines').classes()).toContain('standard');
+    expect(w.find('[data-msg-id="3"] .head').exists()).toBe(false);
+    expect(w.find('[data-msg-id="3"] .prefix').text()).toBe('bob');
+    expect(w.find('[data-msg-id="3"]').classes()).not.toContain('cont');
+  });
+
+  it('counts and tints by today’s rules: an ignored sender’s reply is out of the count', async () => {
+    seed();
+    const w = await mountAt('/buffer/9/thread/m1');
+    const threads = useThreadsStore();
+    threads.applyThread({
+      bufferId: 9,
+      rootMsgid: 'm1',
+      token: threads.view!.token,
+      root: line(1),
+      replies: [
+        line(2, { nick: 'bob', replyTo: { msgid: 'm1', root: 'm1', parent: null } }),
+        line(3, {
+          nick: 'troll',
+          fromIgnored: true,
+          replyTo: { msgid: 'm1', root: 'm1', parent: null },
+        }),
+        line(4, {
+          nick: 'dave',
+          matched: true,
+          replyTo: { msgid: 'm1', root: 'm1', parent: null },
+        }),
+      ],
+    });
+    await w.vm.$nextTick();
+    expect(w.find('.rule').text()).toBe('2 replies');
+    expect(w.find('[data-msg-id="3"]').text()).toContain('(ignored)');
+    // The stamp tints until the rules are loaded; then the rules decide.
+    expect(w.find('[data-msg-id="4"]').classes()).toContain('highlight');
   });
 
   it('the list route asks for the buffer’s threads and opens one on click', async () => {

@@ -30,7 +30,7 @@
         @keydown.enter.prevent="open(t.rootMsgid)"
         @keydown.space.prevent="open(t.rootMsgid)"
       >
-        <span v-if="t.root" class="root"
+        <span v-if="t.root && !hiddenRoot(t.root)" class="root"
           >{{ marks(t.root.type)[0] }}<NickRef :nick="t.root.nick" />{{ marks(t.root.type)[1] }}
           {{ excerpt(t.root.text) }}</span
         >
@@ -51,6 +51,9 @@
 import { computed } from 'vue';
 import NickRef from './NickRef.vue';
 import { useThreadsStore } from '../stores/threads.js';
+import { useBuffersStore } from '../stores/buffers.js';
+import { useIgnoresStore } from '../stores/ignores.js';
+import type { ReplyParent } from '../../../shared/replies.js';
 import { requestThreadNav } from '../composables/useThreadNav.js';
 import { formatRelative } from '../utils/timestamp.js';
 import { replyExcerpt } from '../utils/replyText.js';
@@ -58,6 +61,16 @@ import { quoteMarks } from '../../../shared/replies.js';
 
 const props = defineProps<{ bufferId: number }>();
 const threads = useThreadsStore();
+const buffers = useBuffersStore();
+const ignores = useIgnoresStore();
+
+// The server leaves out a root from someone ignored when it arrived; someone
+// ignored since is judged here, as the reply quote judges its parent.
+function hiddenRoot(root: ReplyParent): boolean {
+  const buf = buffers.byId(props.bufferId);
+  if (root.self || !buf || buf.networkId == null) return false;
+  return ignores.isMessageHidden(buf.networkId, { ...root, target: buf.target });
+}
 
 const list = computed(() =>
   threads.list && threads.list.bufferId === props.bufferId ? threads.list : null,

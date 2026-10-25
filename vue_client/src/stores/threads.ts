@@ -83,6 +83,15 @@ export interface ThreadPendingReply {
 
 let nextToken = 1;
 
+// Most replies the panel holds live (#1225): the `thread` read ships the
+// newest THREAD_MAX_REPLIES, and live replies past that drop the oldest, so a
+// panel left open under a bridge stays this size. The server's cap is the same.
+export const THREAD_MAX_REPLIES = 1000;
+
+export function threadKey(bufferId: number, rootMsgid: string): string {
+  return `${bufferId}|${rootMsgid}`;
+}
+
 export const useThreadsStore = defineStore('threads', {
   state: () => ({
     followed: [] as FollowedThread[],
@@ -91,16 +100,22 @@ export const useThreadsStore = defineStore('threads', {
     pending: null as ThreadPendingReply | null,
   }),
   getters: {
-    followedFor:
-      (state) =>
-      (bufferId: number, rootMsgid: string): FollowedThread | null =>
-        state.followed.find((t) => t.bufferId === bufferId && t.rootMsgid === rootMsgid) ?? null,
+    // The followed list by thread, built once per list — the message list asks
+    // per chip per render.
+    followedByKey: (state): Map<string, FollowedThread> => {
+      const map = new Map<string, FollowedThread>();
+      for (const t of state.followed) map.set(threadKey(t.bufferId, t.rootMsgid), t);
+      return map;
+    },
+    followedFor() {
+      return (bufferId: number, rootMsgid: string): FollowedThread | null =>
+        this.followedByKey.get(threadKey(bufferId, rootMsgid)) ?? null;
+    },
     // The server's unread count for a thread; 0 when it isn't followed.
-    unreadFor:
-      (state) =>
-      (bufferId: number, rootMsgid: string): number =>
-        state.followed.find((t) => t.bufferId === bufferId && t.rootMsgid === rootMsgid)?.unread ??
-        0,
+    unreadFor() {
+      return (bufferId: number, rootMsgid: string): number =>
+        this.followedByKey.get(threadKey(bufferId, rootMsgid))?.unread ?? 0;
+    },
   },
   actions: {
     applyFollowed(list: FollowedThread[]) {
@@ -195,6 +210,10 @@ export const useThreadsStore = defineStore('threads', {
       if (inView) {
         if (v.replies.some((r) => r.id === event.id)) return;
         v.replies.push(event);
+        if (v.replies.length > THREAD_MAX_REPLIES) {
+          v.replies.splice(0, v.replies.length - THREAD_MAX_REPLIES);
+          v.truncated = true;
+        }
       }
       if (event.fromIgnored) return;
       const bump = (line: ThreadMessage | undefined) => {

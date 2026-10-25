@@ -4,13 +4,19 @@
 -->
 
 <!--
-  The thread panel's own composer (#1225). Every line sent from here is a
-  reply in the thread: to the line picked with Reply in the panel, else to the
-  thread's first line (threads.replyTarget). Plain on purpose — a textarea that
-  sends on Enter, breaks on Shift+Enter and Tab-completes nicks from the
-  channel's members. No uploads, emoji picker, drafts or slash commands: the
-  channel's composer has those, and a /command typed here is refused rather
-  than sent as text.
+  The thread panel's own composer (#1225), in the main composer's clothes: the
+  same row, padding and bare textarea, so the two line up at the bottom of the
+  window. Every line sent from here is a reply in the thread: to the line
+  picked with Reply in the panel, else to the thread's first line
+  (threads.replyTarget). Plain on purpose — Enter sends, Tab completes nicks
+  from the channel's members with the completion suffix the channel uses. No
+  uploads, emoji picker, drafts or slash commands: the channel's composer has
+  those, and a /command typed here is refused rather than sent as text.
+
+  One line per send: a send the network would split into several PRIVMSGs
+  carries its reply tag on the first only, and the rest would land in the
+  channel outside the thread (ircManager.send) — so such a send is refused.
+  A network with draft/multiline takes a whole batch under one tag.
 
   The `nick: ` address goes on at send, as the channel's Reply puts it in the
   draft: it is what a client without reply tags sees. Never for your own line
@@ -18,29 +24,14 @@
 -->
 
 <template>
-  <div class="thread-composer">
-    <div class="replying">
-      <template v-if="pending">
-        <span class="label">Replying to</span>
-        <NickRef :nick="pending.nick" />
-        <button
-          type="button"
-          class="link clear"
-          title="Reply to the thread instead"
-          @click="clearPending"
-        >
-          <XIcon />
-        </button>
-      </template>
-      <span v-else class="label">Replying in thread</span>
-    </div>
+  <div class="thread-input">
     <textarea
       ref="inputEl"
       v-model="text"
-      class="input"
       rows="1"
       :placeholder="placeholder"
       :disabled="!canSend"
+      :aria-label="placeholder"
       @keydown="onKeydown"
       @input="onInput"
     />
@@ -49,19 +40,21 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
-import { XIcon } from '@lucide/vue';
-import NickRef from './NickRef.vue';
-import { useThreadsStore } from '../stores/threads.js';
+import { threadKey, useThreadsStore } from '../stores/threads.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useNetworksStore } from '../stores/networks.js';
+import { useSettingsStore } from '../stores/settings.js';
 import { useToastsStore } from '../stores/toasts.js';
 import { socketSendWithAck } from '../composables/useSocket.js';
 import { privateTarget, replyTagsGoOut } from '../composables/useMessageActions.js';
+import { isImeKey } from '../composables/useImeSafeInput.js';
 import { applySpoilerMarkup } from '../utils/spoilerMarkup.js';
+import { chunkCountForSay, textBudgetFor } from '../utils/messageSplit.js';
 
 const threads = useThreadsStore();
 const buffers = useBuffersStore();
 const networks = useNetworksStore();
+const settings = useSettingsStore();
 const toasts = useToastsStore();
 
 const inputEl = ref<HTMLTextAreaElement | null>(null);
@@ -69,26 +62,23 @@ const text = ref('');
 
 const view = computed(() => threads.view);
 const pending = computed(() => threads.pending);
+// The buffer by id, never the view's copy of its name: a DM's peer can change
+// nick while the panel is up, and the send must follow the buffer.
 const buffer = computed(() => (view.value ? buffers.byId(view.value.bufferId) : null));
 
 // A send needs the network up and carrying reply tags: a line sent without
 // one would land in the channel as a plain line, outside the thread.
 const canSend = computed(() => {
   const v = view.value;
-  if (!v || v.loading) return false;
+  if (!v || v.loading || !buffer.value) return false;
   return replyTagsGoOut(v.networkId) && threads.replyTarget() != null;
 });
 
 const placeholder = computed(() => {
   if (!view.value) return '';
   if (!canSend.value) return 'Can’t reply here right now';
-  return 'Reply…';
+  return 'Reply in thread…';
 });
-
-function clearPending(): void {
-  threads.setPending(null);
-  focus();
-}
 
 function focus(): void {
   inputEl.value?.focus();
@@ -116,14 +106,19 @@ function autosize(): void {
   el.style.height = 'auto';
   // Up to ~6 lines, then it scrolls.
   const line = parseFloat(getComputedStyle(el).lineHeight) || 20;
-  el.style.height = `${Math.min(el.scrollHeight, line * 6 + 12)}px`;
+  el.style.height = `${Math.min(el.scrollHeight, line * 6)}px`;
 }
 
 // ─── Tab completion ───────────────────────────────────────────────────────
 // The word before the caret, matched against the channel's members (then the
-// thread's speakers, for a DM or a line from someone who left). Tab cycles;
-// any other key ends the cycle.
+// thread's speakers, for someone who left). Tab cycles; any other key ends
+// the cycle. At the start of the line the nick takes the channel composer's
+// addressing suffix (input.completion.nick_suffix); elsewhere a space.
 let cycle: { prefix: string; start: number; matches: string[]; index: number } | null = null;
+
+function addressSuffix(): string {
+  return `${String(settings.effective('input.completion.nick_suffix') ?? ':').trimEnd()} `;
+}
 
 function candidates(prefix: string): string[] {
   const seen = new Set<string>();
@@ -161,7 +156,7 @@ function completeNick(): void {
   }
   const nick = cycle.matches[cycle.index];
   const atLineStart = cycle.start === 0 || text.value[cycle.start - 1] === '\n';
-  const insert = atLineStart ? `${nick}: ` : `${nick} `;
+  const insert = atLineStart ? `${nick}${addressSuffix()}` : `${nick} `;
   const after = text.value.slice(caret);
   text.value = text.value.slice(0, cycle.start) + insert + after;
   const pos = cycle.start + insert.length;
@@ -180,10 +175,12 @@ function onKeydown(e: KeyboardEvent): void {
   cycle = null;
   if (e.key === 'Escape' && pending.value) {
     e.preventDefault();
-    clearPending();
+    threads.setPending(null);
     return;
   }
-  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+  // Safari fires the Enter that confirms an IME candidate with isComposing
+  // false; isImeKey reads the keyCode it leaves behind (useImeSafeInput).
+  if (e.key === 'Enter' && !e.shiftKey && !isImeKey(e)) {
     e.preventDefault();
     void submit();
   }
@@ -193,9 +190,10 @@ function onKeydown(e: KeyboardEvent): void {
 
 async function submit(): Promise<void> {
   const v = view.value;
+  const buf = buffer.value;
   const raw = text.value;
   const body = raw.trim();
-  if (!v || !body || !canSend.value) return;
+  if (!v || !buf || !body || !canSend.value) return;
   // A /command would go out as a line in the thread (`/msg bob password`
   // included). The channel's composer runs commands; this one doesn't.
   if (body.startsWith('/') && !body.startsWith('//')) {
@@ -214,12 +212,25 @@ async function submit(): Promise<void> {
   // line is ours (nobody to address) or the thread is in a DM.
   const own = target.self || networks.isOwnNick(v.networkId, target.nick);
   const addressed =
-    own || !target.nick || privateTarget(v.target) ? line : `${target.nick}: ${line}`;
+    own || !target.nick || privateTarget(buf.target) ? line : `${target.nick}: ${line}`;
+  const wire = applySpoilerMarkup(addressed);
+  // One PRIVMSG, or one draft/multiline batch: anything else leaves the thread.
+  const net = networks.states[v.networkId];
+  if (!net?.multilineLimits && chunkCountForSay(wire, textBudgetFor(net, buf.target)) > 1) {
+    toasts.push({
+      title: 'Too long for one line',
+      body: 'A reply that splits would leave the thread. Shorten it, or send it in the channel.',
+      kind: 'warn',
+      ttlMs: 6000,
+    });
+    return;
+  }
+  const key = threadKey(v.bufferId, v.rootMsgid);
   const sent = socketSendWithAck({
     type: 'send',
     networkId: v.networkId,
-    target: v.target,
-    text: applySpoilerMarkup(addressed),
+    target: buf.target,
+    text: wire,
     replyTo: target.messageId,
   });
   if (!sent) {
@@ -243,59 +254,41 @@ async function submit(): Promise<void> {
       kind: 'error',
       ttlMs: 6000,
     });
-    // Give the words back if nothing new was typed meanwhile.
-    if (!text.value) text.value = raw;
+    // Give the words back — to the same thread, with nothing new typed since.
+    const now = threads.view;
+    if (now && threadKey(now.bufferId, now.rootMsgid) === key && !text.value) text.value = raw;
   }
 }
 </script>
 
 <style scoped>
-.thread-composer {
-  flex: 0 0 auto;
-  border-top: 1px solid var(--border);
-  padding: var(--space-3) var(--space-4) var(--space-4);
+/* The main composer's row (MessageInput .input): same padding, bare textarea. */
+.thread-input {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  align-items: flex-start;
+  padding: var(--space-4) var(--space-6);
+  min-width: 0;
 }
-.replying {
-  display: flex;
-  align-items: center;
-  gap: 1ch;
-  color: var(--fg-muted);
-  min-height: 1lh;
-}
-.replying .clear {
-  display: inline-flex;
-  align-items: center;
-  background: none;
+textarea {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
   border: none;
   padding: 0;
-  margin-left: auto;
-  cursor: pointer;
-  color: var(--fg-muted);
-}
-.replying .clear:hover {
   color: var(--fg);
-}
-.input {
-  width: 100%;
-  resize: none;
-  box-sizing: border-box;
-  background: var(--bg-soft);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-3) var(--space-4);
   font: inherit;
   line-height: 1.4;
+  resize: none;
   overflow-y: auto;
+  min-height: 1.4em;
 }
-.input:focus {
+textarea:focus {
   outline: none;
-  border-color: var(--accent);
 }
-.input:disabled {
+textarea:disabled {
   opacity: 0.6;
+}
+textarea::placeholder {
+  color: var(--fg-muted);
 }
 </style>

@@ -14,6 +14,7 @@ import { useBuffersStore } from '../stores/buffers.js';
 import { useThreadsStore } from '../stores/threads.js';
 import type { ThreadMessage } from '../stores/threads.js';
 import { useToastsStore } from '../stores/toasts.js';
+import { useSettingsStore } from '../stores/settings.js';
 import { socketSendWithAck } from '../composables/useSocket.js';
 
 vi.mock('../composables/useSocket.js', () => ({
@@ -96,7 +97,6 @@ describe('ThreadComposer', () => {
     const threads = seed();
     threads.setPending({ messageId: 2, nick: 'bob', type: 'message', text: 'x', self: false });
     await type('indeed');
-    expect(wrapper!.find('.replying').text()).toContain('bob');
     await wrapper!.find('textarea').trigger('keydown', { key: 'Enter' });
     expect(sends()[0]).toMatchObject({ text: 'bob: indeed', replyTo: 2 });
     expect(threads.pending).toBeNull();
@@ -140,6 +140,42 @@ describe('ThreadComposer', () => {
     ta.setSelectionRange(6, 6);
     await wrapper!.find('textarea').trigger('keydown', { key: 'Tab' });
     expect(ta.value).toBe('hey alice ');
+  });
+
+  it('Tab at the start of a line takes the channel’s completion suffix', async () => {
+    seed();
+    useSettingsStore().values['input.completion.nick_suffix'] = ',';
+    const ta = await type('al');
+    ta.setSelectionRange(2, 2);
+    await wrapper!.find('textarea').trigger('keydown', { key: 'Tab' });
+    expect(ta.value).toBe('alice, ');
+  });
+
+  it('refuses a line the network would split, since the rest would leave the thread', async () => {
+    seed();
+    await type('x'.repeat(600));
+    await wrapper!.find('textarea').trigger('keydown', { key: 'Enter' });
+    expect(sends()).toEqual([]);
+    expect(useToastsStore().items.at(-1)?.title).toMatch(/Too long/);
+    // A network with draft/multiline takes it as one batch under one tag.
+    useNetworksStore().states[1] = {
+      nick: 'me',
+      state: 'connected',
+      canReply: true,
+      multilineLimits: { maxBytes: 4096, maxLines: 20 },
+    } as never;
+    await wrapper!.find('textarea').trigger('keydown', { key: 'Enter' });
+    expect(sends()).toHaveLength(1);
+  });
+
+  it('sends to the buffer’s current name, not the one the thread opened under', async () => {
+    const threads = seed('alice');
+    // The peer changed nick: the buffer row follows, the open view does not.
+    useBuffersStore().byId(9)!.target = 'alice_';
+    expect(threads.view?.target).toBe('alice');
+    await type('still you?');
+    await wrapper!.find('textarea').trigger('keydown', { key: 'Enter' });
+    expect(sends()[0]).toMatchObject({ target: 'alice_', text: 'still you?' });
   });
 
   it('is disabled while the network cannot carry a reply tag', async () => {

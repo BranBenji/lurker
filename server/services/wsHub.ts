@@ -400,7 +400,9 @@ function effectiveSetting(userId: number, key: string): unknown {
 // Whether the user keeps replies in threads (`chat.threads`, #1225) — read by
 // computeUnreadFor, which runs once per buffer on a connect snapshot, so the
 // answer is kept per user rather than re-read from the settings table each
-// time. Dropped on the user's next settings change (the handler below).
+// time. Dropped on the user's next settings change (the handler below) and at
+// every snapshot, so a value written behind the service's back (an import)
+// lasts at most until the next connect.
 const threadsHiddenByUser = new Map<number, boolean>();
 function threadsHiddenFor(userId: number): boolean {
   let hidden = threadsHiddenByUser.get(userId);
@@ -693,11 +695,14 @@ function computeUnreadFor(
   // The server pseudo-buffer applies a notability filter (#470): routine
   // Lurker-generated connection-status notices don't mark it unread, but errors,
   // inbound notices, and closed-buffer mirrors do. Channels/DMs count normally.
-  // With reply threads on, a thread reply counts here only as a highlight
-  // (#1225, THREADS_HIDDEN_SQL): the channel hides it, its thread counts it.
+  // With reply threads on, a channel's thread reply counts here only as a
+  // highlight (#1225, THREADS_HIDDEN_SQL): the channel hides it, its thread
+  // counts it. Threads are a channel feature: a DM keeps every line.
   const unread = target.startsWith(':server:')
     ? countServerBufferUnread(nid, target, lastReadId)
-    : countNewer(nid, target, lastReadId, undefined, { threadsHidden: threadsHiddenFor(userId) });
+    : countNewer(nid, target, lastReadId, undefined, {
+        threadsHidden: !isDmTarget(target) && threadsHiddenFor(userId),
+      });
   // A DM is inherently a mention of you, so — like the system buffer — every
   // unread line counts as a highlight. This lights the buffer-list row up in
   // the highlight color and shows the ● badge, surfacing unread DMs above
@@ -2808,6 +2813,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     userId: number,
     freshNetworkId: number | null = null,
   ): SnapshotBreakdown {
+    threadsHiddenByUser.delete(userId);
     const tNetworks = Date.now();
     const networks = ircManager.snapshotForUser(userId);
     const networksMs = Date.now() - tNetworks;

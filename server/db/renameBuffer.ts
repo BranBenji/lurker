@@ -106,6 +106,12 @@ const adoptNotifyStmt = db.prepare(
 const adoptDraftStmt = db.prepare(
   `UPDATE OR IGNORE user_drafts SET buffer_id = ? WHERE buffer_id = ?`,
 );
+// Reply threads the user is in (#1225): the messages move, so the follows
+// move with them; where both sides follow the same root the survivor's
+// pointer wins, like the other satellites.
+const adoptThreadFollowsStmt = db.prepare(
+  `UPDATE OR IGNORE thread_follows SET buffer_id = ? WHERE buffer_id = ?`,
+);
 const draftBodyStmt = db.prepare(
   `SELECT body FROM user_drafts WHERE user_id = ? AND buffer_id = ?`,
 );
@@ -165,6 +171,7 @@ export function absorbBufferRow(
   adoptNicklistStmt.run(survivor.id, absorbed.id);
   adoptNotifyStmt.run(survivor.id, absorbed.id);
   adoptDraftStmt.run(survivor.id, absorbed.id);
+  adoptThreadFollowsStmt.run(survivor.id, absorbed.id);
   mergeChannelPropsStmt.run({ survivor: survivor.id, absorbed: absorbed.id });
   // Visibility is the union: if either side was open, the merged buffer is.
   if (absorbed.state === 'open' && survivor.state !== 'open') setOpenStmt.run(survivor.id);

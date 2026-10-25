@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
-import { useThreadsStore } from './threads.js';
+import { THREAD_MAX_REPLIES, useThreadsStore } from './threads.js';
 import type { ThreadMessage } from './threads.js';
 import { useBuffersStore } from './buffers.js';
 import { socketSend } from '../composables/useSocket.js';
@@ -100,6 +100,26 @@ describe('threads store', () => {
     );
     expect(threads.view?.replies).toHaveLength(3);
     expect(inChannel.thread?.replies).toBe(2);
+  });
+
+  it('keeps the live slice to the server’s cap, dropping the oldest and saying so', () => {
+    seed();
+    const threads = useThreadsStore();
+    threads.open(9, 'root');
+    threads.applyThread({
+      bufferId: 9,
+      rootMsgid: 'root',
+      token: threads.view!.token,
+      root: null,
+      replies: Array.from({ length: THREAD_MAX_REPLIES }, (_, i) =>
+        line(i + 10, { replyTo: { msgid: 'root', root: 'root', parent: null } }),
+      ),
+    });
+    threads.applyLive(line(5000, { replyTo: { msgid: 'root', root: 'root', parent: null } }));
+    expect(threads.view?.replies).toHaveLength(THREAD_MAX_REPLIES);
+    expect(threads.view?.replies[0].id).toBe(11);
+    expect(threads.view?.replies.at(-1)?.id).toBe(5000);
+    expect(threads.view?.truncated).toBe(true);
   });
 
   it('a reply to another thread leaves the open one alone', () => {

@@ -187,17 +187,6 @@
           </template>
           <template v-else-if="isDmHeader">
             <button
-              v-if="threadsOn"
-              type="button"
-              class="link"
-              :class="{ 'is-active': !!threadRoute }"
-              title="Threads"
-              aria-label="Threads"
-              @click="toggleThreads"
-            >
-              <MessagesSquareIcon />
-            </button>
-            <button
               type="button"
               class="link"
               title="View profile"
@@ -227,8 +216,8 @@
             </button>
           </template>
           <template v-else-if="isChannel">
-            <!-- Reply threads (#1225): the buffer's threads, in the panel that
-                 takes the member column while it's up. -->
+            <!-- Reply threads (#1225): the channel's threads, in the column
+                 beside the chat while one is up. -->
             <button
               v-if="threadsOn"
               type="button"
@@ -261,10 +250,9 @@
     <div class="topic-divider"></div>
 
     <MessageList ref="messageListRef" :pending-scroll-id="pendingScrollId" />
-    <!-- The thread panel (#1225) takes the member column while a thread route
-         is up; the member list comes back when it closes. -->
+    <MemberList v-if="showMembers && hasNicklist" />
+    <!-- The thread panel (#1225): a column of its own, on the grid's rows. -->
     <ThreadPanel v-if="threadRoute" />
-    <MemberList v-else-if="showMembers && hasNicklist" />
     <StatusBar />
     <MessageInput v-if="hasInput" ref="messageInputRef" />
 
@@ -785,7 +773,8 @@ useChatBootstrap({ onJump: onJumpToMessage });
   --sidebar-w: 220px;
   --members-w: 180px;
   display: grid;
-  grid-template-columns: var(--sidebar-w) 1fr var(--members-w);
+  --thread-w: 0px;
+  grid-template-columns: var(--sidebar-w) 1fr var(--members-w) var(--thread-w);
   /* The 1px row owns the topic/messages divider as its own grid track,
      outside the scroll container. Putting the line inside .message-list
      (border-top, inset box-shadow) lets row backgrounds and hover states
@@ -794,11 +783,11 @@ useChatBootstrap({ onJump: onJumpToMessage });
      and nothing can paint on top of it. */
   grid-template-rows: auto auto 1fr auto auto;
   grid-template-areas:
-    'sidebar topic    topic'
-    'sidebar divider  divider'
-    'sidebar messages members'
-    'sidebar status   status'
-    'sidebar input    input';
+    'sidebar topic    topic   thread'
+    'sidebar divider  divider thread'
+    'sidebar messages members thread'
+    'sidebar status   status  thread'
+    'sidebar input    input   thread';
   /* Height sized to the dynamic viewport. iOS scrolls the page
      naturally when the keyboard opens; the input row at the bottom
      stays visible above the keyboard, and the upper portion (sidebar,
@@ -815,11 +804,11 @@ useChatBootstrap({ onJump: onJumpToMessage });
 .chat.members-collapsed {
   --members-w: 0px;
 }
-/* The thread panel (#1225) borrows the member column and needs more room than
-   a nicklist; after the collapse rules so it wins where there was no nicklist
-   (a DM, a hidden member list). */
+/* The thread panel (#1225): a fourth column bolted to the side, every row of
+   the grid, so its head is level with the topic bar and its composer with the
+   main one. Zero-width (and unmounted) when no thread is up. */
 .chat.thread-open {
-  --members-w: min(360px, 40vw);
+  --thread-w: min(380px, 40vw);
 }
 /* System console has no member list — collapse the rail so the log pane
    spans the full content width instead of leaving an empty column. */
@@ -1030,9 +1019,12 @@ button.topic-text:focus-visible {
 .message-list {
   grid-area: messages;
 }
-.members,
-.thread-panel {
+.members {
   grid-area: members;
+  border-left: 1px solid var(--border);
+}
+.thread-panel {
+  grid-area: thread;
   border-left: 1px solid var(--border);
 }
 .status-bar {

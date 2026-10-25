@@ -118,7 +118,11 @@ export interface MessageActionsAPI {
   run(key: MessageActionKey, message: MessageLike, ctx: MessageContext): void;
   // The same actions rendered as ContextMenuItem[] for the right-click / tap
   // menu (#392). Derived from buildActions so the bar and the menu can't drift.
-  buildItems(message: MessageLike | null | undefined, ctx: MessageContext): ContextMenuItem[];
+  buildItems(
+    message: MessageLike | null | undefined,
+    ctx: MessageContext,
+    opts?: MessageActionOptions,
+  ): ContextMenuItem[];
   // Open the shared context menu at a viewport point for this message.
   openMenu(
     message: MessageLike | null | undefined,
@@ -126,7 +130,15 @@ export interface MessageActionsAPI {
     x: number,
     y: number,
     triggerEl?: Element | null,
+    opts?: MessageActionOptions,
   ): void;
+}
+
+export interface MessageActionOptions {
+  // Actions a surface doesn't offer — the thread panel leaves Quote out, since
+  // a send from there already carries a reply tag (#1225). By key, so the bar
+  // and the menu drop the same thing however it's labelled.
+  exclude?: readonly MessageActionKey[];
 }
 
 // Single source of truth for the per-message actions rendered as the hover
@@ -350,18 +362,22 @@ export function useMessageActions(): MessageActionsAPI {
   function buildItems(
     message: MessageLike | null | undefined,
     ctx: MessageContext,
+    opts: MessageActionOptions = {},
   ): ContextMenuItem[] {
     if (!message) return [];
-    return buildActions(message).map((a) => ({
-      label: a.label,
-      icon: a.icon,
-      // The menu stays open while state moves on, so Save/Remove does what its
-      // label said, not the opposite of whatever is true at the tap (#1136).
-      onClick:
-        a.key === 'save'
-          ? () => bookmarks.setSaved(message, !a.active)
-          : () => run(a.key, message, ctx),
-    }));
+    const excluded = opts.exclude ?? [];
+    return buildActions(message)
+      .filter((a) => !excluded.includes(a.key))
+      .map((a) => ({
+        label: a.label,
+        icon: a.icon,
+        // The menu stays open while state moves on, so Save/Remove does what its
+        // label said, not the opposite of whatever is true at the tap (#1136).
+        onClick:
+          a.key === 'save'
+            ? () => bookmarks.setSaved(message, !a.active)
+            : () => run(a.key, message, ctx),
+      }));
   }
 
   function openMenu(
@@ -370,9 +386,10 @@ export function useMessageActions(): MessageActionsAPI {
     x: number,
     y: number,
     triggerEl: Element | null = null,
+    opts: MessageActionOptions = {},
   ): void {
     if (!message) return;
-    const items = buildItems(message, ctx);
+    const items = buildItems(message, ctx, opts);
     if (items.length === 0) return;
     menu.open(items, x, y, triggerEl);
   }

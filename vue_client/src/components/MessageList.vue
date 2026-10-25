@@ -355,7 +355,7 @@
           /><!-- The thread this line started (#1225), with reply threads on: its
                  replies are kept out of the list above, and this is the way in.
                  --><ThreadChip
-            v-if="threadsOn && row.m?.thread && row.m.msgid"
+            v-if="threadsHere && row.m?.thread && row.m.msgid"
             :count="row.m.thread.replies"
             :last-reply-time="row.m.thread.lastReplyTime"
             :unread="threads.unreadFor(buffer?.id ?? -1, row.m.msgid)"
@@ -598,10 +598,13 @@ const actionItalic = computed(() => !!settings.effective('look.action.italic'));
 // on a message opens the action menu instead (onMessageRowClick). Always off on
 // touch via the CSS reveal media query, where tap opens the menu regardless.
 const hoverActions = computed(() => !!settings.effective('look.message.hover_actions'));
-// Reply threads (#1225): replies stay out of this list and open in the thread
-// panel; a line that started one wears a ThreadChip.
+// Reply threads (#1225): in a channel with the setting on, replies stay out of
+// this list and open in the thread panel; a line that started one wears a
+// ThreadChip. A DM keeps every line.
 const threads = useThreadsStore();
-const threadsOn = computed(() => settings.effective('chat.threads') === true);
+const threadsHere = computed(
+  () => settings.effective('chat.threads') === true && buffer.value?.kind === 'channel',
+);
 // The message whose action menu is open — set when a tap (touch) or, with the
 // hover bar toggled off, a click (desktop) opens it (onMessageRowClick). Gives
 // the row a `selected` background so users with no hover can see which message
@@ -1366,12 +1369,6 @@ const renderRows = computed((): RenderRow[] => {
     // the first row the reader can actually see.
     if (hideAllEvents && isNoiseType(m.type)) continue;
 
-    // Reply threads (#1225): a reply lives in its thread panel, not here. Only
-    // a row that names its root — one stored before roots were tracked still
-    // shows inline, with its quote. The row stays in the store for jumps and
-    // bookmarks; the scroll watcher opens its thread when one lands on it.
-    if (threadsOn.value && m.replyTo?.root) continue;
-
     // Render-time ignore filter (issue #301). Self-authored events are never
     // hidden. The matcher gets full event context so level/channel/pattern
     // rules apply. A NOHIGHLIGHT rule doesn't hide — it suppresses the row's
@@ -1414,6 +1411,16 @@ const renderRows = computed((): RenderRow[] => {
           type: m.type,
           self: m.self,
         }) || replyToSelf;
+    }
+
+    // Reply threads (#1225): a reply lives in its thread panel, not here —
+    // unless it's a highlight, which badges the channel and so must have a
+    // row to badge. Only a row that names its root — one stored before roots
+    // were tracked still shows inline, with its quote. A hidden row stays in
+    // the store for jumps and bookmarks; the scroll watcher opens its thread
+    // when one lands on it.
+    if (threadsHere.value && m.replyTo?.root && !rowHighlight && !m.matched && !replyToSelf) {
+      continue;
     }
 
     // Parsed once and reused by the smart filter and the presence dividers
@@ -1815,15 +1822,15 @@ function openThreadAt(m: ChatMessage | undefined): void {
 }
 
 // A jump landing on a reply this list hides (reply threads on): open its
-// thread on that reply instead of scrolling to a row that isn't drawn. Only a
-// loaded row can be judged; a jump that fetched a slice first is judged once
-// that slice is in. False when the id is shown here, or unknown.
+// thread on that reply instead of scrolling to a row that isn't drawn. Asked
+// only once the row has failed to appear, so a reply shown inline (a
+// highlight) is simply scrolled to. False when the id is unknown here.
 function openHiddenReply(id: number | string): boolean {
   const buf = buffer.value;
-  if (!threadsOn.value || !buf || buf.id == null) return false;
+  if (!threadsHere.value || !buf || buf.id == null) return false;
   const m = messages.value.find((x) => x.id === Number(id)) as ChatMessage | undefined;
   const root = m?.replyTo?.root;
-  if (!root) return false;
+  if (!root || m?.matched || m?.replyToSelf) return false;
   requestThreadNav({ kind: 'thread', bufferId: buf.id, rootMsgid: root, focusId: Number(id) });
   return true;
 }
@@ -2675,7 +2682,6 @@ watch(
   async (id) => {
     if (id == null) return;
     await nextTick();
-    if (openHiddenReply(id)) return;
     let attempts = 0;
     const tryScroll = () => {
       // A newer jump superseded this one — abandon the stale retry loop.

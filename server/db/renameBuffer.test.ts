@@ -158,6 +158,32 @@ describe('merge (a buffer already holds the new name): SOURCE survives', () => {
     expect(result.draftChanged).toBe(false);
   });
 
+  it('carries the absorbed side’s thread follows; the survivor’s pointer wins a clash', () => {
+    const tf = db;
+    buffers.ensureOpen(userId, networkId, 'gina_');
+    const absorbedId = buffers.getBuffer(userId, networkId, 'gina_')!.id;
+    buffers.ensureOpen(userId, networkId, 'gina');
+    const liveId = buffers.getBuffer(userId, networkId, 'gina')!.id;
+    const follow = tf.prepare(
+      `INSERT INTO thread_follows (user_id, buffer_id, root_msgid, read_id) VALUES (?, ?, ?, ?)`,
+    );
+    follow.run(userId, absorbedId, 'only-there', 5);
+    follow.run(userId, absorbedId, 'both', 9);
+    follow.run(userId, liveId, 'both', 3);
+
+    renameBuffer(userId, networkId, 'gina', 'gina_');
+
+    const rows = tf
+      .prepare(
+        `SELECT buffer_id, root_msgid, read_id FROM thread_follows WHERE user_id = ? ORDER BY root_msgid`,
+      )
+      .all(userId) as Array<{ buffer_id: number; root_msgid: string; read_id: number }>;
+    expect(rows.filter((r) => r.root_msgid.startsWith('only') || r.root_msgid === 'both')).toEqual([
+      { buffer_id: liveId, root_msgid: 'both', read_id: 3 },
+      { buffer_id: liveId, root_msgid: 'only-there', read_id: 5 },
+    ]);
+  });
+
   it('adopts the absorbed draft when the survivor has none, and says so', () => {
     buffers.ensureOpen(userId, networkId, 'frank2');
     drafts.upsertDraft(userId, networkId, 'frank2', 'stashed');

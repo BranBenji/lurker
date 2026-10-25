@@ -108,7 +108,7 @@
           </button>
         </template>
         <button
-          v-if="threadsOn && active && !isServerBuffer"
+          v-if="threadsOn && isChannel"
           class="icon"
           title="Threads"
           aria-label="Threads"
@@ -158,21 +158,29 @@
       <MemberList />
     </section>
 
-    <!-- Screen: a reply thread, or the buffer's thread list (#1225). The panel
-         carries its own header (title, list, close) and composer; Back is the
-         buffer, as on the members screen. -->
-    <section
-      v-else-if="screen === 'thread' || screen === 'threads'"
-      class="screen thread-screen"
-      :class="{ 'keyboard-open': keyboardOpen }"
-    >
+    <!-- Screen: a reply thread, or the buffer's thread list (#1225). This bar
+         heads it (the panel draws none on a screen); Back is the buffer, as on
+         the members screen, and a thread offers the list. -->
+    <section v-else-if="screen === 'thread' || screen === 'threads'" class="screen thread-screen">
       <header class="bar">
         <button class="icon back" title="Back" @click="goBufferFromMembers">
           <ArrowLeftIcon />
         </button>
-        <span class="title">{{ bufferLabel }}</span>
+        <span class="title"
+          >{{ bufferLabel }} — {{ screen === 'thread' ? 'thread' : 'threads' }}</span
+        >
+        <span class="spacer"></span>
+        <button
+          v-if="screen === 'thread'"
+          class="icon"
+          title="All threads here"
+          aria-label="All threads here"
+          @click="goThreads"
+        >
+          <ListTreeIcon />
+        </button>
       </header>
-      <ThreadPanel />
+      <ThreadPanel screen />
     </section>
 
     <NetworkForm
@@ -312,6 +320,7 @@ import {
   BookmarkIcon,
   EllipsisVerticalIcon,
   HashIcon,
+  ListTreeIcon,
   MessagesSquareIcon,
   PlusIcon,
   SearchIcon,

@@ -44,18 +44,19 @@ function line(nick: string, text: string, extra: Record<string, unknown> = {}) {
 
 function mountWith(
   messages: Record<string, unknown>[],
-  opts: { threads?: boolean; pendingScrollId?: number | null } = {},
+  opts: { threads?: boolean; pendingScrollId?: number | null; target?: string } = {},
 ) {
   const networks = useNetworksStore();
   const buffers = useBuffersStore();
+  const target = opts.target ?? '#chan';
   networks.networks = [{ id: 1, name: 'testnet' }] as never;
   networks.states = { 1: { nick: 'me', state: 'connected', peerPresence: {} } } as never;
-  const b = buffers.ensure(1, '#chan', 9);
+  const b = buffers.ensure(1, target, 9);
   b.messages = messages as never;
   b.joined = true;
   b.hasMoreOlder = false;
   b.lastReadId = 999;
-  networks.activeKey = '1::#chan';
+  networks.activeKey = `1::${target}`;
   if (opts.threads) useSettingsStore().values['chat.threads'] = true;
   wrapper = mount(MessageList, {
     attachTo: document.body,
@@ -125,6 +126,41 @@ describe('MessageList — reply threads', () => {
     ]);
     await w.vm.$nextTick();
     expect(rowOf(w, root.id).find('.thread-chip').classes()).toContain('unread');
+  });
+
+  it('on: a highlighted reply stays inline — it badges the channel, so it has a row', () => {
+    const root = line('alice', 'anyone?', {
+      msgid: 'm1',
+      thread: { replies: 2, lastReplyTime: 't' },
+    });
+    const mention = line('bob', 'me: you around?', {
+      matched: true,
+      replyTo: { msgid: 'm1', root: 'm1', parent: null },
+    });
+    const toMe = line('carol', 'me: yes', {
+      replyToSelf: true,
+      replyTo: { msgid: 'm1', root: 'm1', parent: null },
+    });
+    const plain = line('dave', 'alice: me', { replyTo: { msgid: 'm1', root: 'm1', parent: null } });
+    const w = mountWith([root, mention, toMe, plain], { threads: true });
+    expect(rowOf(w, mention.id).exists()).toBe(true);
+    expect(rowOf(w, toMe.id).exists()).toBe(true);
+    expect(rowOf(w, plain.id).exists()).toBe(false);
+  });
+
+  it('on: a DM keeps every reply and wears no chip', () => {
+    const root = line('alice', 'hi', {
+      target: 'alice',
+      msgid: 'm1',
+      thread: { replies: 1, lastReplyTime: 't' },
+    });
+    const reply = line('alice', 'and hi again', {
+      target: 'alice',
+      replyTo: { msgid: 'm1', root: 'm1', parent: null },
+    });
+    const w = mountWith([root, reply], { threads: true, target: 'alice' });
+    expect(rowOf(w, reply.id).exists()).toBe(true);
+    expect(w.find('.thread-chip').exists()).toBe(false);
   });
 
   it('on: a jump onto a hidden reply opens its thread on that reply', async () => {

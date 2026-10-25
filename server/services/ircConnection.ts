@@ -1717,8 +1717,15 @@ export class IrcConnection {
       // A reply can put its thread on the user's followed list (they posted,
       // or were highlighted, or it's their thread), or change one already on
       // it — flag it so wsHub sends every client the new list (#1225). Someone
-      // ignored never does.
-      if (replyRootMsgid && !fromIgnored) {
+      // ignored never does. Only while the user keeps replies in threads, and
+      // only in a channel: with the setting off nothing reads a follow, and a
+      // pointer nothing moves would sit unread for as long as the lines last.
+      if (
+        replyRootMsgid &&
+        !fromIgnored &&
+        !isDmTargetName(event.target as string) &&
+        effectiveSetting(this.network.user_id, 'chat.threads') === true
+      ) {
         try {
           const changed = noteThreadReply(this.network.user_id, bufferId, replyRootMsgid, {
             id: Number(id),
