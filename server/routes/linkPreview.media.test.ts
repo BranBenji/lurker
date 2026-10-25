@@ -88,6 +88,23 @@ describe('serving bytes', () => {
     expect(Buffer.from(res.body).equals(PNG)).toBe(true);
   });
 
+  it('answers the token whatever query follows it, which the lightbox leans on', async () => {
+    // ⚠ The web client opens the lightbox on `src?view=full` — a URL distinct from the inline
+    // image's, so Safari gives it a decode of its own (lurker#1163). The route matches the
+    // PATH; this pins that nothing here starts reading the query, or that fix 404s every
+    // lightbox at once.
+    handler = (_req, res) => {
+      res.writeHead(200, { 'content-type': 'image/png', 'content-length': String(PNG.length) });
+      res.end(PNG);
+    };
+
+    const res = await agent
+      .get(`/api/link-preview/media/${tokenFor('/own-decode.png')}?view=full`)
+      .expect(200);
+    expect(res.headers['content-type']).toBe('image/png');
+    expect(Buffer.from(res.body).equals(PNG)).toBe(true);
+  });
+
   it('refuses SVG even though the origin calls it an image', async () => {
     // The allowlist is the point: these bytes are served under OUR origin, and SVG executes
     // script. The decoder refuses it at its end (that's what the stub implements); the test

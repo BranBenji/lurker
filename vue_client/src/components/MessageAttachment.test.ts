@@ -1240,11 +1240,14 @@ describe('MessageAttachments — the lightbox is a gallery over the whole messag
     // the setting makes in words ("the site hosting it never sees your device") — the image
     // rendered inline via the proxy and then the click went straight to the remote host — and
     // made an `http://` image fail as mixed content once the lightbox loaded it directly.
-    expect(viewer.url.value).toBe('/api/link-preview/media/t2');
+    // ⚠ ...under a query of its own: the inline `<img>` has already drawn these bytes small,
+    // and Safari 27 gives a second `<img>` on the SAME URL the small decode's size — the
+    // lightbox opened at thumbnail size (lurker#1163). See `ownDecodeUrl`.
+    expect(viewer.url.value).toBe('/api/link-preview/media/t2?view=full');
     expect(viewer.items.value.map((i) => i.url)).toEqual([
-      '/api/link-preview/media/t1',
-      '/api/link-preview/media/t2',
-      '/api/link-preview/media/t3',
+      '/api/link-preview/media/t1?view=full',
+      '/api/link-preview/media/t2?view=full',
+      '/api/link-preview/media/t3?view=full',
     ]);
     // And the arrows are live in both directions, which is the whole point.
     expect(viewer.hasPrev.value).toBe(true);
@@ -1323,7 +1326,7 @@ describe('MessageAttachments — the lightbox is a gallery over the whole messag
     const wrapper = mount(MessageBody, { props: { text: one.url, segments: [] } });
     void wrapper.find('.inline-image').trigger('click');
     const viewer = useMediaViewer();
-    expect(viewer.url.value).toBe('/api/link-preview/media/t9');
+    expect(viewer.url.value).toBe('/api/link-preview/media/t9?view=full');
     expect(viewer.shareUrl.value).toBe('https://e.test/9.png');
   });
 
@@ -1335,7 +1338,7 @@ describe('MessageAttachments — the lightbox is a gallery over the whole messag
     });
     wrapper.find('img.inline-image').trigger('click');
     expect(useMediaViewer().count.value).toBe(1);
-    expect(useMediaViewer().url.value).toBe('/api/link-preview/media/t1');
+    expect(useMediaViewer().url.value).toBe('/api/link-preview/media/t1?view=full');
   });
 
   it('does not open anything when the media viewer is switched off', async () => {
