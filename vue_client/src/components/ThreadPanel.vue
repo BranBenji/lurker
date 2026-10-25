@@ -16,7 +16,9 @@
              in order, always in the list's compact layout (head line over the
              body, avatars when they're on, the compact density tokens and
              timestamp formats): the panel is narrow like a phone, and the
-             three-column grid never fits it. No reply quotes: the thread's
+             three-column grid never fits it. Links unfurl as they do in the
+             list (inline media and previews, usePreviewBody's gate). No reply
+             quotes: the thread's
              order is the context, and the `nick: ` a reply opens with is
              dropped as the list drops it. Lines have the message list's
              actions bar Reply and Quote.
@@ -109,7 +111,15 @@
                 :class="{ italic: row.line.type === 'action' && actionItalic }"
                 ><template v-if="row.line.type === 'action'"
                   ><NickRef :nick="String(row.line.nick ?? '')" />{{ ' ' }}</template
-                ><RenderSegments
+                ><MessageBody
+                  v-if="previewBody(row.line)"
+                  :text="row.text ?? row.line.text"
+                  :segments="segments(row.line, row.text)"
+                  :self-color="selfColor"
+                  :network-id="view?.networkId ?? null"
+                  blockquotes
+                  @measured="followGrowth" /><RenderSegments
+                  v-else
                   :segments="segments(row.line, row.text)"
                   :self-color="selfColor"
                   :network-id="view?.networkId ?? null"
@@ -169,6 +179,7 @@ import { ListTreeIcon, XIcon } from '@lucide/vue';
 import NickRef from './NickRef.vue';
 import NickAvatar from './NickAvatar.vue';
 import RenderSegments from './RenderSegments.vue';
+import MessageBody from './MessageBody.vue';
 import ReactionRow from './ReactionRow.vue';
 import IgnoreModal from './IgnoreModal.vue';
 import ThreadList from './ThreadList.vue';
@@ -185,6 +196,7 @@ import { useViewport } from '../composables/useViewport.js';
 import { useReplyQuote } from '../composables/useReplyQuote.js';
 import { useThreadRoute, requestThreadNav } from '../composables/useThreadNav.js';
 import { useMessageActions } from '../composables/useMessageActions.js';
+import { usePreviewBody } from '../composables/usePreviewBody.js';
 import type {
   MessageActionKey,
   MessageAction,
@@ -498,6 +510,14 @@ function onScroll(): void {
 function scrollToBottom(): void {
   const el = scroller.value;
   if (el) el.scrollTop = el.scrollHeight;
+}
+
+// Inline media and link previews (MessageBody, the message list's gate): a
+// card or picture that lands after the line grows it, so a reader at the end
+// stays at the end.
+const { previewBody } = usePreviewBody();
+function followGrowth(): void {
+  if (atBottom.value) scrollToBottom();
 }
 
 function scrollToId(id: number, pulse: boolean): boolean {

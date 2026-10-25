@@ -15,6 +15,8 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useThreadsStore } from '../stores/threads.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useConfigStore } from '../stores/config.js';
+import MessageBody from './MessageBody.vue';
 import type { ThreadMessage } from '../stores/threads.js';
 import { socketSend } from '../composables/useSocket.js';
 import * as threadNav from '../composables/useThreadNav.js';
@@ -207,6 +209,40 @@ describe('ThreadPanel', () => {
     // No quotes anywhere: the thread's order is the context.
     expect(w.findAll('.reply-quote')).toHaveLength(0);
     expect(w.find('[data-msg-id="4"]').text()).toContain('back to an earlier one');
+  });
+
+  // The message list's gate (usePreviewBody): with previews on, a line with a
+  // link goes through MessageBody (its media and cards); a plain line, a
+  // notice, or any line with previews off stays plain text.
+  it('unfurls links the way the message list does', async () => {
+    seed();
+    useConfigStore().features = { linkPreviews: true, bouncer: false, dcc: false };
+    useSettingsStore().values['chat.inline_media.enabled'] = true;
+    const w = await mountAt('/buffer/9/thread/m1');
+    const threads = useThreadsStore();
+    const reply = (id: number, over: Record<string, unknown>) =>
+      line(id, { nick: 'bob', replyTo: { msgid: 'm1', root: 'm1', parent: null }, ...over });
+    threads.applyThread({
+      bufferId: 9,
+      rootMsgid: 'm1',
+      token: threads.view!.token,
+      root: line(1),
+      replies: [
+        reply(2, { text: 'look https://x.test/cat.png' }),
+        reply(3, { text: 'no link here' }),
+        reply(4, { type: 'notice', text: 'bot https://x.test/a.png' }),
+      ],
+    });
+    await w.vm.$nextTick();
+    const unfurls = (id: number) =>
+      w.find(`[data-msg-id="${id}"]`).findComponent(MessageBody).exists();
+    expect(unfurls(2)).toBe(true);
+    expect(unfurls(3)).toBe(false);
+    expect(unfurls(4)).toBe(false);
+
+    useSettingsStore().values['chat.inline_media.enabled'] = false;
+    await w.vm.$nextTick();
+    expect(unfurls(2)).toBe(false);
   });
 
   it('rows are always the compact layout, whatever the list setting says', async () => {
