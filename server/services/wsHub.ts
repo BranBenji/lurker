@@ -397,6 +397,20 @@ function effectiveSetting(userId: number, key: string): unknown {
   return (defaultsAsObject() as Record<string, unknown>)[key];
 }
 
+// Whether the user keeps replies in threads (`chat.threads`, #1225) — read by
+// computeUnreadFor, which runs once per buffer on a connect snapshot, so the
+// answer is kept per user rather than re-read from the settings table each
+// time. Dropped on the user's next settings change (the handler below).
+const threadsHiddenByUser = new Map<number, boolean>();
+function threadsHiddenFor(userId: number): boolean {
+  let hidden = threadsHiddenByUser.get(userId);
+  if (hidden === undefined) {
+    hidden = effectiveSetting(userId, 'chat.threads') === true;
+    threadsHiddenByUser.set(userId, hidden);
+  }
+  return hidden;
+}
+
 // HH:MM (24h) into minutes-past-midnight, or null on a malformed value. The
 // quiet-hours settings are plain strings rather than integers so the UI can
 // use <input type="time"> directly without conversion juggling.
@@ -683,9 +697,7 @@ function computeUnreadFor(
   // (#1225, THREADS_HIDDEN_SQL): the channel hides it, its thread counts it.
   const unread = target.startsWith(':server:')
     ? countServerBufferUnread(nid, target, lastReadId)
-    : countNewer(nid, target, lastReadId, undefined, {
-        threadsHidden: effectiveSetting(userId, 'chat.threads') === true,
-      });
+    : countNewer(nid, target, lastReadId, undefined, { threadsHidden: threadsHiddenFor(userId) });
   // A DM is inherently a mention of you, so — like the system buffer — every
   // unread line counts as a highlight. This lights the buffer-list row up in
   // the highlight color and shows the ● badge, surfacing unread DMs above
@@ -2522,6 +2534,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   });
 
   settingsService.on('event', ({ userId, changes, resets }) => {
+    threadsHiddenByUser.delete(userId);
     // #627: the raw setting isn't the effective cap — it still has to clear the
     // transport ceiling and any operator-baked policy cap. The user's OWN change
     // already has a delivery path right here, so recompute rather than leaving

@@ -120,15 +120,17 @@
       </div>
       <ThreadComposer ref="composerRef" />
     </template>
+    <!-- Inside the root on purpose: the shells place the panel by its root
+         class through their scoped styles, which a fragment root would lose. -->
+    <IgnoreModal
+      v-if="ignoreTarget"
+      :nick="ignoreTarget.nick"
+      :user="ignoreTarget.user"
+      :host="ignoreTarget.host"
+      :network-id="ignoreTarget.networkId"
+      @close="ignoreTarget = null"
+    />
   </div>
-  <IgnoreModal
-    v-if="ignoreTarget"
-    :nick="ignoreTarget.nick"
-    :user="ignoreTarget.user"
-    :host="ignoreTarget.host"
-    :network-id="ignoreTarget.networkId"
-    @close="ignoreTarget = null"
-  />
 </template>
 
 <script setup lang="ts">
