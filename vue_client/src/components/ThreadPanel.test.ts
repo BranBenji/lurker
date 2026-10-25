@@ -15,6 +15,9 @@ import { useNetworksStore } from '../stores/networks.js';
 import { useBuffersStore } from '../stores/buffers.js';
 import { useThreadsStore } from '../stores/threads.js';
 import { useSettingsStore } from '../stores/settings.js';
+import { useConfigStore } from '../stores/config.js';
+import MessageBody from './MessageBody.vue';
+import { previewRevision } from '../composables/useLinkPreview.js';
 import type { ThreadMessage } from '../stores/threads.js';
 import { socketSend } from '../composables/useSocket.js';
 import * as threadNav from '../composables/useThreadNav.js';
@@ -207,6 +210,152 @@ describe('ThreadPanel', () => {
     // No quotes anywhere: the thread's order is the context.
     expect(w.findAll('.reply-quote')).toHaveLength(0);
     expect(w.find('[data-msg-id="4"]').text()).toContain('back to an earlier one');
+  });
+
+  // The message list's gate (usePreviewBody): with previews on, a line with a
+  // link goes through MessageBody (its media and cards); a plain line, a
+  // notice, or any line with previews off stays plain text.
+  it('unfurls links the way the message list does', async () => {
+    seed();
+    useConfigStore().features = { linkPreviews: true, bouncer: false, dcc: false };
+    useSettingsStore().values['chat.inline_media.enabled'] = true;
+    const w = await mountAt('/buffer/9/thread/m1');
+    const threads = useThreadsStore();
+    const reply = (id: number, over: Record<string, unknown>) =>
+      line(id, { nick: 'bob', replyTo: { msgid: 'm1', root: 'm1', parent: null }, ...over });
+    threads.applyThread({
+      bufferId: 9,
+      rootMsgid: 'm1',
+      token: threads.view!.token,
+      root: line(1),
+      replies: [
+        reply(2, { text: 'look https://x.test/cat.png' }),
+        reply(3, { text: 'no link here' }),
+        reply(4, { type: 'notice', text: 'bot https://x.test/a.png' }),
+      ],
+    });
+    await w.vm.$nextTick();
+    const unfurls = (id: number) =>
+      w.find(`[data-msg-id="${id}"]`).findComponent(MessageBody).exists();
+    expect(unfurls(2)).toBe(true);
+    expect(unfurls(3)).toBe(false);
+    expect(unfurls(4)).toBe(false);
+
+    useSettingsStore().values['chat.inline_media.enabled'] = false;
+    await w.vm.$nextTick();
+    expect(unfurls(2)).toBe(false);
+  });
+
+  // A card lands after its line (previewRevision) and grows it: a reader at
+  // the end stays there; a reply opened by name stays put until the reader
+  // scrolls.
+  describe('as previews fill in', () => {
+    async function open(path: string) {
+      seed();
+      const w = await mountAt(path);
+      const threads = useThreadsStore();
+      threads.applyThread({
+        bufferId: 9,
+        rootMsgid: 'm1',
+        token: threads.view!.token,
+        root: line(1),
+        replies: [2, 3].map((id) =>
+          line(id, { replyTo: { msgid: 'm1', root: 'm1', parent: null } }),
+        ),
+      });
+      // Past the load's own scroll, which runs a tick later.
+      await new Promise((r) => setTimeout(r, 0));
+      const el = w.find('.lines').element as HTMLElement;
+      Object.defineProperty(el, 'clientHeight', { configurable: true, value: 300 });
+      // The height change's own scroll, which the resize guard takes in (a
+      // browser's ResizeObserver would record it; happy-dom has none).
+      await w.find('.lines').trigger('scroll');
+      return { w, el };
+    }
+    const grow = async (el: HTMLElement, to: number) => {
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: to });
+      previewRevision.value++;
+      await new Promise((r) => setTimeout(r, 0));
+    };
+
+    it('keeps a reader at the end at the end', async () => {
+      const { w, el } = await open('/buffer/9/thread/m1');
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 900 });
+      el.scrollTop = 600;
+      await w.find('.lines').trigger('scroll');
+      await grow(el, 1200);
+      expect(el.scrollTop).toBe(1200);
+    });
+
+    it('follows when previews are switched on, cards already cached', async () => {
+      useConfigStore().features = { linkPreviews: true, bouncer: false, dcc: false };
+      const { w, el } = await open('/buffer/9/thread/m1');
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 900 });
+      el.scrollTop = 600;
+      await w.find('.lines').trigger('scroll');
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 1200 });
+      useSettingsStore().values['chat.link_previews.enabled'] = true;
+      await new Promise((r) => setTimeout(r, 0));
+      expect(el.scrollTop).toBe(1200);
+    });
+
+    // Opened on a reply near the end: centring it lands at the bottom, and the
+    // scroll event that comes of it (after the load) reads as "at the end". The
+    // pin, not the tail, decides where growth below it leaves the reader.
+    it('keeps a focused reply over the tail even when it sits at the end', async () => {
+      const into = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(function (
+        this: HTMLElement,
+      ) {
+        const sc = this.closest('.lines') as HTMLElement | null;
+        if (sc) sc.scrollTop = 600;
+      });
+      try {
+        seed();
+        const w = await mountAt('/buffer/9/thread/m1?focus=3');
+        const el = w.find('.lines').element as HTMLElement;
+        Object.defineProperty(el, 'clientHeight', { configurable: true, value: 300 });
+        Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 900 });
+        await w.find('.lines').trigger('scroll'); // the resize guard takes the height in
+        const threads = useThreadsStore();
+        threads.applyThread({
+          bufferId: 9,
+          rootMsgid: 'm1',
+          token: threads.view!.token,
+          root: line(1),
+          replies: [2, 3].map((id) =>
+            line(id, { replyTo: { msgid: 'm1', root: 'm1', parent: null } }),
+          ),
+        });
+        await new Promise((r) => setTimeout(r, 0));
+        expect(el.scrollTop).toBe(600);
+        await w.find('.lines').trigger('scroll'); // centring's own scroll, at the end
+        into.mockClear();
+        await grow(el, 1200);
+        expect(into).toHaveBeenCalledTimes(1);
+        expect(el.scrollTop).toBe(600);
+      } finally {
+        into.mockRestore();
+      }
+    });
+
+    it('holds a focused reply in place until the reader scrolls', async () => {
+      const into = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {});
+      try {
+        const { w, el } = await open('/buffer/9/thread/m1?focus=3');
+        into.mockClear();
+        await grow(el, 1200);
+        expect(into).toHaveBeenCalledTimes(1);
+        expect((into.mock.contexts[0] as HTMLElement).dataset.msgId).toBe('3');
+
+        el.scrollTop = 40;
+        await w.find('.lines').trigger('scroll');
+        into.mockClear();
+        await grow(el, 1500);
+        expect(into).not.toHaveBeenCalled();
+      } finally {
+        into.mockRestore();
+      }
+    });
   });
 
   // The composer grows up into the lines without moving scrollTop: a reader

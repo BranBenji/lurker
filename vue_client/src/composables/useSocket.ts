@@ -275,11 +275,12 @@ function applyEvent(event: any): boolean {
       if (!news) break;
       // A reply joins its thread wherever that's on screen, and its first line's
       // chip counts it (stores/threads, #1225).
-      if (event.replyTo?.root) useThreadsStore().applyLive(event);
+      const inPanel = !!event.replyTo?.root && useThreadsStore().applyLive(event);
       // A live message is the one case where growth is expected and harmless: it lands at the
       // bottom, where the list's existing stick-to-bottom logic follows it down. Only for a row
-      // that went in — a detached buffer draws it when it reattaches, and primes it then.
-      if (shown) primeEventPreviews([event]);
+      // that went in — a detached buffer draws it when it reattaches, and primes it then — or
+      // a reply the open thread panel just drew, whatever the buffer's list did with it.
+      if (shown || inPanel) primeEventPreviews([event]);
       // Speakers feeds tab-complete and the nick-picker. Our own messages
       // would just clutter our own suggestions, so they don't count as
       // "people who recently spoke here."
@@ -770,6 +771,15 @@ function wirePreviewToggles(): void {
         const buffers = useBuffersStore();
         for (const buf of Object.values(buffers.buffers)) {
           primeEventPreviews(buf.messages, buf.networkId, buf.target);
+        }
+        // The open thread panel's lines, which needn't be in the buffer's loaded slice.
+        const view = useThreadsStore().view;
+        if (view) {
+          primeEventPreviews(
+            [...(view.root ? [view.root] : []), ...view.replies],
+            view.networkId,
+            view.target,
+          );
         }
       },
     );

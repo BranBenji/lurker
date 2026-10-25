@@ -13,8 +13,11 @@ import { defineComponent, nextTick } from 'vue';
 import { mount } from '@vue/test-utils';
 import { setActivePinia, createPinia } from 'pinia';
 
-vi.mock('./useLinkPreview.js', () => ({
+const { primePreviews } = vi.hoisted(() => ({
   primePreviews: vi.fn<(texts: unknown[], toggles: unknown) => void>(),
+}));
+vi.mock('./useLinkPreview.js', () => ({
+  primePreviews,
   previewRevision: { value: 0 },
 }));
 
@@ -42,6 +45,9 @@ class FakeWebSocket {
 
 import { useSocket, resetPreviewToggleWiring, resetSocket } from './useSocket.js';
 import { useBuffersStore } from '../stores/buffers.js';
+import { useThreadsStore } from '../stores/threads.js';
+import { useConfigStore } from '../stores/config.js';
+import { useSettingsStore } from '../stores/settings.js';
 
 const RouteView = defineComponent({
   setup() {
@@ -226,6 +232,35 @@ describe('live events on a detached buffer', () => {
     expect(buffers.buffers['1::#chan'].typing.bob).toBeDefined();
     ws.deliver(irc(40, { type: 'message', nick: 'bob', text: 'done typing' }));
     expect(buffers.buffers['1::#chan'].typing.bob).toBeUndefined();
+  });
+
+  // The thread panel (#1225) draws a live reply at once, whatever the detached
+  // list does with it, so its previews are primed then too.
+  it('primes a reply the open thread panel draws', async () => {
+    const ws = await openSocket();
+    channel(true);
+    useConfigStore().features = { linkPreviews: true, bouncer: false, dcc: false };
+    useSettingsStore().values['chat.inline_media.enabled'] = true;
+    useThreadsStore().view = {
+      bufferId: 9,
+      rootMsgid: 'm1',
+      networkId: 1,
+      target: '#chan',
+      root: null,
+      replies: [],
+    } as never;
+    primePreviews.mockClear();
+    ws.deliver(
+      irc(50, {
+        type: 'message',
+        nick: 'bob',
+        bufferId: 9,
+        text: 'look https://e.test/cat.png',
+        replyTo: { msgid: 'm1', root: 'm1', parent: null },
+      }),
+    );
+    expect(useThreadsStore().view?.replies.map((r) => r.id)).toEqual([50]);
+    expect(JSON.stringify(primePreviews.mock.calls)).toContain('https://e.test/cat.png');
   });
 
   it('still leaves a live-tail buffer to its own dedupe', async () => {

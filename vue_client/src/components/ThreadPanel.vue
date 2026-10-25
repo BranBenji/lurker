@@ -17,9 +17,10 @@
              in order, always in the list's compact layout (head line over the
              body, avatars when they're on, the compact density tokens and
              timestamp formats): the panel is narrow like a phone, and the
-             three-column grid never fits it. No reply quotes: the thread's
-             order is the context, and the `nick: ` a reply opens with is
-             dropped as the list drops it. Lines have the message list's
+             three-column grid never fits it. Links unfurl as they do in the
+             list (inline media and previews, usePreviewBody's gate). No reply
+             quotes: the thread's order is the context, and the `nick: ` a
+             reply opens with is dropped as the list drops it. Lines have the message list's
              actions bar Reply and Quote.
     list   — the buffer's threads by last activity (ThreadList).
 
@@ -111,11 +112,19 @@
                 :class="{ italic: row.line.type === 'action' && actionItalic }"
                 ><template v-if="row.line.type === 'action'"
                   ><NickRef :nick="String(row.line.nick ?? '')" />{{ ' ' }}</template
-                ><RenderSegments
+                ><MessageBody
+                  v-if="previewBody(row.line)"
+                  :text="row.text ?? row.line.text"
                   :segments="segments(row.line, row.text)"
                   :self-color="selfColor"
                   :network-id="view?.networkId ?? null"
-                  blockquotes /><ReactionRow
+                  :blockquotes="row.line.type === 'message'"
+                  @measured="followGrowth" /><RenderSegments
+                  v-else
+                  :segments="segments(row.line, row.text)"
+                  :self-color="selfColor"
+                  :network-id="view?.networkId ?? null"
+                  :blockquotes="row.line.type === 'message'" /><ReactionRow
                   v-if="view"
                   :message="{ ...row.line, networkId: view.networkId }"
                   :interactive="row.line.type !== 'notice' && !row.line.e2e"
@@ -170,6 +179,7 @@ import { ListTreeIcon, XIcon } from '@lucide/vue';
 import NickRef from './NickRef.vue';
 import NickAvatar from './NickAvatar.vue';
 import RenderSegments from './RenderSegments.vue';
+import MessageBody from './MessageBody.vue';
 import ReactionRow from './ReactionRow.vue';
 import IgnoreModal from './IgnoreModal.vue';
 import ThreadList from './ThreadList.vue';
@@ -186,6 +196,8 @@ import { useViewport } from '../composables/useViewport.js';
 import { useReplyQuote } from '../composables/useReplyQuote.js';
 import { useThreadRoute, requestThreadNav } from '../composables/useThreadNav.js';
 import { useMessageActions } from '../composables/useMessageActions.js';
+import { usePreviewBody } from '../composables/usePreviewBody.js';
+import { previewRevision } from '../composables/useLinkPreview.js';
 import type {
   MessageActionKey,
   MessageAction,
@@ -504,6 +516,9 @@ function onScroll(): void {
     lastClientHeight = el.clientHeight;
     return;
   }
+  // The reader moved: a focused reply's pin lets go (a re-pin's own scroll
+  // lands on the top it recorded).
+  if (focusPin && Math.abs(el.scrollTop - focusPin.top) > 1) focusPin = null;
   atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
 }
 
@@ -512,14 +527,37 @@ function scrollToBottom(): void {
   if (el) el.scrollTop = el.scrollHeight;
 }
 
+// Inline media and link previews (MessageBody, the message list's gate): a
+// picture (`measured`) or a card (`previewRevision`) that lands after its line
+// grows it, and so does switching previews on, cards already cached. A reply
+// opened by name (`?focus=`) stays where it was put until the reader scrolls,
+// as the lines around it fill in (the scroller has overflow-anchor off, so the
+// browser won't), even when that put it at the end; otherwise a reader at the
+// end stays at the end.
+const { previewBody, previewsActive } = usePreviewBody();
+let focusPin: { id: number; top: number } | null = null;
+function followGrowth(): void {
+  const el = scroller.value;
+  if (focusPin && el) {
+    if (scrollToId(focusPin.id, false)) {
+      focusPin.top = el.scrollTop;
+      return;
+    }
+    focusPin = null;
+  }
+  if (atBottom.value) scrollToBottom();
+}
+watch([previewRevision, previewsActive], () => void nextTick(followGrowth));
+
 // The composer grows up into the lines (and a window resize shrinks them)
-// without moving scrollTop, which would hide the replies being answered: a
-// reader at the end stays at the end, as in the message list.
+// without moving scrollTop, which would hide the replies being answered: the
+// lines follow the growth as they follow a preview's, so a reader at the end
+// stays at the end, as in the message list.
 const scrollerObserver =
   typeof ResizeObserver !== 'undefined'
     ? new ResizeObserver(() => {
         lastClientHeight = scroller.value?.clientHeight ?? 0;
-        if (atBottom.value) scrollToBottom();
+        followGrowth();
       })
     : null;
 watch(scroller, (el, old) => {
@@ -554,7 +592,12 @@ watch(
     if (loading !== false) return;
     await nextTick();
     const focusId = threadRoute.value?.mode === 'thread' ? threadRoute.value.focusId : null;
-    if (!focusId || !scrollToId(focusId, true)) scrollToBottom();
+    focusPin = null;
+    if (focusId && scrollToId(focusId, true)) {
+      focusPin = { id: focusId, top: scroller.value?.scrollTop ?? 0 };
+    } else {
+      scrollToBottom();
+    }
     atBottom.value = !focusId;
   },
   { immediate: true },
