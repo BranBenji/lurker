@@ -464,8 +464,8 @@ export function primePreviews(
   // ⚠ CONDITIONAL, and that matters more than it looks. This runs for every live message, whether
   // or not it carries a URL, and every mounted `MessageAttachments` is an eager subscriber to a
   // computed that reads this ref — so an unconditional bump made one ordinary line of channel
-  // chatter refresh 100-200 computeds that all re-derive `true === true`. MessageList hoists
-  // `previewsActive` out of its rows for the same reason, against a colder trigger than this one.
+  // chatter refresh 100-200 computeds that all re-derive `true === true`. usePreviewBody hoists
+  // `previewsActive` out of the rows for the same reason, against a colder trigger than this one.
   //
   // `dropIfExpired` is deliberately NOT a reason to bump: it only touches a URL whose ref already
   // has a value, `previewPending` short-circuits on that, and the same loop iteration re-queues it

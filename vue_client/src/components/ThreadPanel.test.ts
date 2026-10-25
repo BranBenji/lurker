@@ -17,6 +17,7 @@ import { useThreadsStore } from '../stores/threads.js';
 import { useSettingsStore } from '../stores/settings.js';
 import { useConfigStore } from '../stores/config.js';
 import MessageBody from './MessageBody.vue';
+import { previewRevision } from '../composables/useLinkPreview.js';
 import type { ThreadMessage } from '../stores/threads.js';
 import { socketSend } from '../composables/useSocket.js';
 import * as threadNav from '../composables/useThreadNav.js';
@@ -243,6 +244,64 @@ describe('ThreadPanel', () => {
     useSettingsStore().values['chat.inline_media.enabled'] = false;
     await w.vm.$nextTick();
     expect(unfurls(2)).toBe(false);
+  });
+
+  // A card lands after its line (previewRevision) and grows it: a reader at
+  // the end stays there; a reply opened by name stays put until the reader
+  // scrolls.
+  describe('as previews fill in', () => {
+    async function open(path: string) {
+      seed();
+      const w = await mountAt(path);
+      const threads = useThreadsStore();
+      threads.applyThread({
+        bufferId: 9,
+        rootMsgid: 'm1',
+        token: threads.view!.token,
+        root: line(1),
+        replies: [2, 3].map((id) =>
+          line(id, { replyTo: { msgid: 'm1', root: 'm1', parent: null } }),
+        ),
+      });
+      // Past the load's own scroll, which runs a tick later.
+      await new Promise((r) => setTimeout(r, 0));
+      const el = w.find('.lines').element as HTMLElement;
+      Object.defineProperty(el, 'clientHeight', { configurable: true, value: 300 });
+      return { w, el };
+    }
+    const grow = async (el: HTMLElement, to: number) => {
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: to });
+      previewRevision.value++;
+      await new Promise((r) => setTimeout(r, 0));
+    };
+
+    it('keeps a reader at the end at the end', async () => {
+      const { w, el } = await open('/buffer/9/thread/m1');
+      Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 900 });
+      el.scrollTop = 600;
+      await w.find('.lines').trigger('scroll');
+      await grow(el, 1200);
+      expect(el.scrollTop).toBe(1200);
+    });
+
+    it('holds a focused reply in place until the reader scrolls', async () => {
+      const into = vi.spyOn(HTMLElement.prototype, 'scrollIntoView').mockImplementation(() => {});
+      try {
+        const { w, el } = await open('/buffer/9/thread/m1?focus=3');
+        into.mockClear();
+        await grow(el, 1200);
+        expect(into).toHaveBeenCalledTimes(1);
+        expect((into.mock.contexts[0] as HTMLElement).dataset.msgId).toBe('3');
+
+        el.scrollTop = 40;
+        await w.find('.lines').trigger('scroll');
+        into.mockClear();
+        await grow(el, 1500);
+        expect(into).not.toHaveBeenCalled();
+      } finally {
+        into.mockRestore();
+      }
+    });
   });
 
   it('rows are always the compact layout, whatever the list setting says', async () => {

@@ -18,9 +18,8 @@
              timestamp formats): the panel is narrow like a phone, and the
              three-column grid never fits it. Links unfurl as they do in the
              list (inline media and previews, usePreviewBody's gate). No reply
-             quotes: the thread's
-             order is the context, and the `nick: ` a reply opens with is
-             dropped as the list drops it. Lines have the message list's
+             quotes: the thread's order is the context, and the `nick: ` a
+             reply opens with is dropped as the list drops it. Lines have the message list's
              actions bar Reply and Quote.
     list   — the buffer's threads by last activity (ThreadList).
 
@@ -117,13 +116,13 @@
                   :segments="segments(row.line, row.text)"
                   :self-color="selfColor"
                   :network-id="view?.networkId ?? null"
-                  blockquotes
+                  :blockquotes="row.line.type === 'message'"
                   @measured="followGrowth" /><RenderSegments
                   v-else
                   :segments="segments(row.line, row.text)"
                   :self-color="selfColor"
                   :network-id="view?.networkId ?? null"
-                  blockquotes /><ReactionRow
+                  :blockquotes="row.line.type === 'message'" /><ReactionRow
                   v-if="view"
                   :message="{ ...row.line, networkId: view.networkId }"
                   :interactive="row.line.type !== 'notice' && !row.line.e2e"
@@ -197,6 +196,7 @@ import { useReplyQuote } from '../composables/useReplyQuote.js';
 import { useThreadRoute, requestThreadNav } from '../composables/useThreadNav.js';
 import { useMessageActions } from '../composables/useMessageActions.js';
 import { usePreviewBody } from '../composables/usePreviewBody.js';
+import { previewRevision } from '../composables/useLinkPreview.js';
 import type {
   MessageActionKey,
   MessageAction,
@@ -504,6 +504,9 @@ const atBottom = ref(true);
 function onScroll(): void {
   const el = scroller.value;
   if (!el) return;
+  // The reader moved: a focused reply's pin lets go (a re-pin's own scroll
+  // lands on the top it recorded).
+  if (focusPin && Math.abs(el.scrollTop - focusPin.top) > 1) focusPin = null;
   atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
 }
 
@@ -513,12 +516,23 @@ function scrollToBottom(): void {
 }
 
 // Inline media and link previews (MessageBody, the message list's gate): a
-// card or picture that lands after the line grows it, so a reader at the end
-// stays at the end.
+// picture (`measured`) or a card (`previewRevision`) that lands after its line
+// grows it. A reader at the end stays at the end; a reply opened by name
+// (`?focus=`) stays where it was put until the reader scrolls, as the lines
+// above it fill in (the scroller has overflow-anchor off, so the browser won't).
 const { previewBody } = usePreviewBody();
+let focusPin: { id: number; top: number } | null = null;
 function followGrowth(): void {
-  if (atBottom.value) scrollToBottom();
+  if (atBottom.value) {
+    scrollToBottom();
+    return;
+  }
+  const el = scroller.value;
+  if (!focusPin || !el) return;
+  if (scrollToId(focusPin.id, false)) focusPin.top = el.scrollTop;
+  else focusPin = null;
 }
+watch(previewRevision, () => void nextTick(followGrowth));
 
 function scrollToId(id: number, pulse: boolean): boolean {
   const el = scroller.value?.querySelector(`[data-msg-id="${id}"]`);
@@ -544,7 +558,12 @@ watch(
     if (loading !== false) return;
     await nextTick();
     const focusId = threadRoute.value?.mode === 'thread' ? threadRoute.value.focusId : null;
-    if (!focusId || !scrollToId(focusId, true)) scrollToBottom();
+    focusPin = null;
+    if (focusId && scrollToId(focusId, true)) {
+      focusPin = { id: focusId, top: scroller.value?.scrollTop ?? 0 };
+    } else {
+      scrollToBottom();
+    }
     atBottom.value = !focusId;
   },
   { immediate: true },

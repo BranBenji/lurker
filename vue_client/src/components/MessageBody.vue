@@ -58,10 +58,11 @@ import MessageAttachments from './MessageAttachments.vue';
  * class of defect this feature keeps producing is two derivations of one fact drifting apart, so
  * there is one derivation and the text reads it.
  *
- * ⚠ Mounted only where an attachment could actually appear (`previewsActive && mightHaveLink` at
- * the call site, per message/action). MessageList used to gate MessageAttachments that way for
- * cost — 500 rows each building a computed and running the URL regex — and that gate now covers
- * this component instead. Everything else still renders a bare RenderSegments.
+ * ⚠ Mounted only where an attachment could actually appear (usePreviewBody's gate, shared by the
+ * message list and the thread panel, per message/action). MessageList used to gate
+ * MessageAttachments that way for cost — 500 rows each building a computed and running the URL
+ * regex — and that gate now covers this component instead. Everything else still renders a bare
+ * RenderSegments.
  *
  * Resolution is NOT triggered here: previews are primed at message ingest and this only reads.
  */
