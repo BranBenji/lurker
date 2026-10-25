@@ -881,6 +881,15 @@ const actionContext: MessageContext = {
   },
   onReply: (msg) => {
     if (!msg.nick) return;
+    // Reply threads on (#1225): the answer belongs in the thread, so Reply
+    // opens it with the caret in its composer — a line already in a thread
+    // opens that thread with itself picked, any other line starts its own.
+    // Only a line a reply tag can name; the rest keep the channel's Reply.
+    if (threadsHere.value && replyable(msg) && msg.msgid && buffer.value?.id != null) {
+      const root = (msg as ChatMessage).replyTo?.root;
+      threads.replyFromChannel(buffer.value.id, root ?? String(msg.msgid), root ? msg : null);
+      return;
+    }
     // A line with a msgid gets a real reply (#993): pending in the status bar,
     // sent with the next line. Either way the composer addresses them — that's
     // what a client without replies sees, and the reply line hides it for us.

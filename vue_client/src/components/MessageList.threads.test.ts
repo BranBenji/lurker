@@ -163,6 +163,39 @@ describe('MessageList — reply threads', () => {
     expect(w.find('.thread-chip').exists()).toBe(false);
   });
 
+  it('on: Reply in the channel opens the line’s thread, picking a reply already in one', async () => {
+    const root = line('alice', 'anyone?', {
+      msgid: 'm1',
+      thread: { replies: 1, lastReplyTime: 't' },
+    });
+    const hl = line('bob', 'me: ping', {
+      msgid: 'm2',
+      matched: true,
+      replyTo: { msgid: 'm1', root: 'm1', parent: null },
+    });
+    const w = mountWith([root, hl], { threads: true });
+    const nav = vi.spyOn(threadNav, 'requestThreadNav');
+    const threads = useThreadsStore();
+    const replyOn = async (id: number) => {
+      const btn = rowOf(w, id)
+        .findAll('.row-action')
+        .find((b) => b.attributes('title')?.startsWith('Reply to '));
+      expect(btn).toBeTruthy();
+      await btn!.trigger('click');
+    };
+    // A plain line starts its own thread; the composer answers its first line.
+    await replyOn(root.id);
+    expect(nav).toHaveBeenLastCalledWith({ kind: 'thread', bufferId: 9, rootMsgid: 'm1' });
+    expect(threads.pending).toBeNull();
+    expect(threads.wantComposer).toBe(true);
+    // A reply shown inline (a highlight) opens ITS thread with itself picked.
+    await replyOn(hl.id);
+    expect(nav).toHaveBeenLastCalledWith({ kind: 'thread', bufferId: 9, rootMsgid: 'm1' });
+    expect(threads.pending).toMatchObject({ messageId: hl.id, nick: 'bob' });
+    // Nothing went into the channel's composer.
+    expect(w.find('.message-list').exists()).toBe(true);
+  });
+
   it('on: a jump onto a hidden reply opens its thread on that reply', async () => {
     const root = line('alice', 'anyone?', {
       msgid: 'm1',

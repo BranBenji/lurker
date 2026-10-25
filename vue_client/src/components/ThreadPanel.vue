@@ -578,6 +578,19 @@ watch(
   },
 );
 
+// A Reply in the channel opened this thread to answer in it: the caret goes
+// to the composer once the thread is up.
+watch(
+  () => [view.value?.loading, threads.wantComposer] as const,
+  async ([loading, want]) => {
+    if (loading !== false || !want) return;
+    threads.wantComposer = false;
+    await nextTick();
+    composerRef.value?.focus();
+  },
+  { immediate: true },
+);
+
 // Read as it's shown: on load, as replies arrive while it's open — and when
 // the server's count for it moves, since a reply's `irc` frame lands before
 // the `threads-changed` that counts it.

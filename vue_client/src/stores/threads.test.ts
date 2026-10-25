@@ -11,6 +11,7 @@ import { THREAD_MAX_REPLIES, useThreadsStore } from './threads.js';
 import type { ThreadMessage } from './threads.js';
 import { useBuffersStore } from './buffers.js';
 import { socketSend } from '../composables/useSocket.js';
+import * as threadNav from '../composables/useThreadNav.js';
 
 vi.mock('../composables/useSocket.js', () => ({
   socketSend: vi.fn<() => boolean>(() => true),
@@ -120,6 +121,25 @@ describe('threads store', () => {
     expect(threads.view?.replies[0].id).toBe(11);
     expect(threads.view?.replies.at(-1)?.id).toBe(5000);
     expect(threads.view?.truncated).toBe(true);
+  });
+
+  it('replyFromChannel asks for the thread and keeps the pick through the open', () => {
+    seed();
+    const threads = useThreadsStore();
+    const nav = vi.spyOn(threadNav, 'requestThreadNav');
+    threads.replyFromChannel(9, 'root', { id: 7, nick: 'bob', type: 'message', text: 'x' });
+    expect(nav).toHaveBeenCalledWith({ kind: 'thread', bufferId: 9, rootMsgid: 'root' });
+    expect(threads.wantComposer).toBe(true);
+    // The shell navigates, the panel opens the thread: the pick is still there.
+    threads.open(9, 'root');
+    expect(threads.pending).toMatchObject({ messageId: 7, nick: 'bob' });
+    // Already on that thread: no navigation, just the pick and the caret.
+    nav.mockClear();
+    threads.wantComposer = false;
+    threads.replyFromChannel(9, 'root', null);
+    expect(nav).not.toHaveBeenCalled();
+    expect(threads.pending).toBeNull();
+    expect(threads.wantComposer).toBe(true);
   });
 
   it('a reply to another thread leaves the open one alone', () => {

@@ -3,6 +3,7 @@
 
 import { defineStore } from 'pinia';
 import { socketSend } from '../composables/useSocket.js';
+import { requestThreadNav } from '../composables/useThreadNav.js';
 import { useBuffersStore } from './buffers.js';
 import type { BufferMessage } from './buffers.js';
 import type { ReplyContext, ReplyParent, ThreadStats } from '../../../shared/replies.js';
@@ -98,6 +99,9 @@ export const useThreadsStore = defineStore('threads', {
     view: null as ThreadView | null,
     list: null as ThreadList | null,
     pending: null as ThreadPendingReply | null,
+    // Set by a Reply in the channel (replyFromChannel): the panel puts the
+    // caret in its composer once the thread is up, then clears this.
+    wantComposer: false,
   }),
   getters: {
     // The followed list by thread, built once per list — the message list asks
@@ -130,7 +134,8 @@ export const useThreadsStore = defineStore('threads', {
       if (!buf || buf.networkId == null) return;
       const token = nextToken++;
       const same = this.view?.bufferId === bufferId && this.view.rootMsgid === rootMsgid;
-      if (!same) this.pending = null;
+      // A pick made for THIS thread before it opened (replyFromChannel) stays.
+      if (!same && !this.wantComposer) this.pending = null;
       this.view = {
         networkId: Number(buf.networkId),
         target: buf.target,
@@ -268,6 +273,38 @@ export const useThreadsStore = defineStore('threads', {
     // first line. Null returns to the first line.
     setPending(reply: ThreadPendingReply | null) {
       this.pending = reply;
+    },
+
+    // Reply on a channel line with threads on: open its thread with the caret
+    // in the panel's composer. `line` is the line to answer when it isn't the
+    // thread's first line (a reply already in the thread); null answers the
+    // first line. The pick survives the panel opening because open() keeps it
+    // while wantComposer is set.
+    replyFromChannel(
+      bufferId: number,
+      rootMsgid: string,
+      line: {
+        id?: number | null;
+        nick?: string;
+        type?: string;
+        text?: string;
+        self?: boolean;
+      } | null,
+    ) {
+      const same = this.view?.bufferId === bufferId && this.view.rootMsgid === rootMsgid;
+      this.pending =
+        line && line.id != null && line.nick
+          ? {
+              messageId: Number(line.id),
+              nick: line.nick,
+              type: line.type ?? 'message',
+              text: line.text ?? '',
+              self: !!line.self,
+            }
+          : null;
+      this.wantComposer = true;
+      if (same) return;
+      requestThreadNav({ kind: 'thread', bufferId, rootMsgid });
     },
 
     // What a send from the panel answers: the picked line, else the thread's
