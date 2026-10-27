@@ -1,3 +1,23 @@
+    # ⚠ Give the self-test something that is genuinely LISTENING. Its built-in
+    # probes are the metadata address and the bridge gateway, and a probe that
+    # nothing answers passes whether or not the rules are in force. This
+    # droplet's own addresses have sshd on them: the public one is the host the
+    # INPUT rule protects, and the VPC one is exactly the kind of neighbour we
+    # never want the decoder to reach — so both are named. Skipped silently
+    # for an interface the droplet does not have; the built-in probes still run.
+    # The decoder repeats these probes every ten minutes.
+    local public_ip vpc_ip targets=""
+    public_ip=$(curl -fsS --max-time 5 \
+      http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address 2>/dev/null || true)
+    vpc_ip=$(curl -fsS --max-time 5 \
+      http://169.254.169.254/metadata/v1/interfaces/private/0/ipv4/address 2>/dev/null || true)
+    for ip in "$public_ip" "$vpc_ip"; do
+      [ -n "$ip" ] || continue
+      targets="${targets:+$targets,}${ip}:22"
+    done
+    if [ -n "$targets" ]; then
+      echo "LURKER_PREVIEWS_SELFTEST_TARGETS=${targets}" >> .env
+    fi
 #!/bin/bash
 # Copyright (c) 2026 Brad Root
 # SPDX-License-Identifier: MPL-2.0
@@ -391,15 +411,22 @@ EOF
     # ⚠ Give the self-test something that is genuinely LISTENING. Its built-in
     # probes are the metadata address and the bridge gateway, and a probe that
     # nothing answers passes whether or not the rules are in force. This
-    # droplet's VPC address has sshd on it, and it is exactly the kind of
-    # neighbour we never want the decoder to reach — so it is the strongest
-    # probe available here. Skipped silently if the droplet has no VPC
-    # interface; the built-in probes still run.
-    local vpc_ip
+    # droplet's own addresses have sshd on them: the public one is the host the
+    # INPUT rule protects, and the VPC one is exactly the kind of neighbour we
+    # never want the decoder to reach — so both are named. An interface the
+    # droplet does not have is skipped silently; the built-in probes still run.
+    # The decoder repeats these probes every ten minutes.
+    local public_ip vpc_ip ip targets=""
+    public_ip=$(curl -fsS --max-time 5 \
+      http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address 2>/dev/null || true)
     vpc_ip=$(curl -fsS --max-time 5 \
       http://169.254.169.254/metadata/v1/interfaces/private/0/ipv4/address 2>/dev/null || true)
-    if [ -n "$vpc_ip" ]; then
-      echo "LURKER_PREVIEWS_SELFTEST_TARGETS=${vpc_ip}:22" >> .env
+    for ip in "$public_ip" "$vpc_ip"; do
+      [ -n "$ip" ] || continue
+      targets="${targets:+$targets,}${ip}:22"
+    done
+    if [ -n "$targets" ]; then
+      echo "LURKER_PREVIEWS_SELFTEST_TARGETS=${targets}" >> .env
     fi
   fi
 

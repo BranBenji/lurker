@@ -315,11 +315,12 @@ verify() {
 
 # ⚠⚠ The one gap this script cannot close by itself, so it says so out loud.
 # A host firewall that rewrites the filter table takes the INPUT rule with it,
-# and unlike a reboot or a Docker restart there is nothing to hook: the decoder
-# only re-tests its containment when it starts, so it would keep serving with a
-# route to this host's sshd and nothing would look wrong. The DOCKER-USER rules
-# survive (ufw does not manage Docker's chains); it is host protection that
-# lapses.
+# and unlike a reboot or a Docker restart there is nothing to hook. The decoder
+# re-probes its containment every ten minutes (lurker-previews 0.2.1; before
+# that only at start), so the lapse shows up as a refusal to serve within that
+# window rather than never — but the rule stays gone until this script runs
+# again. The DOCKER-USER rules survive (ufw does not manage Docker's chains); it
+# is host protection that lapses.
 warn_about_firewall_reloads() {
   local fw=''
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
@@ -330,7 +331,8 @@ warn_about_firewall_reloads() {
   [ -n "$fw" ] || return 0
   log "⚠ $fw is active. Re-run this script after any $fw change (a reload rewrites"
   log "  the filter table and drops the INPUT rule that keeps this host unreachable"
-  log "  from the decoder). Rebooting and restarting Docker are already handled."
+  log "  from the decoder; the decoder notices within ten minutes and stops serving"
+  log "  until the rule is back). Rebooting and restarting Docker are already handled."
 }
 
 # ── Boot persistence ────────────────────────────────────────────────────────

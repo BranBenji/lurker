@@ -392,11 +392,13 @@ Two things to set alongside it:
   you wrote your own compose file from the block above, that hardcoded
   `- LURKER_PREVIEWS_ALLOW_PRIVATE=1` wins over any `.env` — delete the line.
 - **Give the self-test a target that answers.** Its built-in probes are the
-  cloud metadata address and the bridge gateway's `:22`/`:80`; on a box with no
-  sshd and nothing on `:80` they all time out whether or not your rules exist,
-  and it passes vacuously. Name something private you know is listening —
-  usually your Docker host's LAN address — via
-  `LURKER_PREVIEWS_SELFTEST_TARGETS=192.168.1.10:22`.
+  cloud metadata address on both families and the bridge gateways' `:22`/`:80`;
+  on a box with no sshd and nothing on `:80` they all time out whether or not
+  your rules exist, and it passes vacuously. Name something private you know is
+  listening — usually your Docker host's LAN address — via
+  `LURKER_PREVIEWS_SELFTEST_TARGETS=192.168.1.10:22`; IPv6 targets go in
+  brackets, `[fd00:1::10]:22`. The decoder re-probes every ten minutes, so a
+  rule that lapses later is caught within that window.
 
 The script adds `DOCKER-USER` rules dropping traffic from the decoder's address
 to `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16` and
@@ -425,9 +427,11 @@ Re-run the script after two things:
   report themselves unavailable while everything else carries on.
 - **Any change to a host firewall that owns the filter table** (`ufw allow …`,
   `firewall-cmd`). A reload rewrites `INPUT` and takes the host-protection rule
-  with it. ⚠ This one is _not_ loud — the decoder only re-tests its containment
-  when it starts — so it is the one case where you have to remember. The script
-  warns at the end when it sees ufw or firewalld running.
+  with it. The decoder notices within ten minutes (its probes repeat) and stops
+  serving until the rule is back, so previews go blank rather than quietly
+  running with a route to your sshd — but nothing puts the rule back except
+  running the script again. It warns at the end when it sees ufw or firewalld
+  running.
 
 (This is what the hosted fleet does per-cell, and why.)
 
