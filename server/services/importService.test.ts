@@ -1830,18 +1830,64 @@ describe('import archive bounds', () => {
     expect((await rejection(user, await archive(extra))).code).toBe('too_many_entries');
   });
 
-  it('skips oversize thumbnails and stops at the total budget, without failing', async () => {
-    const user = createUser(`bounds_t_${Date.now()}`);
-    const buf = await archive({
-      'thumbnails/1.webp': Buffer.alloc(32, 1),
-      'thumbnails/2.webp': Buffer.alloc(200, 2), // past thumbnailBytes
-      'thumbnails/3.webp': Buffer.alloc(32, 3),
-      'thumbnails/4.webp': Buffer.alloc(100, 4), // past the total with 1 + 3
+  it('accepts CR-separated messages.ndjson rows like readline does', async () => {
+    const user = createUser(`bounds_cr_${Date.now()}`);
+    // Five short rows: as one LF-less run they would be 45 bytes against a
+    // 12-byte line bound; as the five lines readline sees, each is 8.
+    const buf = await archive({ 'messages.ndjson': Buffer.from('{"id":1}\r'.repeat(5)) });
+    const result = await importFromZipBuffer(user.id, buf, { ...limits, ndjsonLineBytes: 12 });
+    // Rows with no network to map to are dropped; the point is no throw.
+    expect(result.counts.messages).toBe(0);
+  });
+
+  it('skips a thumbnail past its own bound or the total budget, and keeps the rest', async () => {
+    // Real upload rows, so the surviving thumbnails are observable on them.
+    const { alice } = seedAlice(); // one upload already
+    for (let i = 0; i < 4; i++) {
+      insertUpload(alice.id, {
+        provider: 'hoarder',
+        url: `https://example.com/t${i}.jpg`,
+        filename: `t${i}.jpg`,
+        mime: 'image/jpeg',
+        byte_size: 10,
+        width: 10,
+        height: 10,
+        thumbnail: Buffer.from([0xff, 0xd8, 0xff, 0xe0, i]),
+      });
+    }
+    const exported = await unzipToMap(await exportToBuffer(alice.id, { includeMessages: false }));
+    const thumbNames = [...exported.keys()]
+      .filter((n) => /^thumbnails\/\d+\.jpg$/.test(n))
+      .sort((a, b) => parseInt(a.slice(11), 10) - parseInt(b.slice(11), 10));
+    expect(thumbNames.length).toBe(5);
+    // Per-thumbnail bound 64, total 100, in central-directory order:
+    // 40 kept (40), 200 over its own bound, 40 kept (80), 40 would overrun the
+    // total, 10 kept (90).
+    const sizes = [40, 200, 40, 40, 10];
+    const rebuilt = new Map<string, Buffer>();
+    for (const [name, buf] of exported) if (!name.startsWith('thumbnails/')) rebuilt.set(name, buf);
+    thumbNames.forEach((name, i) => rebuilt.set(name, Buffer.alloc(sizes[i], i + 1)));
+
+    const bob = createUser(`bounds_tb_${Date.now()}`);
+    const result = await importFromZipBuffer(bob.id, await zipFromMap(rebuilt), {
+      ...limits,
+      manifestBytes: 64 * 1024,
+      jsonBytes: 1024 * 1024,
+      entries: 1000,
+      thumbnailBytes: 64,
+      thumbnailsTotalBytes: 100,
     });
-    const result = await importFromZipBuffer(user.id, buf, limits);
-    // No upload_history rows to attach them to, so the count is 0; the point
-    // is the import went through rather than reading the oversize entries.
-    expect(result.thumbnailsAttached).toBe(0);
+    expect(result.thumbnailsAttached).toBe(3);
+    const rows = db
+      .prepare('SELECT thumbnail FROM upload_history WHERE user_id = ? ORDER BY id')
+      .all(bob.id) as Array<{ thumbnail: Buffer | null }>;
+    expect(rows.map((r) => (r.thumbnail ? Buffer.from(r.thumbnail).length : null))).toEqual([
+      40,
+      null,
+      40,
+      null,
+      10,
+    ]);
   });
 
   it('a corrupt messages.ndjson entry fails the import instead of the process', async () => {

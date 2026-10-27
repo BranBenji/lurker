@@ -289,6 +289,14 @@ export function parseProtocolParam(rawUrl: string): number | null {
 // Generic payload for outgoing WS messages.
 type WsPayload = Record<string, unknown>;
 
+// The frame's `type` as something safe to put in a log line or an error
+// frame. Any coercion of the raw value — a template literal, String() — calls
+// its toString, and `{"type":{"toString":null}}` makes that throw: inside a
+// catch block, that is the crash the boundary exists to prevent.
+function frameType(msg: WsPayload): string {
+  return typeof msg.type === 'string' ? msg.type : `<${typeof msg.type}>`;
+}
+
 // How a client must fold a `backlog` frame's `events` into what it already
 // holds for that buffer. Shipped on EVERY backlog frame as of #668.
 //
@@ -2772,7 +2780,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       try {
         handleClientMessage(ws, user, msg);
       } catch (err) {
-        console.error(`[wsHub] user ${user.id} '${String(msg.type)}' frame threw:`, err);
+        console.error(`[wsHub] user ${user.id} '${frameType(msg)}' frame threw:`, err);
         try {
           send(ws, { kind: 'error', text: 'invalid frame' });
           // The originating tab may be waiting on this frame's ACK.
@@ -3109,7 +3117,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
   // error frame, and a send-result for a tab waiting on this clientId — so a
   // client bug is visible rather than a silent no-op.
   function rejectField(ws: LurkerWebSocket, msg: WsPayload, field: string): void {
-    send(ws, { kind: 'error', text: `invalid frame: ${String(msg.type)}.${field}` });
+    send(ws, { kind: 'error', text: `invalid frame: ${frameType(msg)}.${field}` });
     if (msg.clientId) {
       send(ws, { kind: 'send-result', clientId: msg.clientId, ok: false, error: 'invalid-frame' });
     }
@@ -4329,7 +4337,7 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         break;
       }
       default:
-        send(ws, { kind: 'error', text: `unknown message type: ${msg.type}` });
+        send(ws, { kind: 'error', text: `unknown message type: ${frameType(msg)}` });
     }
   }
 

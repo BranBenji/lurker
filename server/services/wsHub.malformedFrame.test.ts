@@ -119,6 +119,29 @@ describe('malformed frames', () => {
     }
   });
 
+  // The unknown-type error used to format `msg.type` into a template literal,
+  // and the catch around the dispatcher used to String() it again: a type
+  // whose toString is not callable threw in both, the second time outside any
+  // protection. No coercion of the raw value anywhere now.
+  it('a type whose toString throws is an unknown type, not a crash', async () => {
+    const { ws, heard } = await attach(alice);
+    let uncaught: unknown = null;
+    const trap = (err: unknown) => {
+      uncaught = err;
+    };
+    process.prependOnceListener('uncaughtException', trap);
+    try {
+      ws.send(JSON.stringify({ type: { toString: null } }));
+      const err = await waitFor(heard, (f) => f.kind === 'error');
+      expect(err.text).toBe('unknown message type: <object>');
+      await stillServes(ws, heard);
+    } finally {
+      process.removeListener('uncaughtException', trap);
+      ws.close();
+    }
+    expect(uncaught).toBeNull();
+  });
+
   // The cases the verb registry does not type: a number where the dispatcher
   // handed a string straight to a string method. Answered like any other
   // rejection, so a client bug is visible rather than a silent no-op.

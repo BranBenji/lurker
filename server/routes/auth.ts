@@ -29,6 +29,7 @@ import {
 import { inviteStatus, consumeInvite } from '../db/invites.js';
 import {
   findLiveRecoveryToken,
+  getRecoveryTokenForUser,
   spendRecoveryAndEnroll,
   spendRecoveryAndSetPassword,
 } from '../db/accountRecovery.js';
@@ -145,20 +146,33 @@ router.get('/setup-status', (_req: Request, res: Response) => {
 // deletes it and starts over. Two exceptions. While a setup challenge is live
 // (five minutes) the ceremony may still finish, so the account is in progress,
 // not abandoned — otherwise anyone posting /setup/options mid-ceremony would
-// pull the operator's user out from under them. And never on a hosted cell,
-// where an admin signs in through the control plane and has no local
-// credential by design.
+// pull the operator's user out from under them. An account with a live
+// recovery link (tools/recovery-link.ts) is being recovered, not abandoned:
+// the link is how an operator rescues exactly this shape of account, and
+// deleting the user would cascade the token away mid-rescue. And never on a
+// hosted cell, where an admin signs in through the control plane and has no
+// local credential by design.
 function strandedAdmin(): { id: number } | null {
   if (isNodeMode()) return null;
   if (countUsers() !== 1 || countAllCredentials() > 0) return null;
   const [user] = listUsers();
   if (!user || user.role !== 'admin' || userHasPassword(user.id)) return null;
+  if (getRecoveryTokenForUser(user.id)) return null;
   return user;
+}
+
+// /setup/verify consumes its challenge before awaiting the signature check,
+// so for that await no challenge is live; this holds the reservation through
+// it. Module-level like the challenge map it extends.
+let setupVerifying = 0;
+
+function setupInProgress(): boolean {
+  return setupVerifying > 0 || hasLiveChallenge('setup');
 }
 
 function abandonedSetupAdmin(): { id: number } | null {
   const stranded = strandedAdmin();
-  return stranded && !hasLiveChallenge('setup') ? stranded : null;
+  return stranded && !setupInProgress() ? stranded : null;
 }
 
 function setupPending(): boolean {
@@ -168,7 +182,7 @@ function setupPending(): boolean {
 // The 409 for a setup call that cannot proceed: a ceremony in progress is told
 // so, since "already complete" would send the operator looking for a login.
 function refuseSetup(res: Response): void {
-  if (strandedAdmin() && hasLiveChallenge('setup')) {
+  if (strandedAdmin() && setupInProgress()) {
     res.status(409).json({ error: 'setup in progress; try again in a few minutes' });
     return;
   }
@@ -245,6 +259,7 @@ router.post('/setup/verify', async (req: Request, res: Response) => {
   }
   const { rpID, expectedOrigin } = rpConfig();
   let verification: VerifiedRegistrationResponse;
+  setupVerifying += 1;
   try {
     verification = await verifyRegistrationResponse({
       response: req.body?.response,
@@ -258,6 +273,8 @@ router.post('/setup/verify', async (req: Request, res: Response) => {
     const e = err as { message?: string };
     res.status(400).json({ error: e.message || 'verification failed' });
     return;
+  } finally {
+    setupVerifying -= 1;
   }
   if (!verification.verified || !verification.registrationInfo) {
     res.status(400).json({ error: 'verification failed' });

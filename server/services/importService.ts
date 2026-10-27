@@ -233,16 +233,20 @@ function boundLineLength(
       let pos = 0;
       let over = false;
       while (pos < chunk.length) {
-        const nl = chunk.indexOf(10, pos);
-        const end = nl === -1 ? chunk.length : nl;
+        // readline ends a line at \n, \r or \r\n; a bare \r must count here
+        // too, or a CR-separated archive reads as one long line.
+        const lf = chunk.indexOf(10, pos);
+        const cr = chunk.indexOf(13, pos);
+        const term = lf === -1 ? cr : cr === -1 ? lf : Math.min(lf, cr);
+        const end = term === -1 ? chunk.length : term;
         run += end - pos;
         if (run > max) {
           over = true;
           break;
         }
-        if (nl === -1) break;
+        if (term === -1) break;
         run = 0;
-        pos = nl + 1;
+        pos = term + 1;
       }
       if (over) {
         overflowed = true;

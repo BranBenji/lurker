@@ -83,4 +83,20 @@ describe('abandoned first-run setup', () => {
     expect(res.status).toBe(400);
     expect(users.findUserById(id)).toBeDefined();
   });
+
+  it('an account with a live recovery link is being rescued, not abandoned', async () => {
+    const { id } = users.listUsers()[0];
+    expect(users.userHasPassword(id)).toBe(false);
+    const recovery = await import('../db/accountRecovery.js');
+    recovery.createRecoveryToken(id, null);
+    expect((await testRequest(app).get('/api/auth/setup-status')).body.needsSetup).toBe(false);
+    const res = await testRequest(app).post('/api/auth/setup/password').send({
+      username: 'usurper',
+      password: 'longenoughpw',
+    });
+    expect(res.status).toBe(409);
+    expect(users.findUserById(id)).toBeDefined();
+    recovery.deleteRecoveryTokensForUser(id);
+    expect((await testRequest(app).get('/api/auth/setup-status')).body.needsSetup).toBe(true);
+  });
 });
