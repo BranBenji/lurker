@@ -51,6 +51,15 @@ services:
       - WEBAUTHN_RP_NAME=Lurker
       - WEBAUTHN_ORIGIN=https://${LURKER_DOMAIN}
       - VAPID_SUBJECT=mailto:${ADMIN_EMAIL}
+      # Caddy terminates TLS, so the browser only ever talks https to this
+      # instance: the session cookie can carry Secure (the browser judges the
+      # flag by the scheme IT used, not by the plain-HTTP hop from Caddy to the
+      # container), the login limiter has to key on the client address Caddy
+      # forwards rather than on Caddy's own, and the links Lurker builds should
+      # name the public origin.
+      - COOKIE_SECURE=true
+      - LURKER_TRUST_PROXY=true
+      - PUBLIC_BASE_URL=https://${LURKER_DOMAIN}
 
 volumes:
   caddy_data:

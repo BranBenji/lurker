@@ -2749,14 +2749,45 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         ws.close(1008, 'message rate exceeded');
         return;
       }
-      let msg: WsPayload;
+      let parsed: unknown;
       try {
-        msg = JSON.parse(raw.toString()) as WsPayload;
+        parsed = JSON.parse(raw.toString());
       } catch (_err) {
         send(ws, { kind: 'error', text: 'invalid json' });
         return;
       }
-      handleClientMessage(ws, user, msg);
+      // Valid JSON is not yet a frame: `null`, a number, a string and an array
+      // all parse, and the dispatcher reads `msg.type` off whatever arrived.
+      // A throw out of this listener is an uncaughtException, which the fatal
+      // handler (#442) turns into process.exit — one frame from one signed-in
+      // user dropping every user's IRC. So the shape is checked once here, and
+      // whatever the dispatcher still throws on a frame is contained the way
+      // sendSnapshot contains the opening burst, and for the same reason: the
+      // fatal handler records and exits, it does not make a throw survivable.
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        send(ws, { kind: 'error', text: 'invalid frame' });
+        return;
+      }
+      const msg = parsed as WsPayload;
+      try {
+        handleClientMessage(ws, user, msg);
+      } catch (err) {
+        console.error(`[wsHub] user ${user.id} '${String(msg.type)}' frame threw:`, err);
+        try {
+          send(ws, { kind: 'error', text: 'invalid frame' });
+          // The originating tab may be waiting on this frame's ACK.
+          if (msg.clientId) {
+            send(ws, {
+              kind: 'send-result',
+              clientId: msg.clientId,
+              ok: false,
+              error: 'invalid-frame',
+            });
+          }
+        } catch (_err) {
+          /* socket may already be unwritable */
+        }
+      }
     });
 
     // The browser auto-answers ping frames; this just records that the answer
@@ -3325,11 +3356,14 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         break;
       }
       case 'join':
+        // The channel reaches the case-folder and the key reaches encryptSecret;
+        // neither takes a non-string, and this path has no verb to type it.
+        if (typeof msg.channel !== 'string') break;
         ircManager.joinChannel(
           userId,
           msg.networkId as number,
-          msg.channel as string,
-          msg.key as string | undefined,
+          msg.channel,
+          typeof msg.key === 'string' ? msg.key : undefined,
         );
         break;
       case 'open-buffer': {
@@ -3351,11 +3385,12 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         break;
       }
       case 'part':
+        if (typeof msg.channel !== 'string') break;
         ircManager.partChannel(
           userId,
           msg.networkId as number,
-          msg.channel as string,
-          msg.reason as string | undefined,
+          msg.channel,
+          typeof msg.reason === 'string' ? msg.reason : undefined,
         );
         break;
       case 'close-buffer': {
@@ -3380,7 +3415,9 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         sendSnapshot(ws, userId);
         break;
       case 'raw':
-        ircManager.getConnection(userId, msg.networkId as number)?.raw(msg.line as string);
+        // raw() scrubs the line with a string replace; a number here threw.
+        if (typeof msg.line !== 'string') break;
+        ircManager.getConnection(userId, msg.networkId as number)?.raw(msg.line);
         break;
       case 'probe-presence': {
         // Client just activated a DM — refresh its presence cache so the
@@ -3470,18 +3507,15 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           typeof msg.all === 'boolean' ? msg.all : undefined,
         );
         // Empty/whitespace-only message → treat as /back (idiomatic IRC).
-        const message = msg.type === 'away' ? ((msg.message as string) || '').trim() : '';
+        const message =
+          msg.type === 'away' && typeof msg.message === 'string' ? msg.message.trim() : '';
         if (!message) ircManager.clearAway(userId, scope, { autoSet: false });
         else ircManager.setAway(userId, scope, message, { autoSet: false });
         break;
       }
       case 'typing':
-        ircManager.typing(
-          userId,
-          msg.networkId as number,
-          msg.target as string,
-          msg.state as string,
-        );
+        if (typeof msg.target !== 'string' || typeof msg.state !== 'string') break;
+        ircManager.typing(userId, msg.networkId as number, msg.target, msg.state);
         break;
       case 'mark-read': {
         const addr = verbBuffer(userId, msg);

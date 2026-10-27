@@ -1759,3 +1759,96 @@ describe('importFromZipBuffer — avatar sets', () => {
     expect(JSON.parse(pointer.value)).toBe(String(bobSets[0].id));
   });
 });
+
+// ---- archive bounds (zip bomb) ----
+// Each limit is injected small so the test archive stays small too; the point
+// is that every whole-entry read, and the one streamed read, has a bound at all.
+describe('import archive bounds', () => {
+  const limits = {
+    manifestBytes: 256,
+    jsonBytes: 4096,
+    thumbnailBytes: 64,
+    thumbnailsTotalBytes: 128,
+    ndjsonLineBytes: 512,
+    entries: 8,
+  };
+
+  async function archive(extra: Record<string, Buffer>): Promise<Buffer> {
+    const entries = new Map<string, Buffer>();
+    entries.set(
+      'manifest.json',
+      Buffer.from(JSON.stringify({ export_format_version: 1, lurker_version: 'test' })),
+    );
+    entries.set('data.json', Buffer.from(JSON.stringify({ networks: [] })));
+    for (const [name, buf] of Object.entries(extra)) entries.set(name, buf);
+    return zipFromMap(entries);
+  }
+
+  // The thrown ImportError, so each test asserts its code where lint can see it.
+  async function rejection(user: User, buf: Buffer): Promise<{ code: string }> {
+    const err = await importFromZipBuffer(user.id, buf, limits).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ImportError);
+    return err as InstanceType<typeof ImportError>;
+  }
+
+  it('refuses a manifest past its bound', async () => {
+    const user = createUser(`bounds_m_${Date.now()}`);
+    const padded = JSON.stringify({ export_format_version: 1, pad: 'x'.repeat(400) });
+    expect(
+      (await rejection(user, await archive({ 'manifest.json': Buffer.from(padded) }))).code,
+    ).toBe('entry_too_large');
+  });
+
+  it('refuses data.json past its bound', async () => {
+    const user = createUser(`bounds_d_${Date.now()}`);
+    const padded = JSON.stringify({ networks: [], pad: 'x'.repeat(8192) });
+    expect((await rejection(user, await archive({ 'data.json': Buffer.from(padded) }))).code).toBe(
+      'entry_too_large',
+    );
+  });
+
+  it('refuses a section file past its bound', async () => {
+    const user = createUser(`bounds_s_${Date.now()}`);
+    const padded = JSON.stringify([{ pad: 'x'.repeat(8192) }]);
+    expect(
+      (await rejection(user, await archive({ 'bookmarks.json': Buffer.from(padded) }))).code,
+    ).toBe('entry_too_large');
+  });
+
+  it('refuses a messages.ndjson line past its bound', async () => {
+    const user = createUser(`bounds_n_${Date.now()}`);
+    const line = JSON.stringify({ id: 1, text: 'x'.repeat(2048) });
+    expect(
+      (await rejection(user, await archive({ 'messages.ndjson': Buffer.from(`${line}\n`) }))).code,
+    ).toBe('entry_too_large');
+  });
+
+  it('refuses an archive with too many entries', async () => {
+    const user = createUser(`bounds_e_${Date.now()}`);
+    const extra: Record<string, Buffer> = {};
+    for (let i = 0; i < 20; i++) extra[`thumbnails/${i}.webp`] = Buffer.from('x');
+    expect((await rejection(user, await archive(extra))).code).toBe('too_many_entries');
+  });
+
+  it('skips oversize thumbnails and stops at the total budget, without failing', async () => {
+    const user = createUser(`bounds_t_${Date.now()}`);
+    const buf = await archive({
+      'thumbnails/1.webp': Buffer.alloc(32, 1),
+      'thumbnails/2.webp': Buffer.alloc(200, 2), // past thumbnailBytes
+      'thumbnails/3.webp': Buffer.alloc(32, 3),
+      'thumbnails/4.webp': Buffer.alloc(100, 4), // past the total with 1 + 3
+    });
+    const result = await importFromZipBuffer(user.id, buf, limits);
+    // No upload_history rows to attach them to, so the count is 0; the point
+    // is the import went through rather than reading the oversize entries.
+    expect(result.thumbnailsAttached).toBe(0);
+  });
+
+  it('checks the account is empty before reading any entry body', async () => {
+    const { alice } = seedAlice();
+    const padded = JSON.stringify({ export_format_version: 1, pad: 'x'.repeat(400) });
+    expect(
+      (await rejection(alice, await archive({ 'manifest.json': Buffer.from(padded) }))).code,
+    ).toBe('account_not_empty');
+  });
+});

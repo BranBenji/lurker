@@ -485,23 +485,22 @@ which is worth reading in full before turning on `s3`.
 
 ### Secure cookies
 
-Lurker's session cookies are **not** flagged `Secure` by default. This sounds wrong but is correct for the common self-hosted shapes:
+Lurker's session cookies are **not** flagged `Secure` by default, so they work on LAN / Tailscale / `*.local` hostnames over plain HTTP, where browsers drop Secure cookies on non-localhost origins.
 
-- LAN / Tailscale / `*.local` hostnames over plain HTTP — browsers drop Secure cookies on non-localhost HTTP origins
-- Cloudflare Tunnel, reverse proxies, etc. — the _browser_ sees HTTPS, but the container sees plain HTTP from the proxy, so even with TLS in front the cookie travels cleartext over Docker's internal network (which is fine — that traffic never leaves the host)
-
-If you genuinely serve Lurker over end-to-end HTTPS (Express terminating TLS directly), set:
+Set it whenever the **browser** reaches Lurker over HTTPS — including behind Caddy, nginx, Cloudflare Tunnel or any other proxy that terminates TLS and talks plain HTTP to the container. The browser judges the flag by the scheme _it_ used, not by the proxy's hop to the container, so a Secure cookie still lands; what it buys you is that a stray `http://` link to your host can no longer send the cookie in the clear.
 
 ```yaml
 environment:
   - COOKIE_SECURE=true
 ```
 
+The Caddy overlay (`docker-compose.caddy.yml`) sets this, `LURKER_TRUST_PROXY` and `PUBLIC_BASE_URL` already, and its Caddyfile sends `Strict-Transport-Security`.
+
 ### Auth rate limiting behind a proxy
 
 Lurker throttles repeated failed logins per client IP (a per-IP backoff on the login, token, and password-change endpoints, plus a coarse request cap on the auth surface). By default it uses the connection's socket address, which is correct when Lurker faces the internet directly.
 
-If you run Lurker behind a reverse proxy or tunnel (Caddy, nginx, Cloudflare), the socket address is the _proxy_, so every visitor would share one bucket. Set this **only** when a proxy you control populates `X-Forwarded-For`, so Lurker keys on the real client:
+If you run Lurker behind a reverse proxy or tunnel (Caddy, nginx, Cloudflare), the socket address is the _proxy_, so every visitor would share one bucket — and ten failed logins from anyone lock everyone out for 15 minutes. Set this **only** when a proxy you control populates `X-Forwarded-For`, so Lurker keys on the real client (the Caddy overlay does):
 
 ```yaml
 environment:

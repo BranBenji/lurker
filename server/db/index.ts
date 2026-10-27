@@ -1320,6 +1320,21 @@ export function backfillFirstAdmin(): void {
 
 migrate();
 
+// The database holds every session token raw and, on an install without
+// LURKER_SECRET_KEY, every IRC credential in the clear, and SQLite creates it
+// under the process umask — 0644 in the Docker image, world-readable in a
+// bind-mounted data/. session-secret.key next to it is written 0600; hold the
+// DB and its WAL companions to the same bar. Best-effort: a file another uid
+// owns (data/ created by root, Lurker now run as a user) refuses the chmod,
+// and that must not stop the boot.
+for (const suffix of ['', '-wal', '-shm']) {
+  try {
+    fs.chmodSync(dbPath + suffix, 0o600);
+  } catch {
+    /* absent (no WAL yet) or not ours */
+  }
+}
+
 // One-shot rebuild for peer_presence_state schema change. Old layout had
 // four separate datetime columns (offline/online/away/back); replaced with
 // a single (state, state_at) pair so the client can render exactly one

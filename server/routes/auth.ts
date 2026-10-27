@@ -24,6 +24,7 @@ import {
   getPasswordHash,
   userHasPassword,
   setPasswordHash,
+  listUsers,
 } from '../db/users.js';
 import { inviteStatus, consumeInvite } from '../db/invites.js';
 import {
@@ -121,12 +122,38 @@ router.use(limitRequests(authRequestThrottle));
 // before the operator bootstraps their admin account. Once a user exists,
 // further accounts come in through the invite flow, not this endpoint.
 router.get('/setup-status', (_req: Request, res: Response) => {
-  if (countUsers() === 0) {
+  if (setupPending()) {
     res.json({ needsSetup: true, mode: 'create-user' });
     return;
   }
   res.json({ needsSetup: false });
 });
+
+// /setup/options creates the admin BEFORE the passkey ceremony (the options
+// need a stable user handle), so a ceremony that never finishes — the operator
+// closed the tab, the authenticator balked, or someone else reached the fresh
+// instance first — leaves a lone admin with no passkey and no password. Nothing
+// deleted it, so every later setup call answered 409 and nobody could ever sign
+// in. Such an account has never been used (no credential means no session), so
+// it is setup still pending: the status says so, and the next setup attempt
+// deletes it and starts over. Never on a hosted cell, where an admin signs in
+// through the control plane and has no local credential by design.
+function abandonedSetupAdmin(): { id: number } | null {
+  if (isNodeMode()) return null;
+  if (countUsers() !== 1 || countAllCredentials() > 0) return null;
+  const [user] = listUsers();
+  if (!user || user.role !== 'admin' || userHasPassword(user.id)) return null;
+  return user;
+}
+
+function setupPending(): boolean {
+  return countUsers() === 0 || abandonedSetupAdmin() !== null;
+}
+
+function reclaimAbandonedSetup(): void {
+  const stranded = abandonedSetupAdmin();
+  if (stranded) deleteUser(stranded.id);
+}
 
 // ---------- setup / first-admin bootstrap ----------
 
@@ -134,10 +161,11 @@ router.get('/setup-status', (_req: Request, res: Response) => {
 // created here is promoted to admin and gets exclusive control over invites
 // and user management.
 router.post('/setup/options', async (req: Request, res: Response) => {
-  if (countUsers() > 0) {
+  if (!setupPending()) {
     res.status(409).json({ error: 'setup already complete' });
     return;
   }
+  reclaimAbandonedSetup();
   const requested = (req.body?.username || '').trim();
   if (!isValidUsername(requested)) {
     res.status(400).json({ error: 'invalid username' });
@@ -237,7 +265,7 @@ router.post('/setup/verify', async (req: Request, res: Response) => {
 // skips the WebAuthn dance — operator picks a username and password and is
 // signed in straight away. They can add a passkey later from settings.
 router.post('/setup/password', (req: Request, res: Response) => {
-  if (countUsers() > 0) {
+  if (!setupPending()) {
     res.status(409).json({ error: 'setup already complete' });
     return;
   }
@@ -251,6 +279,7 @@ router.post('/setup/password', (req: Request, res: Response) => {
     res.status(400).json({ error: passwordRequirementsMessage() });
     return;
   }
+  reclaimAbandonedSetup();
   if (usernameTaken(requested)) {
     res.status(409).json({ error: 'username already taken' });
     return;
