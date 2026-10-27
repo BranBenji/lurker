@@ -277,7 +277,11 @@ export async function answerImport(
                         ? 400
                         : e.code === 'bad_bookmarks'
                           ? 400
-                          : 500;
+                          : e.code === 'entry_too_large'
+                            ? 413
+                            : e.code === 'too_many_entries'
+                              ? 400
+                              : 500;
       return { status, body: { error: e.message, code: e.code } };
     }
     throw err;

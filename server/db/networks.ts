@@ -178,7 +178,10 @@ export function createNetwork(userId: number, fields: NetworkFields): Network | 
       name,
       host,
       port ?? 6697,
-      tls ? 1 : 0,
+      // Default on when absent or null, like trusted_certificates: the column
+      // defaults to 1 and the port to 6697, so an API client that omits `tls`
+      // used to get a plaintext dial on the TLS port, credentials included.
+      tls === undefined || tls === null ? 1 : tls ? 1 : 0,
       trusted_certificates === undefined ? 1 : trusted_certificates ? 1 : 0,
       nick,
       username || null,

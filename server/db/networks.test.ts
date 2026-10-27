@@ -220,3 +220,15 @@ describe('network secrets without an encryption key (self-host)', () => {
     });
   });
 });
+
+describe('createNetwork tls default', () => {
+  it('is on when tls is omitted or null, like the column default', () => {
+    const erin = createUser('erin-tls');
+    const base = { name: 'libera', host: 'irc.libera.chat', nick: 'erin' };
+    expect(createNetwork(erin.id, base)!.tls).toBe(1);
+    expect(createNetwork(erin.id, { ...base, tls: null as unknown as boolean })!.tls).toBe(1);
+    expect(createNetwork(erin.id, { ...base, tls: false })!.tls).toBe(0);
+    expect(createNetwork(erin.id, { ...base, tls: 0 })!.tls).toBe(0);
+    expect(createNetwork(erin.id, { ...base, tls: true })!.tls).toBe(1);
+  });
+});

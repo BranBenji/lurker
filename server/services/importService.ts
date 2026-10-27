@@ -22,6 +22,7 @@
 import yauzl from 'yauzl';
 import type { ZipFile, Entry } from 'yauzl';
 import readline from 'node:readline';
+import { Transform } from 'node:stream';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -72,6 +73,38 @@ import type { IgnorePatternKind } from '../db/ignoredMasks.js';
 // stalls long enough to drop a heartbeat.
 const MESSAGE_BATCH = 1000;
 
+// What an archive may make this process hold in memory at once. The upload
+// route caps the COMPRESSED archive (500 MB); DEFLATE reaches ~1000:1 on
+// repetitive JSON, so without these a few megabytes inflated to gigabytes in
+// the heap of the one process serving every user. Each bound is on bytes
+// actually read: the zip header's uncompressedSize is the archive's claim, not
+// a measurement. Overridable per call so a test can hit them with a small
+// archive rather than a large one.
+export interface ImportLimits {
+  /** manifest.json: a handful of fields. */
+  manifestBytes: number;
+  /** data.json and each <section>.json (bookmarks, reactions): every
+   *  non-message row of the account, read whole. */
+  jsonBytes: number;
+  /** One upload thumbnail; the pipeline renders them at 512px. */
+  thumbnailBytes: number;
+  /** All thumbnails together — they are held until phase C. */
+  thumbnailsTotalBytes: number;
+  /** One messages.ndjson line: a row is one IRC line plus its columns. */
+  ndjsonLineBytes: number;
+  /** Central-directory entries, each a yauzl object held for the import. */
+  entries: number;
+}
+
+export const DEFAULT_IMPORT_LIMITS: ImportLimits = {
+  manifestBytes: 64 * 1024,
+  jsonBytes: 256 * 1024 * 1024,
+  thumbnailBytes: 2 * 1024 * 1024,
+  thumbnailsTotalBytes: 256 * 1024 * 1024,
+  ndjsonLineBytes: 1024 * 1024,
+  entries: 100_000,
+};
+
 interface ExportTableDefFull {
   mode: string;
   scope: string;
@@ -103,7 +136,10 @@ export class ImportError extends Error {
 // no entry bodies). yauzl Entry objects stay valid for openReadStream while the
 // ZipFile is open, so we can then read entries in the order WE need (manifest +
 // data before messages), not the order archiver happened to write them.
-function openZipEntries(zipPath: string): Promise<{ zip: ZipFile; entries: Map<string, Entry> }> {
+function openZipEntries(
+  zipPath: string,
+  maxEntries: number,
+): Promise<{ zip: ZipFile; entries: Map<string, Entry> }> {
   return new Promise((resolve, reject) => {
     // autoClose:false — we enumerate ALL entries first (reading past the last
     // entry), then openReadStream them in our own order. With the default
@@ -116,8 +152,20 @@ function openZipEntries(zipPath: string): Promise<{ zip: ZipFile; entries: Map<s
         return;
       }
       const entries = new Map<string, Entry>();
+      // Every central-directory record counts, directories included: each is
+      // parsed on the event loop whether or not it is kept.
+      let seen = 0;
       zip.on('error', reject);
       zip.on('entry', (entry: Entry) => {
+        seen += 1;
+        if (seen > maxEntries) {
+          // Rejecting here means the caller never gets the ZipFile to close.
+          zip.close();
+          reject(
+            new ImportError('too_many_entries', `archive has more than ${maxEntries} entries`),
+          );
+          return;
+        }
         if (!entry.fileName.endsWith('/')) entries.set(entry.fileName, entry);
         zip.readEntry();
       });
@@ -153,6 +201,72 @@ async function readEntryBuffer(zip: ZipFile, entry: Entry, max?: number): Promis
     chunks.push(chunk as Buffer);
   }
   return Buffer.concat(chunks);
+}
+
+// The read every whole-entry consumer makes: past `max` bytes the archive is
+// refused, whatever its headers claimed.
+async function readEntryBounded(
+  zip: ZipFile,
+  entry: Entry,
+  label: string,
+  max: number,
+): Promise<Buffer> {
+  const buf = await readEntryBuffer(zip, entry, max);
+  if (buf === null) {
+    throw new ImportError('entry_too_large', `${label} is larger than ${max} bytes`);
+  }
+  return buf;
+}
+
+// readline buffers a line until its newline arrives, so one newline-less line
+// is the whole entry in memory. This passes bytes through until a line runs
+// past `max`, then ends the stream early and reports the overflow; the caller
+// checks `overflowed()` after the last line and refuses the archive.
+function boundLineLength(
+  input: NodeJS.ReadableStream,
+  max: number,
+): { stream: Transform; overflowed: () => boolean } {
+  let run = 0;
+  let overflowed = false;
+  const stream = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      let pos = 0;
+      let over = false;
+      while (pos < chunk.length) {
+        // readline ends a line at \n, \r or \r\n; a bare \r must count here
+        // too, or a CR-separated archive reads as one long line.
+        const lf = chunk.indexOf(10, pos);
+        const cr = chunk.indexOf(13, pos);
+        const term = lf === -1 ? cr : cr === -1 ? lf : Math.min(lf, cr);
+        const end = term === -1 ? chunk.length : term;
+        run += end - pos;
+        if (run > max) {
+          over = true;
+          break;
+        }
+        if (term === -1) break;
+        run = 0;
+        pos = term + 1;
+      }
+      if (over) {
+        overflowed = true;
+        input.unpipe(stream);
+        (input as NodeJS.ReadableStream & { destroy?: () => void }).destroy?.();
+        callback();
+        stream.end();
+        return;
+      }
+      callback(null, chunk);
+    },
+  });
+  // pipe() installs no error handler on its source. yauzl reports a corrupt
+  // entry (bad DEFLATE bytes, a size that disagrees with the header) as an
+  // 'error' on the entry stream, which readline used to re-emit so the import
+  // failed cleanly; with nothing listening it is an uncaughtException. Hand it
+  // to the Transform so readline still sees it.
+  input.on('error', (err) => stream.destroy(err as Error));
+  input.pipe(stream);
+  return { stream, overflowed: () => overflowed };
 }
 
 function parseJson<T>(buf: Buffer, code: string, label: string): T {
@@ -587,6 +701,7 @@ async function streamMessagesInBatches(
   entry: Entry,
   targetUserId: number,
   idMaps: Record<string, Map<unknown, unknown>>,
+  maxLineBytes: number,
 ): Promise<number> {
   const def = EXPORT_TABLES.messages as ExportTableDefFull;
   // buffer_id is not an archive column (archives carry names; ids are
@@ -634,8 +749,8 @@ async function streamMessagesInBatches(
     }
   });
 
-  const stream = await openEntryStream(zip, entry);
-  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const bounded = boundLineLength(await openEntryStream(zip, entry), maxLineBytes);
+  const rl = readline.createInterface({ input: bounded.stream, crlfDelay: Infinity });
   let batch: string[] = [];
   for await (const line of rl) {
     batch.push(line);
@@ -644,6 +759,12 @@ async function streamMessagesInBatches(
       batch = [];
       await yieldToEventLoop();
     }
+  }
+  if (bounded.overflowed()) {
+    throw new ImportError(
+      'entry_too_large',
+      `messages.ndjson has a line longer than ${maxLineBytes} bytes`,
+    );
   }
   if (batch.length) flush(batch);
   return inserted;
@@ -698,18 +819,29 @@ export interface ImportResult {
 export async function importFromZipFile(
   targetUserId: number,
   zipPath: string,
+  limits: ImportLimits = DEFAULT_IMPORT_LIMITS,
 ): Promise<ImportResult> {
-  const { zip, entries } = await openZipEntries(zipPath);
+  // Reads the central directory only, bounded by limits.entries.
+  const { zip, entries } = await openZipEntries(zipPath, limits.entries);
   // Pauses the retention sweeper for the duration — see importInProgress.
   beginImport();
   try {
+    // ---- empty-account guard — before any entry BODY is read, so an account
+    // the import would refuse anyway can't make it inflate the archive. ----
+    if (!accountIsEmpty(targetUserId)) {
+      throw new ImportError(
+        'account_not_empty',
+        'target account already has data; imports require a fresh account',
+      );
+    }
+
     // ---- manifest ----
     const manifestEntry = entries.get('manifest.json');
     if (!manifestEntry) {
       throw new ImportError('missing_manifest', 'archive does not contain manifest.json');
     }
     const manifest = parseJson<Record<string, unknown>>(
-      await readEntryBuffer(zip, manifestEntry),
+      await readEntryBounded(zip, manifestEntry, 'manifest.json', limits.manifestBytes),
       'bad_manifest',
       'manifest.json',
     );
@@ -729,18 +861,10 @@ export async function importFromZipFile(
       throw new ImportError('missing_data', 'archive does not contain data.json');
     }
     const data = parseJson<Record<string, Record<string, unknown>[]>>(
-      await readEntryBuffer(zip, dataEntry),
+      await readEntryBounded(zip, dataEntry, 'data.json', limits.jsonBytes),
       'bad_data',
       'data.json',
     );
-
-    // ---- empty-account guard ----
-    if (!accountIsEmpty(targetUserId)) {
-      throw new ImportError(
-        'account_not_empty',
-        'target account already has data; imports require a fresh account',
-      );
-    }
 
     // ---- <section>.json: bookmarks, reactions (#992) — optional, small ----
     // Each is its table's rows, inserted in Phase C like any other table (the
@@ -753,7 +877,7 @@ export async function importFromZipFile(
       const entry = entries.get(name);
       if (!entry) continue;
       data[table] = parseJson<Record<string, unknown>[]>(
-        await readEntryBuffer(zip, entry),
+        await readEntryBounded(zip, entry, name, limits.jsonBytes),
         `bad_${def.section}`,
         name,
       );
@@ -764,10 +888,20 @@ export async function importFromZipFile(
     // exported before it, which must keep importing). The extension only locates
     // the entry; the bytes go into the BLOB as-is and the serving route sniffs
     // their type, so a mismatch here can't corrupt anything. ----
+    // A thumbnail is a preview, so one past its bound is skipped rather than
+    // failing the import, and one that would overrun the total budget is
+    // skipped while a smaller one after it may still fit.
     const thumbs = new Map<number, Buffer>();
+    let thumbBytes = 0;
     for (const [name, entry] of entries) {
       const m = name.match(/^thumbnails\/(\d+)\.(?:jpg|webp)$/);
-      if (m) thumbs.set(parseInt(m[1], 10), await readEntryBuffer(zip, entry));
+      if (!m) continue;
+      if (entry.uncompressedSize > limits.thumbnailBytes) continue;
+      if (thumbBytes + entry.uncompressedSize > limits.thumbnailsTotalBytes) continue;
+      const buf = await readEntryBuffer(zip, entry, limits.thumbnailBytes);
+      if (buf === null) continue;
+      thumbBytes += buf.length;
+      thumbs.set(parseInt(m[1], 10), buf);
     }
     // ---- avatar set tiles (#607), by the archive's set id. They go back
     // through the service with the rows, which re-judges every image the way
@@ -854,7 +988,13 @@ export async function importFromZipFile(
       idMaps.messages = new Map();
       const messagesEntry = entries.get('messages.ndjson');
       counts.messages = messagesEntry
-        ? await streamMessagesInBatches(zip, messagesEntry, targetUserId, idMaps)
+        ? await streamMessagesInBatches(
+            zip,
+            messagesEntry,
+            targetUserId,
+            idMaps,
+            limits.ndjsonLineBytes,
+          )
         : 0;
 
       // ---- Phase C: the tables that hang off messages — bookmarks, reactions,
@@ -939,13 +1079,14 @@ export async function importFromZipFile(
 export async function importFromZipBuffer(
   targetUserId: number,
   zipBuffer: Buffer,
+  limits: ImportLimits = DEFAULT_IMPORT_LIMITS,
 ): Promise<ImportResult> {
   const tmp = path.join(os.tmpdir(), `lurker-import-${randomBytes(8).toString('hex')}.lurk`);
   // 0600 — the archive carries decrypted network passwords; don't leave it
   // world-readable under a permissive umask.
   await fs.promises.writeFile(tmp, zipBuffer, { mode: 0o600 });
   try {
-    return await importFromZipFile(targetUserId, tmp);
+    return await importFromZipFile(targetUserId, tmp, limits);
   } finally {
     await fs.promises.unlink(tmp).catch(() => {});
   }

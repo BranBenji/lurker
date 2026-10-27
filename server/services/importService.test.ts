@@ -1759,3 +1759,165 @@ describe('importFromZipBuffer — avatar sets', () => {
     expect(JSON.parse(pointer.value)).toBe(String(bobSets[0].id));
   });
 });
+
+// ---- archive bounds (zip bomb) ----
+// Each limit is injected small so the test archive stays small too; the point
+// is that every whole-entry read, and the one streamed read, has a bound at all.
+describe('import archive bounds', () => {
+  const limits = {
+    manifestBytes: 256,
+    jsonBytes: 4096,
+    thumbnailBytes: 64,
+    thumbnailsTotalBytes: 128,
+    ndjsonLineBytes: 512,
+    entries: 8,
+  };
+
+  async function archive(extra: Record<string, Buffer>): Promise<Buffer> {
+    const entries = new Map<string, Buffer>();
+    entries.set(
+      'manifest.json',
+      Buffer.from(JSON.stringify({ export_format_version: 1, lurker_version: 'test' })),
+    );
+    entries.set('data.json', Buffer.from(JSON.stringify({ networks: [] })));
+    for (const [name, buf] of Object.entries(extra)) entries.set(name, buf);
+    return zipFromMap(entries);
+  }
+
+  // The thrown ImportError, so each test asserts its code where lint can see it.
+  async function rejection(user: User, buf: Buffer): Promise<{ code: string }> {
+    const err = await importFromZipBuffer(user.id, buf, limits).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ImportError);
+    return err as InstanceType<typeof ImportError>;
+  }
+
+  it('refuses a manifest past its bound', async () => {
+    const user = createUser(`bounds_m_${Date.now()}`);
+    const padded = JSON.stringify({ export_format_version: 1, pad: 'x'.repeat(400) });
+    expect(
+      (await rejection(user, await archive({ 'manifest.json': Buffer.from(padded) }))).code,
+    ).toBe('entry_too_large');
+  });
+
+  it('refuses data.json past its bound', async () => {
+    const user = createUser(`bounds_d_${Date.now()}`);
+    const padded = JSON.stringify({ networks: [], pad: 'x'.repeat(8192) });
+    expect((await rejection(user, await archive({ 'data.json': Buffer.from(padded) }))).code).toBe(
+      'entry_too_large',
+    );
+  });
+
+  it('refuses a section file past its bound', async () => {
+    const user = createUser(`bounds_s_${Date.now()}`);
+    const padded = JSON.stringify([{ pad: 'x'.repeat(8192) }]);
+    expect(
+      (await rejection(user, await archive({ 'bookmarks.json': Buffer.from(padded) }))).code,
+    ).toBe('entry_too_large');
+  });
+
+  it('refuses a messages.ndjson line past its bound', async () => {
+    const user = createUser(`bounds_n_${Date.now()}`);
+    const line = JSON.stringify({ id: 1, text: 'x'.repeat(2048) });
+    expect(
+      (await rejection(user, await archive({ 'messages.ndjson': Buffer.from(`${line}\n`) }))).code,
+    ).toBe('entry_too_large');
+  });
+
+  it('refuses an archive with too many entries', async () => {
+    const user = createUser(`bounds_e_${Date.now()}`);
+    const extra: Record<string, Buffer> = {};
+    for (let i = 0; i < 20; i++) extra[`thumbnails/${i}.webp`] = Buffer.from('x');
+    expect((await rejection(user, await archive(extra))).code).toBe('too_many_entries');
+  });
+
+  it('accepts CR-separated messages.ndjson rows like readline does', async () => {
+    const user = createUser(`bounds_cr_${Date.now()}`);
+    // Five short rows: as one LF-less run they would be 45 bytes against a
+    // 12-byte line bound; as the five lines readline sees, each is 8.
+    const buf = await archive({ 'messages.ndjson': Buffer.from('{"id":1}\r'.repeat(5)) });
+    const result = await importFromZipBuffer(user.id, buf, { ...limits, ndjsonLineBytes: 12 });
+    // Rows with no network to map to are dropped; the point is no throw.
+    expect(result.counts.messages).toBe(0);
+  });
+
+  it('skips a thumbnail past its own bound or the total budget, and keeps the rest', async () => {
+    // Real upload rows, so the surviving thumbnails are observable on them.
+    const { alice } = seedAlice(); // one upload already
+    for (let i = 0; i < 4; i++) {
+      insertUpload(alice.id, {
+        provider: 'hoarder',
+        url: `https://example.com/t${i}.jpg`,
+        filename: `t${i}.jpg`,
+        mime: 'image/jpeg',
+        byte_size: 10,
+        width: 10,
+        height: 10,
+        thumbnail: Buffer.from([0xff, 0xd8, 0xff, 0xe0, i]),
+      });
+    }
+    const exported = await unzipToMap(await exportToBuffer(alice.id, { includeMessages: false }));
+    const thumbNames = [...exported.keys()]
+      .filter((n) => /^thumbnails\/\d+\.jpg$/.test(n))
+      .sort((a, b) => parseInt(a.slice(11), 10) - parseInt(b.slice(11), 10));
+    expect(thumbNames.length).toBe(5);
+    // Per-thumbnail bound 64, total 100, in central-directory order:
+    // 40 kept (40), 200 over its own bound, 40 kept (80), 40 would overrun the
+    // total, 10 kept (90).
+    const sizes = [40, 200, 40, 40, 10];
+    const rebuilt = new Map<string, Buffer>();
+    for (const [name, buf] of exported) if (!name.startsWith('thumbnails/')) rebuilt.set(name, buf);
+    thumbNames.forEach((name, i) => rebuilt.set(name, Buffer.alloc(sizes[i], i + 1)));
+
+    const bob = createUser(`bounds_tb_${Date.now()}`);
+    const result = await importFromZipBuffer(bob.id, await zipFromMap(rebuilt), {
+      ...limits,
+      manifestBytes: 64 * 1024,
+      jsonBytes: 1024 * 1024,
+      entries: 1000,
+      thumbnailBytes: 64,
+      thumbnailsTotalBytes: 100,
+    });
+    expect(result.thumbnailsAttached).toBe(3);
+    const rows = db
+      .prepare('SELECT thumbnail FROM upload_history WHERE user_id = ? ORDER BY id')
+      .all(bob.id) as Array<{ thumbnail: Buffer | null }>;
+    expect(rows.map((r) => (r.thumbnail ? Buffer.from(r.thumbnail).length : null))).toEqual([
+      40,
+      null,
+      40,
+      null,
+      10,
+    ]);
+  });
+
+  it('a corrupt messages.ndjson entry fails the import instead of the process', async () => {
+    const user = createUser(`bounds_c_${Date.now()}`);
+    const line = JSON.stringify({ id: 1, text: 'hello '.repeat(40) });
+    const buf = await archive({ 'messages.ndjson': Buffer.from(`${line}\n`.repeat(20)) });
+    // Flip bytes inside the DEFLATE stream of that entry: its local header
+    // (PK\x03\x04 + name) is followed by the compressed bytes.
+    const at = buf.indexOf('messages.ndjson') + 'messages.ndjson'.length + 8;
+    for (let k = 0; k < 8; k++) buf[at + k] ^= 0xff;
+    let uncaught: unknown = null;
+    const trap = (err: unknown) => {
+      uncaught = err;
+    };
+    process.prependOnceListener('uncaughtException', trap);
+    try {
+      const err = await importFromZipBuffer(user.id, buf, limits).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ImportError);
+      expect((err as InstanceType<typeof ImportError>).code).toBe('insert_failed');
+    } finally {
+      process.removeListener('uncaughtException', trap);
+    }
+    expect(uncaught).toBeNull();
+  });
+
+  it('checks the account is empty before reading any entry body', async () => {
+    const { alice } = seedAlice();
+    const padded = JSON.stringify({ export_format_version: 1, pad: 'x'.repeat(400) });
+    expect(
+      (await rejection(alice, await archive({ 'manifest.json': Buffer.from(padded) }))).code,
+    ).toBe('account_not_empty');
+  });
+});
