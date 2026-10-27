@@ -30,8 +30,9 @@
 # the firewall rules that make the self-test pass — and a systemd unit that
 # re-applies them on every boot and whenever Docker restarts. ⚠ One gap it
 # cannot cover: a host firewall that rewrites the filter table later (a `ufw
-# allow …` reload) drops the host-protection rule, and the decoder only
-# re-tests itself when it starts — so re-run the script after changing ufw or
+# allow …` reload) drops the host-protection rule. The decoder re-probes
+# every ten minutes and stops serving when that happens, but only re-running
+# the script puts the rule back — so re-run it after changing ufw or
 # firewalld. See "Link previews & inline media" in docs/SELF_HOSTING.md.
 
 services:
@@ -175,14 +176,16 @@ services:
       - LURKER_PREVIEWS_ALLOW_PRIVATE=${LURKER_PREVIEWS_ALLOW_PRIVATE:-1}
       - LURKER_PREVIEWS_SELFTEST_TARGETS=${LURKER_PREVIEWS_SELFTEST_TARGETS:-}
       # ⚠ Only read when ALLOW_PRIVATE=0, and then it matters a lot. The
-      # built-in probes are the cloud metadata address and this host's bridge
-      # gateway on :22/:80 — and a probe that nothing is LISTENING at passes
-      # whether or not your firewall exists. Name something private you know
-      # answers, most simply your Docker host's LAN address with sshd on it,
-      # and the self-test becomes a real test. (Verified: with the rules gone,
-      # a named listening target is what makes the decoder refuse to serve.)
-      # Set it in a .env file beside this compose:
-      #   LURKER_PREVIEWS_SELFTEST_TARGETS=192.168.1.10:22
+      # built-in probes are the cloud metadata address (both families) and
+      # this host's bridge gateways on :22/:80 — and a probe that nothing is
+      # LISTENING at passes whether or not your firewall exists. Name
+      # something private you know answers, most simply your Docker host's
+      # LAN address with sshd on it, and the self-test becomes a real test.
+      # (Verified: with the rules gone, a named listening target is what
+      # makes the decoder refuse to serve.) IPv6 targets go in brackets.
+      # The decoder re-probes every ten minutes, so a rule that lapses
+      # later is caught too. Set it in a .env file beside this compose:
+      #   LURKER_PREVIEWS_SELFTEST_TARGETS=192.168.1.10:22,[fd00:1::10]:22
       # Optional: what the decoder tells sites it is when it fetches a
       # preview. The default names Lurker and the traffic class (a social
       # preview fetch), so a site operator reading their logs can recognise
@@ -203,18 +206,28 @@ services:
     # gain any, and hard resource ceilings.
     read_only: true
     # ⚠ ffmpeg's scratch space, and it is RAM: a tmpfs counts against the
-    # memory limit below, which is what bounds it.
+    # memory limit below. `size=` keeps a filled scratch a failed poster
+    # rather than the whole limit; `noexec,nosuid` mean the one writable
+    # path cannot stage a binary.
     tmpfs:
-      - /tmp
+      - /tmp:rw,noexec,nosuid,size=256m
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
     mem_limit: 512m
-    # ⚠ Counts THREADS, not processes: node's pool plus one capped ffmpeg
-    # decode fits in 128. Meaningfully lower starves thread creation, and the
-    # first symptom is silently posterless cards — a missing poster is a
-    # supported state, so nothing logs.
+    # Equal to mem_limit, so the limit is a limit and not a limit plus swap.
+    memswap_limit: 512m
+    # Nothing in the container shares memory with anything.
+    ipc: none
+    # ⚠ Counts THREADS, not processes. Every ffmpeg the decoder spawns is
+    # single-threaded by argument (decoder, filter graph and encoder capped
+    # separately — before 0.2.1 only the first was, and one "capped" decode
+    # measured fifty threads on a 16-core host) and at most two run at once,
+    # so node's pool plus the decodes sit well inside 128. Meaningfully
+    # lower starves thread creation, and the first symptom is silently
+    # posterless cards — a missing poster is a supported state, so nothing
+    # logs.
     pids_limit: 128
     logging:
       options:

@@ -327,9 +327,10 @@ services:
     image: ghcr.io/amiantos/lurker-previews:latest
     restart: unless-stopped
     # The decoder is meant to reach the public internet but nothing on your
-    # private network. It proves that at boot and REFUSES TO START if it can
-    # reach a private address — which, on a plain Docker network, it can (the
-    # host is one hop away). For a home/VPS self-host, tell it to skip that
+    # private network. It proves that at boot and every ten minutes after, and
+    # REFUSES TO SERVE (503s, the reason in its log) while it can reach a
+    # private address — which, on a plain Docker network, it can (the host is
+    # one hop away). For a home/VPS self-host, tell it to skip that
     # check: the in-process SSRF guard still refuses private URLs, so this is the
     # same protection the feature had before it was split out. See "Hardening"
     # below to enforce it at the network layer instead.
@@ -368,7 +369,7 @@ straight to the origin, the one request the reader deliberately made.
 
 #### Hardening: enforce the egress limit at the network layer
 
-`LURKER_PREVIEWS_ALLOW_PRIVATE=1` turns off the decoder's boot self-test so it
+`LURKER_PREVIEWS_ALLOW_PRIVATE=1` turns off the decoder's self-test so it
 runs on an ordinary Docker network. The in-process SSRF guard is still active, so
 a malicious _URL_ is refused either way — what you give up is protection against a
 malicious _process_ (an RCE in the decoder reaching your LAN). For a trusted
@@ -392,11 +393,13 @@ Two things to set alongside it:
   you wrote your own compose file from the block above, that hardcoded
   `- LURKER_PREVIEWS_ALLOW_PRIVATE=1` wins over any `.env` — delete the line.
 - **Give the self-test a target that answers.** Its built-in probes are the
-  cloud metadata address and the bridge gateway's `:22`/`:80`; on a box with no
-  sshd and nothing on `:80` they all time out whether or not your rules exist,
-  and it passes vacuously. Name something private you know is listening —
-  usually your Docker host's LAN address — via
-  `LURKER_PREVIEWS_SELFTEST_TARGETS=192.168.1.10:22`.
+  cloud metadata address on both families and the bridge gateways' `:22`/`:80`;
+  on a box with no sshd and nothing on `:80` they all time out whether or not
+  your rules exist, and it passes vacuously. Name something private you know is
+  listening — usually your Docker host's LAN address — via
+  `LURKER_PREVIEWS_SELFTEST_TARGETS=192.168.1.10:22`; IPv6 targets go in
+  brackets, `[fd00:1::10]:22`. The decoder re-probes every ten minutes, so a
+  rule that lapses later is caught within that window.
 
 The script adds `DOCKER-USER` rules dropping traffic from the decoder's address
 to `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `169.254.0.0/16` and
@@ -425,9 +428,11 @@ Re-run the script after two things:
   report themselves unavailable while everything else carries on.
 - **Any change to a host firewall that owns the filter table** (`ufw allow …`,
   `firewall-cmd`). A reload rewrites `INPUT` and takes the host-protection rule
-  with it. ⚠ This one is _not_ loud — the decoder only re-tests its containment
-  when it starts — so it is the one case where you have to remember. The script
-  warns at the end when it sees ufw or firewalld running.
+  with it. The decoder notices within ten minutes (its probes repeat) and stops
+  serving until the rule is back, so previews go blank rather than quietly
+  running with a route to your sshd — but nothing puts the rule back except
+  running the script again. It warns at the end when it sees ufw or firewalld
+  running.
 
 (This is what the hosted fleet does per-cell, and why.)
 

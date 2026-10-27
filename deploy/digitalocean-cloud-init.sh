@@ -88,9 +88,10 @@ ENABLE_IDENTD="true"
 # relaxed self-host one: a private bridge of its own, iptables rules that let it
 # reach the public internet and nothing private (not the VPC, not your other
 # containers, not this droplet), a systemd unit that re-applies them on every
-# boot, and the decoder's own boot self-test left ON — so if the containment
-# ever lapses it refuses to serve instead of quietly parsing hostile bytes with
-# a route to your infrastructure.
+# boot, and the decoder's own self-test left ON — it re-probes at every start
+# and every ten minutes after, so if the containment ever lapses it refuses to
+# serve instead of quietly parsing hostile bytes with a route to your
+# infrastructure.
 #
 # ⚠ Budget RAM for it: the decoder is capped at 512 MB and ffmpeg uses that
 # ceiling when it decodes a poster. On the smallest (1 GB) droplet it will lean
@@ -377,7 +378,8 @@ EOF
   # ⚠ 0, not unset: the overlay defaults this to 1 (skip the self-test), which
   # is the right default for a self-host on a plain Docker network but the
   # wrong one here — this droplet gets real egress rules a few steps below, so
-  # the decoder should check them, and keep checking them on every start.
+  # the decoder should check them, and keep checking them — at every start and
+  # every ten minutes after.
   if [ "$ENABLE_LINK_PREVIEWS" = "true" ]; then
     echo "LURKER_PREVIEWS_ALLOW_PRIVATE=0" >> .env
     # ⚠ The byte cache is not a tuning knob here — VIDEO POSTERS REQUIRE IT.
@@ -391,15 +393,22 @@ EOF
     # ⚠ Give the self-test something that is genuinely LISTENING. Its built-in
     # probes are the metadata address and the bridge gateway, and a probe that
     # nothing answers passes whether or not the rules are in force. This
-    # droplet's VPC address has sshd on it, and it is exactly the kind of
-    # neighbour we never want the decoder to reach — so it is the strongest
-    # probe available here. Skipped silently if the droplet has no VPC
-    # interface; the built-in probes still run.
-    local vpc_ip
+    # droplet's own addresses have sshd on them: the public one is the host the
+    # INPUT rule protects, and the VPC one is exactly the kind of neighbour we
+    # never want the decoder to reach — so both are named. An interface the
+    # droplet does not have is skipped silently; the built-in probes still run.
+    # The decoder repeats these probes every ten minutes.
+    local public_ip vpc_ip ip targets=""
+    public_ip=$(curl -fsS --max-time 5 \
+      http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address 2>/dev/null || true)
     vpc_ip=$(curl -fsS --max-time 5 \
       http://169.254.169.254/metadata/v1/interfaces/private/0/ipv4/address 2>/dev/null || true)
-    if [ -n "$vpc_ip" ]; then
-      echo "LURKER_PREVIEWS_SELFTEST_TARGETS=${vpc_ip}:22" >> .env
+    for ip in "$public_ip" "$vpc_ip"; do
+      [ -n "$ip" ] || continue
+      targets="${targets:+$targets,}${ip}:22"
+    done
+    if [ -n "$targets" ]; then
+      echo "LURKER_PREVIEWS_SELFTEST_TARGETS=${targets}" >> .env
     fi
   fi
 
@@ -411,8 +420,8 @@ EOF
 # The decoder's containment: iptables rules scoped to its address so it can
 # reach the public internet and nothing private, plus a systemd unit that
 # re-applies them on boot and whenever Docker restarts. The script verifies its
-# own work by restarting the decoder and reading the verdict its boot self-test
-# logs — so a failure here is a loud one, in the deploy log, rather than a
+# own work by restarting the decoder and reading the verdict its self-test logs
+# at start — so a failure here is a loud one, in the deploy log, rather than a
 # preview service that works while quietly holding a route to this droplet.
 contain_previews() {
   [ "$ENABLE_LINK_PREVIEWS" = "true" ] || return 0
