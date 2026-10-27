@@ -51,7 +51,13 @@ import { revokeAllForUser as revokeApiTokensForUser } from '../db/apiTokens.js';
 import { deleteOAuthForUser, deleteTokenByRaw as deleteOAuthTokenByRaw } from '../db/oauth.js';
 import { deleteAllForUser as deletePushSubscriptionsForUser } from '../db/pushSubscriptions.js';
 import { SESSION_COOKIE, getCookieOptions, requireAuth, bearerToken } from '../middleware/auth.js';
-import { rpConfig, saveChallenge, consumeChallenge, userIdToHandle } from '../services/webauthn.js';
+import {
+  rpConfig,
+  saveChallenge,
+  consumeChallenge,
+  hasLiveChallenge,
+  userIdToHandle,
+} from '../services/webauthn.js';
 import {
   hashPassword,
   verifyPassword,
@@ -136,9 +142,13 @@ router.get('/setup-status', (_req: Request, res: Response) => {
 // deleted it, so every later setup call answered 409 and nobody could ever sign
 // in. Such an account has never been used (no credential means no session), so
 // it is setup still pending: the status says so, and the next setup attempt
-// deletes it and starts over. Never on a hosted cell, where an admin signs in
-// through the control plane and has no local credential by design.
-function abandonedSetupAdmin(): { id: number } | null {
+// deletes it and starts over. Two exceptions. While a setup challenge is live
+// (five minutes) the ceremony may still finish, so the account is in progress,
+// not abandoned — otherwise anyone posting /setup/options mid-ceremony would
+// pull the operator's user out from under them. And never on a hosted cell,
+// where an admin signs in through the control plane and has no local
+// credential by design.
+function strandedAdmin(): { id: number } | null {
   if (isNodeMode()) return null;
   if (countUsers() !== 1 || countAllCredentials() > 0) return null;
   const [user] = listUsers();
@@ -146,8 +156,23 @@ function abandonedSetupAdmin(): { id: number } | null {
   return user;
 }
 
+function abandonedSetupAdmin(): { id: number } | null {
+  const stranded = strandedAdmin();
+  return stranded && !hasLiveChallenge('setup') ? stranded : null;
+}
+
 function setupPending(): boolean {
   return countUsers() === 0 || abandonedSetupAdmin() !== null;
+}
+
+// The 409 for a setup call that cannot proceed: a ceremony in progress is told
+// so, since "already complete" would send the operator looking for a login.
+function refuseSetup(res: Response): void {
+  if (strandedAdmin() && hasLiveChallenge('setup')) {
+    res.status(409).json({ error: 'setup in progress; try again in a few minutes' });
+    return;
+  }
+  res.status(409).json({ error: 'setup already complete' });
 }
 
 function reclaimAbandonedSetup(): void {
@@ -162,15 +187,17 @@ function reclaimAbandonedSetup(): void {
 // and user management.
 router.post('/setup/options', async (req: Request, res: Response) => {
   if (!setupPending()) {
-    res.status(409).json({ error: 'setup already complete' });
+    refuseSetup(res);
     return;
   }
-  reclaimAbandonedSetup();
   const requested = (req.body?.username || '').trim();
   if (!isValidUsername(requested)) {
     res.status(400).json({ error: 'invalid username' });
     return;
   }
+  // After validation, like the password route: a bad request must not cost
+  // the stranded account its slot, only a request that will replace it.
+  reclaimAbandonedSetup();
   if (usernameTaken(requested)) {
     res.status(409).json({ error: 'username already taken' });
     return;
@@ -266,7 +293,7 @@ router.post('/setup/verify', async (req: Request, res: Response) => {
 // signed in straight away. They can add a passkey later from settings.
 router.post('/setup/password', (req: Request, res: Response) => {
   if (!setupPending()) {
-    res.status(409).json({ error: 'setup already complete' });
+    refuseSetup(res);
     return;
   }
   const requested = (req.body?.username || '').trim();

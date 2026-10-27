@@ -16,9 +16,11 @@
 
 	# Once a browser has seen this header it refuses to send the session cookie
 	# over a plain http:// link to this host, even before the 80->443 redirect
-	# fires; nosniff keeps a browser from second-guessing a served type.
+	# fires. This host only: with includeSubDomains an apex LURKER_DOMAIN would
+	# pin every subdomain the operator has to HTTPS for a year. nosniff keeps a
+	# browser from second-guessing a served type.
 	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options nosniff
 	}
 

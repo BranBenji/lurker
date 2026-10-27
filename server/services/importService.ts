@@ -152,9 +152,13 @@ function openZipEntries(
         return;
       }
       const entries = new Map<string, Entry>();
+      // Every central-directory record counts, directories included: each is
+      // parsed on the event loop whether or not it is kept.
+      let seen = 0;
       zip.on('error', reject);
       zip.on('entry', (entry: Entry) => {
-        if (entries.size >= maxEntries) {
+        seen += 1;
+        if (seen > maxEntries) {
           // Rejecting here means the caller never gets the ZipFile to close.
           zip.close();
           reject(
@@ -251,6 +255,12 @@ function boundLineLength(
       callback(null, chunk);
     },
   });
+  // pipe() installs no error handler on its source. yauzl reports a corrupt
+  // entry (bad DEFLATE bytes, a size that disagrees with the header) as an
+  // 'error' on the entry stream, which readline used to re-emit so the import
+  // failed cleanly; with nothing listening it is an uncaughtException. Hand it
+  // to the Transform so readline still sees it.
+  input.on('error', (err) => stream.destroy(err as Error));
   input.pipe(stream);
   return { stream, overflowed: () => overflowed };
 }
@@ -875,14 +885,15 @@ export async function importFromZipFile(
     // the entry; the bytes go into the BLOB as-is and the serving route sniffs
     // their type, so a mismatch here can't corrupt anything. ----
     // A thumbnail is a preview, so one past its bound is skipped rather than
-    // failing the import; past the total budget the rest are skipped too.
+    // failing the import, and one that would overrun the total budget is
+    // skipped while a smaller one after it may still fit.
     const thumbs = new Map<number, Buffer>();
     let thumbBytes = 0;
     for (const [name, entry] of entries) {
       const m = name.match(/^thumbnails\/(\d+)\.(?:jpg|webp)$/);
       if (!m) continue;
       if (entry.uncompressedSize > limits.thumbnailBytes) continue;
-      if (thumbBytes + entry.uncompressedSize > limits.thumbnailsTotalBytes) break;
+      if (thumbBytes + entry.uncompressedSize > limits.thumbnailsTotalBytes) continue;
       const buf = await readEntryBuffer(zip, entry, limits.thumbnailBytes);
       if (buf === null) continue;
       thumbBytes += buf.length;

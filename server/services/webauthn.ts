@@ -46,6 +46,16 @@ export function saveChallenge(payload: Record<string, unknown>): string {
   return token;
 }
 
+/** Whether any unexpired challenge was saved for `purpose` — a ceremony that
+ *  may still complete. */
+export function hasLiveChallenge(purpose: string): boolean {
+  purge();
+  for (const entry of challenges.values()) {
+    if (entry.purpose === purpose) return true;
+  }
+  return false;
+}
+
 export function consumeChallenge(token: string | null | undefined): ChallengeEntry | null {
   if (!token) return null;
   purge();

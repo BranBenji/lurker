@@ -120,7 +120,8 @@ describe('malformed frames', () => {
   });
 
   // The cases the verb registry does not type: a number where the dispatcher
-  // handed a string straight to a string method.
+  // handed a string straight to a string method. Answered like any other
+  // rejection, so a client bug is visible rather than a silent no-op.
   for (const [label, frame] of [
     ['raw with a numeric line', { type: 'raw', networkId, line: 5 }],
     ['join with a numeric channel', { type: 'join', networkId, channel: 5 }],
@@ -128,7 +129,7 @@ describe('malformed frames', () => {
     ['away with an object message', { type: 'away', networkId, message: {} }],
     ['typing with a numeric target', { type: 'typing', networkId, target: 1, state: 'active' }],
   ] as const) {
-    it(`ignores ${label} and keeps serving`, async () => {
+    it(`refuses ${label} with an error frame and keeps serving`, async () => {
       const { ws, heard } = await attach(alice);
       let uncaught: unknown = null;
       const trap = (err: unknown) => {
@@ -136,7 +137,11 @@ describe('malformed frames', () => {
       };
       process.prependOnceListener('uncaughtException', trap);
       try {
-        ws.send(JSON.stringify(frame));
+        ws.send(JSON.stringify({ ...frame, clientId: 'c1' }));
+        const err = await waitFor(heard, (f) => f.kind === 'error');
+        expect(String(err.text)).toMatch(/^invalid frame: /);
+        const ack = await waitFor(heard, (f) => f.kind === 'send-result');
+        expect(ack).toMatchObject({ clientId: 'c1', ok: false, error: 'invalid-frame' });
         await stillServes(ws, heard);
       } finally {
         process.removeListener('uncaughtException', trap);

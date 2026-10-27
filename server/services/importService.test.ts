@@ -1844,6 +1844,29 @@ describe('import archive bounds', () => {
     expect(result.thumbnailsAttached).toBe(0);
   });
 
+  it('a corrupt messages.ndjson entry fails the import instead of the process', async () => {
+    const user = createUser(`bounds_c_${Date.now()}`);
+    const line = JSON.stringify({ id: 1, text: 'hello '.repeat(40) });
+    const buf = await archive({ 'messages.ndjson': Buffer.from(`${line}\n`.repeat(20)) });
+    // Flip bytes inside the DEFLATE stream of that entry: its local header
+    // (PK\x03\x04 + name) is followed by the compressed bytes.
+    const at = buf.indexOf('messages.ndjson') + 'messages.ndjson'.length + 8;
+    for (let k = 0; k < 8; k++) buf[at + k] ^= 0xff;
+    let uncaught: unknown = null;
+    const trap = (err: unknown) => {
+      uncaught = err;
+    };
+    process.prependOnceListener('uncaughtException', trap);
+    try {
+      const err = await importFromZipBuffer(user.id, buf, limits).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ImportError);
+      expect((err as InstanceType<typeof ImportError>).code).toBe('insert_failed');
+    } finally {
+      process.removeListener('uncaughtException', trap);
+    }
+    expect(uncaught).toBeNull();
+  });
+
   it('checks the account is empty before reading any entry body', async () => {
     const { alice } = seedAlice();
     const padded = JSON.stringify({ export_format_version: 1, pad: 'x'.repeat(400) });

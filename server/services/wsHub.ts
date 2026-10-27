@@ -3104,6 +3104,17 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
     };
   }
 
+  // A frame whose field is not the type the handler needs, on a path the verb
+  // registry does not type. Answered like every other rejection here — an
+  // error frame, and a send-result for a tab waiting on this clientId — so a
+  // client bug is visible rather than a silent no-op.
+  function rejectField(ws: LurkerWebSocket, msg: WsPayload, field: string): void {
+    send(ws, { kind: 'error', text: `invalid frame: ${String(msg.type)}.${field}` });
+    if (msg.clientId) {
+      send(ws, { kind: 'send-result', clientId: msg.clientId, ok: false, error: 'invalid-frame' });
+    }
+  }
+
   function handleClientMessage(ws: LurkerWebSocket, user: User, msg: WsPayload): void {
     const userId = user.id;
     // Any message that carries a networkId must reference a network the caller
@@ -3358,7 +3369,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
       case 'join':
         // The channel reaches the case-folder and the key reaches encryptSecret;
         // neither takes a non-string, and this path has no verb to type it.
-        if (typeof msg.channel !== 'string') break;
+        if (typeof msg.channel !== 'string') {
+          rejectField(ws, msg, 'channel');
+          break;
+        }
         ircManager.joinChannel(
           userId,
           msg.networkId as number,
@@ -3385,7 +3399,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         break;
       }
       case 'part':
-        if (typeof msg.channel !== 'string') break;
+        if (typeof msg.channel !== 'string') {
+          rejectField(ws, msg, 'channel');
+          break;
+        }
         ircManager.partChannel(
           userId,
           msg.networkId as number,
@@ -3416,7 +3433,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         break;
       case 'raw':
         // raw() scrubs the line with a string replace; a number here threw.
-        if (typeof msg.line !== 'string') break;
+        if (typeof msg.line !== 'string') {
+          rejectField(ws, msg, 'line');
+          break;
+        }
         ircManager.getConnection(userId, msg.networkId as number)?.raw(msg.line);
         break;
       case 'probe-presence': {
@@ -3507,6 +3527,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
           typeof msg.all === 'boolean' ? msg.all : undefined,
         );
         // Empty/whitespace-only message → treat as /back (idiomatic IRC).
+        if (msg.type === 'away' && msg.message != null && typeof msg.message !== 'string') {
+          rejectField(ws, msg, 'message');
+          break;
+        }
         const message =
           msg.type === 'away' && typeof msg.message === 'string' ? msg.message.trim() : '';
         if (!message) ircManager.clearAway(userId, scope, { autoSet: false });
@@ -3514,7 +3538,10 @@ export function attachWsHub(httpServer: HttpServer, sessionSecret: string) {
         break;
       }
       case 'typing':
-        if (typeof msg.target !== 'string' || typeof msg.state !== 'string') break;
+        if (typeof msg.target !== 'string' || typeof msg.state !== 'string') {
+          rejectField(ws, msg, typeof msg.target !== 'string' ? 'target' : 'state');
+          break;
+        }
         ircManager.typing(userId, msg.networkId as number, msg.target, msg.state);
         break;
       case 'mark-read': {

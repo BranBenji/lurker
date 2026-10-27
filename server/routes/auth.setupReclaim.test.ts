@@ -53,6 +53,25 @@ describe('abandoned first-run setup', () => {
     expect(users.countUsers()).toBe(1);
   });
 
+  it('a live setup challenge means in progress, not abandoned', async () => {
+    const { id } = users.listUsers()[0];
+    users.setPasswordHash(id, null);
+    const { saveChallenge, consumeChallenge } = await import('../services/webauthn.js');
+    const token = saveChallenge({ purpose: 'setup', challenge: 'c', userId: id });
+    const status = await testRequest(app).get('/api/auth/setup-status');
+    expect(status.body.needsSetup).toBe(false);
+    const res = await testRequest(app).post('/api/auth/setup/password').send({
+      username: 'racer',
+      password: 'longenoughpw',
+    });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/in progress/);
+    expect(users.findUserById(id)).toBeDefined();
+    consumeChallenge(token);
+    expect((await testRequest(app).get('/api/auth/setup-status')).body.needsSetup).toBe(true);
+    users.setPasswordHash(id, 'x');
+  });
+
   it('a validation failure never deletes the stranded admin', async () => {
     const { id } = users.listUsers()[0];
     users.setPasswordHash(id, null);
