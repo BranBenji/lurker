@@ -30,8 +30,9 @@
 # the firewall rules that make the self-test pass — and a systemd unit that
 # re-applies them on every boot and whenever Docker restarts. ⚠ One gap it
 # cannot cover: a host firewall that rewrites the filter table later (a `ufw
-# allow …` reload) drops the host-protection rule, and the decoder only
-# re-tests itself when it starts — so re-run the script after changing ufw or
+# allow …` reload) drops the host-protection rule. The decoder re-probes
+# every ten minutes and stops serving when that happens, but only re-running
+# the script puts the rule back — so re-run it after changing ufw or
 # firewalld. See "Link previews & inline media" in docs/SELF_HOSTING.md.
 
 services:

@@ -327,9 +327,10 @@ services:
     image: ghcr.io/amiantos/lurker-previews:latest
     restart: unless-stopped
     # The decoder is meant to reach the public internet but nothing on your
-    # private network. It proves that at boot and REFUSES TO START if it can
-    # reach a private address — which, on a plain Docker network, it can (the
-    # host is one hop away). For a home/VPS self-host, tell it to skip that
+    # private network. It proves that at boot and every ten minutes after, and
+    # REFUSES TO SERVE (503s, the reason in its log) while it can reach a
+    # private address — which, on a plain Docker network, it can (the host is
+    # one hop away). For a home/VPS self-host, tell it to skip that
     # check: the in-process SSRF guard still refuses private URLs, so this is the
     # same protection the feature had before it was split out. See "Hardening"
     # below to enforce it at the network layer instead.
@@ -368,7 +369,7 @@ straight to the origin, the one request the reader deliberately made.
 
 #### Hardening: enforce the egress limit at the network layer
 
-`LURKER_PREVIEWS_ALLOW_PRIVATE=1` turns off the decoder's boot self-test so it
+`LURKER_PREVIEWS_ALLOW_PRIVATE=1` turns off the decoder's self-test so it
 runs on an ordinary Docker network. The in-process SSRF guard is still active, so
 a malicious _URL_ is refused either way — what you give up is protection against a
 malicious _process_ (an RCE in the decoder reaching your LAN). For a trusted

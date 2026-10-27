@@ -26,7 +26,7 @@
 #   * a RETURN rule first, so Lurker ↔ decoder traffic on the shared bridge
 #     survives the DROPs above (the decoder's own subnet is inside 172.16/12).
 #
-# ⚠ DROP, never REJECT. The decoder's boot self-test reads a completed connect
+# ⚠ DROP, never REJECT. The decoder's self-test reads a completed connect
 # as "the policy is not in force"; a REJECT answers RST, which it cannot tell
 # apart from a refusal it should ignore. DROP makes blocked targets time out,
 # which is the unambiguous signal.
@@ -266,15 +266,16 @@ apply_all() {
 # ── Verification ────────────────────────────────────────────────────────────
 
 # The rules are only half the point; the decoder confirming them is the other
-# half. Restart it so its boot self-test runs UNDER the rules we just applied
+# half. Restart it so its self-test runs UNDER the rules we just applied
 # — on a reboot the container will usually have started before this script
 # did, and a self-test that ran too early proves nothing.
 verify() {
-  # ⚠ Read only the logs from THIS start. The decoder logs its verdict once, at
-  # boot, and the line from the previous start is still sitting in the log — on
-  # a first run that line says REFUSING TO SERVE, which is exactly the answer
+  # ⚠ Read only the logs from THIS start. The decoder logs a pass once per start
+  # (and a refusal on every ten-minute probe that fails), and the lines from the
+  # previous start are still sitting in the log — on a first run they say
+  # REFUSING TO SERVE, which is exactly the answer
   # we would otherwise misreport as a failure of the rules we just installed.
-  log "restarting $CONTAINER so its boot self-test runs under these rules..."
+  log "restarting $CONTAINER so its self-test runs under these rules..."
   docker restart "$CONTAINER" >/dev/null
   # ⚠ The container's own StartedAt, read AFTER the restart. Epoch seconds off
   # the wall clock have one-second granularity and `--since` is inclusive, so a
@@ -331,8 +332,9 @@ warn_about_firewall_reloads() {
   [ -n "$fw" ] || return 0
   log "⚠ $fw is active. Re-run this script after any $fw change (a reload rewrites"
   log "  the filter table and drops the INPUT rule that keeps this host unreachable"
-  log "  from the decoder; the decoder notices within ten minutes and stops serving"
-  log "  until the rule is back). Rebooting and restarting Docker are already handled."
+  log "  from the decoder; a 0.2.1+ decoder notices within ten minutes and stops serving"
+  log "  until the rule is back, an older one only re-checks at start). Rebooting and"
+  log "  restarting Docker are already handled."
 }
 
 # ── Boot persistence ────────────────────────────────────────────────────────

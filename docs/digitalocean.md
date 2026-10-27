@@ -63,7 +63,7 @@ sudo /opt/lurker/previews-egress.sh
 
 The firewall rules are scoped to the address Docker gave the decoder, and updating it can hand it a new one. Re-running is idempotent and takes seconds. You will not have to remember for updates: a decoder whose rules no longer fit refuses to serve and says so in `docker logs lurker-previews`, previews go blank, and nothing else is affected.
 
-⚠ Run it again after changing the firewall too — `ufw allow …` reloads the ruleset and drops the rule that keeps the droplet itself unreachable from the decoder. That one is _not_ self-announcing, because the decoder only re-checks its containment when it starts. Reboots and Docker restarts are already handled by the systemd unit the script installs.
+⚠ Run it again after changing the firewall too — `ufw allow …` reloads the ruleset and drops the rule that keeps the droplet itself unreachable from the decoder. The decoder re-checks its containment every ten minutes, so within that window it stops serving and says so in its log — but nothing puts the rule back until you run the script. Reboots and Docker restarts are already handled by the systemd unit the script installs.
 
 ## Going further
 
