@@ -802,6 +802,16 @@ function buildUserhost(event: Record<string, unknown>): string | null {
 
 // Keys bouncer clients may add to the socket's subscription beyond Lurker's own.
 const MAX_EXTRA_METADATA_KEYS = 64;
+// How long after a peer's JOIN their metadata is asked for (#1246): long
+// enough for an autojoin's run of JOINs to be one query.
+const PEER_JOIN_SYNC_DELAY_SEC = 1;
+
+// A metadata target that names a nick: not a channel, and not the `*` (us) or
+// `*ALL` (everything) forms.
+function isMetadataNickTarget(target: string): boolean {
+  return !isChannelMetadataTarget(target) && !target.startsWith('*');
+}
+
 // Bytes of keys on one SUB line: room for `METADATA * SUB `, CRLF and one more
 // long key under the 512-byte line limit.
 const MAX_SUB_LINE_KEY_BYTES = 400;
@@ -3361,6 +3371,12 @@ export class IrcConnection {
         host: (event.hostname as string) || null,
         account: joinAccount,
       });
+      // Someone joining a channel we're in (#1246): the server syncs the
+      // room's metadata to them and tells the room nothing of theirs — ergo
+      // broadcasts the JOIN, a MODE and an AWAY, and the spec asks no more —
+      // so a peer who signed off and back on wore a generated tile until a
+      // WHOIS. Ask. A restore's replayed joins are covered by its own sync.
+      if (!isSelf && ch && !this.restoring) this.syncPeerMetadata(eventNick);
       this.publish({
         type: 'join',
         target: eventChannel,
@@ -4994,16 +5010,31 @@ export class IrcConnection {
     });
   }
 
+  // A `METADATA <target> SYNC` after a wait: the server's 774 named it, or a
+  // peer joined (syncPeerMetadata). One per target at a time.
   private scheduleMetadataSync(target: string, retryAfterSec: number): void {
     if (this.metadataSyncTimers.has(target)) return;
     const delay = Math.min(Math.max(0, retryAfterSec), 300) * 1000;
     const timer = setTimeout(() => {
       this.metadataSyncTimers.delete(target);
       if (this.disposed || this.state !== 'connected' || !this.metadataLimits()) return;
+      // A nick gone again meanwhile: its record would sit with nothing to
+      // forget it, and be taken for current when they next join.
+      if (isMetadataNickTarget(target) && !this.keepsUserMetadata(target)) return;
       this.replies.send('lurker', `METADATA ${target} SYNC`);
     }, delay);
     timer.unref?.();
     this.metadataSyncTimers.set(target, timer);
+  }
+
+  // A peer who just joined a channel we're in (#1246): their whole record,
+  // unless we hold one — a second shared channel, a watched DM peer, or a
+  // change that beat the join. The wait folds an autojoin burst (one JOIN per
+  // channel) into one query.
+  private syncPeerMetadata(nick: string): void {
+    if (!this.metadataLimits()) return;
+    if (this.userMetadata.has(nick.toLowerCase())) return;
+    this.scheduleMetadataSync(nick, PEER_JOIN_SYNC_DELAY_SEC);
   }
 
   // One change into state, and out to clients as the whole record. A value
@@ -5066,10 +5097,18 @@ export class IrcConnection {
   private forgetUserMetadata(nick: string): void {
     const lower = nick.toLowerCase();
     if (!this.userMetadata.has(lower)) return;
-    if (this.isSelfNick(nick) || this.trackedPeers.has(lower)) return;
-    for (const ch of this.channels.values()) if (ch.members.has(lower)) return;
+    if (this.keepsUserMetadata(nick)) return;
     this.userMetadata.delete(lower);
     this.publishUserMetadata(nick, null);
+  }
+
+  // Whether a nick's record has a reason to be held: ourselves, a tracked DM
+  // peer, or someone in a channel we're in.
+  private keepsUserMetadata(nick: string): boolean {
+    const lower = nick.toLowerCase();
+    if (this.isSelfNick(nick) || this.trackedPeers.has(lower)) return true;
+    for (const ch of this.channels.values()) if (ch.members.has(lower)) return true;
+    return false;
   }
 
   // After we leave a channel: everyone we only knew from there. Deleting the

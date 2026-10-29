@@ -245,6 +245,52 @@ describe("a peer's metadata", () => {
     }
   });
 
+  it('asks for the record of someone who joins, and again after they sign off and on (#1246)', async () => {
+    const { conn, events } = connectDirect('host');
+    let peer = await rawClient(ircd.port, 'erin');
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      conn.join('#late');
+      conn.join('#later');
+      await until(() => conn.channelState('#later')?.members.has('host') ?? false, 5000, 'in');
+      // Set before the join: the server tells the joiner about the room, not
+      // the room about the joiner, so this reaches us only if we ask.
+      ircd.setMetadata('erin', 'display-name', 'Erin');
+      peer.send('JOIN #late');
+      peer.send('JOIN #later');
+      await until(() => snap(conn).userMetadata.erin !== undefined, 5000, 'learned');
+      expect(snap(conn).userMetadata.erin).toEqual({ displayName: 'Erin' });
+      const syncs = () => ircd.client('host')!.sent.filter((l) => l === 'METADATA erin SYNC');
+      // The two joins were one query.
+      expect(syncs()).toHaveLength(1);
+
+      // Signed off: forgotten. Back on with a new record: learned afresh.
+      peer.send('QUIT :brb');
+      await until(() => snap(conn).userMetadata.erin === undefined, 5000, 'forgotten');
+      peer.socket.destroy();
+      peer = await rawClient(ircd.port, 'erin');
+      ircd.setMetadata('erin', 'display-name', 'Erin again');
+      peer.send('JOIN #late');
+      await until(() => snap(conn).userMetadata.erin !== undefined, 5000, 'learned again');
+      expect(snap(conn).userMetadata.erin).toEqual({ displayName: 'Erin again' });
+      expect(userMeta(events, 'erin').at(-1)!.values).toEqual({ displayName: 'Erin again' });
+      expect(syncs()).toHaveLength(2);
+
+      // Gone again before the query goes: nothing is asked, so no record is
+      // left behind to be taken for current on their next join.
+      peer.send('PART #late');
+      await until(() => !conn.channelState('#late')?.members.has('erin'), 5000, 'out');
+      peer.send('JOIN #late');
+      peer.send('PART #late');
+      await until(() => snap(conn).userMetadata.erin === undefined, 5000, 'forgotten again');
+      await new Promise((r) => setTimeout(r, 1500));
+      expect(syncs()).toHaveLength(2);
+    } finally {
+      peer.socket.destroy();
+      conn.disconnect();
+    }
+  });
+
   it('keeps a channel’s own record beside its members', async () => {
     const { conn, events } = connectDirect('chanviewer');
     try {
