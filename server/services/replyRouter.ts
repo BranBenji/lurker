@@ -52,6 +52,10 @@ export type Asker = 'lurker' | 'user' | ReplyClient;
  */
 export type ReplyOwner = Asker | 'unasked' | 'nobody';
 
+// How a query ended, for its `onEnd`: its reply came whole, the server put it
+// off (a 774 for a SYNC), an error ended it, or nothing came in time.
+export type QueryEnd = 'replied' | 'postponed' | 'error' | 'timeout';
+
 import type { SendHandle, SendPriority } from './sendPacer.js';
 
 /** A line handed to the connection's queue, which can be taken back before it goes. */
@@ -268,7 +272,7 @@ interface Query extends Spec {
   onSent: ((at: number) => void) | undefined;
   onDropped: (() => void) | undefined;
   priority: SendPriority | undefined;
-  onEnd: (() => void) | undefined;
+  onEnd: ((how: QueryEnd) => void) | undefined;
 }
 
 interface Settle {
@@ -335,8 +339,9 @@ export class ReplyRouter {
    * `onSent` runs when the line has gone (#1149): a timer that waits on the
    * reply starts there. Lurker's own queries wait in the queue's `low` lane,
    * behind what the user says, unless `priority` says otherwise. `onEnd` runs
-   * once the query is over — its reply ended, an error ended it, or it timed
-   * out — and never when its socket went first.
+   * once the query is over, told how — its reply ended, the server postponed
+   * it, an error ended it, or it timed out — and never when its socket went
+   * first.
    */
   send(
     asker: Asker,
@@ -345,7 +350,7 @@ export class ReplyRouter {
     onSent?: (at: number) => void,
     onDropped?: () => void,
     priority?: SendPriority,
-    onEnd?: () => void,
+    onEnd?: (how: QueryEnd) => void,
   ): void {
     const lane = priority ?? (asker === 'lurker' ? 'low' : undefined);
     const found = this.classify(line);
@@ -552,7 +557,7 @@ export class ReplyRouter {
         }
         this.takeOffWire(query);
         this.abort(query);
-        query.onEnd?.();
+        query.onEnd?.('timeout');
         this.releaseWaiting();
       });
     }, delay);
@@ -575,13 +580,19 @@ export class ReplyRouter {
       if (!role) continue;
       query.heardAt = Date.now();
       query.started = true;
-      if (role === 'end') this.finish(query, this.trailerOf(query, command));
+      if (role === 'end') {
+        this.finish(
+          query,
+          this.trailerOf(query, command),
+          command === '774' ? 'postponed' : 'replied',
+        );
+      }
       return query.asker ?? 'nobody';
     }
     for (const query of this.wire) {
       if (!query.sent) continue;
       if (!this.isErrorFor(query, command, params)) continue;
-      this.finish(query, this.endAfterError(query));
+      this.finish(query, this.endAfterError(query), 'error');
       return query.asker ?? 'nobody';
     }
     return undefined;
@@ -589,9 +600,9 @@ export class ReplyRouter {
 
   // Take the query off the wire. If a line may still follow its end, it keeps a
   // claim on the next line, and what waits for it keeps waiting until then.
-  private finish(query: Query, wants: string | null): void {
+  private finish(query: Query, wants: string | null, how: QueryEnd): void {
     this.takeOffWire(query);
-    query.onEnd?.();
+    query.onEnd?.(how);
     if (!wants) {
       this.releaseWaiting();
       return;

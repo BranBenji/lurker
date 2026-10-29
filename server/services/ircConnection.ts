@@ -99,7 +99,7 @@ import { ProxyTransport } from './proxyTransport.js';
 import { MonitorList } from './monitorList.js';
 import type { MonitorHolder, MonitorSync } from './monitorList.js';
 import { ReplyRouter, listModeNumerics } from './replyRouter.js';
-import type { Asker, ReplyOwner } from './replyRouter.js';
+import type { Asker, QueryEnd, ReplyOwner } from './replyRouter.js';
 import { ModeListCollector } from './modeList.js';
 import type { ModeListResult } from './modeList.js';
 import { classifyModeChange, modeLetter } from '../../shared/modes.js';
@@ -802,9 +802,26 @@ function buildUserhost(event: Record<string, unknown>): string | null {
 
 // Keys bouncer clients may add to the socket's subscription beyond Lurker's own.
 const MAX_EXTRA_METADATA_KEYS = 64;
-// How long after a peer's JOIN their metadata is asked for (#1246): long
-// enough for an autojoin's run of JOINs to be one query.
-const PEER_JOIN_SYNC_DELAY_SEC = 1;
+// How long after a peer's JOIN their metadata is asked for (#1246). A run of
+// JOINs is one query whatever this is (the second finds them in a channel of
+// ours already); the wait is for a join-and-part — a bot's probe, a
+// mis-click — to go unasked, and a nick regained on identify to be asked by
+// its final name. Tests shorten it.
+function peerJoinSyncDelaySec(): number {
+  return reconnectEnvInt('LURKER_METADATA_JOIN_SYNC_MS', 1000) / 1000;
+}
+
+interface PendingMetadataSync {
+  timer: ReturnType<typeof setTimeout>;
+  peerJoin: boolean;
+}
+
+// A peer-join sync from the ask to its end: the nick as last known (a rename
+// moves it) and the keys set since the ask.
+interface PeerSync {
+  nick: string;
+  seen: Set<string>;
+}
 
 // Bytes of keys on one SUB line: room for `METADATA * SUB `, CRLF and one more
 // long key under the 512-byte line limit.
@@ -952,18 +969,14 @@ export class IrcConnection {
   // channel. Grown by every line that names a nick; shrunk when a nick we no
   // longer share a channel with and don't watch leaves (forgetUserMetadata).
   private userMetadata: Map<string, MetadataRecord>;
-  // Pending `METADATA <target> SYNC`s, by target: a 774 asked for one, or a
-  // peer joined (peerJoin, #1246).
-  private metadataSyncTimers: Map<
-    string,
-    { timer: ReturnType<typeof setTimeout>; peerJoin: boolean }
-  >;
-  // Peer-join syncs on the wire, by lowercase nick: the keys set since it
-  // was asked for. The reply's batch end makes the record exactly those
-  // (reconcilePeerSync) — what we held of a previous session goes.
-  private peerSyncs: Map<string, Set<string>>;
-  // Open `metadata` batches answering a peer-join sync: ref → lowercase nick.
-  private peerSyncBatches: Map<string, string>;
+  // Pending `METADATA <target> SYNC`s, by lowercase target: a 774 asked for
+  // one, or a peer joined (peerJoin, #1246).
+  private metadataSyncTimers: Map<string, PendingMetadataSync>;
+  // Peer-join syncs from the ask to the reply's end, by lowercase nick: the
+  // keys set since the ask. A whole reply makes the record exactly those
+  // (endPeerSync) — what we held of a previous session goes. A rename moves
+  // the entry; the query's callback holds the object, not the name.
+  private peerSyncs: Map<string, PeerSync>;
   // Keys bouncer clients subscribed to beyond Lurker's own, each with the
   // clients holding it (addMetadataKeys / removeMetadataKeys). The network
   // gives the socket one subscription list, so the union goes up; a key's
@@ -1468,7 +1481,6 @@ export class IrcConnection {
     this.client.requestCap(METADATA_CAP);
     this.userMetadata = new Map();
     this.peerSyncs = new Map();
-    this.peerSyncBatches = new Map();
     this.metadataSyncTimers = new Map();
     this.metadataExtraKeys = new Map();
     this.ownServerMetadata = new Map();
@@ -2000,23 +2012,6 @@ export class IrcConnection {
       // batched line reaches its handler only when the batch ends, after the
       // microtask has cleared who asked for it, and these are mostly batched.
       // State is applied whoever asked; only the echo reads replyOwner.
-      // A `metadata` batch answering a peer-join sync (#1246): its end is
-      // when the record is whole. Labelled with the nick, as ergo does.
-      if (rawCommand === 'BATCH' && msg?.params?.[0]) {
-        const ref = msg.params[0].slice(1);
-        if (msg.params[0].startsWith('+')) {
-          const label = (msg.params[2] ?? '').toLowerCase();
-          if (msg.params[1] === 'metadata' && this.peerSyncs.has(label)) {
-            this.peerSyncBatches.set(ref, label);
-          }
-        } else if (msg.params[0].startsWith('-')) {
-          const nick = this.peerSyncBatches.get(ref);
-          if (nick !== undefined) {
-            this.peerSyncBatches.delete(ref);
-            this.reconcilePeerSync(nick);
-          }
-        }
-      }
       if (rawCommand === 'METADATA' || METADATA_NUMERICS.has(rawCommand)) {
         const batched = !!(msg?.tags as Record<string, string> | undefined)?.batch;
         this.onMetadataLine(rawCommand, msg?.params ?? [], batched);
@@ -2489,7 +2484,6 @@ export class IrcConnection {
       // the server replays it (#607).
       this.userMetadata.clear();
       this.peerSyncs.clear();
-      this.peerSyncBatches.clear();
       for (const { timer } of this.metadataSyncTimers.values()) clearTimeout(timer);
       this.metadataSyncTimers.clear();
       this.ownServerMetadata.clear();
@@ -4986,7 +4980,11 @@ export class IrcConnection {
       // couldn't send the values now. ergo's target is `*ALL` after a SUB.
       const target = params[1];
       const retry = Number(params[2]);
-      if (target) this.scheduleMetadataSync(target, Number.isFinite(retry) ? retry : 0);
+      if (target) {
+        // A postponed peer-join sync stays one (its entry survived the end).
+        const peerJoin = this.peerSyncs.has(target.toLowerCase());
+        this.scheduleMetadataSync(target, Number.isFinite(retry) ? retry : 0, peerJoin);
+      }
       return;
     }
     const change = parseMetadataLine(command, params);
@@ -5043,70 +5041,97 @@ export class IrcConnection {
   }
 
   // A `METADATA <target> SYNC` after a wait: the server's 774 named it, or a
-  // peer joined (syncPeerMetadata). One per target at a time.
+  // peer joined (syncPeerMetadata). One per target at a time; a peer join
+  // landing on a pending one makes it one.
   private scheduleMetadataSync(target: string, retryAfterSec: number, peerJoin = false): void {
-    if (this.metadataSyncTimers.has(target)) return;
+    const key = target.toLowerCase();
+    const pending = this.metadataSyncTimers.get(key);
+    if (pending) {
+      if (peerJoin) pending.peerJoin = true;
+      return;
+    }
     const delay = Math.min(Math.max(0, retryAfterSec), 300) * 1000;
     const timer = setTimeout(() => {
-      this.metadataSyncTimers.delete(target);
+      const entry = this.metadataSyncTimers.get(key);
+      this.metadataSyncTimers.delete(key);
       if (this.disposed || this.state !== 'connected' || !this.metadataLimits()) return;
+      const sync = entry?.peerJoin ? this.peerSyncs.get(key) : undefined;
       // A peer gone again before we asked: nothing to ask about.
-      if (peerJoin && !this.keepsUserMetadata(target)) {
-        this.peerSyncs.delete(target.toLowerCase());
+      if (entry?.peerJoin && !this.keepsUserMetadata(target)) {
+        if (sync) this.dropPeerSync(sync);
         return;
       }
-      this.replies.send('lurker', `METADATA ${target} SYNC`);
+      this.replies.send(
+        'lurker',
+        `METADATA ${target} SYNC`,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        sync ? (how) => this.endPeerSync(sync, how) : undefined,
+      );
     }, delay);
     timer.unref?.();
-    this.metadataSyncTimers.set(target, { timer, peerJoin });
+    this.metadataSyncTimers.set(key, { timer, peerJoin });
   }
 
   // A peer who just joined a channel we're in and shared none before (#1246):
   // their whole record. What we hold of them — a watched DM peer's record
   // outlives their QUIT — is their last session's, replaced when the reply
-  // ends (reconcilePeerSync). The wait lets a run of JOINs settle first.
+  // ends (endPeerSync).
   private syncPeerMetadata(nick: string): void {
     if (!this.metadataLimits()) return;
-    this.peerSyncs.set(nick.toLowerCase(), new Set());
-    this.scheduleMetadataSync(nick, PEER_JOIN_SYNC_DELAY_SEC, true);
+    this.peerSyncs.set(nick.toLowerCase(), { nick, seen: new Set() });
+    this.scheduleMetadataSync(nick, peerJoinSyncDelaySec(), true);
   }
 
-  // A peer-join sync's reply is complete: the record is what it set (and
-  // what else was set since the ask), nothing older. Then, if they've left
-  // again meanwhile, the record goes with them.
-  private reconcilePeerSync(nick: string): void {
+  private dropPeerSync(sync: PeerSync): void {
+    const key = sync.nick.toLowerCase();
+    if (this.peerSyncs.get(key) === sync) this.peerSyncs.delete(key);
+  }
+
+  // A peer-join sync's query is over. Whole reply: the record is what it set
+  // (and what else was set since the ask), nothing older. Postponed: the 774
+  // handler asks again, the entry stays. A FAIL or a timeout said nothing
+  // about the record. Either way, a peer who left again meanwhile goes.
+  private endPeerSync(sync: PeerSync, how: QueryEnd): void {
+    if (how === 'postponed') return;
+    this.dropPeerSync(sync);
+    const nick = sync.nick;
+    if (!this.keepsUserMetadata(nick)) {
+      this.forgetUserMetadata(nick);
+      return;
+    }
+    if (how !== 'replied') return;
     const lower = nick.toLowerCase();
-    const seen = this.peerSyncs.get(lower);
-    if (!seen) return;
-    this.peerSyncs.delete(lower);
     const record = this.userMetadata.get(lower);
-    if (record) {
-      const stale = Object.keys(record).filter((key) => !seen.has(key));
-      for (const key of stale) {
-        delete record[key];
-        this.noteOwnedMetadataChange(nick, key, null);
-      }
-      if (stale.length) {
-        if (Object.keys(record).length === 0) this.userMetadata.delete(lower);
-        this.publishUserMetadata(nick, Object.keys(record).length ? record : null);
-      }
+    if (!record) return;
+    const stale = Object.keys(record).filter((key) => !sync.seen.has(key));
+    if (stale.length === 0) return;
+    for (const key of stale) {
+      delete record[key];
+      // Bouncer clients heard the sync's lines as Lurker's; so is this.
+      this.client.emit('lurker metadata', { target: nick, key, value: null, owner: 'lurker' });
     }
-    this.forgetUserMetadata(nick);
+    if (Object.keys(record).length === 0) this.userMetadata.delete(lower);
+    this.publishUserMetadata(nick, Object.keys(record).length ? record : null);
   }
 
-  // A pending peer-join sync follows a rename (#1246): the server answers
-  // for the nick we name, and a `metadata` batch is labelled with it.
+  // A peer-join sync follows a rename (#1246): one still waiting is asked by
+  // the new name; one on the wire answers under it.
   private rekeyPeerSync(oldNick: string, newNick: string): void {
-    const seen = this.peerSyncs.get(oldNick.toLowerCase());
-    if (seen) {
-      this.peerSyncs.delete(oldNick.toLowerCase());
-      this.peerSyncs.set(newNick.toLowerCase(), seen);
+    const oldKey = oldNick.toLowerCase();
+    const sync = this.peerSyncs.get(oldKey);
+    if (sync) {
+      this.peerSyncs.delete(oldKey);
+      sync.nick = newNick;
+      this.peerSyncs.set(newNick.toLowerCase(), sync);
     }
-    const pending = this.metadataSyncTimers.get(oldNick);
+    const pending = this.metadataSyncTimers.get(oldKey);
     if (pending?.peerJoin) {
       clearTimeout(pending.timer);
-      this.metadataSyncTimers.delete(oldNick);
-      this.scheduleMetadataSync(newNick, PEER_JOIN_SYNC_DELAY_SEC, true);
+      this.metadataSyncTimers.delete(oldKey);
+      this.scheduleMetadataSync(newNick, peerJoinSyncDelaySec(), true);
     }
   }
 
@@ -5134,7 +5159,7 @@ export class IrcConnection {
     if (!nick) return;
     const lower = nick.toLowerCase();
     const record = this.userMetadata.get(lower) ?? {};
-    if (value !== null) this.peerSyncs.get(lower)?.add(change.key);
+    if (value !== null) this.peerSyncs.get(lower)?.seen.add(change.key);
     if ((record[change.key] ?? null) === value) return;
     if (value === null) delete record[change.key];
     else record[change.key] = value;

@@ -23,12 +23,15 @@ let userId: number;
 let seq = 0;
 
 beforeAll(async () => {
+  // The peer-join sync's wait (#1246), shortened: the tests wait on replies.
+  process.env.LURKER_METADATA_JOIN_SYNC_MS = '50';
   ({ IrcConnection } = await import('./ircConnection.js'));
   ircd = await FakeIrcd.start({ metadata: true });
   userId = createUser('metadata-wiring').id;
 });
 
 afterAll(async () => {
+  delete process.env.LURKER_METADATA_JOIN_SYNC_MS;
   await ircd.close();
 });
 
@@ -283,7 +286,7 @@ describe("a peer's metadata", () => {
       peer.send('JOIN #late');
       peer.send('PART #late');
       await until(() => snap(conn).userMetadata.erin === undefined, 5000, 'forgotten again');
-      await new Promise((r) => setTimeout(r, 1500));
+      await new Promise((r) => setTimeout(r, 200));
       expect(syncs()).toHaveLength(2);
     } finally {
       peer.socket.destroy();
