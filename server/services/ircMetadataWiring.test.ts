@@ -291,6 +291,60 @@ describe("a peer's metadata", () => {
     }
   });
 
+  it('replaces what it held of a watched DM peer with their new session’s record', async () => {
+    const { conn, events } = connectDirect('watcher');
+    let peer = await rawClient(ircd.port, 'gail');
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      conn.join('#dm');
+      await until(() => conn.channelState('#dm')?.members.has('watcher') ?? false, 5000, 'in');
+      conn.trackDmPeer('gail');
+      ircd.setMetadata('gail', 'display-name', 'Gail');
+      ircd.setMetadata('gail', 'pronouns', 'she/her');
+      peer.send('JOIN #dm');
+      await until(() => snap(conn).userMetadata.gail?.pronouns !== undefined, 5000, 'learned');
+      expect(snap(conn).userMetadata.gail).toEqual({ displayName: 'Gail', pronouns: 'she/her' });
+
+      // A watched peer's record outlives their QUIT — the DM still shows it.
+      peer.send('QUIT :bye');
+      await until(() => !conn.channelState('#dm')?.members.has('gail'), 5000, 'gone');
+      expect(snap(conn).userMetadata.gail).toEqual({ displayName: 'Gail', pronouns: 'she/her' });
+      peer.socket.destroy();
+
+      // Back with less: the sync's end drops what this session didn't set.
+      ircd.metadata.delete('gail');
+      peer = await rawClient(ircd.port, 'gail');
+      ircd.setMetadata('gail', 'display-name', 'Gail II');
+      peer.send('JOIN #dm');
+      await until(() => snap(conn).userMetadata.gail?.pronouns === undefined, 5000, 'reconciled');
+      expect(snap(conn).userMetadata.gail).toEqual({ displayName: 'Gail II' });
+      expect(userMeta(events, 'gail').at(-1)!.values).toEqual({ displayName: 'Gail II' });
+    } finally {
+      peer.socket.destroy();
+      conn.disconnect();
+    }
+  });
+
+  it('follows a rename made before the join’s query went out', async () => {
+    const { conn } = connectDirect('renamer');
+    const peer = await rawClient(ircd.port, 'Guest42');
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      conn.join('#id');
+      await until(() => conn.channelState('#id')?.members.has('renamer') ?? false, 5000, 'in');
+      ircd.setMetadata('Guest42', 'display-name', 'Hal');
+      peer.send('JOIN #id');
+      peer.send('NICK hal');
+      await until(() => snap(conn).userMetadata.hal !== undefined, 5000, 'learned as hal');
+      expect(snap(conn).userMetadata.hal).toEqual({ displayName: 'Hal' });
+      const sent = ircd.client('renamer')!.sent.filter((l) => /^METADATA \S+ SYNC$/.test(l));
+      expect(sent.filter((l) => l !== 'METADATA *ALL SYNC')).toEqual(['METADATA hal SYNC']);
+    } finally {
+      peer.socket.destroy();
+      conn.disconnect();
+    }
+  });
+
   it('keeps a channel’s own record beside its members', async () => {
     const { conn, events } = connectDirect('chanviewer');
     try {

@@ -806,12 +806,6 @@ const MAX_EXTRA_METADATA_KEYS = 64;
 // enough for an autojoin's run of JOINs to be one query.
 const PEER_JOIN_SYNC_DELAY_SEC = 1;
 
-// A metadata target that names a nick: not a channel, and not the `*` (us) or
-// `*ALL` (everything) forms.
-function isMetadataNickTarget(target: string): boolean {
-  return !isChannelMetadataTarget(target) && !target.startsWith('*');
-}
-
 // Bytes of keys on one SUB line: room for `METADATA * SUB `, CRLF and one more
 // long key under the 512-byte line limit.
 const MAX_SUB_LINE_KEY_BYTES = 400;
@@ -958,8 +952,18 @@ export class IrcConnection {
   // channel. Grown by every line that names a nick; shrunk when a nick we no
   // longer share a channel with and don't watch leaves (forgetUserMetadata).
   private userMetadata: Map<string, MetadataRecord>;
-  // Pending `METADATA <target> SYNC`s a 774 asked for, by target.
-  private metadataSyncTimers: Map<string, ReturnType<typeof setTimeout>>;
+  // Pending `METADATA <target> SYNC`s, by target: a 774 asked for one, or a
+  // peer joined (peerJoin, #1246).
+  private metadataSyncTimers: Map<
+    string,
+    { timer: ReturnType<typeof setTimeout>; peerJoin: boolean }
+  >;
+  // Peer-join syncs on the wire, by lowercase nick: the keys set since it
+  // was asked for. The reply's batch end makes the record exactly those
+  // (reconcilePeerSync) — what we held of a previous session goes.
+  private peerSyncs: Map<string, Set<string>>;
+  // Open `metadata` batches answering a peer-join sync: ref → lowercase nick.
+  private peerSyncBatches: Map<string, string>;
   // Keys bouncer clients subscribed to beyond Lurker's own, each with the
   // clients holding it (addMetadataKeys / removeMetadataKeys). The network
   // gives the socket one subscription list, so the union goes up; a key's
@@ -1463,6 +1467,8 @@ export class IrcConnection {
     // to on registration (subscribeMetadata); the lines land in userMetadata.
     this.client.requestCap(METADATA_CAP);
     this.userMetadata = new Map();
+    this.peerSyncs = new Map();
+    this.peerSyncBatches = new Map();
     this.metadataSyncTimers = new Map();
     this.metadataExtraKeys = new Map();
     this.ownServerMetadata = new Map();
@@ -1994,6 +2000,23 @@ export class IrcConnection {
       // batched line reaches its handler only when the batch ends, after the
       // microtask has cleared who asked for it, and these are mostly batched.
       // State is applied whoever asked; only the echo reads replyOwner.
+      // A `metadata` batch answering a peer-join sync (#1246): its end is
+      // when the record is whole. Labelled with the nick, as ergo does.
+      if (rawCommand === 'BATCH' && msg?.params?.[0]) {
+        const ref = msg.params[0].slice(1);
+        if (msg.params[0].startsWith('+')) {
+          const label = (msg.params[2] ?? '').toLowerCase();
+          if (msg.params[1] === 'metadata' && this.peerSyncs.has(label)) {
+            this.peerSyncBatches.set(ref, label);
+          }
+        } else if (msg.params[0].startsWith('-')) {
+          const nick = this.peerSyncBatches.get(ref);
+          if (nick !== undefined) {
+            this.peerSyncBatches.delete(ref);
+            this.reconcilePeerSync(nick);
+          }
+        }
+      }
       if (rawCommand === 'METADATA' || METADATA_NUMERICS.has(rawCommand)) {
         const batched = !!(msg?.tags as Record<string, string> | undefined)?.batch;
         this.onMetadataLine(rawCommand, msg?.params ?? [], batched);
@@ -2465,7 +2488,9 @@ export class IrcConnection {
       // Metadata is the socket's: the next registration subscribes again and
       // the server replays it (#607).
       this.userMetadata.clear();
-      for (const timer of this.metadataSyncTimers.values()) clearTimeout(timer);
+      this.peerSyncs.clear();
+      this.peerSyncBatches.clear();
+      for (const { timer } of this.metadataSyncTimers.values()) clearTimeout(timer);
       this.metadataSyncTimers.clear();
       this.ownServerMetadata.clear();
       this.ownMetadataPending.clear();
@@ -3363,6 +3388,10 @@ export class IrcConnection {
       // extended-join: irc-framework parses the account param when the cap is
       // enabled, and omits the key when it isn't (#508).
       const joinAccount = normalizeAccount(event.account);
+      // Whether we shared a channel with them before this JOIN (#1246): then
+      // the server has been telling us their changes, and the record is good.
+      // A watched DM peer's isn't: it outlived their QUIT.
+      const wasFriend = !isSelf && this.inSharedChannel(eventNick);
       ch?.members.set(eventNick.toLowerCase(), {
         nick: eventNick,
         modes: [],
@@ -3375,8 +3404,10 @@ export class IrcConnection {
       // room's metadata to them and tells the room nothing of theirs — ergo
       // broadcasts the JOIN, a MODE and an AWAY, and the spec asks no more —
       // so a peer who signed off and back on wore a generated tile until a
-      // WHOIS. Ask. A restore's replayed joins are covered by its own sync.
-      if (!isSelf && ch && !this.restoring) this.syncPeerMetadata(eventNick);
+      // WHOIS. Ask, unless we were already in a channel with them (an
+      // autojoin's second JOIN). A restore's replayed joins are covered by
+      // its own sync.
+      if (!isSelf && ch && !wasFriend && !this.restoring) this.syncPeerMetadata(eventNick);
       this.publish({
         type: 'join',
         target: eventChannel,
@@ -3796,6 +3827,7 @@ export class IrcConnection {
         this.publishUserMetadata(eventNick, null);
         this.publishUserMetadata(eventNewNick, metaRecord);
       }
+      if (oldLower !== newLower) this.rekeyPeerSync(eventNick, eventNewNick);
       // From a DM-buffer perspective: the old name is no longer reachable
       // (sending to it would 401), and the new name is reachable (if we have
       // a DM with them, or now). Don't fire either side for our own /nick.
@@ -5012,29 +5044,70 @@ export class IrcConnection {
 
   // A `METADATA <target> SYNC` after a wait: the server's 774 named it, or a
   // peer joined (syncPeerMetadata). One per target at a time.
-  private scheduleMetadataSync(target: string, retryAfterSec: number): void {
+  private scheduleMetadataSync(target: string, retryAfterSec: number, peerJoin = false): void {
     if (this.metadataSyncTimers.has(target)) return;
     const delay = Math.min(Math.max(0, retryAfterSec), 300) * 1000;
     const timer = setTimeout(() => {
       this.metadataSyncTimers.delete(target);
       if (this.disposed || this.state !== 'connected' || !this.metadataLimits()) return;
-      // A nick gone again meanwhile: its record would sit with nothing to
-      // forget it, and be taken for current when they next join.
-      if (isMetadataNickTarget(target) && !this.keepsUserMetadata(target)) return;
+      // A peer gone again before we asked: nothing to ask about.
+      if (peerJoin && !this.keepsUserMetadata(target)) {
+        this.peerSyncs.delete(target.toLowerCase());
+        return;
+      }
       this.replies.send('lurker', `METADATA ${target} SYNC`);
     }, delay);
     timer.unref?.();
-    this.metadataSyncTimers.set(target, timer);
+    this.metadataSyncTimers.set(target, { timer, peerJoin });
   }
 
-  // A peer who just joined a channel we're in (#1246): their whole record,
-  // unless we hold one — a second shared channel, a watched DM peer, or a
-  // change that beat the join. The wait folds an autojoin burst (one JOIN per
-  // channel) into one query.
+  // A peer who just joined a channel we're in and shared none before (#1246):
+  // their whole record. What we hold of them — a watched DM peer's record
+  // outlives their QUIT — is their last session's, replaced when the reply
+  // ends (reconcilePeerSync). The wait lets a run of JOINs settle first.
   private syncPeerMetadata(nick: string): void {
     if (!this.metadataLimits()) return;
-    if (this.userMetadata.has(nick.toLowerCase())) return;
-    this.scheduleMetadataSync(nick, PEER_JOIN_SYNC_DELAY_SEC);
+    this.peerSyncs.set(nick.toLowerCase(), new Set());
+    this.scheduleMetadataSync(nick, PEER_JOIN_SYNC_DELAY_SEC, true);
+  }
+
+  // A peer-join sync's reply is complete: the record is what it set (and
+  // what else was set since the ask), nothing older. Then, if they've left
+  // again meanwhile, the record goes with them.
+  private reconcilePeerSync(nick: string): void {
+    const lower = nick.toLowerCase();
+    const seen = this.peerSyncs.get(lower);
+    if (!seen) return;
+    this.peerSyncs.delete(lower);
+    const record = this.userMetadata.get(lower);
+    if (record) {
+      const stale = Object.keys(record).filter((key) => !seen.has(key));
+      for (const key of stale) {
+        delete record[key];
+        this.noteOwnedMetadataChange(nick, key, null);
+      }
+      if (stale.length) {
+        if (Object.keys(record).length === 0) this.userMetadata.delete(lower);
+        this.publishUserMetadata(nick, Object.keys(record).length ? record : null);
+      }
+    }
+    this.forgetUserMetadata(nick);
+  }
+
+  // A pending peer-join sync follows a rename (#1246): the server answers
+  // for the nick we name, and a `metadata` batch is labelled with it.
+  private rekeyPeerSync(oldNick: string, newNick: string): void {
+    const seen = this.peerSyncs.get(oldNick.toLowerCase());
+    if (seen) {
+      this.peerSyncs.delete(oldNick.toLowerCase());
+      this.peerSyncs.set(newNick.toLowerCase(), seen);
+    }
+    const pending = this.metadataSyncTimers.get(oldNick);
+    if (pending?.peerJoin) {
+      clearTimeout(pending.timer);
+      this.metadataSyncTimers.delete(oldNick);
+      this.scheduleMetadataSync(newNick, PEER_JOIN_SYNC_DELAY_SEC, true);
+    }
   }
 
   // One change into state, and out to clients as the whole record. A value
@@ -5061,6 +5134,7 @@ export class IrcConnection {
     if (!nick) return;
     const lower = nick.toLowerCase();
     const record = this.userMetadata.get(lower) ?? {};
+    if (value !== null) this.peerSyncs.get(lower)?.add(change.key);
     if ((record[change.key] ?? null) === value) return;
     if (value === null) delete record[change.key];
     else record[change.key] = value;
@@ -5105,8 +5179,12 @@ export class IrcConnection {
   // Whether a nick's record has a reason to be held: ourselves, a tracked DM
   // peer, or someone in a channel we're in.
   private keepsUserMetadata(nick: string): boolean {
+    if (this.isSelfNick(nick) || this.trackedPeers.has(nick.toLowerCase())) return true;
+    return this.inSharedChannel(nick);
+  }
+
+  private inSharedChannel(nick: string): boolean {
     const lower = nick.toLowerCase();
-    if (this.isSelfNick(nick) || this.trackedPeers.has(lower)) return true;
     for (const ch of this.channels.values()) if (ch.members.has(lower)) return true;
     return false;
   }
