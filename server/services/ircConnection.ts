@@ -3821,7 +3821,7 @@ export class IrcConnection {
         this.publishUserMetadata(eventNick, null);
         this.publishUserMetadata(eventNewNick, metaRecord);
       }
-      if (oldLower !== newLower) this.rekeyPeerSync(eventNick, eventNewNick);
+      this.rekeyPeerSync(eventNick, eventNewNick);
       // From a DM-buffer perspective: the old name is no longer reachable
       // (sending to it would 401), and the new name is reachable (if we have
       // a DM with them, or now). Don't fire either side for our own /nick.
@@ -5061,10 +5061,12 @@ export class IrcConnection {
         if (sync) this.dropPeerSync(sync);
         return;
       }
+      // A peer sync's line is made as it goes out: queued behind pacing, it
+      // names the nick a rename meanwhile gave them.
       this.replies.send(
         'lurker',
         `METADATA ${target} SYNC`,
-        undefined,
+        sync ? () => `METADATA ${sync.nick} SYNC` : undefined,
         undefined,
         undefined,
         undefined,
@@ -5096,8 +5098,11 @@ export class IrcConnection {
   // about the record. Either way, a peer who left again meanwhile goes.
   private endPeerSync(sync: PeerSync, how: QueryEnd): void {
     if (how === 'postponed') return;
-    this.dropPeerSync(sync);
     const nick = sync.nick;
+    // Superseded — they left and came back while this was out — the newer
+    // ask owns the record.
+    if (this.peerSyncs.get(nick.toLowerCase()) !== sync) return;
+    this.dropPeerSync(sync);
     if (!this.keepsUserMetadata(nick)) {
       this.forgetUserMetadata(nick);
       return;
