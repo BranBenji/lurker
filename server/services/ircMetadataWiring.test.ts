@@ -23,12 +23,15 @@ let userId: number;
 let seq = 0;
 
 beforeAll(async () => {
+  // The peer-join sync's wait (#1246), shortened: the tests wait on replies.
+  process.env.LURKER_METADATA_JOIN_SYNC_MS = '50';
   ({ IrcConnection } = await import('./ircConnection.js'));
   ircd = await FakeIrcd.start({ metadata: true });
   userId = createUser('metadata-wiring').id;
 });
 
 afterAll(async () => {
+  delete process.env.LURKER_METADATA_JOIN_SYNC_MS;
   await ircd.close();
 });
 
@@ -239,6 +242,106 @@ describe("a peer's metadata", () => {
       peer.send('QUIT :bye');
       await until(() => snap(conn).userMetadata.dana2 === undefined, 5000, 'forgotten');
       expect(userMeta(events, 'dana2').at(-1)!.values).toBeNull();
+    } finally {
+      peer.socket.destroy();
+      conn.disconnect();
+    }
+  });
+
+  it('asks for the record of someone who joins, and again after they sign off and on (#1246)', async () => {
+    const { conn, events } = connectDirect('host');
+    let peer = await rawClient(ircd.port, 'erin');
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      conn.join('#late');
+      conn.join('#later');
+      await until(() => conn.channelState('#later')?.members.has('host') ?? false, 5000, 'in');
+      // Set before the join: the server tells the joiner about the room, not
+      // the room about the joiner, so this reaches us only if we ask.
+      ircd.setMetadata('erin', 'display-name', 'Erin');
+      peer.send('JOIN #late');
+      peer.send('JOIN #later');
+      await until(() => snap(conn).userMetadata.erin !== undefined, 5000, 'learned');
+      expect(snap(conn).userMetadata.erin).toEqual({ displayName: 'Erin' });
+      const syncs = () => ircd.client('host')!.sent.filter((l) => l === 'METADATA erin SYNC');
+      // The two joins were one query.
+      expect(syncs()).toHaveLength(1);
+
+      // Signed off: forgotten. Back on with a new record: learned afresh.
+      peer.send('QUIT :brb');
+      await until(() => snap(conn).userMetadata.erin === undefined, 5000, 'forgotten');
+      peer.socket.destroy();
+      peer = await rawClient(ircd.port, 'erin');
+      ircd.setMetadata('erin', 'display-name', 'Erin again');
+      peer.send('JOIN #late');
+      await until(() => snap(conn).userMetadata.erin !== undefined, 5000, 'learned again');
+      expect(snap(conn).userMetadata.erin).toEqual({ displayName: 'Erin again' });
+      expect(userMeta(events, 'erin').at(-1)!.values).toEqual({ displayName: 'Erin again' });
+      expect(syncs()).toHaveLength(2);
+
+      // Gone again before the query goes: nothing is asked, so no record is
+      // left behind to be taken for current on their next join.
+      peer.send('PART #late');
+      await until(() => !conn.channelState('#late')?.members.has('erin'), 5000, 'out');
+      peer.send('JOIN #late');
+      peer.send('PART #late');
+      await until(() => snap(conn).userMetadata.erin === undefined, 5000, 'forgotten again');
+      await new Promise((r) => setTimeout(r, 200));
+      expect(syncs()).toHaveLength(2);
+    } finally {
+      peer.socket.destroy();
+      conn.disconnect();
+    }
+  });
+
+  it('replaces what it held of a watched DM peer with their new session’s record', async () => {
+    const { conn, events } = connectDirect('watcher');
+    let peer = await rawClient(ircd.port, 'gail');
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      conn.join('#dm');
+      await until(() => conn.channelState('#dm')?.members.has('watcher') ?? false, 5000, 'in');
+      conn.trackDmPeer('gail');
+      ircd.setMetadata('gail', 'display-name', 'Gail');
+      ircd.setMetadata('gail', 'pronouns', 'she/her');
+      peer.send('JOIN #dm');
+      await until(() => snap(conn).userMetadata.gail?.pronouns !== undefined, 5000, 'learned');
+      expect(snap(conn).userMetadata.gail).toEqual({ displayName: 'Gail', pronouns: 'she/her' });
+
+      // A watched peer's record outlives their QUIT — the DM still shows it.
+      peer.send('QUIT :bye');
+      await until(() => !conn.channelState('#dm')?.members.has('gail'), 5000, 'gone');
+      expect(snap(conn).userMetadata.gail).toEqual({ displayName: 'Gail', pronouns: 'she/her' });
+      peer.socket.destroy();
+
+      // Back with less: the sync's end drops what this session didn't set.
+      ircd.metadata.delete('gail');
+      peer = await rawClient(ircd.port, 'gail');
+      ircd.setMetadata('gail', 'display-name', 'Gail II');
+      peer.send('JOIN #dm');
+      await until(() => snap(conn).userMetadata.gail?.pronouns === undefined, 5000, 'reconciled');
+      expect(snap(conn).userMetadata.gail).toEqual({ displayName: 'Gail II' });
+      expect(userMeta(events, 'gail').at(-1)!.values).toEqual({ displayName: 'Gail II' });
+    } finally {
+      peer.socket.destroy();
+      conn.disconnect();
+    }
+  });
+
+  it('follows a rename made before the join’s query went out', async () => {
+    const { conn } = connectDirect('renamer');
+    const peer = await rawClient(ircd.port, 'Guest42');
+    try {
+      await until(() => conn.state === 'connected', 5000, 'connected');
+      conn.join('#id');
+      await until(() => conn.channelState('#id')?.members.has('renamer') ?? false, 5000, 'in');
+      ircd.setMetadata('Guest42', 'display-name', 'Hal');
+      peer.send('JOIN #id');
+      peer.send('NICK hal');
+      await until(() => snap(conn).userMetadata.hal !== undefined, 5000, 'learned as hal');
+      expect(snap(conn).userMetadata.hal).toEqual({ displayName: 'Hal' });
+      const sent = ircd.client('renamer')!.sent.filter((l) => /^METADATA \S+ SYNC$/.test(l));
+      expect(sent.filter((l) => l !== 'METADATA *ALL SYNC')).toEqual(['METADATA hal SYNC']);
     } finally {
       peer.socket.destroy();
       conn.disconnect();

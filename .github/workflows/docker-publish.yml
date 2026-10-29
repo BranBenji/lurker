@@ -31,13 +31,7 @@ env:
   # the engine's behaviour did not, so self-hosters keep the engine they are running
   # instead of having `docker compose pull` recreate it — and drop their IRC
   # connections — for nothing. Entries are one-shot: drop them once released.
-  #
-  # v2.6.1: a security patch release (WS frame hardening, import bounds, deploy
-  # defaults). Nothing in the engine closure moved since v2.6.0 — verified with
-  # tools/engine-closure.mjs files + manifest against the v2.6.0 tag — but the
-  # path diff below runs against the previous tag's closure as a whole, so the
-  # pin says plainly that the engine did not change.
-  ENGINE_TAG_PINNED_RELEASES: 'v2.6.1'
+  ENGINE_TAG_PINNED_RELEASES: ''
 
 jobs:
   build-and-push:

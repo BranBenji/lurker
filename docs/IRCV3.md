@@ -70,7 +70,9 @@ again after every connect, since most servers forget it when you disconnect.
 
 - **`draft/metadata-2`** — Lurker subscribes to `display-name`, `avatar`,
   `pronouns`, `homepage` and `status`, keeps a record per nick for the life of
-  the connection, and re-syncs on every re-attach. Three line shapes are read
+  the connection, and re-syncs on every re-attach. A server syncs the room's
+  metadata to whoever joins it, not the joiner's to the room, so Lurker asks
+  for a joining peer's record itself (`METADATA <nick> SYNC`). Three line shapes are read
   as one: the spec's `METADATA`, and the `761`/`766` numerics Ergo sends them
   as. An avatar URL set by another user is an involuntary fetch, so it goes
   through the link-preview decoder — the client never sees the origin — which
