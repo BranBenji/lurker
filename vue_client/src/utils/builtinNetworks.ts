@@ -33,6 +33,15 @@ export interface BuiltinNetwork {
   defaultChannel?: string;
   /** True when a client on a cloud/datacenter IP likely needs SASL to connect (e.g. Libera). */
   saslLikelyRequired: boolean;
+  /**
+   * The network Lurker's own people run (irc.lurker.chat). It pins above every
+   * other builtin regardless of size: the tag tier below sorts by user count,
+   * which would bury a young first-party server under Libera, and this is the
+   * one network where a hosted user's first connection cannot fail on a SASL
+   * wall. Exactly one entry should carry it. Ordering only: the card itself
+   * shows its tags like any other builtin, with no badge.
+   */
+  firstParty?: boolean;
   tags: string[];
 }
 
@@ -60,16 +69,19 @@ export interface NetworkPreset extends BuiltinNetwork {
   instanceId?: number;
 }
 
-// Sorted most-popular-first so the picker's default order is meaningful; entries
-// without a user count sink to the bottom but keep their relative input order.
 // Networks carrying this tag have an active #lurker channel. The picker floats
 // them to the top, badges them ("#lurker available"), and defaults their join
 // channel to #lurker. It's a marker, not a browse category, so it's kept out of
 // the filter facets and the card's tag list.
 export const LURKER_TAG = 'lurker';
 
-// Lurker-friendly networks first, then most-popular-first within each group.
+// First-party network first, then Lurker-friendly networks, then
+// most-popular-first within each group so the picker's default order is
+// meaningful. Entries without a user count sink to the bottom of their group
+// but keep their relative input order.
 export const builtinNetworks: BuiltinNetwork[] = (data as BuiltinNetwork[]).toSorted((a, b) => {
+  const firstPartyDelta = Number(b.firstParty === true) - Number(a.firstParty === true);
+  if (firstPartyDelta !== 0) return firstPartyDelta;
   const lurkerDelta = Number(b.tags.includes(LURKER_TAG)) - Number(a.tags.includes(LURKER_TAG));
   if (lurkerDelta !== 0) return lurkerDelta;
   return (b.users ?? -1) - (a.users ?? -1);
