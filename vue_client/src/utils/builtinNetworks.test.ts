@@ -70,6 +70,28 @@ describe('suggestedChannels', () => {
   });
 });
 
+describe('builtinNetworks order', () => {
+  it('leads with the first-party network, then lurker-tagged ones by size', () => {
+    expect(builtinNetworks[0]?.firstParty).toBe(true);
+    expect(builtinNetworks[0]?.host).toBe('irc.lurker.chat');
+    // The pin, not the count, puts it first: its users figure is far below Libera's.
+    expect(builtinNetworks[0]!.users!).toBeLessThan(builtinNetworks[1]!.users!);
+    const second = builtinNetworks[1]!;
+    expect(second.firstParty).toBeUndefined();
+    expect(second.tags).toContain(LURKER_TAG);
+  });
+
+  it('carries exactly one first-party network', () => {
+    expect(builtinNetworks.filter((n) => n.firstParty).map((n) => n.name)).toStrictEqual([
+      'Lurker.Chat',
+    ]);
+  });
+
+  it('offers #lurker then #lobby for the first-party network', () => {
+    expect(suggestedChannels(builtinNetworks[0]!)).toStrictEqual([LURKER_CHANNEL, '#lobby']);
+  });
+});
+
 describe('builtinNetworks data', () => {
   // These land a brand-new user in a channel on their first ever session, so a
   // malformed one is a first-impression bug. Cheap to assert, so assert it.

@@ -1,5 +1,18 @@
 [
   {
+    "name": "Lurker.Chat",
+    "host": "irc.lurker.chat",
+    "port": 6697,
+    "tls": true,
+    "website": "https://lurker.chat",
+    "users": 20,
+    "channels": 12,
+    "defaultChannel": "#lobby",
+    "saslLikelyRequired": false,
+    "firstParty": true,
+    "tags": ["lurker", "foss", "ai", "gaming", "music", "diy"]
+  },
+  {
     "name": "Libera.Chat",
     "host": "irc.libera.chat",
     "port": 6697,
